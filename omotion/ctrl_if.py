@@ -257,6 +257,26 @@ class CTRL_IF:
         self.uart.clear_buffer()
         return response
     
+    async def camera_fsin_on(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_ON)
+        self.uart.clear_buffer()
+        return response
+    
+    async def camera_fsin_off(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_OFF)
+        self.uart.clear_buffer()
+        return response
+    
     async def send_bitstream(self, filename="test.bit", packet_id=None):
 
         max_bytes_per_block = 1024

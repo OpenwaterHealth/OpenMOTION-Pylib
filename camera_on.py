@@ -30,7 +30,13 @@ async def main():
     r = await ustx_ctrl.camera_stream_on()
     # Format and print the received data in hex format
     format_and_print_hex(r)
-        
+    
+    time.sleep(0.01)
+
+    print("FSIN On")
+    r = await ustx_ctrl.camera_fsin_on()
+    # Format and print the received data in hex format
+    format_and_print_hex(r)
 
     s.close()
 
