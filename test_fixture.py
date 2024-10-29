@@ -13,7 +13,8 @@ def calculate_file_crc(file_name):
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
-    FILE_NAME = "test.bit"  # Specify your file here
+    FILE_NAME = "test_cam.bit"  # Specify your file here
+    FILE_NAME= "HistoFPGAFw_impl1.bit"
     s = None
 
     if CTRL_BOARD:
@@ -106,10 +107,15 @@ async def main():
         format_and_print_hex(r)
         print("FPGA Configuration Completed")
 
-    #print("Camera Configuration Started")
+    print("Camera Configuration Started")
 
-    #r = await ustx_ctrl.camera_configure_registers()
-    #format_and_print_hex(r)
+    r = await ustx_ctrl.camera_configure_registers()
+    format_and_print_hex(r)
+
+    r = await ustx_ctrl.fpga_soft_reset()
+    format_and_print_hex(r)
+
+
 
     s.close()
 

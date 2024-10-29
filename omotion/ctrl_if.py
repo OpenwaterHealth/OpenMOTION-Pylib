@@ -194,6 +194,17 @@ class CTRL_IF:
         response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_RESET)
         self.uart.clear_buffer()
         return response
+
+    async def fpga_soft_reset(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_SOFT_RESET)
+        self.uart.clear_buffer()
+        return response
+
     
     async def fpga_activate(self, packet_id=None):
         if packet_id is None:
