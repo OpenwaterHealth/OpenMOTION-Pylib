@@ -19,7 +19,8 @@ class AsyncSerial:
 
     async def write(self, data):
         return await self.loop.run_in_executor(self.executor, self.ser.write, data)
-
+    def in_waiting(self):
+        return self.ser.in_waiting
     def close(self):
         self.ser.close()
         self.executor.shutdown()
