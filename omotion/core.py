@@ -59,6 +59,8 @@ class UartPacket:
 
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
+            print("length" + str(len(buffer)))
+            print(buffer)
             raise ValueError("Invalid buffer format")
 
         self.id = int.from_bytes(buffer[1:3], 'big')
@@ -70,9 +72,9 @@ class UartPacket:
         self.data = bytearray(buffer[9:9+self.data_len])
         crc_value = util_crc16(buffer[1:9+self.data_len])
         self.crc = int.from_bytes(buffer[9+self.data_len:11+self.data_len], 'big')
-#        if self.crc != crc_value:
-#            print("Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
-#            raise ValueError("CRC mismatch")
+        if self.crc != crc_value:
+            print("Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
+            raise ValueError("CRC mismatch")
 
     def print_packet(self,full=False):
         print("UartPacket:")
@@ -184,7 +186,12 @@ class UART:
         while self._listening:
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
                 await self._rx()
-                telemetry_packet = UartPacket(buffer=self.read_buffer)
+                try:
+                    telemetry_packet = UartPacket(buffer=self.read_buffer)
+                except struct.error as e:
+                    print("Failed to parse telemetry data:", e)
+                    return
+
                 self.clear_buffer()
                 self.telemetry_parser(telemetry_packet)  # Process telemetry data
         await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
@@ -208,20 +215,9 @@ class UART:
 
     def telemetry_parser(self,packet):
         try:
-            packet.print_packet()
+            if(packet.command == OW_HISTO):
+                print("Histo recieved")
+            #packet.print_packet()
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return
-
-    # Example parsers for specific status codes
-    def parse_warning(additional_data):
-        # Assuming warning payload contains a warning code and a message
-        warning_code, = struct.unpack('>H', additional_data[:2])
-        warning_message = additional_data[2:].decode('utf-8')
-        print(f"Warning {warning_code}: {warning_message}")
-
-    def parse_error(additional_data):
-        # Assuming error payload contains an error code and details
-        error_code, = struct.unpack('>H', additional_data[:2])
-        error_details = additional_data[2:].decode('utf-8')
-        print(f"Error {error_code}: {error_details}")
