@@ -28,14 +28,15 @@ async def main():
     print("FSIN Off")
     r = await ustx_ctrl.camera_fsin_off()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
+    
 
     print("Camera Stream off")
     # Send and Recieve General ping command
     r = await ustx_ctrl.camera_stream_off()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
-        
+    r.print_packet()
+    
 
     s.close()
 

@@ -30,14 +30,16 @@ async def main():
     # Send and Recieve General ping command
     r = await ctrl_interface.camera_stream_on()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
     
     time.sleep(0.01)
 
     print("FSIN On")
     r = await ctrl_interface.camera_fsin_on()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+
+    r.print_packet()
+    
 
     await s.start_telemetry_listener()
 
@@ -45,8 +47,8 @@ async def main():
     # Send and Recieve General ping command
     r = await ctrl_interface.version()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
-
+    r.print_packet()
+    
     await asyncio.sleep(3600)  # Run for 1 hour, adjust as needed
 
 

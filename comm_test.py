@@ -3,10 +3,16 @@ from omotion import *
 import json
 import time
 
+# Function to read file and calculate CRC
+def calculate_file_crc(file_name):
+    with open(file_name, 'rb') as f:
+        file_data = f.read()
+        crc = util_crc16(file_data)
+        return crc
+
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
-    FILE_NAME = "HistoFPGAFw_impl1.bit"  # Specify your file here
     s = None
 
     if CTRL_BOARD:
@@ -22,20 +28,14 @@ async def main():
             s = UART(com_port, timeout=5)
     else:
         s = UART(PORT_NAME, timeout=5)
-        
 
     ustx_ctrl = CTRL_IF(s)
-    print("Camera Stream on")
-    # Send and Recieve General ping command
-    r = await ustx_ctrl.camera_stream_on()
-    # Format and print the received data in hex format
-    r.print_packet()
-    
-    time.sleep(0.01)
 
-    print("FSIN On")
-    r = await ustx_ctrl.camera_fsin_on()
+    print("Pong Controller")
+    # Send and Recieve General ping command
+    r = await ustx_ctrl.pong()
     # Format and print the received data in hex format
+#    format_and_print_hex(r)
     r.print_packet()
 
     s.close()

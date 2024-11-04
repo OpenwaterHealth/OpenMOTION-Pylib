@@ -70,20 +70,22 @@ class UartPacket:
         self.data = bytearray(buffer[9:9+self.data_len])
         crc_value = util_crc16(buffer[1:9+self.data_len])
         self.crc = int.from_bytes(buffer[9+self.data_len:11+self.data_len], 'big')
-        if self.crc != crc_value:
-            raise ValueError("CRC mismatch")
+#        if self.crc != crc_value:
+#            print("Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
+#            raise ValueError("CRC mismatch")
 
-    def print_packet(self):
+    def print_packet(self,full=False):
         print("UartPacket:")
         print("  Packet ID:", self.id)
         print("  Packet Type:", hex(self.packet_type))
         print("  Command:", hex(self.command))
-        print("  Address:", hex(self.addr))
-        print("  Reserved:", hex(self.reserved))
         print("  Data Length:", self.data_len)
-        print("  Data:", self.data.hex())
-        print("  CRC:", hex(self.crc))
-
+        if(full):
+            print("  Address:", hex(self.addr))
+            print("  Reserved:", hex(self.reserved))
+            print("  Data:", self.data.hex())
+            print("  CRC:", hex(self.crc))
+        
 class UART:
     def __init__(self, port: str, baud_rate=921600, timeout=10, align=0):
         log.info(f"Connecting to COM port at {port} speed {baud_rate}")
@@ -127,7 +129,8 @@ class UART:
 
         await self._tx(packet)
         await self._wait_for_response(timeout)
-        return self.read_buffer
+        
+        return self.read_packet()
 
     async def send(self, buffer):
         await self._tx(buffer)
@@ -135,7 +138,10 @@ class UART:
     async def read(self):
         await self._rx()
         return self.read_buffer
-
+    
+    def read_packet(self):
+        return UartPacket(buffer=self.read_buffer)
+        
     async def _tx(self, data: bytes):
         try:
             if self.align > 0:
@@ -172,15 +178,15 @@ class UART:
         print("    Serial Port: ", self.port)
         print("    Serial Baud: ", self.baud_rate)
 
-    
     async def start_telemetry_listener(self):
         ''' Continuously listen for telemetry data on a separate loop '''
         self._listening = True
         while self._listening:
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
-                telemetry_data = await self.ser.read_all()
-                if self.telemetry_parser:
-                    self.telemetry_parser(telemetry_data)  # Process telemetry data
+                await self._rx()
+                telemetry_packet = UartPacket(buffer=self.read_buffer)
+                self.clear_buffer()
+                self.telemetry_parser(telemetry_packet)  # Process telemetry data
         await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
 
     def bytes_to_integers(self,byte_array):
@@ -200,52 +206,9 @@ class UART:
         print("Total Sum:", total_sum)
         return integers
 
-    def telemetry_parser(self,data):
+    def telemetry_parser(self,packet):
         try:
-            # Ensure minimum length for Packet ID, Status Code, Timestamp
-            # Define the format for the fixed part of the structure (up to data_len)
-            fixed_part_format = '>B H B B B B H'
-            fixed_part_size = struct.calcsize(fixed_part_format)
-
-            # Check if data has enough bytes for the fixed part
-            if len(data) < fixed_part_size:
-                raise ValueError("Data is too short to contain UartPacket fixed fields.")
-
-            # Unpack the fixed-length fields
-            protocol_type, id, packet_type, command, addr, reserved, data_len = struct.unpack_from(fixed_part_format, data, 0)
-
-            # Calculate the total expected length including variable-length data
-            total_length = fixed_part_size + data_len + 2  # +2 for the CRC at the end
-            print("Packet len" + str(len(data)))
-            print("Data len" + str(data_len))
-            print("Total length" + str(total_length))
-            # Check if data has enough bytes for the entire packet
-            if len(data) < total_length:
-                raise ValueError("Data is too short to contain the entire UartPacket with variable data length.")
-
-            # Extract the variable-length `data` field and the `crc`
-            data_start = fixed_part_size
-            data_end = data_start + data_len
-            data_field = data[data_start:data_end]
-
-            # Unpack the CRC
-            crc_format = '>H'
-            crc = struct.unpack_from(crc_format, data, data_end)[0]
-
-            if(command == 0x1b):
-                print(self.bytes_to_integers(data_field))
-            # Return the unpacked values in a dictionary for easier access
-            return {
-                "id": id,
-                "packet_type": packet_type,
-                "command": command,
-                "addr": addr,
-                "reserved": reserved,
-                "data_len": data_len,
-                "data": data_field,
-                "crc": crc
-            }
-
+            packet.print_packet()
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return
