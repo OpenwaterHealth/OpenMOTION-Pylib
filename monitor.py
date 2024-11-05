@@ -24,18 +24,18 @@ async def main():
         s = UART(PORT_NAME, timeout=5)
         
 
-    ctrl_interface = CTRL_IF(s)
+    motion_ctrl = CTRL_IF(s)
 
     print("Camera Stream on")
     # Send and Recieve General ping command
-    r = await ctrl_interface.camera_stream_on()
+    r = await motion_ctrl.camera_stream_on()
     # Format and print the received data in hex format
     r.print_packet()
     
     time.sleep(0.01)
 
     print("FSIN On")
-    r = await ctrl_interface.camera_fsin_on()
+    r = await motion_ctrl.camera_fsin_on()
     # Format and print the received data in hex format
 
     r.print_packet()
@@ -43,15 +43,26 @@ async def main():
 
     print("Version Controller")
     # Send and Recieve General ping command
-    r = await ctrl_interface.version()    
+    r = await motion_ctrl.version()    
     # Format and print the received data in hex format
     r.print_packet()
 
-    await s.start_telemetry_listener()
-
-    await asyncio.sleep(3600)  # Run for 1 hour, adjust as needed
-
-
+    try:
+        await s.start_telemetry_listener()
+    except KeyboardInterrupt:
+        print("\nInterrupted! Cleaning up before exiting.")
+        await motion_ctrl.camera_fsin_off()
+        await motion_ctrl.camera_stream_off()
+    finally:
+        s.close()
+        print("Exiting the program.")
     s.close()
 
-asyncio.run(main())
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("App was interrupted")
+    finally:
+        print("App was finished gracefully")

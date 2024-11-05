@@ -15,7 +15,7 @@ logging.basicConfig(filename="telem.log",
 log = logging.getLogger("UART")
 
 class UartPacket:
-    def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=None, buffer=None):
+    def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
         if buffer:
             self.from_buffer(buffer)
         else:
@@ -107,7 +107,7 @@ class UART:
     def close(self):
         self.ser.close()
 
-    async def send_ustx(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
+    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
         if data:
             if packetType == OW_JSON:
                 payload = json.dumps(data).encode('utf-8')
@@ -144,7 +144,17 @@ class UART:
         return self.read_buffer
     
     def read_packet(self):
-        return UartPacket(buffer=self.read_buffer)
+        try:
+            packet = UartPacket(buffer=self.read_buffer)
+        except Exception as e:
+            print("Bad packet recieved: " + str(e))
+            packet = UartPacket(id = 0,
+                                packet_type=OW_BAD_PARSE,
+                                command =0,
+                                addr = 0,
+                                reserved = 0,
+                                data = [] )
+        return packet
         
     async def _tx(self, data: bytes):
         try:
@@ -214,8 +224,6 @@ class UART:
             # Unpack each 4-byte chunk as a single integer (big-endian)
             integer = struct.unpack_from('<I', byte_array, i)[0]
             integers.append(integer)
-        total_sum = sum(integers)
-        print("Total Sum:", total_sum)
         return integers
 
     def telemetry_parser(self,packet):
@@ -224,7 +232,8 @@ class UART:
                 print("Histo recieved")
                 histo = self.bytes_to_integers(packet.data)
                 log.info(msg=str(histo))
-            #packet.print_packet()
+            else:
+                packet.print_packet()
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return
