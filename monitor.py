@@ -41,14 +41,14 @@ async def main():
     r.print_packet()
     
 
-    await s.start_telemetry_listener()
-
     print("Version Controller")
     # Send and Recieve General ping command
     r = await ctrl_interface.version()    
     # Format and print the received data in hex format
     r.print_packet()
-    
+
+    await s.start_telemetry_listener()
+
     await asyncio.sleep(3600)  # Run for 1 hour, adjust as needed
 
 

@@ -159,8 +159,11 @@ class UART:
                 data = await self.ser.read_all()
                 if data:
                     self.read_buffer.extend(data)
-                    if OW_END_BYTE in data:
-                        break
+                    if(data[0] == OW_START_BYTE and len(data) > 9): ## if enough of the packet has come in to determine length
+                        data_len = int.from_bytes(data[7:9], 'big')
+                        packet_len = len(data)
+                        if(packet_len == (data_len + 12)):          ## wait for enough of the packet to come in to determine if its done
+                            break    
         except Exception as e:
             log.error(f"Error during reception: {e}")
 
