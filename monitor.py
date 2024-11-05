@@ -49,11 +49,9 @@ async def main():
 
     try:
         await s.start_telemetry_listener()
-    except KeyboardInterrupt:
-        print("\nInterrupted! Cleaning up before exiting.")
+    finally:
         await motion_ctrl.camera_fsin_off()
         await motion_ctrl.camera_stream_off()
-    finally:
         s.close()
         print("Exiting the program.")
     s.close()
