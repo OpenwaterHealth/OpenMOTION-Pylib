@@ -9,7 +9,9 @@ from .utils import util_crc16
 from .async_serial import AsyncSerial  # Assuming async_serial.py contains the AsyncSerial class
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(filename="telem.log",
+                    filemode='a',
+                    level=logging.DEBUG)
 log = logging.getLogger("UART")
 
 class UartPacket:
@@ -220,6 +222,8 @@ class UART:
         try:
             if(packet.command == OW_HISTO):
                 print("Histo recieved")
+                histo = self.bytes_to_integers(packet.data)
+                log.info(msg=str(histo))
             #packet.print_packet()
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
