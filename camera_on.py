@@ -24,17 +24,17 @@ async def main():
         s = UART(PORT_NAME, timeout=5)
         
 
-    ustx_ctrl = CTRL_IF(s)
+    motion_ctrl = CTRL_IF(s)
     print("Camera Stream on")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.camera_stream_on()
+    r = await motion_ctrl.camera_stream_on()
     # Format and print the received data in hex format
     r.print_packet()
     
     time.sleep(0.01)
 
     print("FSIN On")
-    r = await ustx_ctrl.camera_fsin_on()
+    r = await motion_ctrl.camera_fsin_on()
     # Format and print the received data in hex format
     r.print_packet()
 

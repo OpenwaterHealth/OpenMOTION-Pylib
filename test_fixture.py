@@ -35,84 +35,84 @@ async def main():
     file_crc = calculate_file_crc(FILE_NAME)
     print(f"CRC16 of file {FILE_NAME}: {hex(file_crc)}")
 
-    ustx_ctrl = CTRL_IF(s)
+    motion_ctrl = CTRL_IF(s)
 
     print("Pong Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.pong()
+    r = await motion_ctrl.pong()
     # Format and print the received data in hex format
     format_and_print_hex(r)
         
     print("Version Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.version()    
+    r = await motion_ctrl.version()    
     # Format and print the received data in hex format
     format_and_print_hex(r)
 
     print("Echo Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.echo(data=b'Hello World')    
+    r = await motion_ctrl.echo(data=b'Hello World')    
     # Format and print the received data in hex format
     format_and_print_hex(r)
 
     print("Toggle LED Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.toggle_led()    
+    r = await motion_ctrl.toggle_led()    
     # Format and print the received data in hex format
     format_and_print_hex(r)
 
     print("CHIP ID Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.chipid()    
+    r = await motion_ctrl.chipid()    
     # Format and print the received data in hex format
     format_and_print_hex(r)
     if True:
         print("FPGA Configuration Started")
-        r = await ustx_ctrl.fpga_reset()
+        r = await motion_ctrl.fpga_reset()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_activate()
+        r = await motion_ctrl.fpga_activate()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_on()
+        r = await motion_ctrl.fpga_on()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_id()
+        r = await motion_ctrl.fpga_id()
         format_and_print_hex(r)
         
-        r = await ustx_ctrl.fpga_enter_sram_prog()
+        r = await motion_ctrl.fpga_enter_sram_prog()
         format_and_print_hex(r)
         
-        r = await ustx_ctrl.fpga_erase_sram()
+        r = await motion_ctrl.fpga_erase_sram()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_status()
+        r = await motion_ctrl.fpga_status()
         format_and_print_hex(r)
         
         if False:
-            r = await ustx_ctrl.fpga_program_sram()
+            r = await motion_ctrl.fpga_program_sram()
             format_and_print_hex(r)
         else:
-            r = await ustx_ctrl.send_bitstream(filename=FILE_NAME)
+            r = await motion_ctrl.send_bitstream(filename=FILE_NAME)
             for resp in r:
                 format_and_print_hex(resp)
 
-        r = await ustx_ctrl.fpga_usercode()
+        r = await motion_ctrl.fpga_usercode()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_status()
+        r = await motion_ctrl.fpga_status()
         format_and_print_hex(r)
 
-        r = await ustx_ctrl.fpga_exit_sram_prog()
+        r = await motion_ctrl.fpga_exit_sram_prog()
         format_and_print_hex(r)
         print("FPGA Configuration Completed")
 
     print("Camera Configuration Started")
 
-    r = await ustx_ctrl.camera_configure_registers()
+    r = await motion_ctrl.camera_configure_registers()
     format_and_print_hex(r)
 
-    r = await ustx_ctrl.fpga_soft_reset()
+    r = await motion_ctrl.fpga_soft_reset()
     format_and_print_hex(r)
 
 

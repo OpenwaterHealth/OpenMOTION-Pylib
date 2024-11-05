@@ -29,13 +29,12 @@ async def main():
     else:
         s = UART(PORT_NAME, timeout=5)
 
-    ustx_ctrl = CTRL_IF(s)
+    motion_ctrl = CTRL_IF(s)
 
     print("Pong Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.pong()
+    r = await motion_ctrl.pong()
     # Format and print the received data in hex format
-#    format_and_print_hex(r)
     r.print_packet()
 
     s.close()
