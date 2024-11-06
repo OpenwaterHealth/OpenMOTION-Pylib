@@ -41,7 +41,7 @@ async def main():
     r.print_packet()
 
     try:
-        await s.start_telemetry_listener( timeout=5)
+        await s.start_telemetry_listener(timeout=5)
     finally:
         await motion_ctrl.camera_fsin_off()
         await motion_ctrl.camera_stream_off()

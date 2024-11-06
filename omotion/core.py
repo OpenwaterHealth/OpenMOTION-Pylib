@@ -3,6 +3,7 @@ import logging
 import asyncio
 import time
 import struct
+import csv
 
 from .config import *
 from .utils import util_crc16
@@ -99,6 +100,12 @@ class UART:
         self.align = align
         self.ser = AsyncSerial(port, baud_rate, timeout)
         self.read_buffer = []
+
+        with open('histo_data.csv', mode='w', newline='') as file:
+            file.truncate()
+            writer = csv.writer(file)
+            header = list(range(1024))
+            writer.writerow(header)
 
     async def connect(self):
         # Already connected via AsyncSerial's __init__
@@ -233,9 +240,12 @@ class UART:
     def telemetry_parser(self,packet):
         try:
             if(packet.command == OW_HISTO):
-                print("Histo recieved")
+                # print("Histo recieved")
                 histo = self.bytes_to_integers(packet.data)
-                log.info(msg=str(histo))
+                #log.info(msg=str(histo))
+                with open('histo_data.csv', mode='a', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(histo)                  
             else:
                 packet.print_packet()
         except struct.error as e:
