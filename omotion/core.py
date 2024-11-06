@@ -229,23 +229,25 @@ class UART:
 
         # Initialize an empty list to store the converted integers
         integers = []
-
+        hidden_figures = []
         # Iterate over the byte array in chunks of 4 bytes
         for i in range(0, len(byte_array), 4):
             # Unpack each 4-byte chunk as a single integer (big-endian)
-            integer = struct.unpack_from('<I', byte_array, i)[0]
-            integers.append(integer)
-        return integers
+            # integer = struct.unpack_from('<I', byte_array, i)[0]
+            hidden_figures.append(byte_array[i+3])
+            integers.append(int.from_bytes(byte_array[i:i+2],byteorder='little'))
+        return (integers, hidden_figures)
 
     def telemetry_parser(self,packet):
         try:
             if(packet.command == OW_HISTO):
                 # print("Histo recieved")
-                histo = self.bytes_to_integers(packet.data)
+                (histo,hidden_figures) = self.bytes_to_integers(packet.data)
                 #log.info(msg=str(histo))
+                frame_id = hidden_figures[1023]
                 with open('histo_data.csv', mode='a', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow(histo)                  
+                    writer.writerow([frame_id] + histo)                  
             else:
                 packet.print_packet()
         except struct.error as e:

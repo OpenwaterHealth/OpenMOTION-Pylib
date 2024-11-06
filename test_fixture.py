@@ -41,79 +41,79 @@ async def main():
     # Send and Recieve General ping command
     r = await motion_ctrl.pong()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
         
     print("Version Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.version()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("Echo Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.echo(data=b'Hello World')    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("Toggle LED Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.toggle_led()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("CHIP ID Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.chipid()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
     if True:
         print("FPGA Configuration Started")
         r = await motion_ctrl.fpga_reset()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_activate()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_on()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_id()
-        format_and_print_hex(r)
+        r.print_packet()
         
         r = await motion_ctrl.fpga_enter_sram_prog()
-        format_and_print_hex(r)
+        r.print_packet()
         
         r = await motion_ctrl.fpga_erase_sram()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_status()
-        format_and_print_hex(r)
+        r.print_packet()
         
         if False:
             r = await motion_ctrl.fpga_program_sram()
-            format_and_print_hex(r)
+            r.print_packet()
         else:
             r = await motion_ctrl.send_bitstream(filename=FILE_NAME)
-            for resp in r:
-                format_and_print_hex(resp)
+            # for resp in r:
+                # format_and_print_hex(resp)
 
         r = await motion_ctrl.fpga_usercode()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_status()
-        format_and_print_hex(r)
+        r.print_packet()
 
         r = await motion_ctrl.fpga_exit_sram_prog()
-        format_and_print_hex(r)
+        r.print_packet()
         print("FPGA Configuration Completed")
 
     print("Camera Configuration Started")
 
     r = await motion_ctrl.camera_configure_registers()
-    format_and_print_hex(r)
+    r.print_packet()
 
     r = await motion_ctrl.fpga_soft_reset()
-    format_and_print_hex(r)
+    r.print_packet()
 
 
 

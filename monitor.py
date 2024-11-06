@@ -25,6 +25,11 @@ async def main():
         
     motion_ctrl = CTRL_IF(s)
 
+    print("FPGA Soft Reset")
+    await motion_ctrl.fpga_soft_reset()
+    
+    time.sleep(0.01)
+
     print("Camera Stream on")
     r = await motion_ctrl.camera_stream_on()
     r.print_packet()
