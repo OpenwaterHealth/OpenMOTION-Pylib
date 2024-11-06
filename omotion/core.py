@@ -195,10 +195,14 @@ class UART:
         print("    Serial Port: ", self.port)
         print("    Serial Baud: ", self.baud_rate)
 
-    async def start_telemetry_listener(self):
+    async def start_telemetry_listener(self, timeout = 0):
         ''' Continuously listen for telemetry data on a separate loop '''
         self._listening = True
+        start_time = time.monotonic()
         while self._listening:
+            if ((timeout != 0) & ((time.monotonic() - start_time) > timeout)):
+                self._listening = False
+                return
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
                 await self._rx()
                 try:
