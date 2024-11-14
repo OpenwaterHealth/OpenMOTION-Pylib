@@ -37,6 +37,22 @@ async def main():
     # Format and print the received data in hex format
     r.print_packet()
 
+    #Send the preamble
+    preamble = [I2C_Packet(id=0,device_address=0x36,register_address=0x0100,data=0x00),
+                I2C_Packet(id=1,device_address=0x36,register_address=0x0107,data=0x01)]
+    for packet in preamble:
+        await motion_ctrl.camera_i2c_write(packet)
+        await asyncio.sleep(0.0001)
+    #Delay for at least 5ms
+    await asyncio.sleep(0.005)
+
+    #Send the i2c config
+    csv_file_path = 'camera_config_partial.csv'
+    i2c_packets = I2C_Packet.read_csv_to_i2c_packets(csv_file_path)
+    for packet in i2c_packets:
+        await motion_ctrl.camera_i2c_write(packet)
+        await asyncio.sleep(0.0001)
+    
     s.close()
 
 asyncio.run(main())

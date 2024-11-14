@@ -4,6 +4,8 @@ from .utils import *
 import asyncio
 import struct
 from typing import List
+from .i2c_data_packet import I2C_DATA_Packet
+from .i2c_packet import I2C_Packet
 import json
 
 class CTRL_IF:
@@ -281,9 +283,10 @@ class CTRL_IF:
         if packet_id is None:
             self.packet_count += 1
             packet_id = self.packet_count
-        
-        data = packet
-        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_I2C_PASSTHRU, data=DeprecationWarning)
+        data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')#[0x02,0x03,0x04] #packet.register_address.to_bytes() + packet.data.to_bytes()
+        #data = I2C_DATA_Packet(packet.id, command = packet.device_address, data = packet_data).to_buffer()
+
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data,wait_for_response=False)
         self.uart.clear_buffer()
         return response
     

@@ -3,12 +3,12 @@ import crcmod
 import csv
 
 class I2C_Packet:
-    def __init__(self):
-        self.id = 0
-        self.cmd = 0 # read/write
-        self.device_address = 0
-        self.register_address = 0
-        self.data = 0
+    def __init__(self, id=0, cmd=0, device_address=0, register_address=0, data=0):
+        self.id = id
+        self.cmd = cmd # read/write
+        self.device_address = device_address
+        self.register_address = register_address
+        self.data = data
 
 
     def calculate_crc(self):
@@ -63,21 +63,21 @@ class I2C_Packet:
 
 
 
-def read_csv_to_i2c_packets(csv_file_path):
-    i2c_packets = []
+    def read_csv_to_i2c_packets(csv_file_path):
+        i2c_packets = []
 
-    with open(csv_file_path, mode='r') as file:
-        csv_reader = csv.DictReader(file)
-        for row in csv_reader:
-            packet = I2C_Packet()
-            packet.id = int(row['id'])
-            packet.cmd = 1
-            packet.device_address = int(row['device_address'], 16)  # Assuming hex format
-            packet.register_address = int(row['register_address'], 16)  # Assuming hex format
-            packet.data = int(row['data'], 16)  # Assuming hex format
-            i2c_packets.append(packet)
+        with open(csv_file_path, mode='r') as file:
+            csv_reader = csv.DictReader(file)
+            for row in csv_reader:
+                packet = I2C_Packet()
+                packet.id = int(row['id'])
+                packet.cmd = 1
+                packet.device_address = int(row['device_address'], 16)  # Assuming hex format
+                packet.register_address = int(row['register_address'], 16)  # Assuming hex format
+                packet.data = int(row['data'], 16)  # Assuming hex format
+                i2c_packets.append(packet)
 
-    return i2c_packets
+        return i2c_packets
 
 
 if __name__ == "__main__":
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     # Example usage
     csv_file_path = 'camera_config_partial.csv'
-    i2c_packets = read_csv_to_i2c_packets(csv_file_path)
+    i2c_packets = I2C_Packet.read_csv_to_i2c_packets(csv_file_path)
     
     for packet in i2c_packets:
         packet.print_packet()

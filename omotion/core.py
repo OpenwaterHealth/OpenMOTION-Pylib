@@ -114,7 +114,7 @@ class UART:
     def close(self):
         self.ser.close()
 
-    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
+    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10, wait_for_response = True):
         if data:
             if packetType == OW_JSON:
                 payload = json.dumps(data).encode('utf-8')
@@ -137,12 +137,20 @@ class UART:
         crc_value = util_crc16(packet[1:])
         packet.extend(crc_value.to_bytes(2, 'big'))
         packet.append(OW_END_BYTE)
-
-        await self._tx(packet)
-        await self._wait_for_response(timeout)
         
-        return self.read_packet()
-
+        await self._tx(packet)
+        if wait_for_response:
+            await self._wait_for_response(timeout)
+            return self.read_packet()
+        else:
+            packet = UartPacket(id = 0,
+                    packet_type=OW_CODE_SUCCESS,
+                    command =0,
+                    addr = 0,
+                    reserved = 0,
+                    data = [] )
+            return packet
+        
     async def send(self, buffer):
         await self._tx(buffer)
 
