@@ -277,6 +277,16 @@ class CTRL_IF:
         self.uart.clear_buffer()
         return response
     
+    async def camera_i2c_write(self, packet, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        data = packet
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_I2C_PASSTHRU, data=DeprecationWarning)
+        self.uart.clear_buffer()
+        return response
+    
     async def send_bitstream(self, filename="test.bit", packet_id=None):
 
         max_bytes_per_block = 1024
