@@ -25,16 +25,18 @@ async def main():
         
     motion_ctrl = CTRL_IF(s)
 
+    delay_time = .01
+
     print("FPGA Soft Reset")
     await motion_ctrl.fpga_soft_reset()
     
-    time.sleep(0.01)
+    time.sleep(delay_time)
 
     print("Camera Stream on")
     r = await motion_ctrl.camera_stream_on()
     r.print_packet()
     
-    time.sleep(0.01)
+    time.sleep(delay_time)
 
     print("FSIN On")
     r = await motion_ctrl.camera_fsin_on()
@@ -48,7 +50,13 @@ async def main():
     try:
         await s.start_telemetry_listener(timeout=5)
     finally:
+        
+        time.sleep(delay_time)
+        print("FSIN Off")
         await motion_ctrl.camera_fsin_off()
+        
+        time.sleep(delay_time)
+        print("Stream Off")
         await motion_ctrl.camera_stream_off()
         s.close()
         print("Exiting the program.")

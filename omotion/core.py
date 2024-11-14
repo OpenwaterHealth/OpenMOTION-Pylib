@@ -92,7 +92,7 @@ class UartPacket:
             print("  CRC:", hex(self.crc))
         
 class UART:
-    def __init__(self, port: str, baud_rate=921600, timeout=10, align=0):
+    def __init__(self, port: str, baud_rate=2000000, timeout=10, align=0):
         log.info(f"Connecting to COM port at {port} speed {baud_rate}")
         self.port = port
         self.baud_rate = baud_rate
@@ -104,7 +104,7 @@ class UART:
         with open('histo_data.csv', mode='w', newline='') as file:
             file.truncate()
             writer = csv.writer(file)
-            header = list(range(1024))
+            header = ['id'] + list(range(1024)) + ['total']
             writer.writerow(header)
 
     async def connect(self):
@@ -232,10 +232,11 @@ class UART:
         hidden_figures = []
         # Iterate over the byte array in chunks of 4 bytes
         for i in range(0, len(byte_array), 4):
+            bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
-            # integer = struct.unpack_from('<I', byte_array, i)[0]
-            hidden_figures.append(byte_array[i+3])
-            integers.append(int.from_bytes(byte_array[i:i+2],byteorder='little'))
+#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            hidden_figures.append(bytes[3])
+            integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
         return (integers, hidden_figures)
 
     def telemetry_parser(self,packet):
@@ -244,10 +245,12 @@ class UART:
                 # print("Histo recieved")
                 (histo,hidden_figures) = self.bytes_to_integers(packet.data)
                 #log.info(msg=str(histo))
+                total = sum(histo)
+                print("SUM: " + str(total))
                 frame_id = hidden_figures[1023]
                 with open('histo_data.csv', mode='a', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow([frame_id] + histo)                  
+                    writer.writerow([frame_id] + histo + [total])                  
             else:
                 packet.print_packet()
         except struct.error as e:
