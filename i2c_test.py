@@ -38,11 +38,13 @@ async def main():
     r.print_packet()
 
     #Send the preamble
-    preamble = [I2C_Packet(id=0,device_address=0x36,register_address=0x0100,data=0x00),
-                I2C_Packet(id=1,device_address=0x36,register_address=0x0107,data=0x01)]
-    for packet in preamble:
-        await motion_ctrl.camera_i2c_write(packet)
-        await asyncio.sleep(0.0001)
+    await asyncio.sleep(0.005)
+    
+    await motion_ctrl.camera_i2c_write(I2C_Packet(id=0,device_address=0x36,register_address=0x0100,data=0x00))
+    await asyncio.sleep(0.05)
+    await motion_ctrl.camera_i2c_write(I2C_Packet(id=1,device_address=0x36,register_address=0x0107,data=0x01))
+    await asyncio.sleep(0.015) 
+    
     #Delay for at least 5ms
     await asyncio.sleep(0.005)
 

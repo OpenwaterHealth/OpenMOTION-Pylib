@@ -27,6 +27,11 @@ async def main():
 
     delay_time = .01
 
+    await motion_ctrl.camera_set_gain(16)
+    time.sleep(delay_time)
+
+    await motion_ctrl.camera_set_exposure(2)
+
     print("FPGA Soft Reset")
     await motion_ctrl.fpga_soft_reset()
     
