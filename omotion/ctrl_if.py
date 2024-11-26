@@ -321,6 +321,25 @@ class CTRL_IF:
         self.uart.clear_buffer()
         return response
     
+    async def switch_camera(self, camera_id, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
+        bytes_val = camera_id.to_bytes(1, 'big')
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.clear_buffer()
+        return response
+    
+    async def enable_i2c_broadcast(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_I2C_BROADCAST)
+        self.uart.clear_buffer()
+        return response
+    
     async def send_bitstream(self, filename="test.bit", packet_id=None):
 
         max_bytes_per_block = 1024

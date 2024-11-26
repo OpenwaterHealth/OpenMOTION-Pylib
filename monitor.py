@@ -28,6 +28,16 @@ async def main():
     delay_time = .01
     gain = 1
 
+    await motion_ctrl.enable_i2c_broadcast()
+    time.sleep(delay_time)
+    
+    await motion_ctrl.camera_set_gain(gain)
+    time.sleep(delay_time)
+    
+    print("Camera switch to channel 6")
+    await motion_ctrl.switch_camera(6)
+    time.sleep(delay_time)
+    
     await motion_ctrl.camera_set_gain(gain)
     time.sleep(delay_time)
 
