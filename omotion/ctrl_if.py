@@ -316,9 +316,7 @@ class CTRL_IF:
         if packet_id is None:
             self.packet_count += 1
             packet_id = self.packet_count
-        data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')#[0x02,0x03,0x04] #packet.register_address.to_bytes() + packet.data.to_bytes()
-        #data = I2C_DATA_Packet(packet.id, command = packet.device_address, data = packet_data).to_buffer()
-
+        data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')
         response = await self.uart.send_packet(id=packet_id, packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data,wait_for_response=False)
         self.uart.clear_buffer()
         return response

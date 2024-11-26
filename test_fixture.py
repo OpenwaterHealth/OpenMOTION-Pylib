@@ -14,7 +14,7 @@ async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
     FILE_NAME = "test_cam.bit"  # Specify your file here
-    FILE_NAME= "HistoFPGAFw_impl1.bit"
+    FILE_NAME= "HistoFPGAFw_impl1_agg.bit"
     s = None
 
     if CTRL_BOARD:

@@ -26,8 +26,9 @@ async def main():
     motion_ctrl = CTRL_IF(s)
 
     delay_time = .01
+    gain = 1
 
-    await motion_ctrl.camera_set_gain(16)
+    await motion_ctrl.camera_set_gain(gain)
     time.sleep(delay_time)
 
     await motion_ctrl.camera_set_exposure(2)
