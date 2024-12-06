@@ -243,6 +243,8 @@ class UART:
             bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
 #            integer = struct.unpack_from('<I', byte_array, i)[0]
+            if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
+                print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
             integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
         return (integers, hidden_figures)

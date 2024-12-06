@@ -49,6 +49,10 @@ async def main():
     # Format and print the received data in hex format
     r.print_packet()
 
+
+    await motion_ctrl.switch_camera(2)
+    time.sleep(1)
+
     print("Echo Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.echo(data=b'Hello World')    
