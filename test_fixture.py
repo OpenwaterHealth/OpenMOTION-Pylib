@@ -14,7 +14,7 @@ async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
     FILE_NAME = "test_cam.bit"  # Specify your file here
-    FILE_NAME= "HistoFPGAFw_impl1_agg.bit"
+    FILE_NAME= "HistoFPGAFw_impl1.bit"
     s = None
 
     if CTRL_BOARD:
@@ -50,7 +50,7 @@ async def main():
     r.print_packet()
 
 
-    await motion_ctrl.switch_camera(2)
+    await motion_ctrl.switch_camera(6)
     time.sleep(1)
 
     print("Echo Controller")

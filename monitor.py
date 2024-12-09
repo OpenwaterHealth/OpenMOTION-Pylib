@@ -66,7 +66,7 @@ async def main():
         print("FSIN Off")
         await motion_ctrl.camera_fsin_off()
         
-        time.sleep(delay_time)
+        time.sleep(delay_time*3)
         print("Stream Off")
         await motion_ctrl.camera_stream_off()
         s.close()

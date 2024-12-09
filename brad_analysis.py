@@ -9,7 +9,7 @@ import pandas as pd
 #%%
 
 csv_loc = 'histo_data.csv'
-histos_laser = pd.read_csv('histo_data_1.csv')
+histos_laser = pd.read_csv('histo_data.csv')
 histos_laser = np.array(histos_laser)
 
 histos_dark = pd.read_csv('data_captures/dark_histo_data_16.csv')
