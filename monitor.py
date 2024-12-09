@@ -3,10 +3,10 @@ from omotion import *
 import json
 import time
 
+
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
-    FILE_NAME = "HistoFPGAFw_impl1.bit"  # Specify your file here
     s = None
 
     if CTRL_BOARD:
@@ -23,21 +23,42 @@ async def main():
     else:
         s = UART(PORT_NAME, timeout=5)
         
-
     motion_ctrl = CTRL_IF(s)
+
+    print("FPGA Soft Reset")
+    await motion_ctrl.fpga_soft_reset()
+    
+    time.sleep(0.01)
+
     print("Camera Stream on")
-    # Send and Recieve General ping command
     r = await motion_ctrl.camera_stream_on()
-    # Format and print the received data in hex format
     r.print_packet()
     
     time.sleep(0.01)
 
     print("FSIN On")
     r = await motion_ctrl.camera_fsin_on()
-    # Format and print the received data in hex format
+    r.print_packet()
+    
+
+    print("Version Controller")
+    r = await motion_ctrl.version()    
     r.print_packet()
 
+    try:
+        await s.start_telemetry_listener(timeout=5)
+    finally:
+        await motion_ctrl.camera_fsin_off()
+        await motion_ctrl.camera_stream_off()
+        s.close()
+        print("Exiting the program.")
     s.close()
 
-asyncio.run(main())
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("App was interrupted")
+    finally:
+        print("App was finished gracefully")

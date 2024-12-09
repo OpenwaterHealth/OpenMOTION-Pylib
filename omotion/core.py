@@ -2,16 +2,21 @@ import json
 import logging
 import asyncio
 import time
+import struct
+import csv
+
 from .config import *
 from .utils import util_crc16
 from .async_serial import AsyncSerial  # Assuming async_serial.py contains the AsyncSerial class
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(filename="telem.log",
+                    filemode='a',
+                    level=logging.DEBUG)
 log = logging.getLogger("UART")
 
 class UartPacket:
-    def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=None, buffer=None):
+    def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
         if buffer:
             self.from_buffer(buffer)
         else:
@@ -57,6 +62,8 @@ class UartPacket:
 
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
+            print("length" + str(len(buffer)))
+            print(buffer)
             raise ValueError("Invalid buffer format")
 
         self.id = int.from_bytes(buffer[1:3], 'big')
@@ -69,19 +76,21 @@ class UartPacket:
         crc_value = util_crc16(buffer[1:9+self.data_len])
         self.crc = int.from_bytes(buffer[9+self.data_len:11+self.data_len], 'big')
         if self.crc != crc_value:
+            print("Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
             raise ValueError("CRC mismatch")
 
-    def print_packet(self):
+    def print_packet(self,full=False):
         print("UartPacket:")
         print("  Packet ID:", self.id)
         print("  Packet Type:", hex(self.packet_type))
         print("  Command:", hex(self.command))
-        print("  Address:", hex(self.addr))
-        print("  Reserved:", hex(self.reserved))
         print("  Data Length:", self.data_len)
-        print("  Data:", self.data.hex())
-        print("  CRC:", hex(self.crc))
-
+        if(full):
+            print("  Address:", hex(self.addr))
+            print("  Reserved:", hex(self.reserved))
+            print("  Data:", self.data.hex())
+            print("  CRC:", hex(self.crc))
+        
 class UART:
     def __init__(self, port: str, baud_rate=921600, timeout=10, align=0):
         log.info(f"Connecting to COM port at {port} speed {baud_rate}")
@@ -92,6 +101,12 @@ class UART:
         self.ser = AsyncSerial(port, baud_rate, timeout)
         self.read_buffer = []
 
+        with open('histo_data.csv', mode='w', newline='') as file:
+            file.truncate()
+            writer = csv.writer(file)
+            header = list(range(1024))
+            writer.writerow(header)
+
     async def connect(self):
         # Already connected via AsyncSerial's __init__
         pass
@@ -99,7 +114,7 @@ class UART:
     def close(self):
         self.ser.close()
 
-    async def send_ustx(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
+    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
         if data:
             if packetType == OW_JSON:
                 payload = json.dumps(data).encode('utf-8')
@@ -125,7 +140,8 @@ class UART:
 
         await self._tx(packet)
         await self._wait_for_response(timeout)
-        return self.read_buffer
+        
+        return self.read_packet()
 
     async def send(self, buffer):
         await self._tx(buffer)
@@ -133,7 +149,20 @@ class UART:
     async def read(self):
         await self._rx()
         return self.read_buffer
-
+    
+    def read_packet(self):
+        try:
+            packet = UartPacket(buffer=self.read_buffer)
+        except Exception as e:
+            print("Bad packet recieved: " + str(e))
+            packet = UartPacket(id = 0,
+                                packet_type=OW_BAD_PARSE,
+                                command =0,
+                                addr = 0,
+                                reserved = 0,
+                                data = [] )
+        return packet
+        
     async def _tx(self, data: bytes):
         try:
             if self.align > 0:
@@ -149,8 +178,11 @@ class UART:
                 data = await self.ser.read_all()
                 if data:
                     self.read_buffer.extend(data)
-                    if OW_END_BYTE in data:
-                        break
+                    if(data[0] == OW_START_BYTE and len(data) > 9): ## if enough of the packet has come in to determine length
+                        data_len = int.from_bytes(data[7:9], 'big')
+                        packet_len = len(data)
+                        if(packet_len == (data_len + 12)):          ## wait for enough of the packet to come in to determine if its done
+                            break    
         except Exception as e:
             log.error(f"Error during reception: {e}")
 
@@ -169,3 +201,55 @@ class UART:
     def print(self):
         print("    Serial Port: ", self.port)
         print("    Serial Baud: ", self.baud_rate)
+
+    async def start_telemetry_listener(self, timeout = 0):
+        ''' Continuously listen for telemetry data on a separate loop '''
+        self._listening = True
+        start_time = time.monotonic()
+        while self._listening:
+            if ((timeout != 0) & ((time.monotonic() - start_time) > timeout)):
+                self._listening = False
+                return
+            if self.ser.in_waiting() > 0:  # Check if there is any incoming data
+                await self._rx()
+                try:
+                    telemetry_packet = UartPacket(buffer=self.read_buffer)
+                except struct.error as e:
+                    print("Failed to parse telemetry data:", e)
+                    return
+
+                self.clear_buffer()
+                self.telemetry_parser(telemetry_packet)  # Process telemetry data
+        await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
+
+    def bytes_to_integers(self,byte_array):
+        # Check that the byte array is exactly 4096 bytes
+        if len(byte_array) != 4096:
+            raise ValueError("Input byte array must be exactly 4096 bytes.")
+
+        # Initialize an empty list to store the converted integers
+        integers = []
+        hidden_figures = []
+        # Iterate over the byte array in chunks of 4 bytes
+        for i in range(0, len(byte_array), 4):
+            # Unpack each 4-byte chunk as a single integer (big-endian)
+            # integer = struct.unpack_from('<I', byte_array, i)[0]
+            hidden_figures.append(byte_array[i+3])
+            integers.append(int.from_bytes(byte_array[i:i+2],byteorder='little'))
+        return (integers, hidden_figures)
+
+    def telemetry_parser(self,packet):
+        try:
+            if(packet.command == OW_HISTO):
+                # print("Histo recieved")
+                (histo,hidden_figures) = self.bytes_to_integers(packet.data)
+                #log.info(msg=str(histo))
+                frame_id = hidden_figures[1023]
+                with open('histo_data.csv', mode='a', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow([frame_id] + histo)                  
+            else:
+                packet.print_packet()
+        except struct.error as e:
+            print("Failed to parse telemetry data:", e)
+            return

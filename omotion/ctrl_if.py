@@ -19,7 +19,7 @@ class CTRL_IF:
             packet_id = self.packet_count
 
         #
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_PING)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_PING)
         self.uart.clear_buffer()
 
         return response
@@ -86,7 +86,7 @@ class CTRL_IF:
             packet_id = self.packet_count
 
         #
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_PONG)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_PONG)
         self.uart.clear_buffer()
 
         return response
@@ -97,7 +97,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         #
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_ECHO, data=data)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_ECHO, data=data)
         self.uart.clear_buffer()
         return response
 
@@ -107,7 +107,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
         self.uart.clear_buffer()
         return response
 
@@ -117,7 +117,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_VERSION)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_VERSION)
         self.uart.clear_buffer()
         return response
 
@@ -127,7 +127,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_HWID)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_HWID)
         self.uart.clear_buffer()
         return response
 
@@ -137,7 +137,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CMD_RESET)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_RESET)
         self.uart.clear_buffer()
         return response
 
@@ -147,7 +147,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_SCAN)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_SCAN)
         self.uart.clear_buffer()
         return response
     
@@ -157,7 +157,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ON)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ON)
         self.uart.clear_buffer()
         return response
     
@@ -167,7 +167,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_OFF)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_OFF)
         self.uart.clear_buffer()
         return response
     
@@ -177,7 +177,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ID)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ID)
         self.uart.clear_buffer()
         return response
     
@@ -187,7 +187,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG)
         self.uart.clear_buffer()
         return response
     
@@ -197,7 +197,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG)
         self.uart.clear_buffer()
         return response
     
@@ -207,7 +207,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM)
         self.uart.clear_buffer()
         return response
     
@@ -217,7 +217,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM)
         self.uart.clear_buffer()
         return response
         
@@ -227,7 +227,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_STATUS)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_STATUS)
         self.uart.clear_buffer()
         return response
         
@@ -237,7 +237,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_USERCODE)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_USERCODE)
         self.uart.clear_buffer()
         return response
     
@@ -247,9 +247,20 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_RESET)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_RESET)
         self.uart.clear_buffer()
         return response
+
+    async def fpga_soft_reset(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_SOFT_RESET)
+        self.uart.clear_buffer()
+        return response
+
     
     async def fpga_activate(self, packet_id=None):
         if packet_id is None:
@@ -257,7 +268,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE)
         self.uart.clear_buffer()
         return response
 
@@ -267,7 +278,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SCAN)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SCAN)
         self.uart.clear_buffer()
         return response
     
@@ -278,7 +289,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_ON)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_ON)
         self.uart.clear_buffer()
         return response
         
@@ -288,7 +299,7 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_OFF)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_OFF)
         self.uart.clear_buffer()
         return response
     
@@ -298,7 +309,27 @@ class CTRL_IF:
             packet_id = self.packet_count
         
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG)
+        self.uart.clear_buffer()
+        return response
+    
+    async def camera_fsin_on(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_ON)
+        self.uart.clear_buffer()
+        return response
+    
+    async def camera_fsin_off(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_OFF)
         self.uart.clear_buffer()
         return response
     
@@ -317,7 +348,7 @@ class CTRL_IF:
                 while True:
                     data = f.read(max_bytes_per_block)
                     if not data:
-                        response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_BITSTREAM,addr=block_count, reserved=1, data=data)                                        
+                        response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_BITSTREAM,addr=block_count, reserved=1, data=data)                                        
                         self.uart.clear_buffer()
                         responses.append(response)
                         break  # End of file
@@ -328,7 +359,7 @@ class CTRL_IF:
                         packet_id = self.packet_count
                     
                     # Send the data chunk (packet) asynchronously
-                    response = await self.uart.send_ustx(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_BITSTREAM,addr=block_count, reserved=0, data=data)            
+                    response = await self.uart.send_packet(id=packet_id, packetType=OW_FPGA, command=OW_FPGA_BITSTREAM,addr=block_count, reserved=0, data=data)            
                     self.uart.clear_buffer()
                     responses.append(response)
 

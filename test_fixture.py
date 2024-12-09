@@ -13,7 +13,8 @@ def calculate_file_crc(file_name):
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
-    FILE_NAME = "test.bit"  # Specify your file here
+    FILE_NAME = "test_cam.bit"  # Specify your file here
+    FILE_NAME= "HistoFPGAFw_impl1.bit"
     s = None
 
     if CTRL_BOARD:
@@ -40,31 +41,31 @@ async def main():
     # Send and Recieve General ping command
     r = await motion_ctrl.pong()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
         
     print("Version Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.version()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("Echo Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.echo(data=b'Hello World')    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("Toggle LED Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.toggle_led()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
 
     print("CHIP ID Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.chipid()    
     # Format and print the received data in hex format
-    format_and_print_hex(r)
+    r.print_packet()
     if True:
         print("FPGA Configuration Started")
         r = await motion_ctrl.fpga_reset()
@@ -106,7 +107,7 @@ async def main():
         format_and_print_hex(r)
         print("FPGA Configuration Completed")
 
-    #print("Camera Configuration Started")
+    print("Camera Configuration Started")
 
     #r = await motion_ctrl.camera_configure_registers()
     #format_and_print_hex(r)

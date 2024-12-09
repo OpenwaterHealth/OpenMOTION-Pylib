@@ -8,6 +8,7 @@ log = logging.getLogger("UART")
 class AsyncSerial:
     def __init__(self, port, baudrate, timeout=10):
         self.ser = serial.Serial(port, baudrate, timeout=timeout)
+        self.reset_buffers()
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.loop = asyncio.get_event_loop()
 
@@ -19,7 +20,11 @@ class AsyncSerial:
 
     async def write(self, data):
         return await self.loop.run_in_executor(self.executor, self.ser.write, data)
-
+    def in_waiting(self):
+        return self.ser.in_waiting
     def close(self):
         self.ser.close()
         self.executor.shutdown()
+    def reset_buffers(self):
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
