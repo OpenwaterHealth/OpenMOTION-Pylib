@@ -26,15 +26,13 @@ async def main():
     motion_ctrl = CTRL_IF(s)
 
     delay_time = .01
-    gain = 16
+    gain = 8
     time.sleep(1)
-    print("Camera switch to channel 3")
-    await motion_ctrl.switch_camera(2)
+
+
+    await motion_ctrl.switch_camera(6)
     time.sleep(delay_time*3)
-
-    # await motion_ctrl.enable_i2c_broadcast()
-    # time.sleep(delay_time)
-
+    
     print("camera set gain")    
     await motion_ctrl.camera_set_gain(gain)
     time.sleep(delay_time)
@@ -42,6 +40,11 @@ async def main():
     print("camera set exposure")    
     await motion_ctrl.camera_set_exposure(2)
     time.sleep(delay_time)
+
+
+    # print("camera set test pattern")    
+    # await motion_ctrl.camera_enable_test_pattern(3)
+    # time.sleep(delay_time)
 
     # print("FPGA Soft Reset")
     # await motion_ctrl.fpga_soft_reset()
@@ -53,10 +56,6 @@ async def main():
 
     print("FSIN On")
     r = await motion_ctrl.camera_fsin_on()
-
-    print("Version Controller")
-    r = await motion_ctrl.version()    
-    r.print_packet()
 
     try:
         await s.start_telemetry_listener(timeout=5)

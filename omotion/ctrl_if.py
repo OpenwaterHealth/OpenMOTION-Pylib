@@ -311,6 +311,60 @@ class CTRL_IF:
         await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
         await asyncio.sleep(0.05)
         return 0
+    
+    async def camera_enable_test_pattern(self,pattern_id,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        if(pattern_id == 0):
+            # {0x5000, 0x3f},  X02C1B_test_gradient_bar
+            # {0x5100, 0x80},
+            # {0x5102, 0x20},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x20,0x5103:0x04}
+        elif(pattern_id == 1):
+            # {0x5000, 0x3f},X02C1B_test_solid_a
+            # {0x5100, 0x80},
+            # {0x5102, 0x00},
+            # {0x5103, 0x01},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x00,0x5103:0x01}
+        elif(pattern_id == 2):
+            # {0x5000, 0x3f},X02C1B_test_square
+            # {0x5100, 0x82},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x82,0x5103:0x04}
+        elif(pattern_id == 3):
+            # {0x5000, 0x3f},X02C1B_test_gradient_cont
+            # {0x5100, 0x80},
+            # {0x5102, 0x30},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x30,0x5103:0x04}
+        else:
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x20,0x5103:0x04}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+
+    async def camera_disable_test_pattern(self,pattern_id,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        # {0x5000, 0x3e},
+        # {0x5100, 0x00},
+        pattern_bytes = {0x5000:0x3e,0x5100:0x00}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
 
     async def camera_i2c_write(self, packet, packet_id=None):
         if packet_id is None:

@@ -14,7 +14,13 @@ async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
     FILE_NAME = "test_cam.bit"  # Specify your file here
-    FILE_NAME= "HistoFPGAFw_impl1.bit"
+    FILE_NAME= "HistoFPGAFw_impl1_test.bit" # data out = bin
+    FILE_NAME= "HistoFPGAFw_impl1_test3.bit" # 
+    FILE_NAME= "HistoFPGAFw_impl1_agg.bit" #
+    FILE_NAME= "HistoFPGAFw_impl1.bit" # data out = bin
+
+    FILE_NAME= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit"      #working
+
     s = None
 
     if CTRL_BOARD:
@@ -38,17 +44,10 @@ async def main():
     motion_ctrl = CTRL_IF(s)
 
     print("Pong Controller")
-    # Send and Recieve General ping command
     r = await motion_ctrl.pong()
-    # Format and print the received data in hex format
-    r.print_packet()
-        
-    print("Version Controller")
-    # Send and Recieve General ping command
-    r = await motion_ctrl.version()    
-    # Format and print the received data in hex format
-    r.print_packet()
 
+    print("Version Controller")
+    r = await motion_ctrl.version()    
 
     await motion_ctrl.switch_camera(6)
     time.sleep(1)
@@ -56,70 +55,28 @@ async def main():
     print("Echo Controller")
     # Send and Recieve General ping command
     r = await motion_ctrl.echo(data=b'Hello World')    
-    # Format and print the received data in hex format
-    r.print_packet()
 
-    print("Toggle LED Controller")
-    # Send and Recieve General ping command
-    r = await motion_ctrl.toggle_led()    
-    # Format and print the received data in hex format
-    r.print_packet()
+    print("FPGA Configuration Started")
+    r = await motion_ctrl.fpga_reset()
+    r = await motion_ctrl.fpga_activate()
+    r = await motion_ctrl.fpga_on()
+    r = await motion_ctrl.fpga_id()
+    r = await motion_ctrl.fpga_enter_sram_prog()
+    r = await motion_ctrl.fpga_erase_sram()
+    r = await motion_ctrl.fpga_status()
 
-    print("CHIP ID Controller")
-    # Send and Recieve General ping command
-    r = await motion_ctrl.chipid()    
-    # Format and print the received data in hex format
-    r.print_packet()
-    if True:
-        print("FPGA Configuration Started")
-        r = await motion_ctrl.fpga_reset()
-        r.print_packet()
+    r = await motion_ctrl.send_bitstream(filename=FILE_NAME)
 
-        r = await motion_ctrl.fpga_activate()
-        r.print_packet()
+    r = await motion_ctrl.fpga_usercode()
+    r = await motion_ctrl.fpga_status()
+    r = await motion_ctrl.fpga_exit_sram_prog()
 
-        r = await motion_ctrl.fpga_on()
-        r.print_packet()
-
-        r = await motion_ctrl.fpga_id()
-        r.print_packet()
-        
-        r = await motion_ctrl.fpga_enter_sram_prog()
-        r.print_packet()
-        
-        r = await motion_ctrl.fpga_erase_sram()
-        r.print_packet()
-
-        r = await motion_ctrl.fpga_status()
-        r.print_packet()
-        
-        if False:
-            r = await motion_ctrl.fpga_program_sram()
-            r.print_packet()
-        else:
-            r = await motion_ctrl.send_bitstream(filename=FILE_NAME)
-            # for resp in r:
-                # format_and_print_hex(resp)
-
-        r = await motion_ctrl.fpga_usercode()
-        r.print_packet()
-
-        r = await motion_ctrl.fpga_status()
-        r.print_packet()
-
-        r = await motion_ctrl.fpga_exit_sram_prog()
-        r.print_packet()
-        print("FPGA Configuration Completed")
+    print("FPGA Configuration Completed")
 
     print("Camera Configuration Started")
-
     r = await motion_ctrl.camera_configure_registers()
-    r.print_packet()
-
     r = await motion_ctrl.fpga_soft_reset()
-    r.print_packet()
-
-
+    print("Camera Configuration Completed")
 
     s.close()
 
