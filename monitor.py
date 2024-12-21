@@ -41,10 +41,19 @@ async def main():
     await motion_ctrl.camera_set_exposure(2)
     time.sleep(delay_time)
 
-
     # print("camera set test pattern")    
     # await motion_ctrl.camera_enable_test_pattern(3)
     # time.sleep(delay_time)
+
+    # print("camera set rgbir")    
+    # await motion_ctrl.camera_set_rgbir(2)
+    # time.sleep(delay_time)
+
+
+    print("camera set test pattern")    
+    # await motion_ctrl.camera_enable_test_pattern(0)
+    await motion_ctrl.camera_disable_test_pattern()
+    time.sleep(delay_time)
 
     # print("FPGA Soft Reset")
     # await motion_ctrl.fpga_soft_reset()

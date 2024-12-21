@@ -350,7 +350,7 @@ class CTRL_IF:
 
         return 0
 
-    async def camera_disable_test_pattern(self,pattern_id,packet_id=None):
+    async def camera_disable_test_pattern(self,packet_id=None):
         if packet_id is None:
             self.packet_count += 1
             packet_id = self.packet_count
@@ -365,6 +365,33 @@ class CTRL_IF:
             self.packet_count += 1
 
         return 0
+    
+    async def camera_set_rgbir(self,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        # @@ RGB-IR
+        # 6c 3840 00
+        # 6c 3712 02
+        # 6c 5103 00
+        # 6c 5265 04
+        # 6c 4508 80
+        pattern_bytes = {0x3840:0x00,
+                         0x3712:0x02,
+                         0x5103:0x00,
+                         0x5265:0x04,
+                         0x4508:0x80}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+    
+
+    
 
     async def camera_i2c_write(self, packet, packet_id=None):
         if packet_id is None:

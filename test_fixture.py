@@ -16,10 +16,10 @@ async def main():
     FILE_NAME = "test_cam.bit"  # Specify your file here
     FILE_NAME= "HistoFPGAFw_impl1_test.bit" # data out = bin
     FILE_NAME= "HistoFPGAFw_impl1_test3.bit" # 
-    FILE_NAME= "HistoFPGAFw_impl1_agg.bit" #
     FILE_NAME= "HistoFPGAFw_impl1.bit" # data out = bin
 
     FILE_NAME= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit"      #working
+    FILE_NAME= "HistoFPGAFw_impl1_agg.bit" #
 
     s = None
 
