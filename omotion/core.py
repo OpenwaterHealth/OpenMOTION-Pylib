@@ -235,7 +235,7 @@ class UART:
         # Check that the byte array is exactly 4096 bytes
         if len(byte_array) != 4096:
             raise ValueError("Input byte array must be exactly 4096 bytes.")
-
+        
         # Initialize an empty list to store the converted integers
         integers = []
         hidden_figures = []

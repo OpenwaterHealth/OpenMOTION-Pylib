@@ -49,7 +49,7 @@ async def main():
     print("Version Controller")
     r = await motion_ctrl.version()    
 
-    await motion_ctrl.switch_camera(6)
+    await motion_ctrl.switch_camera(5)
     time.sleep(1)
 
     print("Echo Controller")
@@ -60,6 +60,8 @@ async def main():
     r = await motion_ctrl.fpga_reset()
     r = await motion_ctrl.fpga_activate()
     r = await motion_ctrl.fpga_on()
+    time.sleep(1)
+
     r = await motion_ctrl.fpga_id()
     r = await motion_ctrl.fpga_enter_sram_prog()
     r = await motion_ctrl.fpga_erase_sram()

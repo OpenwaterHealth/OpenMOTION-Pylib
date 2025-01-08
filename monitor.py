@@ -29,10 +29,14 @@ async def main():
     gain = 8
     time.sleep(1)
 
-
-    await motion_ctrl.switch_camera(6)
+    await motion_ctrl.switch_camera(5)
     time.sleep(delay_time*3)
     
+    print("camera read temp")    
+    temp = await motion_ctrl.read_camera_temp()
+    print("Camera temperature: ", temp," C")
+    time.sleep(delay_time)
+
     print("camera set gain")    
     await motion_ctrl.camera_set_gain(gain)
     time.sleep(delay_time)
@@ -40,7 +44,7 @@ async def main():
     print("camera set exposure")    
     await motion_ctrl.camera_set_exposure(2)
     time.sleep(delay_time)
-
+    
     # print("camera set test pattern")    
     # await motion_ctrl.camera_enable_test_pattern(3)
     # time.sleep(delay_time)

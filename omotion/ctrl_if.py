@@ -389,6 +389,27 @@ class CTRL_IF:
             self.packet_count += 1
 
         return 0
+    async def camera_set_mono(self,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        # @@ BW
+        # 6c 3840 40 same
+        # 6c 3712 c2
+        # 6c 5103 02
+        # 6c 5265 14
+        # 6c 4508 00
+        pattern_bytes = {0x3840:0x40,
+                        0x3712:0xc2,
+                        0x5103:0x02,
+                        0x5265:0x14,
+                        0x4508:0x00}
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
     
 
     
@@ -411,6 +432,17 @@ class CTRL_IF:
         response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
         self.uart.clear_buffer()
         return response
+    
+    async def read_camera_temp(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        self.uart.clear_buffer()
+
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_READ_TEMP)
+        self.uart.clear_buffer()
+        temp = struct.unpack('f', response.data)[0]
+        return temp
     
     async def enable_i2c_broadcast(self, packet_id=None):
         if packet_id is None:
