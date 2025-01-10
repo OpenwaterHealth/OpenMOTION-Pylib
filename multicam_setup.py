@@ -38,7 +38,10 @@ async def main():
 
     motion_ctrl = CTRL_IF(s)
 
-    cameras_to_flash = [2, 6, 7, 8]
+    spi_cameras_to_flash = [2, 6, 7, 8]
+    usart_cameras_to_flash = [1, 3, 4, 5]
+    cameras_to_flash = spi_cameras_to_flash + usart_cameras_to_flash
+    
     for i in cameras_to_flash:
         print(f"Switching to Camera {i}")
         await motion_ctrl.switch_camera(i)
@@ -71,6 +74,8 @@ async def main():
         print("camera set exposure")    
         await motion_ctrl.camera_set_exposure(2)
         time.sleep(delay_time)
+
+        time.sleep(.25)
 
         print(f"Finished Camera {i}")
 
