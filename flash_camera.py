@@ -2,6 +2,7 @@ import asyncio
 from omotion import *
 import json
 import time
+import sys
 
 # Function to read file and calculate CRC
 def calculate_file_crc(file_name):
@@ -29,32 +30,34 @@ async def main():
         
         com_port = list_vcp_with_vid_pid(vid, pid)
         if com_port is None:
-            print("No device found")
+            exit()
         else:
-            print("Device found at port: ", com_port)
+            print("Using device at port: ", com_port)
             # Select communication port
             s = UART(com_port, timeout=5)
     else:
         s = UART(PORT_NAME, timeout=5)
-        
+    
+    if len(sys.argv) < 2:
+        camera_id = 1
+    try:
+        # Get the first command line argument and convert it to an integer
+        camera_id = int(sys.argv[1])
+    except ValueError:
+        print("Error: <camera_value> must be an integer.")
+        sys.exit(1)
+
     # Calculate CRC of the specified file
     file_crc = calculate_file_crc(FILE_NAME)
-    print(f"CRC16 of file {FILE_NAME}: {hex(file_crc)}")
+    # print(f"CRC16 of file {FILE_NAME}: {hex(file_crc)}")
 
     motion_ctrl = CTRL_IF(s)
 
-    print("Pong Controller")
-    r = await motion_ctrl.pong()
+    r = await motion_ctrl.version()   
+    print("FW Version: " + r.data.hex())
 
-    print("Version Controller")
-    r = await motion_ctrl.version()    
-
-    await motion_ctrl.switch_camera(5)
+    await motion_ctrl.switch_camera(camera_id)
     time.sleep(1)
-
-    print("Echo Controller")
-    # Send and Recieve General ping command
-    r = await motion_ctrl.echo(data=b'Hello World')    
 
     print("FPGA Configuration Started")
     r = await motion_ctrl.fpga_reset()
