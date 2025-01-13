@@ -4,6 +4,8 @@ from .utils import *
 import asyncio
 import struct
 from typing import List
+from .i2c_data_packet import I2C_DATA_Packet
+from .i2c_packet import I2C_Packet
 import json
 
 class CTRL_IF:
@@ -330,6 +332,180 @@ class CTRL_IF:
         
         
         response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_OFF)
+        self.uart.clear_buffer()
+        return response
+    
+    async def camera_set_gain(self,gain,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        gain_bytes = gain.to_bytes(2,'big')
+        
+        await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3508,data=gain_bytes[1]))
+        await asyncio.sleep(0.05)
+        self.packet_count += 1
+        await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3509,data=gain_bytes[0]))
+        await asyncio.sleep(0.05)
+        return 0
+
+    async def camera_set_exposure(self,exposure_selection,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        exposures = [0x1F,0x20,0x2C,0x2D]
+        exposure_byte = exposures[exposure_selection]
+        # ;; exp=242.83us --> {0x3501,0x3502} = 0x001F
+        # ;; exp=250.67us --> {0x3501,0x3502} = 0x0020
+        # ;; exp=344.67us --> {0x3501,0x3502} = 0x002C
+        # ;; exp=352.50us --> {0x3501,0x3502} = 0x002D
+
+        await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3501,data=0x00))
+        await asyncio.sleep(0.05)
+        self.packet_count += 1
+        await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
+        await asyncio.sleep(0.05)
+        return 0
+    
+    async def camera_enable_test_pattern(self,pattern_id,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        if(pattern_id == 0):
+            # {0x5000, 0x3f},  X02C1B_test_gradient_bar
+            # {0x5100, 0x80},
+            # {0x5102, 0x20},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x20,0x5103:0x04}
+        elif(pattern_id == 1):
+            # {0x5000, 0x3f},X02C1B_test_solid_a
+            # {0x5100, 0x80},
+            # {0x5102, 0x00},
+            # {0x5103, 0x01},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x00,0x5103:0x01}
+        elif(pattern_id == 2):
+            # {0x5000, 0x3f},X02C1B_test_square
+            # {0x5100, 0x82},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x82,0x5103:0x04}
+        elif(pattern_id == 3):
+            # {0x5000, 0x3f},X02C1B_test_gradient_cont
+            # {0x5100, 0x80},
+            # {0x5102, 0x30},
+            # {0x5103, 0x04},
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x30,0x5103:0x04}
+        else:
+            pattern_bytes = {0x5000:0x3f,0x5100:0x80,0x5102:0x20,0x5103:0x04}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+
+    async def camera_disable_test_pattern(self,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        # {0x5000, 0x3e},
+        # {0x5100, 0x00},
+        pattern_bytes = {0x5000:0x3e,0x5100:0x00}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+    
+    async def camera_set_rgbir(self,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        # @@ RGB-IR
+        # 6c 3840 00
+        # 6c 3712 02
+        # 6c 5103 00
+        # 6c 5265 04
+        # 6c 4508 80
+        pattern_bytes = {0x3840:0x00,
+                         0x3712:0x02,
+                         0x5103:0x00,
+                         0x5265:0x04,
+                         0x4508:0x80}
+        
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+    async def camera_set_mono(self,packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        # @@ BW
+        # 6c 3840 40 same
+        # 6c 3712 c2
+        # 6c 5103 02
+        # 6c 5265 14
+        # 6c 4508 00
+        pattern_bytes = {0x3840:0x40,
+                        0x3712:0xc2,
+                        0x5103:0x02,
+                        0x5265:0x14,
+                        0x4508:0x00}
+        for(register_address,data) in pattern_bytes.items():
+            await self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=register_address,data=data))
+            await asyncio.sleep(0.05)
+            self.packet_count += 1
+
+        return 0
+    
+
+    
+
+    async def camera_i2c_write(self, packet, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data,wait_for_response=False)
+        self.uart.clear_buffer()
+        return response
+    
+    async def switch_camera(self, camera_id, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
+        bytes_val = camera_id.to_bytes(1, 'big')
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.clear_buffer()
+        return response
+    
+    async def read_camera_temp(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        self.uart.clear_buffer()
+
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_READ_TEMP)
+        self.uart.clear_buffer()
+        temp = struct.unpack('f', response.data)[0]
+        return temp
+    
+    async def enable_i2c_broadcast(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CMD_I2C_BROADCAST)
         self.uart.clear_buffer()
         return response
     

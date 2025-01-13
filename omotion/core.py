@@ -114,7 +114,7 @@ class UART:
     def close(self):
         self.ser.close()
 
-    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10):
+    async def send_packet(self, id=0, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10, wait_for_response = True):
         if data:
             if packetType == OW_JSON:
                 payload = json.dumps(data).encode('utf-8')
@@ -137,12 +137,20 @@ class UART:
         crc_value = util_crc16(packet[1:])
         packet.extend(crc_value.to_bytes(2, 'big'))
         packet.append(OW_END_BYTE)
-
-        await self._tx(packet)
-        await self._wait_for_response(timeout)
         
-        return self.read_packet()
-
+        await self._tx(packet)
+        if wait_for_response:
+            await self._wait_for_response(timeout)
+            return self.read_packet()
+        else:
+            packet = UartPacket(id = 0,
+                    packet_type=OW_CODE_SUCCESS,
+                    command =0,
+                    addr = 0,
+                    reserved = 0,
+                    data = [] )
+            return packet
+        
     async def send(self, buffer):
         await self._tx(buffer)
 
@@ -213,6 +221,7 @@ class UART:
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
                 await self._rx()
                 try:
+                    print("recieved data")
                     telemetry_packet = UartPacket(buffer=self.read_buffer)
                 except struct.error as e:
                     print("Failed to parse telemetry data:", e)
@@ -226,7 +235,7 @@ class UART:
         # Check that the byte array is exactly 4096 bytes
         if len(byte_array) != 4096:
             raise ValueError("Input byte array must be exactly 4096 bytes.")
-
+        
         # Initialize an empty list to store the converted integers
         integers = []
         hidden_figures = []
@@ -235,6 +244,8 @@ class UART:
             bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
 #            integer = struct.unpack_from('<I', byte_array, i)[0]
+            # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
+            #     print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
             integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
         return (integers, hidden_figures)
@@ -251,8 +262,8 @@ class UART:
                 with open('histo_data.csv', mode='a', newline='') as file:
                     writer = csv.writer(file)
                     writer.writerow([frame_id] + histo + [total])                  
-            else:
-                packet.print_packet()
+            # else:
+            #     packet.print_packet()
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return
