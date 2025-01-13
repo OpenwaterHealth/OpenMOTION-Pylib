@@ -24,6 +24,62 @@ class CTRL_IF:
 
         return response
 
+    async def set_trigger(self, data=None, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+
+        if data:
+            try:
+                json_string = json.dumps(data)
+            except json.JSONDecodeError as e:
+                print(f"Data must be valid JSON: {e}")
+                return  
+
+            payload = json_string.encode('utf-8')
+        else:
+            payload = None
+
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_SET_TRIG, data=payload)
+        self.uart.clear_buffer()
+
+        return response
+
+    async def get_trigger(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_GET_TRIG, data=None)
+        self.uart.clear_buffer()
+        data_object = None
+        try:
+            parsedResp = UartPacket(buffer=response)
+            data_object = json.loads(parsedResp.data.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            print("Error decoding JSON:", e)
+        return data_object
+    
+    async def start_trigger(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_START_TRIG, data=None)
+        self.uart.clear_buffer()
+        return response
+
+
+    async def stop_trigger(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        response= await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_STOP_TRIG, data=None)
+        self.uart.clear_buffer()
+        return response
+
+
     async def pong(self, packet_id=None):
         if packet_id is None:
             self.packet_count += 1
