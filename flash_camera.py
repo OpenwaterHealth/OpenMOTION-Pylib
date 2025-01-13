@@ -60,10 +60,10 @@ async def main():
     time.sleep(1)
 
     print("FPGA Configuration Started")
-    r = await motion_ctrl.fpga_reset()
-    r = await motion_ctrl.fpga_activate()
-    r = await motion_ctrl.fpga_on()
-    time.sleep(1)
+    r = await motion_ctrl.fpga_reset()       # Take cresetb hi for 250ms then low for 1sec
+    r = await motion_ctrl.fpga_activate()    # send activation key
+    time.sleep(.1)
+    r = await motion_ctrl.fpga_on()          # set cresetb hi again (10ms delay)
 
     r = await motion_ctrl.fpga_id()
     r = await motion_ctrl.fpga_enter_sram_prog()

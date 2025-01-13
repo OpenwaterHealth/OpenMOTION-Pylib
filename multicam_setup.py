@@ -48,7 +48,10 @@ async def main():
         time.sleep(1)
         print("FPGA Configuration Started")
         r = await motion_ctrl.fpga_reset()
+        time.sleep(.1)
+
         r = await motion_ctrl.fpga_activate()
+        time.sleep(.1)
         r = await motion_ctrl.fpga_on()
         time.sleep(1)
 
@@ -66,14 +69,6 @@ async def main():
         r = await motion_ctrl.camera_configure_registers()
         r = await motion_ctrl.fpga_soft_reset()
         print("Camera Configuration Done")
-
-        print("camera set gain")    
-        await motion_ctrl.camera_set_gain(1)
-        time.sleep(delay_time)
-
-        print("camera set exposure")    
-        await motion_ctrl.camera_set_exposure(2)
-        time.sleep(delay_time)
 
         time.sleep(.25)
 
