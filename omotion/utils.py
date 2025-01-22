@@ -1,5 +1,11 @@
 import serial.tools.list_ports
 
+SENSOR_VID = 1155  # Example VID for demonstration
+SENSOR_PID = 23130  # Example PID for demonstration
+
+CONSOLE_VID = 0x483  # Example VID for demonstration
+CONSOLE_PID = 0xA53E  # Example PID for demonstration
+        
 # CRC16-ccitt lookup table
 crc16_tab = [
 	0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
@@ -56,15 +62,11 @@ def format_and_print_hex(data):
         
 def list_vcp_with_vid_pid(target_vid, target_pid):
     ports = serial.tools.list_ports.comports()
+    devices = []
     for port in ports:
         if port.vid == target_vid and port.pid == target_pid:
             print(f"Device found: {port.device} - {port.description}")
-            return port.device
-    print("Device not found")
-    return None
+            devices.append(port.device)
+    return devices
 
-# Convert VID and PID to integers (hexadecimal to decimal)
-# vid = 1155  # Example VID for demonstration
-# pid = 22446  # Example PID for demonstration
-# 
-# list_vcp_with_vid_pid(vid, pid)
+

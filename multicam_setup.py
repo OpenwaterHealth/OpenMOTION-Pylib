@@ -14,7 +14,9 @@ async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
     FILE_NAME = "test_cam.bit"  # Specify your file here
-    FILE_NAME= "HistoFPGAFw_impl1_agg.bit"
+    FILE_NAME= "HistoFPGAFw_impl1_agg_v2.bit"
+    FILE_NAME= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit"      #working
+
     s = None
     delay_time = .01
 
@@ -22,12 +24,12 @@ async def main():
         vid = 1155  # Example VID for demonstration
         pid = 23130  # Example PID for demonstration
         
-        com_port = list_vcp_with_vid_pid(vid, pid)
-        if com_port is None:
-            print("No device found")
+        devices = list_vcp_with_vid_pid(vid, pid)
+        if devices is None:
+            exit()
         else:
+            com_port = devices[1]
             print("Device found at port: ", com_port)
-            # Select communication port
             s = UART(com_port, timeout=5)
     else:
         s = UART(PORT_NAME, timeout=5)

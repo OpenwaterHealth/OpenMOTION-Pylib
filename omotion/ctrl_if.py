@@ -42,7 +42,7 @@ class CTRL_IF:
         else:
             payload = None
 
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_SET_TRIG, data=payload)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CTRL_SET_TRIG, data=payload)
         self.uart.clear_buffer()
 
         return response
@@ -52,12 +52,12 @@ class CTRL_IF:
             self.packet_count += 1
             packet_id = self.packet_count
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_GET_TRIG, data=None)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CTRL_GET_TRIG, data=None)
         self.uart.clear_buffer()
         data_object = None
         try:
-            parsedResp = UartPacket(buffer=response)
-            data_object = json.loads(parsedResp.data.decode('utf-8'))
+            # parsedResp = UartPacket(buffer=response)
+            data_object = json.loads(response.data.decode('utf-8'))
         except json.JSONDecodeError as e:
             print("Error decoding JSON:", e)
         return data_object
@@ -67,7 +67,7 @@ class CTRL_IF:
             self.packet_count += 1
             packet_id = self.packet_count
         
-        response = await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_START_TRIG, data=None)
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CTRL_START_TRIG, data=None)
         self.uart.clear_buffer()
         return response
 
@@ -77,7 +77,7 @@ class CTRL_IF:
             self.packet_count += 1
             packet_id = self.packet_count
         
-        response= await self.uart.send_ustx(id=packet_id, packetType=OW_CMD, command=OW_CTRL_STOP_TRIG, data=None)
+        response= await self.uart.send_packet(id=packet_id, packetType=OW_CMD, command=OW_CTRL_STOP_TRIG, data=None)
         self.uart.clear_buffer()
         return response
 

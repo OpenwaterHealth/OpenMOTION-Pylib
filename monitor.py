@@ -12,7 +12,7 @@ async def main():
     delay_time = .01
     gain = 8
     exposure = 2
-    monitor_time = 5
+    monitor_time = 1
     test_pattern = -1
 
     s = None
@@ -20,12 +20,12 @@ async def main():
         vid = 1155  # Example VID for demonstration
         pid = 23130  # Example PID for demonstration
         
-        com_port = list_vcp_with_vid_pid(vid, pid)
-        if com_port is None:
+        devices = list_vcp_with_vid_pid(vid, pid)
+        if devices is None:
             exit()
         else:
+            com_port = devices[0]
             print("Device found at port: ", com_port)
-            # Select communication port
             s = UART(com_port, timeout=5)
     else:
         s = UART(PORT_NAME, timeout=5)

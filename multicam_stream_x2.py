@@ -26,9 +26,11 @@ async def main():
         if devices is None:
             exit()
         else:
-            com_port = devices[1]
-            print("Device found at port: ", com_port)
-            s = UART(com_port, timeout=5)
+            com_port_a = devices[0]
+            com_port_b = devices[1]
+            print("Device found at port: ", com_port_a)
+            s_a = UART(com_port_a, timeout=5)
+            s_b = UART(com_port_b, timeout=5)
     else:
         s = UART(PORT_NAME, timeout=5)
         
@@ -36,33 +38,42 @@ async def main():
     file_crc = calculate_file_crc(FILE_NAME)
     print(f"CRC16 of file {FILE_NAME}: {hex(file_crc)}")
 
-    motion_ctrl = CTRL_IF(s)
+    motion_ctrl_a = CTRL_IF(s_a)
+    motion_ctrl_b = CTRL_IF(s_b)
 
-    await motion_ctrl.enable_i2c_broadcast()
+    await motion_ctrl_a.enable_i2c_broadcast()
+    await motion_ctrl_b.enable_i2c_broadcast()
     time.sleep(delay_time)
-
+    
     print("Camera Stream on")
-    r = await motion_ctrl.camera_stream_on()    
+    r = await motion_ctrl_a.camera_stream_on()    
+    r = await motion_ctrl_b.camera_stream_on()    
     time.sleep(delay_time)
 
     print("FSIN On")
-    r = await motion_ctrl.camera_fsin_on()
+    r = await motion_ctrl_a.camera_fsin_on()
+    r = await motion_ctrl_b.camera_fsin_on()
 
     try:
         # await s.start_telemetry_listener(timeout=5)
-        time.sleep(5)
+        time.sleep(10)
     
     finally:
         
         time.sleep(delay_time)
         print("FSIN Off")
-        await motion_ctrl.camera_fsin_off()
+        await motion_ctrl_a.camera_fsin_off()
+        await motion_ctrl_b.camera_fsin_off()
         
         time.sleep(delay_time*3)
         print("Stream Off")
-        await motion_ctrl.camera_stream_off()
-        s.close()
+        await motion_ctrl_a.camera_stream_off()
+        await motion_ctrl_b.camera_stream_off()
+        
+        s_a.close()
+        s_b.close()
         print("Exiting the program.")
-    s.close()
-
+    s_a.close()
+    s_b.close()
+        
 asyncio.run(main())
