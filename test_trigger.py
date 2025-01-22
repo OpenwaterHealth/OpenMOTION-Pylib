@@ -30,7 +30,7 @@ async def main():
     print("Set Sync Trigger")
     json_trigger_data = {
         "TriggerFrequencyHz": 40,
-        "TriggerPulseWidthUsec": 125--,
+        "TriggerPulseWidthUsec": 12500,
         "LaserPulseDelayUsec": 100,
         "LaserPulseWidthUsec": 200
     }

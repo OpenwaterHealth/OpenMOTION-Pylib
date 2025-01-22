@@ -310,7 +310,6 @@ class CTRL_IF:
             self.packet_count += 1
             packet_id = self.packet_count
         
-        
         response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG)
         self.uart.clear_buffer()
         return response
@@ -319,7 +318,6 @@ class CTRL_IF:
         if packet_id is None:
             self.packet_count += 1
             packet_id = self.packet_count
-        
         
         response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_ON)
         self.uart.clear_buffer()
@@ -330,8 +328,23 @@ class CTRL_IF:
             self.packet_count += 1
             packet_id = self.packet_count
         
-        
         response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_OFF)
+        self.uart.clear_buffer()
+        return response
+    async def camera_fsin_ext_on(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXT_ON)
+        self.uart.clear_buffer()
+        return response
+    async def camera_fsin_ext_off(self, packet_id=None):
+        if packet_id is None:
+            self.packet_count += 1
+            packet_id = self.packet_count
+        
+        response = await self.uart.send_packet(id=packet_id, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXT_OFF)
         self.uart.clear_buffer()
         return response
     

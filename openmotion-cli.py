@@ -27,6 +27,7 @@ async def main():
     test_parser.add_argument("--flash_fpga", nargs=2, metavar=("module", "camera"), help="Flash FPGA")
     test_parser.add_argument("--flash_camera", nargs=2, metavar=("module", "camera"), help="Flash camera")
     test_parser.add_argument("--flash_all", action="store_true", help="Flash all devices")
+    test_parser.add_argument("--monitor", nargs=2, metavar=("module_id", "camera_id"), type=int, help="Monitor camera")
 
     # System Information Commands
     sys_info_parser = subparsers.add_parser("system_information", help="System information commands")
@@ -71,6 +72,9 @@ async def main():
             await callbacks.flash_camera(state, module, camera)
         if args.flash_all:
             await callbacks.flash_all(state)
+        if args.monitor:
+            module_id, camera_id = args.monitor
+            await callbacks.monitor(state, module_id, camera_id)
         # not implemented yet
         if args.test_laser_sync:
             frequency, period = args.test_laser_sync

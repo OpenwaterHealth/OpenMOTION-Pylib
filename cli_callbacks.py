@@ -56,6 +56,8 @@ class Callbacks:
         if(state["sensors"] is None):
             print("No console found")
             return
+        module = int(module)
+        camera = int(camera)
         sensor_module = state["sensors"][module]
         print("Flashing Camera Module")
 
@@ -100,6 +102,58 @@ class Callbacks:
                 await self.flash_camera(state, sensor_id, camera_id)
         print("Flashing all Cameras Completed")
 
+    async def monitor(self, state, module_id, camera_id, gain=1, exposure=2, test_pattern=-1, monitor_time=1, use_console_fsin=True ):
+        delay_time = .1
+        if(state["sensors"] is None):
+            print("No console found")
+            return
+        module_id = int(module_id)
+        camera_id = int(camera_id)
+        sensor_module = state["sensors"][module_id]
+        sensor_module_uart = state["sensor_uarts"][module_id]
+        if(state["console"] is None):
+            print("No console found")
+            print("Falling back to Aggregator board FSIN")
+            use_console_fsin = False
+            return
+        
+        console = state["console"]
+        print("Monitoring Camera " + str(camera_id) + " on Sensor " + str(module_id+1))
+        
+        await sensor_module.switch_camera(camera_id)
+        time.sleep(1)
+
+        print("Gain: " + str(gain))    
+        await sensor_module.camera_set_gain(gain)
+
+        print("camera set exposure to setting " + str(exposure))    
+        await sensor_module.camera_set_exposure(exposure)
+
+        if(use_console_fsin):
+            r = await sensor_module.camera_fsin_ext_on()
+            r = await console.start_trigger()
+        else:
+            await sensor_module.camera_fsin_ext_off()
+            r = await sensor_module.camera_fsin_on()
+
+        print("Camera Stream on")
+        r = await sensor_module.camera_stream_on()    
+        time.sleep(.1)
+        
+        try:
+            await sensor_module_uart.start_telemetry_listener(timeout=monitor_time)
+        finally:
+            time.sleep(delay_time)
+            print("FSIN Off")
+            if(use_console_fsin):
+                await console.stop_trigger()
+            else:
+                await sensor_module.camera_fsin_off()
+
+            time.sleep(delay_time*3)
+            print("Stream Off")
+            await console.camera_stream_off()
+            print("Exiting the program.")
     # systen info
     # r = await sensor_module.version()   
 #        print("FW Version: " + r.data.hex())
