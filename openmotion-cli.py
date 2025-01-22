@@ -63,24 +63,22 @@ async def main():
     # Process commands
     callbacks = Callbacks()
     if args.command == "test":
+        if args.test_frame_sync:
+            frequency, period, time_s = args.test_frame_sync
+            await callbacks.test_frame_sync(state, frequency, period, time_s)
+        if args.flash_camera:
+            module, camera = args.flash_camera
+            await callbacks.flash_camera(state, module, camera)
+        if args.flash_all:
+            await callbacks.flash_all(state)
+        # not implemented yet
+        if args.test_laser_sync:
+            frequency, period = args.test_laser_sync
+            callbacks.test_laser_sync(state, frequency, period)
         if args.enable_fsout:
             callbacks.enable_fsout(state)
         if args.enable_fsin:
             callbacks.enable_fsin(state)
-        if args.test_frame_sync:
-            frequency, period, time_s = args.test_frame_sync
-            await callbacks.test_frame_sync(state, frequency, period, time_s)
-        if args.test_laser_sync:
-            frequency, period = args.test_laser_sync
-            callbacks.test_laser_sync(state, frequency, period)
-        if args.flash_fpga:
-            module, camera = args.flash_fpga
-            callbacks.flash_fpga(state, module, camera)
-        if args.flash_camera:
-            module, camera = args.flash_camera
-            callbacks.flash_camera(state, module, camera)
-        if args.flash_all:
-            callbacks.flash_all(state)
 
     elif args.command == "system_information":
         if args.all:
