@@ -25,15 +25,21 @@ async def main():
     test_parser.add_argument("--test_frame_sync", nargs=3, metavar=("frequency", "period","time_s"), type=int, help="Test frame sync")
     test_parser.add_argument("--test_laser_sync", nargs=2, metavar=("frequency", "period"), type=int, help="Test laser sync")
     test_parser.add_argument("--flash_fpga", nargs=2, metavar=("module", "camera"), help="Flash FPGA")
-    test_parser.add_argument("--flash_camera", nargs=2, metavar=("module", "camera"), help="Flash camera")
+    test_parser.add_argument("--flash_camera", nargs=2, metavar=("module", "camera"),  type=int, help="Flash camera")
     test_parser.add_argument("--flash_all", action="store_true", help="Flash all devices")
+    test_parser.add_argument("--stream_all", nargs=1,metavar=("time_s"), type=int, help="Stream on all devices")
     test_parser.add_argument("--monitor", nargs=2, metavar=("module_id", "camera_id"), type=int, help="Monitor camera")
+    test_parser.add_argument("--toggle_camera", nargs=2, metavar=("module_id","camera_id"),type=int, help="Enable camera for streaming")
 
     # System Information Commands
-    sys_info_parser = subparsers.add_parser("system_information", help="System information commands")
+    sys_info_parser = subparsers.add_parser("info", help="System information commands")
     sys_info_parser.add_argument("--all", action="store_true", help="Get all system information")
     sys_info_parser.add_argument("--console", action="store_true", help="Get console information")
     sys_info_parser.add_argument("--modules", action="store_true", help="Get module information")
+
+    # macro
+    sys_info_parser = subparsers.add_parser("macro", help="Do a chain of commmands, arbitrary by default")
+
 
     args = parser.parse_args()
     if not args.command:
@@ -69,12 +75,12 @@ async def main():
             await callbacks.test_frame_sync(state, frequency, period, time_s)
         if args.flash_camera:
             module, camera = args.flash_camera
-            await callbacks.flash_camera(state, module, camera)
+            await callbacks.flash_camera(state, module-1, camera-1)
         if args.flash_all:
             await callbacks.flash_all(state)
         if args.monitor:
             module_id, camera_id = args.monitor
-            await callbacks.monitor(state, module_id, camera_id)
+            await callbacks.monitor(state, module_id-1, camera_id-1)
         # not implemented yet
         if args.test_laser_sync:
             frequency, period = args.test_laser_sync
@@ -83,14 +89,23 @@ async def main():
             callbacks.enable_fsout(state)
         if args.enable_fsin:
             callbacks.enable_fsin(state)
+        if args.toggle_camera:
+            module_id, camera_id = args.toggle_camera
+            await callbacks.toggle_camera_stream(state, module_id-1, camera_id-1)
+        if args.stream_all:
+            time_s = args.stream_all[0]
+            await callbacks.stream_all(state, time_s)
 
-    elif args.command == "system_information":
+    elif args.command == "info":
         if args.all:
-            callbacks.get_system_info_all(state)
+            await callbacks.system_info(state)
         if args.console:
             callbacks.get_system_info_console(state)
         if args.modules:
             callbacks.get_system_info_modules(state)
+
+    elif args.command == "macro":
+        await callbacks.macro(state)
 
     # Close connections
     if(state["console_uart"] is not None): state["console_uart"].close()
