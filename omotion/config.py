@@ -57,6 +57,7 @@ OW_CODE_DATA_ERROR = 0xFE
 OW_CODE_ERROR = 0xFF
 
 OW_HISTO = 0x1b
+OW_SCAN = 0x1c
 
 # Global Commands 
 OW_CMD_PING = 0x00  

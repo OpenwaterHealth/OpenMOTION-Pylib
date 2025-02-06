@@ -55,11 +55,13 @@ class Callbacks:
     async def flash_camera(self, state, module, camera, bitstream= "HistoFPGAFw_impl1.bit", verbose=False):
         if(state["sensors"] is None):
             print("No console found")
-            return
+        
         module = int(module)
         camera = int(camera)
         sensor_module = state["sensors"][module]
         print("Flashing Camera Module " + str(module+1) + " Camera " + str(camera+1))
+
+        # bitstream= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit" 
 
         # Calculate CRC of the specified file
         file_crc = self.calculate_file_crc(bitstream)
@@ -193,13 +195,14 @@ class Callbacks:
         else:
             sensor_module = state["sensors"][sensor_id]
             await sensor_module.toggle_camera_stream(camera_id)
-    async def stream_all(self, state, time_s):
+
+    async def stream_all(self, state, time_s, log=False):
         delay_time = .1
         use_console_fsin = True
         if(state["sensors"] is None):
             print("No sensors found")
             return
-        if(state["console"] is None):
+        if(not state["console_present"]):
             print("No console found")
             print("Falling back to Aggregator board FSIN")
             use_console_fsin = False
@@ -215,14 +218,18 @@ class Callbacks:
             console = state["console"]
             await console.set_trigger(data=json_trigger_data)
         
-        console = state["console"]
         time.sleep(.1)
 
         for sensor_module in state["sensors"]:
             if(use_console_fsin): await sensor_module.camera_fsin_ext_on()    
+            else: await sensor_module.camera_fsin_ext_off()
 
+            time.sleep(.01)
             await sensor_module.enable_i2c_broadcast()
+            time.sleep(.01)
             r = await sensor_module.camera_stream_on()    
+            time.sleep(.01)
+            if(not use_console_fsin): await sensor_module.camera_fsin_on()
 
         if(use_console_fsin):
             r = await console.start_trigger()
@@ -232,33 +239,50 @@ class Callbacks:
         
         try:
             print("Streaming for " + str(time_s) + " seconds")
-            time.sleep(time_s)
+            if(log):
+                sensor_module_uart = state["sensor_uarts"][0]
+                await sensor_module_uart.start_telemetry_listener(timeout=time_s)
+
+            else:
+                time.sleep(time_s)
         finally:
-            print("FSIN Off")
-            
-            for sensor_module in state["sensors"]:
-                await sensor_module.camera_stream_off()
-                # await sensor_module.i2c_broadcast_off()
-                if(not use_console_fsin): await sensor_module.camera_fsin_off()
             
             if(use_console_fsin):
                 await console.stop_trigger()
-            
-            time.sleep(delay_time*3)
-            print("Stream Off")
-            await sensor_module.camera_stream_off()
+                time.sleep(delay_time)
+                for sensor_module in state["sensors"]:
+                    await sensor_module.camera_stream_off()
+                    time.sleep(delay_time)
+            else:
+                for sensor_module in state["sensors"]:
+                    await sensor_module.camera_fsin_off()
+                    time.sleep(delay_time)
+                    await sensor_module.camera_stream_off()
+                    time.sleep(delay_time)
             print("Exiting the program.")
 
-    async def macro(self, state):
-        macro_num = 0
-        if(macro_num==0):
-            cameras_to_test = [5,6,7]
+    async def macro(self, state, macro_num = 0):
+        
+        if(macro_num==0):  # flash and stream the cameras
+            cameras_to_test = [0,1,2,3,4,5,6,7]
             for camera in cameras_to_test:
                 await self.flash_camera(state, 0, camera)
                 await self.toggle_camera_stream(state, 0, camera)
             
             await self.stream_all(state, 1)
-            
 
+        elif(macro_num==1): # flash and stream one camera
+            cameras_to_test = [1]# [0,2,3,4,5,6,7]
+            for camera in cameras_to_test:
+                await self.flash_camera(state, 0, camera)
+               
+                await self.toggle_camera_stream(state, 0, camera)
+            
+                await self.stream_all(state, 3)
+                await self.toggle_camera_stream(state, 0, camera)
+        elif(macro_num==2): # stream all with logging on
+            await self.stream_all(state, 4, log = True)
+
+            
     # systen info
     # r = await sensor_module.version()   

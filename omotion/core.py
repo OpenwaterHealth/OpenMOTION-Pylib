@@ -264,6 +264,9 @@ class UART:
                     writer.writerow([frame_id] + histo + [total])                  
             # else:
             #     packet.print_packet()
+            elif(packet.command == OW_SCAN):
+                print("Scan recieved")
+                print(packet.data.hex())
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return

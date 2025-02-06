@@ -30,16 +30,13 @@ async def main():
     test_parser.add_argument("--stream_all", nargs=1,metavar=("time_s"), type=int, help="Stream on all devices")
     test_parser.add_argument("--monitor", nargs=2, metavar=("module_id", "camera_id"), type=int, help="Monitor camera")
     test_parser.add_argument("--toggle_camera", nargs=2, metavar=("module_id","camera_id"),type=int, help="Enable camera for streaming")
+    test_parser.add_argument("--macro", nargs=1, metavar=("macro_id"),type=int, help="Run an arbitrary macro")
 
     # System Information Commands
     sys_info_parser = subparsers.add_parser("info", help="System information commands")
     sys_info_parser.add_argument("--all", action="store_true", help="Get all system information")
     sys_info_parser.add_argument("--console", action="store_true", help="Get console information")
     sys_info_parser.add_argument("--modules", action="store_true", help="Get module information")
-
-    # macro
-    sys_info_parser = subparsers.add_parser("macro", help="Do a chain of commmands, arbitrary by default")
-
 
     args = parser.parse_args()
     if not args.command:
@@ -50,23 +47,26 @@ async def main():
     console = list_vcp_with_vid_pid(CONSOLE_VID, CONSOLE_PID)
     if not console:
         print("No console found")
-        exit()
+        state["console_present"] = False
     else:
         print("Console found at port: ", console[0])
         state["console_uart"] = UART(console[0], timeout=5)
         state["console"] = CTRL_IF( state["console_uart"] )
-
+        state["console_present"] = True
+        
     # Connect to sensors
     sensor_comm_ports = list_vcp_with_vid_pid(SENSOR_VID, SENSOR_PID)
     if not sensor_comm_ports:
         print("No sensor found")
         state["sensors"] = None
         state["sensor_uarts"] = None
+        state["sesors_present"] = 0
     elif(len(sensor_comm_ports) > 0):
+        state["sensors_present"] = len(sensor_comm_ports)
         print("Sensor found at ports: ", sensor_comm_ports)
         state["sensor_uarts"] = [UART(sensor_comm_port) for sensor_comm_port in sensor_comm_ports]
         state["sensors"] = [CTRL_IF(sensor_uart) for sensor_uart in  state["sensor_uarts"]]
-        
+    
     # Process commands
     callbacks = Callbacks()
     if args.command == "test":
@@ -81,7 +81,6 @@ async def main():
         if args.monitor:
             module_id, camera_id = args.monitor
             await callbacks.monitor(state, module_id-1, camera_id-1)
-        # not implemented yet
         if args.test_laser_sync:
             frequency, period = args.test_laser_sync
             callbacks.test_laser_sync(state, frequency, period)
@@ -95,6 +94,9 @@ async def main():
         if args.stream_all:
             time_s = args.stream_all[0]
             await callbacks.stream_all(state, time_s)
+        if args.macro:  
+            macro_id = int(args.macro[0])
+            await callbacks.macro(state, macro_id)
 
     elif args.command == "info":
         if args.all:
@@ -104,12 +106,9 @@ async def main():
         if args.modules:
             callbacks.get_system_info_modules(state)
 
-    elif args.command == "macro":
-        await callbacks.macro(state)
-
     # Close connections
-    if(state["console_uart"] is not None): state["console_uart"].close()
-    if(state["sensor_uarts"] is not None):
+    if(state["console_present"]): state["console_uart"].close()
+    if(state["sensors_present"] >0):
         for sensor in state["sensor_uarts"]: sensor.close()
 
 if __name__ == "__main__":
