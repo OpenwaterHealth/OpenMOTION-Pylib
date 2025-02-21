@@ -137,7 +137,7 @@ class UART:
         crc_value = util_crc16(packet[1:])
         packet.extend(crc_value.to_bytes(2, 'big'))
         packet.append(OW_END_BYTE)
-        
+        print("CRC: " + str(crc_value))
         await self._tx(packet)
         if wait_for_response:
             await self._wait_for_response(timeout)
