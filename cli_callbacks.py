@@ -61,7 +61,7 @@ class Callbacks:
         sensor_module = state["sensors"][module]
         print("Flashing Camera Module " + str(module+1) + " Camera " + str(camera+1))
 
-        # bitstream= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit" 
+        bitstream= "C:/Users/ethanhead/Desktop/gen3-cam-fw/HistoFPGAFw/impl1/HistoFPGAFw_impl1.bit" 
 
         # Calculate CRC of the specified file
         file_crc = self.calculate_file_crc(bitstream)
@@ -119,6 +119,7 @@ class Callbacks:
             use_console_fsin = False
         else:
             print("Using console FSIN")
+            use_console_fsin = True
         
         console = state["console"]
         print("Monitoring Camera " + str(camera_id) + " on Sensor " + str(module_id+1))
@@ -232,7 +233,11 @@ class Callbacks:
             if(not use_console_fsin): await sensor_module.camera_fsin_on()
 
         if(use_console_fsin):
+            r = await sensor_module.camera_fsin_ext_on()
             r = await console.start_trigger()
+        else:
+            await sensor_module.camera_fsin_ext_off()
+            r = await sensor_module.camera_fsin_on()
 
 
         print("Camera Stream on")
@@ -264,7 +269,7 @@ class Callbacks:
     async def macro(self, state, macro_num = 0):
         
         if(macro_num==0):  # flash and stream the cameras
-            cameras_to_test = [0,1,2,3,4,5,6,7]
+            cameras_to_test = [0,2,3,4,5,6,7]
             for camera in cameras_to_test:
                 await self.flash_camera(state, 0, camera)
                 await self.toggle_camera_stream(state, 0, camera)
@@ -272,7 +277,7 @@ class Callbacks:
             await self.stream_all(state, 1)
 
         elif(macro_num==1): # flash and stream one camera
-            cameras_to_test = [1]# [0,2,3,4,5,6,7]
+            cameras_to_test = [0,2,3,4,5,6,7]
             for camera in cameras_to_test:
                 await self.flash_camera(state, 0, camera)
                

@@ -1,7 +1,7 @@
 import serial.tools.list_ports
 
-SENSOR_VID = 1155  # Example VID for demonstration
-SENSOR_PID = 23130  # Example PID for demonstration
+SENSOR_VID = 0x0483 #1155  # Example VID for demonstration
+SENSOR_PID = 0x5a5a #23130  # Example PID for demonstration
 
 CONSOLE_VID = 0x483  # Example VID for demonstration
 CONSOLE_PID = 0xA53E  # Example PID for demonstration

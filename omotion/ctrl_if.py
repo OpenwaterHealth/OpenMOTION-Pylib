@@ -569,5 +569,6 @@ class CTRL_IF:
             print(f"File {filename} not found.")
         except Exception as e:
             print(f"An error occurred: {e}")
-        
+        #Print total bytes sent
+        print(f"Total bytes sent: {address}")
         return responses   
