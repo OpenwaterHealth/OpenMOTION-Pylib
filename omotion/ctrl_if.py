@@ -572,3 +572,47 @@ class CTRL_IF:
         #Print total bytes sent
         print(f"Total bytes sent: {address}")
         return responses   
+    
+    def bytes_to_integers(self,byte_array):
+        # Check that the byte array is exactly 4096 bytes
+        if len(byte_array) != 4096:
+            raise ValueError("Input byte array must be exactly 4096 bytes.")
+        
+        # Initialize an empty list to store the converted integers
+        integers = []
+        hidden_figures = []
+        # Iterate over the byte array in chunks of 4 bytes
+        for i in range(0, len(byte_array), 4):
+            bytes = byte_array[i:i+4]
+            # Unpack each 4-byte chunk as a single integer (big-endian)
+#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
+            #     print(str(i) + " " + str(bytes[0:3]))
+            hidden_figures.append(bytes[3])
+            integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
+        return (integers, hidden_figures)
+
+    def telemetry_parser(self,packet):
+        try:
+            if(packet.command == OW_HISTO_PACKET):
+                # print("Histo recieved")
+                (histo,hidden_figures) = self.bytes_to_integers(packet.data)
+                #log.info(msg=str(histo))
+                total = sum(histo)
+                print("SUM: " + str(total))
+                frame_id = hidden_figures[1023]
+                with open('histo_data.csv', mode='a', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow([frame_id] + histo + [total])                  
+            # else:
+            #     packet.print_packet()
+            elif(packet.command == OW_SCAN_PACKET):
+                # print("Scan recieved")
+                chunkId = packet.addr
+                frameId = packet.id
+                print("chunkId: " + str(chunkId) + ", frameId: " + str(frameId))
+                # print(packet.data.hex())
+
+        except struct.error as e:
+            print("Failed to parse telemetry data:", e)
+            return

@@ -137,7 +137,6 @@ class UART:
         crc_value = util_crc16(packet[1:])
         packet.extend(crc_value.to_bytes(2, 'big'))
         packet.append(OW_END_BYTE)
-        
         await self._tx(packet)
         if wait_for_response:
             await self._wait_for_response(timeout)
@@ -190,6 +189,7 @@ class UART:
                         data_len = int.from_bytes(data[7:9], 'big')
                         packet_len = len(data)
                         if(packet_len == (data_len + 12)):          ## wait for enough of the packet to come in to determine if its done
+                            # print("Packet recieved")
                             break    
         except Exception as e:
             log.error(f"Error during reception: {e}")
@@ -252,7 +252,7 @@ class UART:
 
     def telemetry_parser(self,packet):
         try:
-            if(packet.command == OW_HISTO):
+            if(packet.command == OW_HISTO_PACKET):
                 # print("Histo recieved")
                 (histo,hidden_figures) = self.bytes_to_integers(packet.data)
                 #log.info(msg=str(histo))
@@ -264,9 +264,13 @@ class UART:
                     writer.writerow([frame_id] + histo + [total])                  
             # else:
             #     packet.print_packet()
-            elif(packet.command == OW_SCAN):
-                print("Scan recieved")
-                print(packet.data.hex())
+            elif(packet.command == OW_SCAN_PACKET):
+                # print("Scan recieved")
+                chunkId = packet.addr
+                frameId = packet.id
+                print("chunkId: " + str(chunkId) + ", frameId: " + str(frameId))
+                # print(packet.data.hex())
+
         except struct.error as e:
             print("Failed to parse telemetry data:", e)
             return
