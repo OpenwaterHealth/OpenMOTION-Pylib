@@ -49,8 +49,8 @@ async def main():
     r = await motion_ctrl.camera_fsin_on()
 
     try:
-        # await s.start_telemetry_listener(timeout=5)
-        time.sleep(5)
+        await s.start_telemetry_listener(timeout=5)
+        # time.sleep(5)
     
     finally:
         

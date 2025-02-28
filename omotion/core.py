@@ -76,8 +76,11 @@ class UartPacket:
         crc_value = util_crc16(buffer[1:9+self.data_len])
         self.crc = int.from_bytes(buffer[9+self.data_len:11+self.data_len], 'big')
         if self.crc != crc_value:
-            print("Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
-            raise ValueError("CRC mismatch")
+            print(" Packet CRC: " + str(self.crc) + ", Calculated CRC: " + str(crc_value) )
+            print(" Data length: " + str(self.data_len))
+            print(" Packet length: " + str(len(buffer)))
+            print(" Address: " + str(self.addr))
+            # raise ValueError("CRC mismatch")
 
     def print_packet(self,full=False):
         print("UartPacket:")
@@ -223,12 +226,13 @@ class UART:
                 try:
                     print("recieved data")
                     telemetry_packet = UartPacket(buffer=self.read_buffer)
-                except struct.error as e:
-                    print("Failed to parse telemetry data:", e)
-                    return
+                    self.telemetry_parser(telemetry_packet)  # Process telemetry data
+                except:
+                    log.error("Bad packet recieved: " + str(self.read_buffer))                    
+                    self.telemetry_parser(telemetry_packet)  # Process telemetry data
 
+                    
                 self.clear_buffer()
-                self.telemetry_parser(telemetry_packet)  # Process telemetry data
         await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
 
     def bytes_to_integers(self,byte_array):
@@ -253,6 +257,7 @@ class UART:
     def telemetry_parser(self,packet):
         try:
             if(packet.command == OW_HISTO):
+                cam_id = packet.addr
                 # print("Histo recieved")
                 (histo,hidden_figures) = self.bytes_to_integers(packet.data)
                 #log.info(msg=str(histo))
@@ -261,7 +266,7 @@ class UART:
                 frame_id = hidden_figures[1023]
                 with open('histo_data.csv', mode='a', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow([frame_id] + histo + [total])                  
+                    writer.writerow([frame_id] + histo + [total]+[cam_id])                  
             # else:
             #     packet.print_packet()
         except struct.error as e:
