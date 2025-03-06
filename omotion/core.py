@@ -107,7 +107,7 @@ class UART:
         with open('histo_data.csv', mode='w', newline='') as file:
             file.truncate()
             writer = csv.writer(file)
-            header = ['id'] + list(range(1024)) + ['total']
+            header = ['id'] + list(range(1024)) + ['total'] + ["cam_id"]
             writer.writerow(header)
 
     async def connect(self):
@@ -194,6 +194,7 @@ class UART:
                         packet_len = len(data)
                         if(packet_len == (data_len + 12)):          ## wait for enough of the packet to come in to determine if its done
                             break    
+                    
         except Exception as e:
             log.error(f"Error during reception: {e}")
 
@@ -224,7 +225,7 @@ class UART:
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
                 await self._rx()
                 try:
-                    print("recieved data")
+                    # print("recieved data")
                     telemetry_packet = UartPacket(buffer=self.read_buffer)
                     self.telemetry_parser(telemetry_packet)  # Process telemetry data
                 except:
@@ -233,7 +234,7 @@ class UART:
 
                     
                 self.clear_buffer()
-        await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
+        # await asyncio.sleep(0.01)  # Small delay to prevent busy waiting
 
     def bytes_to_integers(self,byte_array):
         # Check that the byte array is exactly 4096 bytes
@@ -262,7 +263,7 @@ class UART:
                 (histo,hidden_figures) = self.bytes_to_integers(packet.data)
                 #log.info(msg=str(histo))
                 total = sum(histo)
-                print("SUM: " + str(total))
+                # print("SUM: " + str(total))
                 frame_id = hidden_figures[1023]
                 with open('histo_data.csv', mode='a', newline='') as file:
                     writer = csv.writer(file)
