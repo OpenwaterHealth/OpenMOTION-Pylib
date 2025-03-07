@@ -40,7 +40,7 @@ async def main():
 
     spi_cameras_to_flash = [2, 6, 7, 8]
     usart_cameras_to_flash = [1, 3, 4, 5]
-    cameras_to_flash =  spi_cameras_to_flash + usart_cameras_to_flash
+    cameras_to_flash = [1,2,3,4,5,6]# spi_cameras_to_flash + usart_cameras_to_flash
     
     for i in cameras_to_flash:
         print(f"Switching to Camera {i}")

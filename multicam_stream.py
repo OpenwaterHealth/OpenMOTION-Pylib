@@ -49,18 +49,20 @@ async def main():
     r = await motion_ctrl.camera_fsin_on()
 
     try:
-        await s.start_telemetry_listener(timeout=5)
+        await s.start_telemetry_listener(timeout=3, callback = motion_ctrl.camera_stream_off )
         # time.sleep(5)
     
     finally:
         
-        time.sleep(delay_time)
-        print("FSIN Off")
-        await motion_ctrl.camera_fsin_off()
-        
         time.sleep(delay_time*3)
         print("Stream Off")
         await motion_ctrl.camera_stream_off()
+        
+        
+        time.sleep(delay_time*10)
+        print("FSIN Off")
+        await motion_ctrl.camera_fsin_off()
+        
         s.close()
         print("Exiting the program.")
     s.close()

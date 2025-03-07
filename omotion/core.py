@@ -186,7 +186,7 @@ class UART:
     async def _rx(self):
         try:
             while True:
-                data = await self.ser.read_all()
+                data = await self.ser.read(12)
                 if data:
                     self.read_buffer.extend(data)
                     if(data[0] == OW_START_BYTE and len(data) > 9): ## if enough of the packet has come in to determine length
@@ -194,6 +194,11 @@ class UART:
                         packet_len = len(data)
                         if(packet_len == (data_len + 12)):          ## wait for enough of the packet to come in to determine if its done
                             break    
+                        else:
+                            # print("Got a long packet: " + str(packet_len) + " " + str(data_len))
+                            data = await self.ser.read(data_len + 12 - packet_len)
+                            self.read_buffer.extend(data)
+                            break
                     
         except Exception as e:
             log.error(f"Error during reception: {e}")
@@ -214,20 +219,29 @@ class UART:
         print("    Serial Port: ", self.port)
         print("    Serial Baud: ", self.baud_rate)
 
-    async def start_telemetry_listener(self, timeout = 0):
+    async def start_telemetry_listener(self, callback = None, timeout = 0):
         ''' Continuously listen for telemetry data on a separate loop '''
         self._listening = True
         start_time = time.monotonic()
+        warning_shot_fired = False
         while self._listening:
             if ((timeout != 0) & ((time.monotonic() - start_time) > timeout)):
                 self._listening = False
                 return
+            # call a callback when the warning time is reached
+            warning_time = 1 # seconds before the end to call the callback
+            if ((timeout != 0) & ((time.monotonic() - start_time) > (timeout - warning_time))and not warning_shot_fired):
+                if(callback != None ): 
+                    await callback()
+                    warning_shot_fired = True
+                print("Time is running out")
+                pass
             if self.ser.in_waiting() > 0:  # Check if there is any incoming data
                 await self._rx()
                 try:
                     # print("recieved data")
                     telemetry_packet = UartPacket(buffer=self.read_buffer)
-                    self.telemetry_parser(telemetry_packet)  # Process telemetry data
+                    # self.telemetry_parser(telemetry_packet)  # Process telemetry data
                 except:
                     log.error("Bad packet recieved: " + str(self.read_buffer))                    
                     self.telemetry_parser(telemetry_packet)  # Process telemetry data
