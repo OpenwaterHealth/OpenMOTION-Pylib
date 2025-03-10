@@ -8,7 +8,7 @@ log = logging.getLogger("UART")
 class AsyncSerial:
     def __init__(self, port, baudrate, timeout=10):
         self.ser = serial.Serial(port, baudrate, timeout=timeout)
-        self.ser.set_buffer_size(rx_size=65536, tx_size=65536)
+        self.ser.set_buffer_size(rx_size=65536*8, tx_size=65536)
 
         self.reset_buffers()
         self.executor = ThreadPoolExecutor(max_workers=1)

@@ -241,7 +241,7 @@ class UART:
                 try:
                     # print("recieved data")
                     telemetry_packet = UartPacket(buffer=self.read_buffer)
-                    # self.telemetry_parser(telemetry_packet)  # Process telemetry data
+                    self.telemetry_parser(telemetry_packet)  # Process telemetry data
                 except:
                     log.error("Bad packet recieved: " + str(self.read_buffer))                    
                     self.telemetry_parser(telemetry_packet)  # Process telemetry data
