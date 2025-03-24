@@ -17,7 +17,9 @@ async def main():
     FILE_NAME= "HistoFPGAFw_impl1_agg.bit"
     s = None
     delay_time = .01
-
+    gains = [16,4,2,1,1,4,2,16]
+    exposure = 2
+    
     if CTRL_BOARD:
         vid = 1155  # Example VID for demonstration
         pid = 23130  # Example PID for demonstration
@@ -69,6 +71,18 @@ async def main():
         r = await motion_ctrl.camera_configure_registers()
         r = await motion_ctrl.fpga_soft_reset()
         print("Camera Configuration Done")
+
+        
+
+        print("Gain: " + str(gains[i-1]))    
+        await motion_ctrl.camera_set_gain(gains[i-1])
+        time.sleep(.01)
+
+        print("camera set exposure to setting " + str(exposure))    
+        await motion_ctrl.camera_set_exposure(exposure)
+        time.sleep(.01)
+
+
 
         time.sleep(.25)
 
