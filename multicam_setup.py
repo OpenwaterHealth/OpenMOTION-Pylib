@@ -72,7 +72,16 @@ async def main():
         r = await motion_ctrl.fpga_soft_reset()
         print("Camera Configuration Done")
 
-        
+        time.sleep(.25)
+
+        print(f"Finished Camera {i}")
+
+    print("Setting individual camera settings")
+    for i in cameras_to_flash:
+        print(f"Switching to Camera {i}")
+
+        await motion_ctrl.switch_camera(i)
+        time.sleep(1)
 
         print("Gain: " + str(gains[i-1]))    
         await motion_ctrl.camera_set_gain(gains[i-1])
@@ -82,11 +91,10 @@ async def main():
         await motion_ctrl.camera_set_exposure(exposure)
         time.sleep(.01)
 
-
-
         time.sleep(.25)
 
         print(f"Finished Camera {i}")
+
 
     s.close()
 
