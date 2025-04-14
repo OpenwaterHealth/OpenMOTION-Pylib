@@ -29,6 +29,9 @@ class MOTIONInterface:
         self._sensor_uart = MOTIONUart(vid=vid, pid=sensor_pid, baudrate=baudrate, timeout=timeout, desc="sensor", demo_mode=False, async_mode=run_async)
         self.sensor_module = MOTIONSensor(uart=self._sensor_uart)
 
+        self._console_uart = None  # Placeholder for UART module, if needed
+        self.console = None  # Placeholder for console module, if needed
+
         # Connect signals to internal handlers
         if self._async_mode:
             self._sensor_uart.signal_connect.connect(self.signal_connect.emit)

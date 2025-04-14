@@ -92,7 +92,17 @@ class UartPacket:
             print("  Data:", self.data.hex())
             print("  CRC:", hex(self.crc))
         
-
+    def __str__(self):
+        return (
+            f"UartPacket(id={self.id}, "
+            f"type=0x{self.packet_type:02X}, "
+            f"cmd=0x{self.command:02X}, "
+            f"addr=0x{self.addr:02X}, "
+            f"reserved=0x{self.reserved:02X}, "
+            f"data_len={self.data_len}, "
+            f"data={self.data.hex()})"
+            f"crc=0x{self.crc:04X})"
+    )
 class MOTIONSignal:
     def __init__(self):
         # Initialize a list to store connected slots (callback functions)
