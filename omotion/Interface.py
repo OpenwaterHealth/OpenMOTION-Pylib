@@ -26,7 +26,7 @@ class MOTIONInterface:
 
         # Create a MOTIONSensor Device instance as part of the interface
         logger.debug("Initializing TX Module of MOTIONInterface with VID: %s, PID: %s, baudrate: %s, timeout: %s", vid, sensor_pid, baudrate, timeout)
-        self._sensor_uart = MOTIONUart(vid=vid, pid=sensor_pid, baudrate=baudrate, timeout=timeout, desc="MOTIONSensor", demo_mode=False, async_mode=run_async)
+        self._sensor_uart = MOTIONUart(vid=vid, pid=sensor_pid, baudrate=baudrate, timeout=timeout, desc="sensor", demo_mode=False, async_mode=run_async)
         self.sensor_module = MOTIONSensor(uart=self._sensor_uart)
 
         # Connect signals to internal handlers

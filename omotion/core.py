@@ -127,7 +127,10 @@ class MOTIONSignal:
             **kwargs: Keyword arguments to pass to the connected slots.
         """
         for slot in self._slots:
-            slot(*args, **kwargs)
+            try:
+                slot(*args, **kwargs)
+            except Exception as e:
+                log.error("Signal emit error in slot %s: %s", slot, e)
 
 class MOTIONUart:
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
@@ -180,6 +183,7 @@ class MOTIONUart:
                 self.read_thread.start()
         except serial.SerialException as se:
             log.error("Failed to connect to %s: %s", self.port, se)
+            self.serial = None
             self.running = False
             self.port = None
         except Exception as e:
@@ -223,6 +227,7 @@ class MOTIONUart:
         elif not device and self.port:
             log.debug("Device removed; disconnecting.")
             self.running = False
+            time.sleep(0.5)  # Short delay to avoid replug thrash
             self.disconnect()
             self.port = None
 
@@ -271,6 +276,10 @@ class MOTIONUart:
         # In async mode, run the reading loop in a thread
         while self.running:
             try:
+                if not self.serial or not self.serial.is_open:
+                    log.warning("Serial port closed during read loop.")
+                    self.running = False
+                    break
                 if self.serial.in_waiting > 0:
                     data = self.serial.read(self.serial.in_waiting)
                     self.read_buffer.extend(data)
@@ -297,8 +306,10 @@ class MOTIONUart:
                         log.error("Error parsing packet: %s", ve)
                 else:
                     time.sleep(0.05)  # Brief sleep to avoid a busy loop
-            except serial.SerialException as e:
-                log.error("Serial _read_data error on %s: %s", self.descriptor, e)
+            except serial.SerialException as se:
+                self.running = False
+            except Exception as e:
+                log.error("Unexpected serial error on %s: %s", self.descriptor, e)
                 self.running = False
 
     def _tx(self, data: bytes):
