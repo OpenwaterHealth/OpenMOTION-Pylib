@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_ERASE_SRAM, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,384 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
+
+    def reset_camera_sensor(self, camera_position: int) -> bool:
+        """
+        Reset the camera sensor(s) at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the reset command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_RESET, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error resetting camera sensor")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def activate_camera_fpga(self, camera_position: int) -> bool:
+        """
+        Activate the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error activating fpga")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def enable_camera_fpga(self, camera_position: int) -> bool:
+        """
+        Enable the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling fpga")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def disable_camera_fpga(self, camera_position: int) -> bool:
+        """
+        Disable the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error disable fpga")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def check_camera_fpga(self, camera_position: int) -> bool:
+        """
+        Check the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ID, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error checking camera id")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def enter_sram_prog_fpga(self, camera_position: int) -> bool:
+        """
+        Enter SRAM Programming mode for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error entering prog")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def erase_sram_fpga(self, camera_position: int) -> bool:
+        """
+        Erase SRAM for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM, addr=camera_position, timeout=30)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error erasing SRAM")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def get_status_fpga(self, camera_position: int) -> bool:
+        """
+        Get Status of FPGA for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_STATUS, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error getting status")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def get_usercode_fpga(self, camera_position: int) -> bool:
+        """
+        Get usercode of FPGA for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_USERCODE, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error getting status")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
 
     def disconnect(self):
         """
