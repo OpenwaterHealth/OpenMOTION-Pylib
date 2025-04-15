@@ -2,7 +2,8 @@ import logging
 import struct
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_ERASE_SRAM, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE
+from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE
+from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +448,49 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position)
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error entering prog")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def exit_sram_prog_fpga(self, camera_position: int) -> bool:
+        """
+        Exit SRAM Programming mode for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG, addr=camera_position)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error entering prog")
@@ -577,6 +620,118 @@ class MOTIONSensor:
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error getting status")
+                return False
+            else:
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def send_bitstream_fpga(self, filename=None) -> bool:
+        """
+        Sends a bitstream file to the FPGA via UART in blocks.
+
+        Args:
+            filename (str): The full path to the bitstream file.
+
+        Returns:
+            bool: True if the transfer is successful, False otherwise.
+        """
+        max_bytes_per_block = 1024
+        block_count = 0
+        total_bytes_sent = 0
+
+        if filename is None:
+            raise ValueError("Filename cannot be None")
+
+        try:
+            file_crc = calculate_file_crc(filename)
+            print(f"CRC16 of file: {hex(file_crc)}")
+
+            with open(filename, "rb") as f:
+                while True:
+                    data = f.read(max_bytes_per_block)
+
+                    if not data:                        
+                        crc_bytes = file_crc.to_bytes(2, byteorder='big')
+                        r = self.uart.send_packet(
+                            id=None,
+                            packetType=OW_FPGA,
+                            command=OW_FPGA_BITSTREAM,
+                            addr=block_count,
+                            reserved=1,  # Final block / EOF marker
+                            data=crc_bytes
+                        )
+                        self.uart.clear_buffer()
+
+                        if r.packet_type == OW_ERROR:
+                            logger.error("Error sending final crc block")
+                            return False
+                        break
+
+                    # Send actual data chunk
+                    r = self.uart.send_packet(
+                        id=None,
+                        packetType=OW_FPGA,
+                        command=OW_FPGA_BITSTREAM,
+                        addr=block_count,
+                        reserved=0,
+                        data=data
+                    )
+                    self.uart.clear_buffer()
+
+                    if r.packet_type == OW_ERROR:
+                        logger.error(f"Error sending block {block_count}")
+                        return False
+
+                    total_bytes_sent += len(data)
+                    block_count += 1
+
+            print(f"Bitstream upload complete. Blocks sent: {block_count}, Total bytes: {total_bytes_sent}")
+            return True
+
+        except FileNotFoundError:
+            logger.error(f"File {filename} not found.")
+            return False
+        except Exception as e:
+            logger.error(f"Exception during bitstream send: {e}")
+            return False
+
+    def program_fpga(self, camera_position: int) -> bool:
+        """
+        Program FPGA for the camera sensor(s) FPGA at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bool: True if the FPGA command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error programming FPGA")
                 return False
             else:
                 return True

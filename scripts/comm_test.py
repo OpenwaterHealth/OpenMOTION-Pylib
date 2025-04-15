@@ -3,13 +3,6 @@ from omotion import *
 import json
 import time
 
-# Function to read file and calculate CRC
-def calculate_file_crc(file_name):
-    with open(file_name, 'rb') as f:
-        file_data = f.read()
-        crc = util_crc16(file_data)
-        return crc
-
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
