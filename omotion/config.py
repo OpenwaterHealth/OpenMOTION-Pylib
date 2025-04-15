@@ -1,6 +1,9 @@
 SERIAL_PORT = 'COM24'  # Change this to your serial port
 BAUD_RATE = 921600
 
+CONSOLE_MODULE_PID = 0xA53E
+SENSOR_MODULE_PID = 0x5A5A
+
 # Packet structure constants
 OW_START_BYTE = 0xAA
 OW_END_BYTE = 0xDD
@@ -62,7 +65,6 @@ OW_IMAGE_PACKET = 0x03
 
 # Global Commands 
 OW_CMD_PING = 0x00  
-OW_CMD_PONG = 0x01 
 OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 OW_CMD_TOGGLE_LED = 0x04

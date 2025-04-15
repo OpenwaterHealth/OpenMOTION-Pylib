@@ -1,10 +1,11 @@
 import asyncio
 from omotion import *
+import json
+import time
 
 async def main():
     CTRL_BOARD = True  # change to false and specify PORT_NAME for Nucleo Board
     PORT_NAME = "COM16"
-    FILE_NAME = "test.bit"  # Specify your file here
     s = None
 
     if CTRL_BOARD:
@@ -21,20 +22,14 @@ async def main():
     else:
         s = UART(PORT_NAME, timeout=5)
 
-    ustx_ctrl = CTRL_IF(s)
+    motion_ctrl = CTRL_IF(s)
 
-    print("Ping Controller")
+    print("Pong Controller")
     # Send and Recieve General ping command
-    r = await ustx_ctrl.ping()
+    r = await motion_ctrl.pong()
     # Format and print the received data in hex format
-    format_and_print_hex(r)
-    r = await ustx_ctrl.ping()
-    # Format and print the received data in hex format
-    format_and_print_hex(r)
-    
-    
+    r.print_packet()
 
     s.close()
 
 asyncio.run(main())
-        

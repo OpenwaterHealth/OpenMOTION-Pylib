@@ -50,6 +50,13 @@ def util_crc16(buf):
 
     return crc
 
+# Function to read file and calculate CRC
+def calculate_file_crc(file_name):
+    with open(file_name, 'rb') as f:
+        file_data = f.read()
+        crc = util_crc16(file_data)
+        return crc
+
 def format_and_print_hex(data):
     """
     Format the received data as hex and print it.
