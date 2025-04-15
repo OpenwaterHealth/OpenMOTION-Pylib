@@ -31,7 +31,7 @@ class MOTIONInterface:
 
         # Create a MOTIONConsole Device instance as part of the interface
         logger.debug("Initializing Console Module of MOTIONInterface with VID: %s, PID: %s, baudrate: %s, timeout: %s", vid, console_pid, baudrate, timeout)
-        self._console_uart = MOTIONUart(vid=vid, pid=console_pid, baudrate=baudrate, timeout=timeout, desc="sensor", demo_mode=False, async_mode=run_async)
+        self._console_uart = MOTIONUart(vid=vid, pid=console_pid, baudrate=baudrate, timeout=timeout, desc="console", demo_mode=False, async_mode=run_async)
         self.console_module = MOTIONConsole(uart=self._console_uart)
 
         # Create a MOTIONSensor Device instance as part of the interface
