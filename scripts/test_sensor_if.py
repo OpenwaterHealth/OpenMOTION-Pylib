@@ -22,7 +22,6 @@ else:
     
 if not sensor_connected:
     print("Sensor Module not connected.")
-    interface.sensor_module.disconnect()
     exit(1)
 
 # Ping Test
