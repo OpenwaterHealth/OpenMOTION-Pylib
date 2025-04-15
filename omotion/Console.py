@@ -214,4 +214,21 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+    def disconnect(self):
+        """
+        Disconnect the UART and clean up.
+        """
+        if self.uart:
+            logger.info("Disconnecting MOTIONSensor UART...")
+            self.uart.disconnect()  
+            self.uart = None
+
+    def __del__(self):
+        """
+        Fallback cleanup when the object is garbage collected.
+        """
+        try:
+            self.disconnect()
+        except Exception as e:
+            logger.warning("Error in MOTIONSensor destructor: %s", e)
         

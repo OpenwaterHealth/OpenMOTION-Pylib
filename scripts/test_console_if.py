@@ -39,7 +39,7 @@ except Exception as e:
 # Echo Test
 print("\n[3] Echo Test...")
 try:
-    echo_data = b"Hello LIFU!"
+    echo_data = b"Hello MOTIONS!"
     echoed, echoed_len = interface.console_module.echo(echo_data)
     if echoed:
         print(f"Echoed {echoed_len} bytes: {echoed.decode(errors='ignore')}")

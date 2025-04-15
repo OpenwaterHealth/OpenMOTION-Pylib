@@ -159,6 +159,7 @@ class MOTIONUart:
         self.read_thread = None
         self.last_rx = time.monotonic()
         self.read_buffer = []
+        self.serial = None
 
         # Signals: each signal emits (descriptor, port or data)
         self.signal_connect = MOTIONSignal()
