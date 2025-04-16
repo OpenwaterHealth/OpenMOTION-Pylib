@@ -7,7 +7,11 @@ from omotion.Interface import MOTIONInterface
 # python scripts\test_sensor_if.py
 
 print("Starting MOTION Sensor Module Test Script...")
-BIT_FILE = "bitstream\HistoFPGAFw_impl1_agg.bit"
+BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
+#BIT_FILE = "bitstream/testcustom_agg.bit"
+AUTO_UPLOAD = True
+# MANUAL_UPLOAD = True
+CAMERA_MASK = 0x40
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
@@ -23,6 +27,74 @@ else:
 if not sensor_connected:
     print("Sensor Module not connected.")
     exit(1)
+
+def upload_camera_bitstream(auto_upload: bool = False) -> bool:
+    print("FPGA Configuration Started")
+    
+    if auto_upload:
+        # send bitstream to camera FPGA
+        #print("sending bitstream to camera FPGA")
+        #interface.sensor_module.send_bitstream_fpga(BIT_FILE)
+
+        print("Programming camera FPGA")
+        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=False):
+            print("Failed to enter sram programming mode for camera FPGA.")
+            return False
+    
+    else:
+        # Manual upload process
+        if not interface.sensor_module.reset_camera_sensor(CAMERA_MASK):
+            print("Failed to reset camera sensor.")
+            return False
+
+        if not interface.sensor_module.activate_camera_fpga(CAMERA_MASK):
+            print("Failed to activate camera FPGA.")
+            return False
+
+        if not interface.sensor_module.enable_camera_fpga(CAMERA_MASK):
+            print("Failed to enable camera FPGA.")
+            return False
+
+        if not interface.sensor_module.check_camera_fpga(CAMERA_MASK):
+            print("Failed to check id of camera FPGA.")
+            return False
+
+        if not interface.sensor_module.enter_sram_prog_fpga(CAMERA_MASK):
+            print("Failed to enter sram programming mode for camera FPGA.")
+            return False
+
+        if not interface.sensor_module.erase_sram_fpga(CAMERA_MASK):
+            print("Failed to erase sram for camera FPGA.")
+            return False
+
+        # wait for erase
+        # send bitstream to camera FPGA
+        print("sending bitstream to camera FPGA")
+        if not interface.sensor_module.send_bitstream_fpga(BIT_FILE):
+            print("Failed to send bitstream to camera FPGA.")
+            return False
+
+        if not interface.sensor_module.get_status_fpga(CAMERA_MASK):
+            print("Failed to get status for camera FPGA.")
+            return False
+
+        if not interface.sensor_module.program_fpga(CAMERA_MASK):
+            print("Failed to get user code for camera FPGA.")
+            return False
+
+        if not interface.sensor_module.get_usercode_fpga(CAMERA_MASK):
+            print("Failed to get user code for camera FPGA.")
+            return False
+
+        if not interface.sensor_module.get_status_fpga(CAMERA_MASK):
+            print("Failed to get status for camera FPGA.")
+            return False
+
+        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=True):
+            print("Failed to enter sram programming mode for camera FPGA.")
+            return False
+        
+    return True
 
 # Ping Test
 print("\n[1] Ping Sensor Module...")
@@ -72,45 +144,22 @@ except Exception as e:
 
 start_time = time.time()
 print("FPGA Configuration Started")
-if not interface.sensor_module.reset_camera_sensor(0x01):
-    print("Failed to reset camera sensor.")
-
-if not interface.sensor_module.activate_camera_fpga(0x01):
-    print("Failed to activate camera FPGA.")
-
-if not interface.sensor_module.enable_camera_fpga(0x01):
-    print("Failed to enable camera FPGA.")
-
-if not interface.sensor_module.check_camera_fpga(0x01):
-    print("Failed to check id of camera FPGA.")
-
-if not interface.sensor_module.enter_sram_prog_fpga(0x01):
-    print("Failed to enter sram programming mode for camera FPGA.")
-
-if not interface.sensor_module.erase_sram_fpga(0x01):
-    print("Failed to erase sram for camera FPGA.")
-
-# wait for erase
-# send bitstream to camera FPGA
-print("sending bitstream to camera FPGA")
-interface.sensor_module.send_bitstream_fpga(BIT_FILE)
-
-if not interface.sensor_module.get_status_fpga(0x01):
-    print("Failed to get status for camera FPGA.")
-
-if not interface.sensor_module.program_fpga(0x01):
-    print("Failed to get user code for camera FPGA.")
-
-if not interface.sensor_module.get_usercode_fpga(0x01):
-    print("Failed to get user code for camera FPGA.")
-
-if not interface.sensor_module.get_status_fpga(0x01):
-    print("Failed to get status for camera FPGA.")
-
-if not interface.sensor_module.exit_sram_prog_fpga(0x01):
-    print("Failed to enter sram programming mode for camera FPGA.")
-
+if not upload_camera_bitstream(AUTO_UPLOAD):
+    print("Failed to upload camera bitstream.")
+    exit(1)
 print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
+
+print ("Programming camera sensor registers.")
+if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
+    print("Failed to configure default registers for camera FPGA.")
+
+# print ("Programming camera sensor set test pattern.")
+# if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
+#     print("Failed to set grayscale test pattern for camera FPGA.")
+
+# print("Capture histogram frame.")
+# if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):
+#     print("Failed to capture histogram frame.")
 
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
