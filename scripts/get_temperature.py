@@ -34,6 +34,17 @@ print("\n[2] Reading IMU Temperature...")
 temperature = interface.sensor_module.imu_get_temperature()
 print(f"Temperature: {temperature} °C")
 
+# Read IMU Accelerometer
+print("\n[3] Reading IMU Accelerometer...")
+accel = interface.sensor_module.imu_get_accelerometer()
+print(f"Accel (raw): X={accel[0]}, Y={accel[1]}, Z={accel[2]}")
+
+# Read IMU Gyroscope
+print("\n[4] Reading IMU Gyroscope...")
+gyro  = interface.sensor_module.imu_get_gyroscope()
+print(f"Gyro  (raw): X={gyro[0]}, Y={gyro[1]}, Z={gyro[2]}")
+
+
 # disconnect from the sensor module
 interface.sensor_module.disconnect()
 print("\nSensor Module Test Completed.")

@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MOTIONUart
-from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_TEMP
+from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
@@ -253,6 +253,76 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
+
+    def imu_get_accelerometer(self) -> list[int]:
+        """
+        Retrieve raw accelerometer readings (X, Y, Z) from the IMU.
+
+        Returns:
+            list[int]: [x, y, z] accelerometer readings as signed 16-bit integers.
+
+        Raises:
+            ValueError: If UART is not connected or data is invalid.
+            Exception: For unexpected issues.
+        """
+        try:
+            if self.uart.demo_mode:
+                return [0, 0, 0]
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                raise ValueError("UART is not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_ACCEL)
+            self.uart.clear_buffer()
+
+            if r.data_len == 6:
+                x, y, z = struct.unpack('<hhh', r.data)  # 3 × int16_t (little endian)
+                return [x, y, z]
+            else:
+                raise ValueError(f"Invalid data length: expected 6, got {r.data_len}")
+
+        except ValueError as v:
+            logger.error("ValueError in imu_get_accelerometer: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Unexpected error in imu_get_accelerometer: %s", e)
+            raise
+
+    def imu_get_gyroscope(self) -> list[int]:
+        """
+        Retrieve raw gyroscope readings (X, Y, Z) from the IMU.
+
+        Returns:
+            list[int]: [x, y, z] gyroscope readings as signed 16-bit integers.
+
+        Raises:
+            ValueError: If UART is not connected or data is invalid.
+            Exception: For unexpected issues.
+        """
+        try:
+            if self.uart.demo_mode:
+                return [0, 0, 0]
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                raise ValueError("UART is not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_GYRO)
+            self.uart.clear_buffer()
+
+            if r.data_len == 6:
+                x, y, z = struct.unpack('<hhh', r.data)  # 3 × int16_t (little endian)
+                return [x, y, z]
+            else:
+                raise ValueError(f"Invalid data length: expected 6, got {r.data_len}")
+
+        except ValueError as v:
+            logger.error("ValueError in imu_get_gyroscope: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Unexpected error in imu_get_gyroscope: %s", e)
+            raise
 
     def reset_camera_sensor(self, camera_position: int) -> bool:
         """
