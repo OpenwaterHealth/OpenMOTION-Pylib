@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MOTIONUart
-from omotion.config import OW_CAMERA, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE
+from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_TEMP
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,49 @@ class MOTIONSensor:
                 return r.data.hex()
             else:
                 return None
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def imu_get_temperature(self) -> float:
+        """
+        Retrieve the temperature reading from the IMU on the Sensor Module.
+
+        Returns:
+            float: Temperature value in Celsius.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs or the received data length is invalid.
+        """
+
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+
+            # Send the OW_IMU_GET_TEMP command
+            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_TEMP)
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            # Check if the data length matches a float (4 bytes)
+            if r.data_len == 4:
+                # Unpack the float value from the received data (assuming little-endian)
+                temperature = struct.unpack('<f', r.data)[0]
+                # Truncate the temperature to 2 decimal places
+                truncated_temperature = round(temperature, 2)
+                return truncated_temperature
+            else:
+                raise ValueError("Invalid data length received for temperature")
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -862,6 +905,49 @@ class MOTIONSensor:
                 return False
             else:
                 return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+        except Exception as e:
+            logger.error("Exception during reset_camera_sensor: %s", e)
+            raise
+
+    def camera_get_histogram(self, camera_position: int) -> bytearray:
+        """
+        Get Last Histogram from camera sensor(s) Registers at the specified position(s).
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, bit 1 = camera 1, ..., bit 7 = camera 7).
+        For example, to reset cameras 0 and 3, use camera_position = 0b00001001 (0x09).
+
+        Args:
+            camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+
+        Returns:
+            bytearray: Histogram data if the FPGA command was sent successfully, None otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or input is invalid.
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+            
+            if self.uart.demo_mode:
+                return None
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return None
+
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=60)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error programming FPGA")
+                return None
+            else:
+                print(len(r.data))
+                return r.data
 
         except ValueError as v:
             logger.error("ValueError: %s", v)

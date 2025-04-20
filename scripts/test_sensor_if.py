@@ -78,8 +78,8 @@ def upload_camera_bitstream(auto_upload: bool = False) -> bool:
             print("Failed to get status for camera FPGA.")
             return False
 
-        if not interface.sensor_module.program_fpga(CAMERA_MASK):
-            print("Failed to get user code for camera FPGA.")
+        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=True):
+            print("Failed to enter sram programming mode for camera FPGA.")
             return False
 
         if not interface.sensor_module.get_usercode_fpga(CAMERA_MASK):
@@ -88,10 +88,6 @@ def upload_camera_bitstream(auto_upload: bool = False) -> bool:
 
         if not interface.sensor_module.get_status_fpga(CAMERA_MASK):
             print("Failed to get status for camera FPGA.")
-            return False
-
-        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=True):
-            print("Failed to enter sram programming mode for camera FPGA.")
             return False
         
     return True
