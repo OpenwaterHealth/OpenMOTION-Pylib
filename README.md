@@ -1,6 +1,6 @@
 # Overview
 
-This repository contains the code used to interface with an OpenMotion sensor module. The sensor module runs the code contained in the `open-motion-aggregator` repository on an STM32H7 processor. The programs here communicates with the aggregator board's MCU over a serial connection.
+This repository contains the code used to interface with an OpenMotion sensor module and OpenMotion Console. The sensor module runs the code contained in the `motion-sensor-fw` repository on an STM32H7 processor. The programs here communicates with the modules over a USB serial connection.
 
 A library called `omotion` is imported in many of the python scripts listed here to aid communication with the Sensor Module.
 

@@ -15,7 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x40
+CAMERA_MASK = 0x02
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
