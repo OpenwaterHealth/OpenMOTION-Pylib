@@ -28,15 +28,15 @@ def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     try:
         # Convert bytearray to a numpy array of 16-bit integers (assuming little-endian)
         # Each histogram bin is 4 bytes (uint16)
-        hist_values = np.frombuffer(histogram_data, dtype='<u4')  # little-endian uint32
+        # hist_values = np.frombuffer(histogram_data, dtype='<u4')  # little-endian uint32
         
         # Verify expected length (1024 bins for 10-bit)
-        if len(hist_values) != 1024:
-            print(f"Warning: Expected 1024 bins, got {len(hist_values)}")
+        if len(histogram_data) != 1024:
+            print(f"Warning: Expected 1024 bins, got {len(histogram_data)}")
         
         # Plot the histogram
         plt.figure(figsize=(12, 6))
-        plt.bar(range(len(hist_values)), hist_values, width=1.0)
+        plt.bar(range(len(histogram_data)), histogram_data, width=1.0)
         plt.title(title)
         plt.xlabel("Pixel Value (0-1023)")
         plt.ylabel("Count")
@@ -54,6 +54,24 @@ def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin
         print(f"Successfully saved raw histogram to {filename}")
     except Exception as e:
         print(f"Error saving histogram: {e}")
+
+def bytes_to_integers(byte_array):
+        # Check that the byte array is exactly 4096 bytes
+        if len(byte_array) != 4096:
+            raise ValueError("Input byte array must be exactly 4096 bytes.")
+        # Initialize an empty list to store the converted integers
+        integers = []
+        hidden_figures = []
+        # Iterate over the byte array in chunks of 4 bytes
+        for i in range(0, len(byte_array), 4):
+            bytes = byte_array[i:i+4]
+            # Unpack each 4-byte chunk as a single integer (big-endian)
+#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
+            #     print(str(i) + " " + str(bytes[0:3]))
+            hidden_figures.append(bytes[3])
+            integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
+        return (integers, hidden_figures)
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
@@ -101,9 +119,17 @@ else:
     if histogram is None:
         print("Histogram frame is None.")
     else:
-        print("Histogram frame received successfully.")    
-        save_histogram_raw(histogram)    
-        plot_10bit_histogram(histogram, title="10-bit Histogram")
+        print("Histogram frame received successfully.")
+        print("Histogram frame length: " + str(len(histogram)))
+        histogram = histogram[0:4096]
+        (bins, hidden_numbers) = bytes_to_integers(histogram)
+        #print out sum of bins
+        print("Sum of bins: " + str(sum(bins)))
+        print("Bins: " + str(bins))
+        print("Frame ID: " + str(hidden_numbers[1023]))
+        # print("Hidden numbers: " + str(hidden_numbers))
+        # save_histogram_raw(histogram)    
+        plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
