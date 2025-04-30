@@ -16,7 +16,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
 CAMERA_MASK = 0x02
-CAMERA_ID = 0x01
+CAMERA_ID = 0x00
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -129,11 +129,7 @@ except Exception as e:
 # Wait for a moment to ensure FSIN is activated
 time.sleep(1)
 
-# step 4 disable cameras, cancel reception etc
-if not interface.sensor_module.enable_camera(CAMERA_ID):
-    print("Failed to enable cameras.")
-
-# step 5 turn off frame sync
+# step 4 turn off frame sync
 try:
     print("\n[7] Deactivate FSIN...")
     fsin_result = interface.sensor_module.disable_aggregator_fsin()
@@ -141,6 +137,11 @@ try:
 except Exception as e:
     print(f"FSIN activate error: {e}")
 
+time.sleep(.05) # wait a few frames for the camera to exhaust itself before disabling the camera
+
+# step 5 disable cameras, cancel reception etc
+if not interface.sensor_module.disable_camera(CAMERA_ID):
+    print("Failed to enable cameras.")
 
 
 
