@@ -1107,7 +1107,26 @@ class MOTIONSensor:
                 raise ValueError("Sensor Module not connected")
             data = bytearray(1)
             data[0] = camera_position
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_TOGGLE_CAMERA_STREAM, data=data)
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, data=data)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling camera")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def disable_camera(self, camera_position) -> bool:
+        try:
+            if self.uart.demo_mode:
+                return True 
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+            data = bytearray(1)
+            data[0] = camera_position
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, data=data)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error enabling camera")

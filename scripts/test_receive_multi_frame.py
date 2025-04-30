@@ -115,13 +115,31 @@ except Exception as e:
 #step 1 enable cameras - this means turn on streaming mode and start the reception
 if not interface.sensor_module.enable_camera(CAMERA_ID):
     print("Failed to enable cameras.")
-#step 2 turn on frame sync
 
+#step 2 turn on frame sync
+# Activate then deactivate FSIN
+print("\n[6] Activate FSIN...")
+try:
+    fsin_result = interface.sensor_module.enable_aggregator_fsin()
+    print("FSIN activated." if fsin_result else "FSIN activation failed.")
+except Exception as e:
+    print(f"FSIN activate error: {e}")
+    
 # step 3 recieve frames -- for now do this in a dummy mode way
+# Wait for a moment to ensure FSIN is activated
+time.sleep(1)
 
 # step 4 disable cameras, cancel reception etc
+if not interface.sensor_module.enable_camera(CAMERA_ID):
+    print("Failed to enable cameras.")
 
 # step 5 turn off frame sync
+try:
+    print("\n[7] Deactivate FSIN...")
+    fsin_result = interface.sensor_module.disable_aggregator_fsin()
+    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
+except Exception as e:
+    print(f"FSIN activate error: {e}")
 
 
 
