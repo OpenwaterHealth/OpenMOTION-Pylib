@@ -1101,13 +1101,15 @@ class MOTIONSensor:
 
     def enable_camera(self, camera_position) -> bool:
         try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
             if self.uart.demo_mode:
                 return True 
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
-            data = bytearray(1)
-            data[0] = camera_position
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, data=data)
+        
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error enabling camera")
@@ -1120,13 +1122,14 @@ class MOTIONSensor:
 
     def disable_camera(self, camera_position) -> bool:
         try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
             if self.uart.demo_mode:
                 return True 
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
-            data = bytearray(1)
-            data[0] = camera_position
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, data=data)
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error enabling camera")

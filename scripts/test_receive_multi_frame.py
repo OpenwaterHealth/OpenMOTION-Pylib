@@ -15,8 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x02
-CAMERA_ID = 0x00
+CAMERA_MASK = 0xFF
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -111,13 +110,11 @@ except Exception as e:
 # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
 #     print("Failed to set grayscale test pattern for camera FPGA.")
 
-
 #step 1 enable cameras - this means turn on streaming mode and start the reception
-if not interface.sensor_module.enable_camera(CAMERA_ID):
+if not interface.sensor_module.enable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
 
 #step 2 turn on frame sync
-# Activate then deactivate FSIN
 print("\n[6] Activate FSIN...")
 try:
     fsin_result = interface.sensor_module.enable_aggregator_fsin()
@@ -126,8 +123,7 @@ except Exception as e:
     print(f"FSIN activate error: {e}")
     
 # step 3 recieve frames -- for now do this in a dummy mode way
-# Wait for a moment to ensure FSIN is activated
-time.sleep(1)
+time.sleep(1000) # Wait for a moment to ensure FSIN is activated
 
 # step 4 turn off frame sync
 try:
@@ -140,33 +136,8 @@ except Exception as e:
 time.sleep(.05) # wait a few frames for the camera to exhaust itself before disabling the camera
 
 # step 5 disable cameras, cancel reception etc
-if not interface.sensor_module.disable_camera(CAMERA_ID):
+if not interface.sensor_module.disable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
-
-
-
-# old way of doing it
-
-# print("Capture histogram frame.")
-# if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):
-#     print("Failed to capture histogram frame.")
-# else:
-#     print("Get histogram frame.")
-#     histogram = interface.sensor_module.camera_get_histogram(CAMERA_MASK)
-#     if histogram is None:
-#         print("Histogram frame is None.")
-#     else:
-#         print("Histogram frame received successfully.")
-#         print("Histogram frame length: " + str(len(histogram)))
-#         histogram = histogram[0:4096]
-#         (bins, hidden_numbers) = bytes_to_integers(histogram)
-#         #print out sum of bins
-#         print("Sum of bins: " + str(sum(bins)))
-#         print("Bins: " + str(bins))
-#         print("Frame ID: " + str(hidden_numbers[1023]))
-#         # print("Hidden numbers: " + str(hidden_numbers))
-#         # save_histogram_raw(histogram)    
-#         plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
