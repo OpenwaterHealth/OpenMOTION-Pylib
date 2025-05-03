@@ -415,7 +415,7 @@ class MOTIONUart:
             packet.extend(crc_value.to_bytes(2, 'big'))
             packet.append(OW_END_BYTE)
 
-            # print("Sending packet: ", packet.hex())
+            print("Sending packet: ", packet.hex())
             self._tx(packet)
 
             if not self.asyncMode:
