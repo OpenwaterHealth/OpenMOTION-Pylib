@@ -2,3 +2,5 @@ pyserial
 crcmod
 numpy
 matplotlib
+pyusb
+libusb1

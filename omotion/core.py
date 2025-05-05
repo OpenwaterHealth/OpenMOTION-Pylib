@@ -6,9 +6,8 @@ import queue
 import struct
 import csv
 import threading
-
-import serial
-import serial.tools.list_ports
+import usb.core
+import usb.util
 
 from .config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
 from .utils import util_crc16
@@ -158,8 +157,8 @@ class MOTIONUart:
         self.descriptor = desc
         self.read_thread = None
         self.last_rx = time.monotonic()
-        self.read_buffer = []
-        self.serial = None
+        self.read_buffer = bytearray()
+        self.interface = 0  # default interface index
 
         # Signals: each signal emits (descriptor, port or data)
         self.signal_connect = MOTIONSignal()
@@ -172,50 +171,40 @@ class MOTIONUart:
             self.response_lock = threading.Lock()  # Lock for thread-safe access to response_queues
 
     def connect(self):
-        """Open the serial port."""
-        if self.demo_mode:
-            log.info("Demo mode: Simulating UART connection.")
-            self.signal_connect.emit(self.descriptor, "demo_mode")
-            return
-        try:
-            self.serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout
-            )
-            log.info("Connected to UART on port %s.", self.port)
-            self.signal_connect.emit(self.descriptor, self.port)
+        self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
+        if self.dev is None:
+            raise ValueError("Device not found")
 
-            if self.asyncMode:
-                log.info("Starting read thread for %s.", self.descriptor)
-                self.running = True
-                self.read_thread = threading.Thread(target=self._read_data)
-                self.read_thread.daemon = True
-                self.read_thread.start()
-        except serial.SerialException as se:
-            log.error("Failed to connect to %s: %s", self.port, se)
-            self.serial = None
-            self.running = False
-            self.port = None
-        except Exception as e:
-            raise e
+        self.dev.set_configuration()
+        cfg = self.dev.get_active_configuration()
+        intf = cfg[(self.interface, 0)]
+
+        # Claim the interface
+        usb.util.claim_interface(self.dev, self.interface)
+
+        # Assume first bulk OUT and IN
+        self.ep_out = usb.util.find_descriptor(
+            intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT)
+        self.ep_in = usb.util.find_descriptor(
+            intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+
+        if self.ep_out is None or self.ep_in is None:
+            raise ValueError("Bulk endpoints not found")
+
+        self.running = True
+        self.read_thread = threading.Thread(target=self._read_loop)
+        self.read_thread.daemon = True
+        self.read_thread.start()
+
+        self.signal_connect.emit(self.desc, "bulk_usb")
 
     def disconnect(self):
-        """Close the serial port."""
         self.running = False
-        if self.demo_mode:
-            log.info("Demo mode: Simulating UART disconnection.")
-            self.signal_disconnect.emit(self.descriptor, "demo_mode")
-            return
-
         if self.read_thread:
             self.read_thread.join()
-        if self.serial and self.serial.is_open:
-            self.serial.close()
-            self.serial = None
-        log.info("Disconnected from UART.")
-        self.signal_disconnect.emit(self.descriptor, self.port)
-        self.port = None
+        usb.util.release_interface(self.dev, self.interface)
+        usb.util.dispose_resources(self.dev)
+        self.signal_disconnect.emit(self.desc, "bulk_usb")
 
     def is_connected(self) -> bool:
         """
@@ -226,21 +215,20 @@ class MOTIONUart:
         """
         if self.demo_mode:
             return True
-        return self.port is not None and self.serial is not None and self.serial.is_open
+        return (self.ep_out is not None or self.ep_in is not None)
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
-        device = self.list_vcp_with_vid_pid()
-        if device and not self.port:
-            log.debug("Device found; trying to connect.")
-            self.port = device
-            self.connect()
-        elif not device and self.port:
-            log.debug("Device removed; disconnecting.")
-            self.running = False
-            time.sleep(0.5)  # Short delay to avoid replug thrash
+        device = self.find_usb_bulk_device()
+        if device and not self.running:
+            log.debug("USB device connected.")
+            try:
+                self.connect()
+            except Exception as e:
+                log.error("Failed to connect to device: %s", e)
+        elif not device and self.running:
+            log.debug("USB device disconnected.")
             self.disconnect()
-            self.port = None
 
     async def monitor_usb_status(self, interval=1):
         """Periodically check for USB device connection."""
@@ -269,13 +257,9 @@ class MOTIONUart:
             self.monitoring_task.cancel()
             self.monitoring_task = None
 
-    def list_vcp_with_vid_pid(self):
+    def find_usb_bulk_device(self):
         """Find the USB device by VID and PID."""
-        ports = serial.tools.list_ports.comports()
-        for port in ports:
-            if hasattr(port, 'vid') and hasattr(port, 'pid') and port.vid == self.vid and port.pid == self.pid:
-                return port.device
-        return None
+        return usb.core.find(idVendor=self.vid, idProduct=self.pid)
 
     def _read_data(self, timeout=20):
         """Read data from the serial port in a separate thread."""
@@ -287,22 +271,20 @@ class MOTIONUart:
         # In async mode, run the reading loop in a thread
         while self.running:
             try:
-                if not self.serial or not self.serial.is_open:
-                    log.warning("Serial port closed during read loop.")
+                if self.ep_out is None:
+                    log.warning("RX port not available.")
                     self.running = False
                     break
-                if self.serial.in_waiting > 0:
-                    data = self.serial.read(self.serial.in_waiting)
+                else:
+                    data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=self.timeout)
                     self.read_buffer.extend(data)
                     log.info("Data received on %s: %s", self.descriptor, data)
                     # Attempt to parse a complete packet from read_buffer.
                     try:
-                        # Note: Depending on your protocol, you might need to check for start/end bytes
-                        # and possibly handle partial packets.
-                        packet = UartPacket(buffer=bytes(self.read_buffer))
-                        # Clear the buffer after a successful parse.
+                        packet = UartPacket(buffer=self.read_buffer)
+                        self.read_buffer.clear()
+                        
 
-                        self.read_buffer = []
                         if self.asyncMode:
                             with self.response_lock:
                                 # Check if a queue is waiting for this packet ID.
@@ -313,20 +295,19 @@ class MOTIONUart:
                         else:
                             self.signal_data_received.emit(self.descriptor, packet)
 
-                    except ValueError as ve:
-                        log.error("Error parsing packet: %s", ve)
-                else:
-                    time.sleep(0.05)  # Brief sleep to avoid a busy loop
-            except serial.SerialException as se:
-                self.running = False
-            except Exception as e:
-                log.error("Unexpected serial error on %s: %s", self.descriptor, e)
-                self.running = False
+                    except ValueError:
+                        # Incomplete packet, keep accumulating
+                        pass
+            except usb.core.USBError as e:
+                if e.errno == 110:  # Timeout
+                    continue
+                print("USB read error:", e)
+                break
 
     def _tx(self, data: bytes):
         """Send data over UART."""
-        if not self.serial or not self.serial.is_open:
-            log.error("Serial port is not initialized.")
+        if self.ep_in is None:
+            log.error("TX port is not available.")
             return
         if self.demo_mode:
             log.info("Demo mode: Simulating data transmission: %s", data)
@@ -335,46 +316,22 @@ class MOTIONUart:
             if self.align > 0:
                 while len(data) % self.align != 0:
                     data += bytes([OW_END_BYTE])
-            self.serial.write(data)
-        except Exception as e:
-            log.error("Error during transmission: %s", e)
+            self.dev.write(self.ep_out.bEndpointAddress, data, timeout=self.timeout)
+        except usb.core.USBError as e:
+            print("USB write error:", e)
             raise e
-
+        
     def read_packet(self, timeout=20) -> UartPacket:
         """
-        Read a packet from the UART interface.
+        Attempt to read a complete UartPacket from the USB read buffer.
 
         Returns:
-            UartPacket: Parsed packet or an error packet if parsing fails.
+            UartPacket: Parsed packet or raises on failure.
         """
         start_time = time.monotonic()
-        raw_data = b""
-        count = 0
-
-        while timeout == -1 or time.monotonic() - start_time < timeout:
-            time.sleep(0.05)
-            raw_data += self.serial.read_all()
-            if raw_data:
-                count += 1
-                if count > 1:
-                    break
-
-        try:
-            if not raw_data:
-                raise ValueError("No data received from UART within timeout")
-            packet = UartPacket(buffer=raw_data)
-        except Exception as e:
-            log.error("Error parsing packet: %s", e)
-            packet = UartPacket(
-                id=0,
-                packet_type=OW_ERROR,
-                command=0,
-                addr=0,
-                reserved=0,
-                data=[]
-            )
-            raise e
-
+        packet_bytes  = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=200)
+        # Try parsing
+        packet = UartPacket(buffer=packet_bytes)
         return packet
 
     def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=20):
@@ -383,8 +340,8 @@ class MOTIONUart:
         """
 
         try:
-            if not self.serial or not self.serial.is_open:
-                log.error("Cannot send packet. Serial port is not connected.")
+            if self.ep_in is None:
+                log.error("Cannot send packet. TX Port is not available.")
                 return None
 
             if id is None:
