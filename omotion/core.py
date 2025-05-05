@@ -191,10 +191,10 @@ class MOTIONUart:
         if self.ep_out is None or self.ep_in is None:
             raise ValueError("Bulk endpoints not found")
 
-        self.running = True
-        self.read_thread = threading.Thread(target=self._read_loop)
-        self.read_thread.daemon = True
-        self.read_thread.start()
+#        self.running = True
+#        self.read_thread = threading.Thread(target=self._read_loop)
+#        self.read_thread.daemon = True
+#        self.read_thread.start()
 
         self.signal_connect.emit(self.desc, "bulk_usb")
 
@@ -329,10 +329,36 @@ class MOTIONUart:
             UartPacket: Parsed packet or raises on failure.
         """
         start_time = time.monotonic()
-        packet_bytes  = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=200)
-        # Try parsing
-        packet = UartPacket(buffer=packet_bytes)
-        return packet
+        self.read_buffer.clear()
+        expected_length = None
+        
+        while (time.monotonic() - start_time) < timeout:
+            # Read with short timeout for each chunk
+            data = self.dev.read(self.ep_in.bEndpointAddress, 
+                            self.ep_in.wMaxPacketSize, 
+                            timeout=100)  # ms
+            
+            if data:
+                self.read_buffer.extend(data)
+                
+                # If we have enough data to parse length header
+                if len(self.read_buffer) >= 4 and expected_length is None:
+                    # Parse your packet header to get expected length
+                    # Example: first 4 bytes = length (adjust for your protocol)
+                    expected_length = int.from_bytes(self.read_buffer[:4], 'little')
+                
+                # If we know expected length and have all data
+                if expected_length and len(self.read_buffer) >= expected_length:
+                    break
+            else:
+                # Only break if we have some data and no more is coming
+                if len(self.read_buffer) > 0:
+                    break
+        
+        if not self.read_buffer:
+            raise TimeoutError("No data received")
+        
+        return UartPacket(buffer=self.read_buffer)
 
     def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=20):
         """

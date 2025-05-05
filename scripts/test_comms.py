@@ -64,7 +64,7 @@ def main():
     else:
         print("MOTION MOTIONSensor NOT Connected.")
 
-    echo_data = b"Hello VCP COMMS!"
+    echo_data = b"Hello VCP COMMS, we want to test the length past 64 bytes which is the max packet size for FS!"
 
     r = myUart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
     myUart.clear_buffer()
