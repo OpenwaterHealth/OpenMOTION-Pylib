@@ -154,11 +154,14 @@ class MOTIONUart:
         self.running = False
         self.monitoring_task = None
         self.demo_mode = demo_mode
-        self.descriptor = desc
+        self.desc = desc
         self.read_thread = None
+        self.dev = None
         self.last_rx = time.monotonic()
         self.read_buffer = bytearray()
         self.interface = 0  # default interface index
+        self.ep_out = None
+        self.ep_in = None
 
         # Signals: each signal emits (descriptor, port or data)
         self.signal_connect = MOTIONSignal()
@@ -202,8 +205,9 @@ class MOTIONUart:
         self.running = False
         if self.read_thread:
             self.read_thread.join()
-        usb.util.release_interface(self.dev, self.interface)
-        usb.util.dispose_resources(self.dev)
+        if self.dev:
+            usb.util.release_interface(self.dev, self.interface)
+            usb.util.dispose_resources(self.dev)
         self.signal_disconnect.emit(self.desc, "bulk_usb")
 
     def is_connected(self) -> bool:

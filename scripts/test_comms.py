@@ -11,7 +11,7 @@ from omotion.Interface import MOTIONUart
 
 # ---- Constants ----
 VID = 0x0483
-PID = 0x5750
+PID = 0x5A5A
 
 OW_CMD = 0xE2
 
@@ -98,7 +98,7 @@ def main_imu_data_stream():
 
 # ---- Main ----
 def main():
-    myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="console", demo_mode=False, async_mode=False)
+    myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
     if myUart == None:
         print("Error establishing uart object")
         sys.exit(1)
@@ -121,6 +121,6 @@ def main():
 
 
 if __name__ == "__main__":
-    enumerate_and_print_interfaces(vid=VID, pid=PID)
-    #main_imu_data_stream()
-    #main()
+    # enumerate_and_print_interfaces(vid=VID, pid=PID)
+    # main_imu_data_stream()
+    main()
