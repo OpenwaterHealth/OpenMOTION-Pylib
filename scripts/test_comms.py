@@ -19,6 +19,23 @@ OW_CMD_PING = 0x00
 OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 
+EP_IN = 0x83
+EP_SIZE = 64
+TIMEOUT = 100  # milliseconds
+
+def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
+    data = bytearray()
+    while True:
+        try:
+            chunk = dev.read(endpoint, EP_SIZE, timeout=timeout)
+            data.extend(chunk)
+            # If packet is shorter than max size, it's the end
+            if len(chunk) < EP_SIZE:
+                break
+        except usb.core.USBError as e:
+            print(f"USB read error: {e}")
+            break
+    return data.decode(errors='ignore')  # or return raw if needed
 
 def enumerate_and_print_interfaces(vid, pid):
     dev = usb.core.find(idVendor=vid, idProduct=pid)
@@ -51,6 +68,28 @@ def enumerate_and_print_interfaces(vid, pid):
                 except usb.core.USBError as e:
                     print(f"      No data or timeout (err: {e})")
 
+def main_imu_data_stream():
+    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    if dev is None:
+        print("Device not found")
+        return
+
+    dev.set_configuration()
+    usb.util.claim_interface(dev, 2)  # Interface #2 for IMU
+    try:
+        while True:
+            json_str = read_usb_stream(dev)
+            if json_str:
+                print("Received JSON:", json_str)
+            else:
+                print("No data received.")
+                # 25ms update rate, so sleep accordingly or adjust as needed
+                time.sleep(0.010)
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+        usb.util.release_interface(dev, 2)
+        usb.util.dispose_resources(dev)
+
 # ---- Main ----
 def main():
     myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="console", demo_mode=False, async_mode=False)
@@ -76,5 +115,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # enumerate_and_print_interfaces(vid=VID, pid=PID)
-    main()
+    enumerate_and_print_interfaces(vid=VID, pid=PID)
+    #main_imu_data_stream()
+    #main()
