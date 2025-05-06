@@ -2,6 +2,7 @@ import sys
 import time
 import usb.core
 import usb.util
+import json
 from omotion.Interface import MOTIONUart
 
 # Run this script with:
@@ -78,13 +79,18 @@ def main_imu_data_stream():
     usb.util.claim_interface(dev, 2)  # Interface #2 for IMU
     try:
         while True:
-            json_str = read_usb_stream(dev)
+            json_str = read_usb_stream(dev)            
             if json_str:
-                print("Received JSON:", json_str)
+                for line in json_str.splitlines():
+                    try:
+                        data = json.loads(line)
+                        print("Received JSON:", data)
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON: {line}")                
             else:
                 print("No data received.")
                 # 25ms update rate, so sleep accordingly or adjust as needed
-                time.sleep(0.010)
+            time.sleep(0.0125)
     except KeyboardInterrupt:
         print("\nStopped by user.")
         usb.util.release_interface(dev, 2)
@@ -115,6 +121,6 @@ def main():
 
 
 if __name__ == "__main__":
-    enumerate_and_print_interfaces(vid=VID, pid=PID)
-    #main_imu_data_stream()
+    #enumerate_and_print_interfaces(vid=VID, pid=PID)
+    main_imu_data_stream()
     #main()
