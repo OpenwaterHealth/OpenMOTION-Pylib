@@ -121,6 +121,6 @@ def main():
 
 
 if __name__ == "__main__":
-    #enumerate_and_print_interfaces(vid=VID, pid=PID)
-    main_imu_data_stream()
+    enumerate_and_print_interfaces(vid=VID, pid=PID)
+    #main_imu_data_stream()
     #main()
