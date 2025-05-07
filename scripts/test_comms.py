@@ -12,6 +12,7 @@ from omotion.Interface import MOTIONUart
 # ---- Constants ----
 VID = 0x0483
 PID = 0x5A5A
+# PID = 0x5750
 
 OW_CMD = 0xE2
 
@@ -121,6 +122,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # enumerate_and_print_interfaces(vid=VID, pid=PID)
+    enumerate_and_print_interfaces(vid=VID, pid=PID)
     # main_imu_data_stream()
-    main()
+    # main()
