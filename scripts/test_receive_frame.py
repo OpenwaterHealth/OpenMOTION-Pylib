@@ -17,6 +17,16 @@ AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
 CAMERA_MASK = 0x02
 
+ENABLE_TEST_PATTERN = True
+TEST_PATTERN_ID = 0x04
+
+## Test Patterns
+# 0 Gradient bars
+# 1 Solid color
+# 2 Squares
+# 3 Continuous Gradient
+# 4 disabled
+
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
     Plots a 10-bit histogram (0-1023) from raw byte data.
@@ -101,14 +111,15 @@ try:
 except Exception as e:
     print(f"Error reading version: {e}")
 
+if(ENABLE_TEST_PATTERN):
+    print ("Programming camera sensor set test pattern.")
+    if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
+        print("Failed to set grayscale test pattern for camera FPGA.")
+else:
+    print ("Programming camera sensor registers.")
+    if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
+        print("Failed to configure default registers for camera FPGA.")
 
-# print ("Programming camera sensor registers.")
-# if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
-#     print("Failed to configure default registers for camera FPGA.")
-
-# print ("Programming camera sensor set test pattern.")
-# if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
-#     print("Failed to set grayscale test pattern for camera FPGA.")
 
 print("Capture histogram frame.")
 if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):

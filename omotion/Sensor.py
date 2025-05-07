@@ -899,7 +899,7 @@ class MOTIONSensor:
             logger.error("Exception during reset_camera_sensor: %s", e)
             raise
 
-    def camera_configure_test_pattern(self, camera_position: int) -> bool:
+    def camera_configure_test_pattern(self, camera_position: int, test_pattern_id: int) -> bool:
         """
         Set camera sensor(s) Test Pattern Registers at the specified position(s).
 
@@ -925,8 +925,10 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 logger.error("Sensor Module not connected")
                 return False
-
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, timeout=60)
+            #convert test_pattern_id to bytearray of length 1
+            data = bytearray(1)
+            data[0] = test_pattern_id
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position,data=data, timeout=60)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error programming FPGA")
