@@ -5,7 +5,7 @@ import time
 import os
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class MOTIONConsole:
     def __init__(self, uart: MOTIONUart):
         """
-        Initialize the MOTIONSensor Module.            
+        Initialize the MOTIONConsole Module.            
         """
 
         self.uart = uart
@@ -21,13 +21,13 @@ class MOTIONConsole:
         if self.uart and not self.uart.asyncMode:
             self.uart.check_usb_status()
             if self.uart.is_connected():
-                logger.info("MOTION MOTIONSensor connected.")
+                logger.info("MOTION MOTIONConsole connected.")
             else:
-                logger.info("MOTION MOTIONSensor NOT Connected.")    
+                logger.info("MOTION MOTIONConsole NOT Connected.")    
 
     def is_connected(self)-> bool:        
         """
-        Check if the MOTIONSensor is connected.   
+        Check if the MOTIONConsole is connected.   
         Returns True if connected, False otherwise.
         """
         if self.uart and self.uart.is_connected():
@@ -37,8 +37,8 @@ class MOTIONConsole:
         
     def ping(self) -> bool:        
         """    
-        Send a ping command to the MOTIONSensor and receive a response.
-        Returns the response from the MOTIONSensor.
+        Send a ping command to the MOTIONConsole and receive a response.
+        Returns the response from the MOTIONConsole.
         """ 
         try:
             if self.uart.demo_mode:
@@ -69,7 +69,7 @@ class MOTIONConsole:
 
     def get_version(self) -> str:
         """
-        Retrieve the firmware version of the Sensor Module.
+        Retrieve the firmware version of the Console Module.
 
         Returns:
             str: Firmware version in the format 'vX.Y.Z'.
@@ -83,7 +83,7 @@ class MOTIONConsole:
                 return 'v0.1.1'
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return 'v0.0.0'
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
@@ -124,7 +124,7 @@ class MOTIONConsole:
                 return data, len(data)
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return None, None
 
             # Check if echo_data is a byte array
@@ -153,7 +153,7 @@ class MOTIONConsole:
 
     def toggle_led(self) -> bool:
         """
-        Toggle the LED on the Sensor Module.
+        Toggle the LED on the Console Module.
 
         Raises:
             ValueError: If the UART is not connected.
@@ -164,7 +164,7 @@ class MOTIONConsole:
                 return True
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return False
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
@@ -182,7 +182,7 @@ class MOTIONConsole:
 
     def get_hardware_id(self) -> str:
         """
-        Retrieve the hardware ID of the Sensor Module.
+        Retrieve the hardware ID of the Console Module.
 
         Returns:
             str: Hardware ID in hexadecimal format.
@@ -196,7 +196,7 @@ class MOTIONConsole:
                 return bytes.fromhex("deadbeefcafebabe1122334455667788")
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return None
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_HWID)
@@ -214,12 +214,81 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+
+    def enter_dfu(self) -> bool:
+        """
+        Perform a soft reset to enter DFU mode on Console device.
+
+        Returns:
+            bool: True if the reset was successful, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while resetting the device.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_DFU)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting DFU mode for device")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def soft_reset(self) -> bool:
+        """
+        Perform a soft reset on the Console device.
+
+        Returns:
+            bool: True if the reset was successful, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while resetting the device.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Module not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error resetting device")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
         """
         if self.uart:
-            logger.info("Disconnecting MOTIONSensor UART...")
+            logger.info("Disconnecting MOTIONConsole UART...")
             self.uart.disconnect()  
             self.uart = None
 
@@ -230,5 +299,5 @@ class MOTIONConsole:
         try:
             self.disconnect()
         except Exception as e:
-            logger.warning("Error in MOTIONSensor destructor: %s", e)
+            logger.warning("Error in MOTIONConsole destructor: %s", e)
         
