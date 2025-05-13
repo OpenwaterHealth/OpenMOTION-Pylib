@@ -22,7 +22,8 @@ OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 
 EP_IN = 0x83
-EP_SIZE = 64
+EP_IN_HISTO = 0x82
+EP_SIZE = 512  # TODO(fix to 1024)
 TIMEOUT = 100  # milliseconds
 
 def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
@@ -97,6 +98,34 @@ def main_imu_data_stream():
         usb.util.release_interface(dev, 2)
         usb.util.dispose_resources(dev)
 
+def main_histo_dummy_data_stream():
+    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    if dev is None:
+        print("Device not found")
+        return
+
+    dev.set_configuration()
+    usb.util.claim_interface(dev, 1)  # Interface #1 for HISTO
+    try:
+        while True:
+            json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)            
+            if json_str:
+                for line in json_str.splitlines():
+                    try:
+                        data = json.loads(line)
+                        print("Received JSON:", data)
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON: {line}")                
+            else:
+                print("No data received.")
+                # 25ms update rate, so sleep accordingly or adjust as needed
+            time.sleep(0.0125)
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+        usb.util.release_interface(dev, 1)
+        usb.util.dispose_resources(dev)
+
+
 # ---- Main ----
 def main():
     myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
@@ -122,6 +151,7 @@ def main():
 
 
 if __name__ == "__main__":
-    enumerate_and_print_interfaces(vid=VID, pid=PID)
-    # main_imu_data_stream()
+    # enumerate_and_print_interfaces(vid=VID, pid=PID)
+    main_imu_data_stream()
+    # main_histo_dummy_data_stream()
     # main()
