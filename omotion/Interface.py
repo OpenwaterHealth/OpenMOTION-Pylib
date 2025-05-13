@@ -96,5 +96,5 @@ class MOTIONInterface:
             
     @staticmethod
     def get_sdk_version() -> str:
-        return "1.0.1"
+        return "1.0.6"
         
