@@ -93,3 +93,8 @@ class MOTIONInterface:
             self.console_module.disconnect()
         if self.sensor_module:
             self.sensor_module.disconnect()
+            
+    @staticmethod
+    def get_sdk_version() -> str:
+        return "1.0.0"
+        
