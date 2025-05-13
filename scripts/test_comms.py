@@ -22,7 +22,7 @@ OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 
 EP_IN = 0x83
-EP_SIZE = 64
+EP_SIZE = 512
 TIMEOUT = 100  # milliseconds
 
 def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
@@ -122,6 +122,6 @@ def main():
 
 
 if __name__ == "__main__":
-    enumerate_and_print_interfaces(vid=VID, pid=PID)
-    # main_imu_data_stream()
+    # enumerate_and_print_interfaces(vid=VID, pid=PID)
+    main_imu_data_stream()
     # main()
