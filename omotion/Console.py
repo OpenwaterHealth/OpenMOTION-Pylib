@@ -5,7 +5,7 @@ import time
 import os
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_I2C_SCAN, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class MOTIONConsole:
     def __init__(self, uart: MOTIONUart):
         """
-        Initialize the MOTIONSensor Module.            
+        Initialize the MOTIONConsole Module.            
         """
 
         self.uart = uart
@@ -21,13 +21,13 @@ class MOTIONConsole:
         if self.uart and not self.uart.asyncMode:
             self.uart.check_usb_status()
             if self.uart.is_connected():
-                logger.info("MOTION MOTIONSensor connected.")
+                logger.info("MOTION MOTIONConsole connected.")
             else:
-                logger.info("MOTION MOTIONSensor NOT Connected.")    
+                logger.info("MOTION MOTIONConsole NOT Connected.")    
 
     def is_connected(self)-> bool:        
         """
-        Check if the MOTIONSensor is connected.   
+        Check if the MOTIONConsole is connected.   
         Returns True if connected, False otherwise.
         """
         if self.uart and self.uart.is_connected():
@@ -37,8 +37,8 @@ class MOTIONConsole:
         
     def ping(self) -> bool:        
         """    
-        Send a ping command to the MOTIONSensor and receive a response.
-        Returns the response from the MOTIONSensor.
+        Send a ping command to the MOTIONConsole and receive a response.
+        Returns the response from the MOTIONConsole.
         """ 
         try:
             if self.uart.demo_mode:
@@ -69,7 +69,7 @@ class MOTIONConsole:
 
     def get_version(self) -> str:
         """
-        Retrieve the firmware version of the Sensor Module.
+        Retrieve the firmware version of the Console Module.
 
         Returns:
             str: Firmware version in the format 'vX.Y.Z'.
@@ -83,7 +83,7 @@ class MOTIONConsole:
                 return 'v0.1.1'
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return 'v0.0.0'
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
@@ -124,7 +124,7 @@ class MOTIONConsole:
                 return data, len(data)
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return None, None
 
             # Check if echo_data is a byte array
@@ -153,7 +153,7 @@ class MOTIONConsole:
 
     def toggle_led(self) -> bool:
         """
-        Toggle the LED on the Sensor Module.
+        Toggle the LED on the Console Module.
 
         Raises:
             ValueError: If the UART is not connected.
@@ -164,7 +164,7 @@ class MOTIONConsole:
                 return True
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return False
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
@@ -182,7 +182,7 @@ class MOTIONConsole:
 
     def get_hardware_id(self) -> str:
         """
-        Retrieve the hardware ID of the Sensor Module.
+        Retrieve the hardware ID of the Console Module.
 
         Returns:
             str: Hardware ID in hexadecimal format.
@@ -196,7 +196,7 @@ class MOTIONConsole:
                 return bytes.fromhex("deadbeefcafebabe1122334455667788")
 
             if not self.uart.is_connected():
-                logger.error("Sensor Module not connected")
+                logger.error("Console Module not connected")
                 return None
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_HWID)
@@ -214,12 +214,329 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+
+    def enter_dfu(self) -> bool:
+        """
+        Perform a soft reset to enter DFU mode on Console device.
+
+        Returns:
+            bool: True if the reset was successful, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while resetting the device.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_DFU)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting DFU mode for device")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def soft_reset(self) -> bool:
+        """
+        Perform a soft reset on the Console device.
+
+        Returns:
+            bool: True if the reset was successful, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while resetting the device.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Module not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error resetting device")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def scan_i2c_mux_channel(self, mux_index: int, channel: int) -> list[int]:
+        """
+        Scan a specific channel on an I2C MUX and return detected I2C addresses.
+
+        Args:
+            mux_index (int): Index of the I2C MUX (e.g., 0 for MUX at 0x70, 1 for 0x71).
+            channel (int): Channel number on the MUX to activate (0-7).
+
+        Returns:
+            list[int]: List of detected I2C device addresses on the specified mux/channel.
+                    Returns an empty list if no devices are found.
+
+        Raises:
+            ValueError: If the mux index or channel is out of range.
+            Exception: For unexpected UART communication issues.
+        """
+        if channel < 0 or channel > 7:
+            raise ValueError(f"Invalid channel {channel}, must be 0-7")
+        if mux_index not in [0, 1]:
+            raise ValueError(f"Invalid mux index {mux_index}, must be 0 or 1")
+
+        try:
+            # Send I2C scan command with mux index and channel as payload
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_I2C_SCAN,
+                data=bytes([mux_index, channel])
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error scanning I2C mux %d channel %d", mux_index, channel)
+                return []
+
+            # Return list of detected I2C addresses
+            return list(r.data) if r.data else []
+
+        except Exception as e:
+            logger.error("Exception while scanning I2C mux %d channel %d: %s", mux_index, channel, e)
+            raise
+
+    def set_fan_speed(self, fan_id: int = 0, fan_speed: int = 50) -> int:
+        """
+        Get the current output fan percentage.
+
+        Args:
+            fan_id (int): The desired fan to set (default is 0). bottom fans (0), and top fans (1).
+            fan_speed (int): The desired fan speed (default is 50).
+
+        Returns:
+            int: The current output fan percentage.
+
+        Raises:
+            ValueError: If the controller is not connected.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        if fan_id not in [0, 1]:
+            raise ValueError("Invalid fan ID. Must be 0 or 1")
+
+        if fan_speed not in range(101):
+            raise ValueError("Invalid fan speed. Must be 0 to 100")
+
+        try:
+            if self.uart.demo_mode:
+                return 40
+
+            logger.info("Getting current output voltage.")
+
+            data = bytes(
+                [
+                    fan_speed & 0xFF,  # Low byte (least significant bits)
+                ]
+            )
+
+            r = self.uart.send_packet(
+                id=None,
+                addr=fan_id,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_FAN,
+                data=data,
+            )
+
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting Fan Speed")
+                return -1
+
+            logger.info(f"Set fan speed to {fan_speed}")
+            return fan_speed
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_fan_speed(self, fan_id: int = 0) -> int:
+        """
+        Get the current output fan percentage.
+
+        Args:
+            fan_id (int): The desired fan to read (default is 0). bottom fans (0), and top fans (1).
+
+        Returns:
+            int: The current output fan percentage.
+
+        Raises:
+            ValueError: If the controller is not connected.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        if fan_id not in [0, 1]:
+            raise ValueError("Invalid fan ID. Must be 0 or 1")
+
+        try:
+            if self.uart.demo_mode:
+                return 40.0
+
+            logger.info("Getting current output voltage.")
+
+            r = self.uart.send_packet(
+                id=None, addr=fan_id, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FAN
+            )
+
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting HV")
+                return 0.0
+
+            elif r.data_len == 1:
+                fan_value = r.data[0]
+                logger.info(f"Output fan speed is {fan_value}")
+                return fan_value
+            else:
+                logger.error("Error getting output voltage from device")
+                return -1
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def set_rgb_led(self, rgb_state: int) -> int:
+        """
+        Set the RGB LED state.
+
+        Args:
+            rgb_state (int): The desired RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+
+        Returns:
+            int: The current RGB state after setting.
+
+        Raises:
+            ValueError: If the controller is not connected or the RGB state is invalid.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        if rgb_state not in [0, 1, 2, 3]:
+            raise ValueError(
+                "Invalid RGB state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
+            )
+
+        try:
+            if self.uart.demo_mode:
+                return rgb_state
+
+            logger.info("Setting RGB LED state.")
+
+            # Send the RGB state as the reserved byte in the packet
+            r = self.uart.send_packet(
+                id=None,
+                reserved=rgb_state & 0xFF,  # Send the RGB state as a single byte
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_IND,
+            )
+
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting RGB LED state")
+                return -1
+
+            logger.info(f"Set RGB LED state to {rgb_state}")
+            return rgb_state
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_rgb_led(self) -> int:
+        """
+        Get the current RGB LED state.
+
+        Returns:
+            int: The current RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+
+        Raises:
+            ValueError: If the controller is not connected.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        try:
+            if self.uart.demo_mode:
+                return 1  # Default to RED in demo mode
+
+            logger.info("Getting current RGB LED state.")
+
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_IND
+            )
+
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error getting RGB LED state")
+                return -1
+
+            rgb_state = r.reserved
+            logger.info(f"Current RGB LED state is {rgb_state}")
+            return rgb_state
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
         """
         if self.uart:
-            logger.info("Disconnecting MOTIONSensor UART...")
+            logger.info("Disconnecting MOTIONConsole UART...")
             self.uart.disconnect()  
             self.uart = None
 
@@ -230,5 +547,5 @@ class MOTIONConsole:
         try:
             self.disconnect()
         except Exception as e:
-            logger.warning("Error in MOTIONSensor destructor: %s", e)
+            logger.warning("Error in MOTIONConsole destructor: %s", e)
         

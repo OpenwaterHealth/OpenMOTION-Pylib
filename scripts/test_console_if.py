@@ -68,3 +68,32 @@ try:
         print("Failed to read HWID.")
 except Exception as e:
     print(f"HWID read error: {e}")
+
+print("\n[6] Scan I2C MUX Channels...")
+
+mux_index = 1  # Choose MUX 0 or 1
+channel = 0    # Choose channel 0–7
+
+try:
+    addresses = interface.console_module.scan_i2c_mux_channel(mux_index, channel)
+    if addresses:
+        hex_addresses = [hex(addr) for addr in addresses]
+        print(f"Devices found on MUX {mux_index} channel {channel}: {hex_addresses}")
+    else:
+        print(f"No devices found on MUX {mux_index} channel {channel}.")
+except Exception as e:
+    print(f"I2C scan error: {e}")
+
+print("\n[7] Test Fan...")
+fan_speed = interface.console_module.set_fan_speed(1, 40)
+if fan_speed < 0:
+    print("Failed to set Fan Speed.")
+else:
+    print(f"Fan Speed: {fan_speed}")
+
+print("\n[7] Get Fan Speed...")
+fan_speed = interface.console_module.get_fan_speed(0)
+if fan_speed < 0:
+    print("Failed to set Fan Speed.")
+else:
+    print(f"Fan Speed: {fan_speed}")
