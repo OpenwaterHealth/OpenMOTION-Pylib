@@ -5,7 +5,7 @@ import time
 import os
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_IND, OW_CTRL_SET_IND, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,99 @@ class MOTIONConsole:
                 return False
             else:
                 return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def set_rgb_led(self, rgb_state: int) -> int:
+        """
+        Set the RGB LED state.
+
+        Args:
+            rgb_state (int): The desired RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+
+        Returns:
+            int: The current RGB state after setting.
+
+        Raises:
+            ValueError: If the controller is not connected or the RGB state is invalid.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        if rgb_state not in [0, 1, 2, 3]:
+            raise ValueError(
+                "Invalid RGB state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
+            )
+
+        try:
+            if self.uart.demo_mode:
+                return rgb_state
+
+            logger.info("Setting RGB LED state.")
+
+            # Send the RGB state as the reserved byte in the packet
+            r = self.uart.send_packet(
+                id=None,
+                reserved=rgb_state & 0xFF,  # Send the RGB state as a single byte
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_IND,
+            )
+
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting RGB LED state")
+                return -1
+
+            logger.info(f"Set RGB LED state to {rgb_state}")
+            return rgb_state
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_rgb_led(self) -> int:
+        """
+        Get the current RGB LED state.
+
+        Returns:
+            int: The current RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+
+        Raises:
+            ValueError: If the controller is not connected.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("High voltage controller not connected")
+
+        try:
+            if self.uart.demo_mode:
+                return 1  # Default to RED in demo mode
+
+            logger.info("Getting current RGB LED state.")
+
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_IND
+            )
+
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error getting RGB LED state")
+                return -1
+
+            rgb_state = r.reserved
+            logger.info(f"Current RGB LED state is {rgb_state}")
+            return rgb_state
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
