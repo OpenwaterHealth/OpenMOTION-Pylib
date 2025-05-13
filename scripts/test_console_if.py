@@ -83,3 +83,17 @@ try:
         print(f"No devices found on MUX {mux_index} channel {channel}.")
 except Exception as e:
     print(f"I2C scan error: {e}")
+
+print("\n[7] Test Fan...")
+fan_speed = interface.console_module.set_fan_speed(1, 40)
+if fan_speed < 0:
+    print("Failed to set Fan Speed.")
+else:
+    print(f"Fan Speed: {fan_speed}")
+
+print("\n[7] Get Fan Speed...")
+fan_speed = interface.console_module.get_fan_speed(0)
+if fan_speed < 0:
+    print("Failed to set Fan Speed.")
+else:
+    print(f"Fan Speed: {fan_speed}")
