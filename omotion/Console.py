@@ -5,7 +5,7 @@ import time
 import os
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_IND, OW_CTRL_SET_IND, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_IND, OW_CTRL_I2C_SCAN, OW_CTRL_SET_IND, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +283,48 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+    def scan_i2c_mux_channel(self, mux_index: int, channel: int) -> list[int]:
+        """
+        Scan a specific channel on an I2C MUX and return detected I2C addresses.
+
+        Args:
+            mux_index (int): Index of the I2C MUX (e.g., 0 for MUX at 0x70, 1 for 0x71).
+            channel (int): Channel number on the MUX to activate (0-7).
+
+        Returns:
+            list[int]: List of detected I2C device addresses on the specified mux/channel.
+                    Returns an empty list if no devices are found.
+
+        Raises:
+            ValueError: If the mux index or channel is out of range.
+            Exception: For unexpected UART communication issues.
+        """
+        if channel < 0 or channel > 7:
+            raise ValueError(f"Invalid channel {channel}, must be 0-7")
+        if mux_index not in [0, 1]:
+            raise ValueError(f"Invalid mux index {mux_index}, must be 0 or 1")
+
+        try:
+            # Send I2C scan command with mux index and channel as payload
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_I2C_SCAN,
+                data=bytes([mux_index, channel])
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error scanning I2C mux %d channel %d", mux_index, channel)
+                return []
+
+            # Return list of detected I2C addresses
+            return list(r.data) if r.data else []
+
+        except Exception as e:
+            logger.error("Exception while scanning I2C mux %d channel %d: %s", mux_index, channel, e)
+            raise
+        
     def set_rgb_led(self, rgb_state: int) -> int:
         """
         Set the RGB LED state.
