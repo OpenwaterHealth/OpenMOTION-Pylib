@@ -3,9 +3,10 @@ import struct
 import sys
 import time
 import os
+from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_I2C_SCAN, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +325,113 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Exception while scanning I2C mux %d channel %d: %s", mux_index, channel, e)
             raise
+
+
+    def read_i2c_packet(self, mux_index: int, channel: int, device_addr: int, reg_addr: int, read_len: int) -> tuple[bytes, int]:
+        """
+        Read data from I2C device through MUX
+        
+        Args:
+            mux_index: Which MUX to use (0 or 1)
+            channel: Which MUX channel to select (0-7)
+            device_addr: I2C device address (7-bit)
+            reg_addr: Register address to read from
+            read_len: Number of bytes to read
+            
+        Returns:
+            tuple[bytes, int]: The received data and its length, None if failed
+        """
+        """Validate MUX index and channel parameters"""
+        if mux_index not in (0, 1):
+            raise ValueError(f"Invalid mux_index {mux_index}. Must be 0 or 1")
+        if channel < 0 or channel > 7:
+            raise ValueError(f"Invalid channel {channel}. Must be 0-7")
+
+        try:
+            # Build packet: [CMD, MUX_IDX, CHANNEL, DEV_ADDR, REG_ADDR, READ_LEN]
+            packet = struct.pack(
+                'BBBBB',
+                mux_index,
+                channel,
+                device_addr,
+                reg_addr,
+                read_len
+            )
+            
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_I2C_RD,
+                data=packet,
+            )
+
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error Reading I2C Device")
+                return None, None
+
+            if r.data_len > 0:
+                return r.data, r.data_len
+            else:
+                return None, None
+            
+        except Exception as e:
+            print(f"I2C Read failed: {str(e)}")
+            return None, None
+
+    def write_i2c_packet(self, mux_index: int, channel: int, device_addr: int, reg_addr: int, data: bytes) -> bool:
+        """
+        Write data to I2C device through MUX
+        
+        Args:
+            mux_index: Which MUX to use (0 or 1)
+            channel: Which MUX channel to select (0-7)
+            device_addr: I2C device address (7-bit)
+            reg_addr: Register address to write to
+            data: Bytes to write
+            
+        Returns:
+            bool: True if write succeeded, False otherwise
+        """
+        """Validate MUX index and channel parameters"""
+        if mux_index not in (0, 1):
+            raise ValueError(f"Invalid mux_index {mux_index}. Must be 0 or 1")
+        if channel < 0 or channel > 7:
+            raise ValueError(f"Invalid channel {channel}. Must be 0-7")
+
+        try:            
+            # Build packet: [CMD, MUX_IDX, CHANNEL, DEV_ADDR, REG_ADDR] + data
+            header = struct.pack(
+                'BBBBB',
+                mux_index,
+                channel,
+                device_addr,
+                reg_addr,
+                len(data)
+            )
+            packet = header + data
+            
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_I2C_WR,
+                data=packet,
+            )
+
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error Writing I2C Device")
+                return False
+            else:
+                return True
+            
+        except Exception as e:
+            print(f"I2C Write failed: {str(e)}")
+            return False
 
     def set_fan_speed(self, fan_id: int = 0, fan_speed: int = 50) -> int:
         """
