@@ -38,7 +38,7 @@ def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
         except usb.core.USBError as e:
             print(f"USB read error: {e}")
             break
-    return data.decode(errors='ignore')  # or return raw if needed
+    return data
 
 def enumerate_and_print_interfaces(vid, pid):
     dev = usb.core.find(idVendor=vid, idProduct=pid)
@@ -110,12 +110,17 @@ def main_histo_dummy_data_stream():
         while True:
             json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)            
             if json_str:
-                for line in json_str.splitlines():
-                    try:
-                        data = json.loads(line)
-                        print("Received JSON:", data)
-                    except json.JSONDecodeError:
-                        print(f"Invalid JSON: {line}")                
+                # print(json_str)
+                print("String length" + str(json_str.__len__()))
+                print(json_str[0:4])
+                with open("my_file.bin", "wb") as binary_file:
+                    binary_file.write(json_str)                
+                # for line in json_str.splitlines():
+                #     try:
+                #         data = json.loads(line)
+                #         print("Received JSON:", data)
+                #     except json.JSONDecodeError:
+                #         print(f"Invalid JSON: {line}")                
             else:
                 print("No data received.")
                 # 25ms update rate, so sleep accordingly or adjust as needed
@@ -152,6 +157,6 @@ def main():
 
 if __name__ == "__main__":
     # enumerate_and_print_interfaces(vid=VID, pid=PID)
-    main_imu_data_stream()
-    # main_histo_dummy_data_stream()
+    # main_imu_data_stream()
+    main_histo_dummy_data_stream()
     # main()
