@@ -11,7 +11,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x02
+CAMERA_MASK = 0xFF
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
@@ -28,7 +28,7 @@ if not sensor_connected:
     print("Sensor Module not connected.")
     exit(1)
 
-def upload_camera_bitstream(auto_upload: bool = False) -> bool:
+def upload_camera_bitstream(auto_upload: bool = False, camera_position: int =0) -> bool:
     print("FPGA Configuration Started")
     
     if auto_upload:
@@ -37,33 +37,33 @@ def upload_camera_bitstream(auto_upload: bool = False) -> bool:
         #interface.sensor_module.send_bitstream_fpga(BIT_FILE)
 
         print("Programming camera FPGA")
-        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=False):
+        if not interface.sensor_module.program_fpga(camera_position=camera_position, manual_process=False):
             print("Failed to enter sram programming mode for camera FPGA.")
             return False
     
     else:
         # Manual upload process
-        if not interface.sensor_module.reset_camera_sensor(CAMERA_MASK):
+        if not interface.sensor_module.reset_camera_sensor(camera_position):
             print("Failed to reset camera sensor.")
             return False
 
-        if not interface.sensor_module.activate_camera_fpga(CAMERA_MASK):
+        if not interface.sensor_module.activate_camera_fpga(camera_position):
             print("Failed to activate camera FPGA.")
             return False
 
-        if not interface.sensor_module.enable_camera_fpga(CAMERA_MASK):
+        if not interface.sensor_module.enable_camera_fpga(camera_position):
             print("Failed to enable camera FPGA.")
             return False
 
-        if not interface.sensor_module.check_camera_fpga(CAMERA_MASK):
+        if not interface.sensor_module.check_camera_fpga(camera_position):
             print("Failed to check id of camera FPGA.")
             return False
 
-        if not interface.sensor_module.enter_sram_prog_fpga(CAMERA_MASK):
+        if not interface.sensor_module.enter_sram_prog_fpga(camera_position):
             print("Failed to enter sram programming mode for camera FPGA.")
             return False
 
-        if not interface.sensor_module.erase_sram_fpga(CAMERA_MASK):
+        if not interface.sensor_module.erase_sram_fpga(camera_position):
             print("Failed to erase sram for camera FPGA.")
             return False
 
@@ -74,19 +74,19 @@ def upload_camera_bitstream(auto_upload: bool = False) -> bool:
             print("Failed to send bitstream to camera FPGA.")
             return False
 
-        if not interface.sensor_module.get_status_fpga(CAMERA_MASK):
+        if not interface.sensor_module.get_status_fpga(camera_position):
             print("Failed to get status for camera FPGA.")
             return False
 
-        if not interface.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=True):
+        if not interface.sensor_module.program_fpga(camera_position=camera_position, manual_process=True):
             print("Failed to enter sram programming mode for camera FPGA.")
             return False
 
-        if not interface.sensor_module.get_usercode_fpga(CAMERA_MASK):
+        if not interface.sensor_module.get_usercode_fpga(camera_position):
             print("Failed to get user code for camera FPGA.")
             return False
 
-        if not interface.sensor_module.get_status_fpga(CAMERA_MASK):
+        if not interface.sensor_module.get_status_fpga(camera_position):
             print("Failed to get status for camera FPGA.")
             return False
         
@@ -105,28 +105,6 @@ try:
 except Exception as e:
     print(f"Error reading version: {e}")
 
-# Echo Test
-print("\n[3] Echo Test...")
-try:
-    echo_data = b"Hello MOTION!"
-    echoed, echoed_len = interface.sensor_module.echo(echo_data)
-    if echoed:
-        print(f"Echoed {echoed_len} bytes: {echoed.decode(errors='ignore')}")
-    else:
-        print("Echo failed.")
-except Exception as e:
-    print(f"Echo test error: {e}")
-
-# Toggle LED
-print("\n[4] Toggle LED...")
-try:
-    led_result = interface.sensor_module.toggle_led()
-    print("LED toggled." if led_result else "LED toggle failed.")
-    time.sleep(1)  # Wait for a second before toggling off
-    led_result = interface.sensor_module.toggle_led()
-except Exception as e:
-    print(f"LED toggle error: {e}")
-
 # Get HWID
 print("\n[5] Read Hardware ID...")
 try:
@@ -138,24 +116,34 @@ try:
 except Exception as e:
     print(f"HWID read error: {e}")
 
-start_time = time.time()
-print("FPGA Configuration Started")
-if not upload_camera_bitstream(AUTO_UPLOAD):
-    print("Failed to upload camera bitstream.")
-    exit(1)
-print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
+# turn camera mask into camera positions
+CAMERA_POSITIONS = []
+for i in range(8):
+    if CAMERA_MASK & (1 << i):
+        CAMERA_POSITIONS.append(i)
 
-print ("Programming camera sensor registers.")
-if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
-    print("Failed to configure default registers for camera FPGA.")
+for camera_position in CAMERA_POSITIONS:
+    print(f"\n[3] Programming camera FPGA at position {camera_position}...")
 
-print ("Programming camera sensor set test pattern.")
-if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
-    print("Failed to set grayscale test pattern for camera FPGA.")
+    # turn camera position into camera mask
+    CAMERA_MASK_SINGLE = 1 << camera_position
+    start_time = time.time()
+    if not upload_camera_bitstream(AUTO_UPLOAD, CAMERA_MASK_SINGLE):
+        print("Failed to upload camera bitstream.")
+        exit(1)
+    print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
-# print("Capture histogram frame.")
-# if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):
-#     print("Failed to capture histogram frame.")
+    print ("Programming camera sensor registers.")
+    if not interface.sensor_module.camera_configure_registers(CAMERA_MASK_SINGLE):
+        print("Failed to configure default registers for camera FPGA.")
+
+    # print ("Programming camera sensor set test pattern.")
+    # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
+    #     print("Failed to set grayscale test pattern for camera FPGA.")
+
+    # print("Capture histogram frame.")
+    # if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):
+    #     print("Failed to capture histogram frame.")
 
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
