@@ -36,6 +36,12 @@ try:
 except Exception as e:
     print(f"Error reading version: {e}")
 
+
+# TA - mux_idx: 1; channel: 4; i2c_addr: 0x41 }
+# Seed - mux_idx: 1; channel: 5; i2c_addr: 0x41 }
+# Safety EE - mux_idx: 1; channel: 6; i2c_addr: 0x41 }
+# Safety OPT - mux_idx: 1; channel: 7; i2c_addr: 0x41 }
+    
 # Read FPGA Test
 print("\n[3] Read data from FPGA register...")
 try:
