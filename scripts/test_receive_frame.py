@@ -15,7 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x02
+CAMERA_MASK = 0x20
 
 ENABLE_TEST_PATTERN = True
 TEST_PATTERN_ID = 0x04
@@ -64,7 +64,19 @@ def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin
         print(f"Successfully saved raw histogram to {filename}")
     except Exception as e:
         print(f"Error saving histogram: {e}")
-
+def print_weighted_average(histogram):
+    if len(histogram) != 1024:
+        raise ValueError("Histogram must have 1024 bins.")
+    
+    weighted_sum = sum(i * count for i, count in enumerate(histogram))
+    total_count = sum(histogram)
+    
+    if total_count == 0:
+        print("Weighted average is undefined (total count is zero).")
+    else:
+        average = weighted_sum / total_count
+        print(f"Weighted average: {average:.2f}")
+        
 def bytes_to_integers(byte_array):
         # Check that the byte array is exactly 4096 bytes
         if len(byte_array) != 4096:
@@ -140,6 +152,9 @@ else:
         print("Frame ID: " + str(hidden_numbers[1023]))
         # print("Hidden numbers: " + str(hidden_numbers))
         # save_histogram_raw(histogram)    
+        print("Saturated Pixels: " + str(bins[1023]))
+        bins[1023]=0
+        print_weighted_average(bins)
         plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1

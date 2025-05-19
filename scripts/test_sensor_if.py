@@ -123,7 +123,7 @@ for i in range(8):
         CAMERA_POSITIONS.append(i)
 
 for camera_position in CAMERA_POSITIONS:
-    print(f"\n[3] Programming camera FPGA at position {camera_position}...")
+    print(f"\n[3] Programming camera FPGA at position {camera_position +1}...")
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position

@@ -56,7 +56,19 @@ def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
         
     except Exception as e:
         print(f"Error plotting histogram: {e}")
-
+def print_weighted_average(histogram):
+    if len(histogram) != 1024:
+        raise ValueError("Histogram must have 1024 bins.")
+    
+    weighted_sum = sum(i * count for i, count in enumerate(histogram))
+    total_count = sum(histogram)
+    
+    if total_count == 0:
+        print("Weighted average is undefined (total count is zero).")
+    else:
+        average = weighted_sum / total_count
+        print(f"Image Mean: {average:.2f}")
+  
 def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin"):
     """Saves raw histogram bytes to a binary file."""
     try:
@@ -129,19 +141,17 @@ for i in range(8):
         CAMERA_POSITIONS.append(i)
 
 for camera_position in CAMERA_POSITIONS:
-    print(f"\n[3] Programming camera FPGA at position {camera_position}...")
+    print(f"\n[3] Capturing camera at position {camera_position +1}...")
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position
 
-
-
     if(ENABLE_TEST_PATTERN):
-        print ("Programming camera sensor set test pattern.")
+        # print ("Programming camera sensor set test pattern.")
         if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK_SINGLE, TEST_PATTERN_ID):
             print("Failed to set grayscale test pattern for camera FPGA.")
     else:
-        print ("Programming camera sensor registers.")
+        # print ("Programming camera sensor registers.")
         if not interface.sensor_module.camera_configure_registers(CAMERA_MASK_SINGLE):
             print("Failed to configure default registers for camera FPGA.")
 
@@ -150,19 +160,24 @@ for camera_position in CAMERA_POSITIONS:
     if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK_SINGLE):
         print("Failed to capture histogram frame.")
     else:
-        print("Get histogram frame.")
+        # print("Get histogram frame.")
         histogram = interface.sensor_module.camera_get_histogram(CAMERA_MASK_SINGLE)
         if histogram is None:
             print("Histogram frame is None.")
         else:
-            print("Histogram frame received successfully.")
+            # print("Histogram frame received successfully.")
             # print("Histogram frame length: " + str(len(histogram)))
             histogram = histogram[0:4096]
             (bins, hidden_numbers) = bytes_to_integers(histogram)
             #print out sum of bins
             # print("Sum of bins: " + str(sum(bins)))
-            print("Frame ID: " + str(hidden_numbers[1023]))
-            save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
+            # print("Frame ID: " + str(hidden_numbers[1023]))
+            # save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
+            
+            # print("Saturated Pixels: " + str(bins[1023]))
+            bins[1023]=0
+
+            print_weighted_average(bins)
             # plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1
