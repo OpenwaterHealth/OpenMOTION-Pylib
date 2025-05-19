@@ -4,6 +4,7 @@ import usb.core
 import usb.util
 import json
 from omotion.Interface import MOTIONUart
+import threading
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
@@ -155,8 +156,65 @@ def main():
         print("Uart command error")
 
 
+def threaded_imu_stream(dev):
+    usb.util.claim_interface(dev, 2)
+    try:
+        while True:
+            json_str = read_usb_stream(dev, endpoint=EP_IN)
+            if json_str:
+                for line in json_str.splitlines():
+                    try:
+                        data = json.loads(line)
+                        print("[IMU] Received JSON:", data)
+                    except json.JSONDecodeError:
+                        print("[IMU] Invalid JSON:", line)
+            time.sleep(0.0125)
+    except Exception as e:
+        print(f"[IMU] Exception: {e}")
+    finally:
+        usb.util.release_interface(dev, 2)
+
+def threaded_histo_stream(dev):
+    usb.util.claim_interface(dev, 1)
+    try:
+        while True:
+            json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)
+            if json_str:
+                print("[HISTO] String length:", len(json_str))
+                print("[HISTO] First bytes:", json_str[0:4])
+                with open("my_file.bin", "wb") as binary_file:
+                    binary_file.write(json_str)
+            time.sleep(0.0125)
+    except Exception as e:
+        print(f"[HISTO] Exception: {e}")
+    finally:
+        usb.util.release_interface(dev, 1)
+
+def run_both_streams():
+    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    if dev is None:
+        print("Device not found")
+        return
+
+    dev.set_configuration()
+
+    t1 = threading.Thread(target=threaded_imu_stream, args=(dev,), daemon=True)
+    t2 = threading.Thread(target=threaded_histo_stream, args=(dev,), daemon=True)
+
+    t1.start()
+    t2.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Exiting...")
+        usb.util.dispose_resources(dev)
+
+
 if __name__ == "__main__":
     # enumerate_and_print_interfaces(vid=VID, pid=PID)
     # main_imu_data_stream()
-    main_histo_dummy_data_stream()
+    # main_histo_dummy_data_stream()
     # main()
+    run_both_streams()
