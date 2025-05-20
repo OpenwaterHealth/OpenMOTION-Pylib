@@ -159,9 +159,19 @@ class MOTIONUart:
         self.dev = None
         self.last_rx = time.monotonic()
         self.read_buffer = bytearray()
-        self.interface = 0  # default interface index
-        self.ep_out = None
-        self.ep_in = None
+        
+        self.uart_interface = 0  # default interface index
+        self.uart_ep_out = None
+        self.uart_ep_in = None
+
+        self.histo_interface = 1  # default interface index
+        self.histo_thread = None
+
+        self.imu_interface = 2  # default interface index
+        self.imu_thread = None
+
+        self.stop_event = threading.Event()
+
 
         # Signals: each signal emits (descriptor, port or data)
         self.signal_connect = MOTIONSignal()
@@ -180,19 +190,33 @@ class MOTIONUart:
 
         self.dev.set_configuration()
         cfg = self.dev.get_active_configuration()
-        intf = cfg[(self.interface, 0)]
+        intf = cfg[(self.uart_interface, 0)]
 
         # Claim the interface
-        usb.util.claim_interface(self.dev, self.interface)
+        usb.util.claim_interface(self.dev, self.uart_interface)
 
         # Assume first bulk OUT and IN
-        self.ep_out = usb.util.find_descriptor(
+        self.uart_ep_out = usb.util.find_descriptor(
             intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT)
-        self.ep_in = usb.util.find_descriptor(
+        self.uart_ep_in = usb.util.find_descriptor(
             intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
 
-        if self.ep_out is None or self.ep_in is None:
+        if self.uart_ep_out is None or self.uart_ep_in is None:
             raise ValueError("Bulk endpoints not found")
+
+        # Set up HISTO interface
+        histo_intf = cfg[(self.histo_interface, 0)]
+        self.histo_ep_in = usb.util.find_descriptor(
+            histo_intf,
+            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+
+        # Start background threads
+        self.stop_event.clear()
+        self.histo_thread = threading.Thread(target=self._stream_histo_data, daemon=True)
+        self.histo_thread.start()
+
+        # self.imu_thread = threading.Thread(target=self._stream_imu_data, daemon=True)
+        # self.imu_thread.start()
 
 #        self.running = True
 #        self.read_thread = threading.Thread(target=self._read_loop)
@@ -203,10 +227,17 @@ class MOTIONUart:
 
     def disconnect(self):
         self.running = False
+
+        self.stop_event.set()
+        if self.histo_thread:
+            self.histo_thread.join()
+        if self.imu_thread:
+            self.imu_thread.join()
+
         if self.read_thread:
             self.read_thread.join()
         if self.dev:
-            usb.util.release_interface(self.dev, self.interface)
+            usb.util.release_interface(self.dev, self.uart_interface)
             usb.util.dispose_resources(self.dev)
         self.signal_disconnect.emit(self.desc, "bulk_usb")
 
@@ -219,7 +250,7 @@ class MOTIONUart:
         """
         if self.demo_mode:
             return True
-        return (self.ep_out is not None or self.ep_in is not None)
+        return (self.uart_ep_out is not None or self.uart_ep_in is not None)
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
@@ -275,12 +306,12 @@ class MOTIONUart:
         # In async mode, run the reading loop in a thread
         while self.running:
             try:
-                if self.ep_out is None:
+                if self.uart_ep_out is None:
                     log.warning("RX port not available.")
                     self.running = False
                     break
                 else:
-                    data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=self.timeout)
+                    data = self.dev.read(self.uart_ep_in.bEndpointAddress, self.uart_ep_in.wMaxPacketSize, timeout=self.timeout)
                     self.read_buffer.extend(data)
                     log.info("Data received on %s: %s", self.descriptor, data)
                     # Attempt to parse a complete packet from read_buffer.
@@ -310,8 +341,8 @@ class MOTIONUart:
 
     def _tx(self, data: bytes):
         """Send data over UART."""
-        if self.ep_in is None:
-            log.error("TX port is not available.")
+        if self.uart_ep_in is None or self.uart_ep_out is None:
+            log.error("Port is not available.")
             return
         if self.demo_mode:
             log.info("Demo mode: Simulating data transmission: %s", data)
@@ -320,7 +351,7 @@ class MOTIONUart:
             if self.align > 0:
                 while len(data) % self.align != 0:
                     data += bytes([OW_END_BYTE])
-            self.dev.write(self.ep_out.bEndpointAddress, data, timeout=self.timeout)
+            self.dev.write(self.uart_ep_out.bEndpointAddress, data, timeout=self.timeout)
         except usb.core.USBError as e:
             print("USB write error:", e)
             raise e
@@ -338,8 +369,8 @@ class MOTIONUart:
         
         while (time.monotonic() - start_time) < timeout:
             # Read with short timeout for each chunk
-            data = self.dev.read(self.ep_in.bEndpointAddress, 
-                            self.ep_in.wMaxPacketSize, 
+            data = self.dev.read(self.uart_ep_in.bEndpointAddress, 
+                            self.uart_ep_in.wMaxPacketSize, 
                             timeout=100)  # ms
             
             if data:
@@ -370,7 +401,7 @@ class MOTIONUart:
         """
 
         try:
-            if self.ep_in is None:
+            if self.uart_ep_in is None:
                 log.error("Cannot send packet. TX Port is not available.")
                 return None
 
@@ -451,3 +482,52 @@ class MOTIONUart:
         """Print the current UART configuration."""
         log.info("    Serial Port: %s", self.port)
         log.info("    Serial Baud: %s", self.baudrate)
+
+    def _stream_histo_data(self):
+        try:
+            usb.util.claim_interface(self.dev, self.histo_interface)
+            data_packet = bytearray()
+            while not self.stop_event.is_set():
+                try:
+                    data = self.dev.read(self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize, timeout=100)
+                    print("[HISTO] Data length:", len(data))
+                    print("[HISTO] First bytes:", data[0:4])
+                    data_packet.extend(data)
+                    if(len(data)!=512): # recieved a full data packet
+                        # TODO(replace this with a better way of detecting an end of packet)
+                        with open("my_file.bin", "wb") as binary_file:
+                            binary_file.write(data_packet)
+                            print("Data packet length: " + str(len(data_packet)))
+                            data_packet.clear()
+                        print("Packet rx'd")
+
+                    # Write to disk or handle here
+                except usb.core.USBError as e:
+                    if e.errno != 110:  # Not a timeout
+                        print("[HISTO] USB error:", e)
+        finally:
+            try:
+                usb.util.release_interface(self.dev, self.histo_interface)
+            except:
+                pass
+
+    def _stream_imu_data(self):
+        try:
+            usb.util.claim_interface(self.dev, 2)
+            while not self.stop_event.is_set():
+                try:
+                    data = self.dev.read(0x83, 512, timeout=100)
+                    for line in data.splitlines():
+                        try:
+                            parsed = json.loads(line)
+                            print("[IMU] JSON:", parsed)
+                        except json.JSONDecodeError:
+                            print("[IMU] Invalid JSON:", line)
+                except usb.core.USBError as e:
+                    if e.errno != 110:
+                        print("[IMU] USB error:", e)
+        finally:
+            try:
+                usb.util.release_interface(self.dev, 2)
+            except:
+                pass
