@@ -11,7 +11,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
+CAMERA_MASK = 0x03
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
@@ -123,7 +123,7 @@ for i in range(8):
         CAMERA_POSITIONS.append(i)
 
 for camera_position in CAMERA_POSITIONS:
-    print(f"\n[3] Programming camera FPGA at position {camera_position}...")
+    print(f"\n[3] Programming camera FPGA at position {camera_position+1}...")
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position

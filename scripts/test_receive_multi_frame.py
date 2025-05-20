@@ -15,7 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
+CAMERA_MASK = 0x03
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -111,11 +111,12 @@ except Exception as e:
 #     print("Failed to set grayscale test pattern for camera FPGA.")
 
 #step 1 enable cameras - this means turn on streaming mode and start the reception
+print("\n[3] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
 
 #step 2 turn on frame sync
-print("\n[6] Activate FSIN...")
+print("\n[4] Activate FSIN...")
 try:
     fsin_result = interface.sensor_module.enable_aggregator_fsin()
     print("FSIN activated." if fsin_result else "FSIN activation failed.")
@@ -123,11 +124,12 @@ except Exception as e:
     print(f"FSIN activate error: {e}")
     
 # step 3 recieve frames -- for now do this in a dummy mode way
-time.sleep(10) # Wait for a moment to ensure FSIN is activated
+print("\n[5] Rx Frames...")
+time.sleep(2) # Wait for a moment to ensure FSIN is activated
 
 # step 4 turn off frame sync
 try:
-    print("\n[7] Deactivate FSIN...")
+    print("\n[6] Deactivate FSIN...")
     fsin_result = interface.sensor_module.disable_aggregator_fsin()
     print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
 except Exception as e:
@@ -136,6 +138,7 @@ except Exception as e:
 time.sleep(.05) # wait a few frames for the camera to exhaust itself before disabling the camera
 
 # step 5 disable cameras, cancel reception etc
+print("\n[7] Deactivate Cameras...")
 if not interface.sensor_module.disable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
 

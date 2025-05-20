@@ -102,6 +102,7 @@ class UartPacket:
             f"data={self.data.hex()})"
             f"crc=0x{self.crc:04X})"
     )
+
 class MOTIONSignal:
     def __init__(self):
         # Initialize a list to store connected slots (callback functions)
@@ -487,19 +488,21 @@ class MOTIONUart:
         try:
             usb.util.claim_interface(self.dev, self.histo_interface)
             data_packet = bytearray()
+
+                        
             while not self.stop_event.is_set():
                 try:
                     data = self.dev.read(self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize, timeout=100)
-                    print("[HISTO] Data length:", len(data))
-                    print("[HISTO] First bytes:", data[0:4])
+                    if(len(data) == 0): continue
+                    # print("[HISTO] Data length:", len(data))
+                    # print("[HISTO] First bytes:", data[0:4])
                     data_packet.extend(data)
                     if(len(data)!=512): # recieved a full data packet
                         # TODO(replace this with a better way of detecting an end of packet)
-                        with open("my_file.bin", "wb") as binary_file:
+                        with open("my_file.txt", "ab") as binary_file:
                             binary_file.write(data_packet)
-                            print("Data packet length: " + str(len(data_packet)))
+                            # print("Data packet length: " + str(len(data_packet)))
                             data_packet.clear()
-                        print("Packet rx'd")
 
                     # Write to disk or handle here
                 except usb.core.USBError as e:
