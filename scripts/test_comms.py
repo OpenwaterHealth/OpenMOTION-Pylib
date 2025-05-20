@@ -27,6 +27,8 @@ EP_IN_HISTO = 0x82
 EP_SIZE = 512  # TODO(fix to 1024)
 TIMEOUT = 100  # milliseconds
 
+stop_event = threading.Event()
+
 def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
     data = bytearray()
     while True:
@@ -159,7 +161,7 @@ def main():
 def threaded_imu_stream(dev):
     usb.util.claim_interface(dev, 2)
     try:
-        while True:
+        while not stop_event.is_set():
             json_str = read_usb_stream(dev, endpoint=EP_IN)
             if json_str:
                 for line in json_str.splitlines():
@@ -177,7 +179,7 @@ def threaded_imu_stream(dev):
 def threaded_histo_stream(dev):
     usb.util.claim_interface(dev, 1)
     try:
-        while True:
+        while not stop_event.is_set():
             json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)
             if json_str:
                 print("[HISTO] String length:", len(json_str))
@@ -189,6 +191,32 @@ def threaded_histo_stream(dev):
         print(f"[HISTO] Exception: {e}")
     finally:
         usb.util.release_interface(dev, 1)
+
+def threaded_uart_work():
+    try:
+        myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
+        if myUart is None:
+            print("Error establishing uart object")
+            return
+
+        myUart.check_usb_status()
+        if myUart.is_connected():
+            print("[UART] MOTION Sensor connected.")
+        else:
+            print("[UART] MOTION Sensor NOT Connected.")
+            return
+
+        echo_data = b"Hello VCP COMMS, we want to test the length past 64 bytes which is the max packet size for FS!"
+        r = myUart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
+        myUart.clear_buffer()
+
+        if r.data_len > 0:
+            print(f"[UART] Received: {r}")
+            print(f"[UART] Echoed: {r.data.decode(errors='ignore')}")
+        else:
+            print("[UART] Command error")
+    except Exception as e:
+        print(f"[UART] Exception: {e}")
 
 def run_both_streams():
     dev = usb.core.find(idVendor=VID, idProduct=PID)
@@ -211,10 +239,35 @@ def run_both_streams():
         print("Exiting...")
         usb.util.dispose_resources(dev)
 
+def run_all_streams():
+    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    if dev is None:
+        print("Device not found")
+        return
+
+    dev.set_configuration()
+    print("set config")
+    t_imu = threading.Thread(target=threaded_imu_stream, args=(dev,), daemon=True)
+    t_histo = threading.Thread(target=threaded_histo_stream, args=(dev,), daemon=True)
+    t_uart = threading.Thread(target=threaded_uart_work, daemon=True)
+
+    # t_imu.start()
+    # t_histo.start()
+    t_uart.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Exiting...")
+        stop_event.set()
+        time.sleep(0.1)
+        usb.util.dispose_resources(dev)
 
 if __name__ == "__main__":
     # enumerate_and_print_interfaces(vid=VID, pid=PID)
     # main_imu_data_stream()
     # main_histo_dummy_data_stream()
     # main()
-    run_both_streams()
+    # run_both_streams()
+    run_all_streams()
