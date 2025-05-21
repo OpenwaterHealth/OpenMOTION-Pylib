@@ -18,7 +18,7 @@ AUTO_UPLOAD = True
 CAMERA_MASK = 0x01
 
 ENABLE_TEST_PATTERN = True
-TEST_PATTERN_ID = 0x00
+TEST_PATTERN_ID = 0x04
 
 ## Test Patterns
 # 0 Gradient bars

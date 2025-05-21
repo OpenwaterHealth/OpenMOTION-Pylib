@@ -87,8 +87,7 @@ class MOTIONInterface:
     def get_camera_histogram(
         self,
         camera_id: int,
-        test_pattern: bool = False,
-        test_pattern_id: int = 0,
+        test_pattern_id: int = 4,
         auto_upload: bool = True
     ) -> bytearray | None:
         """
@@ -96,7 +95,6 @@ class MOTIONInterface:
 
         Args:
             camera_id (int): Camera index (1–8).
-            test_pattern (bool): Whether to enable test pattern.
             test_pattern_id (int): Test pattern ID to use (if enabled).
             auto_upload (bool): Whether to upload bitstream if needed.
 
@@ -110,7 +108,6 @@ class MOTIONInterface:
             return None
 
         CAMERA_MASK = 1 << (camera_id - 1)
-        ENABLE_TEST_PATTERN = test_pattern
         TEST_PATTERN_ID = test_pattern_id
 
         # Get status
@@ -143,11 +140,10 @@ class MOTIONInterface:
                 print("Failed to configure default registers for camera FPGA.")
                 return None
         
-        if ENABLE_TEST_PATTERN:
-            print("Setting test pattern...")
-            if not self.sensor_module.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
-                print("Failed to set test pattern.")
-                return None
+        print("Setting test pattern...")
+        if not self.sensor_module.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
+            print("Failed to set test pattern.")
+            return None
 
         # Get status
         status_map = self.sensor_module.get_camera_status(CAMERA_MASK)
@@ -158,7 +154,7 @@ class MOTIONInterface:
         status = status_map[camera_id - 1]
         print(f"Camera {camera_id} status: 0x{status:02X} → {self.sensor_module.decode_camera_status(status)}")
 
-        if not (status & (1 << 1) and status & (1 << 2) and status & (1 << 3)):  # Not ready for histo
+        if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):  # Not ready for histo
             print("Not configured.")
             return None
 

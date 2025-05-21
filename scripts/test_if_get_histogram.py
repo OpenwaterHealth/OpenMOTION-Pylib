@@ -24,8 +24,7 @@ if not sensor_connected:
 
 histogram = interface.get_camera_histogram(
     camera_id=1,
-    test_pattern=True,
-    test_pattern_id=0x03,
+    test_pattern_id=0x00,
     auto_upload=True
 )
 
@@ -33,3 +32,6 @@ if histogram:
     histogram = histogram[0:4096]
     bins, hidden = interface.bytes_to_integers(histogram)
     print(f"{len(bins)} bins received.")
+    print("Sum of bins: " + str(sum(bins)))
+    print("Bins: " + str(bins))
+    print("Frame ID: " + str(hidden[1023]))
