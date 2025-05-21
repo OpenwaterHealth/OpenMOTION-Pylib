@@ -7,7 +7,7 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_receive_frame.py
+# python scripts\test_receive_multi_frame.py
 
 
 print("Starting MOTION Sensor Module Test Script...")
@@ -15,7 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x03
+CAMERA_MASK = 0xFF
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """

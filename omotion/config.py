@@ -4,10 +4,16 @@ BAUD_RATE = 921600
 CONSOLE_MODULE_PID = 0xA53E
 SENSOR_MODULE_PID = 0x5A5A
 
-# Packet structure constants
+# UART Packet structure constants
 OW_START_BYTE = 0xAA
 OW_END_BYTE = 0xDD
 ID_COUNTER = 0  # Initializing the ID counter
+
+# Histo Packet structure constants
+HISTO_SIZE_WORDS = 1024
+HISTO_BLOCK_SIZE = 1 + (HISTO_SIZE_WORDS * 4) + 1  # HID + HISTO + EOH
+
+
 
 # Packet Types
 OW_ACK = 0xE0

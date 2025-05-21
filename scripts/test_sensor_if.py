@@ -11,7 +11,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x03
+CAMERA_MASK = 0xFF
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
