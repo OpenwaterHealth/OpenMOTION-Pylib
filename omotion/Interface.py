@@ -89,7 +89,7 @@ class MOTIONInterface:
         camera_id: int,
         test_pattern_id: int = 4,
         auto_upload: bool = True
-    ) -> bytearray | None:
+    ) -> tuple[list[int], list[int]] | None:
         """
         High-level method to get a histogram from a specific camera.
 
@@ -171,8 +171,8 @@ class MOTIONInterface:
             return None
 
         print("Histogram frame received successfully.")
-        return histogram
-
+        histogram = histogram[:4096]
+        return self.bytes_to_integers(histogram)
 
     def __del__(self):
         """Finalizer: clean up if object is garbage collected."""

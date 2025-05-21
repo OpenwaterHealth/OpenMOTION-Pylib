@@ -22,15 +22,13 @@ if not sensor_connected:
     print("Sensor Module not connected.")
     exit(1)
 
-histogram = interface.get_camera_histogram(
+bins, hidden = interface.get_camera_histogram(
     camera_id=1,
     test_pattern_id=0x00,
     auto_upload=True
 )
 
-if histogram:
-    histogram = histogram[0:4096]
-    bins, hidden = interface.bytes_to_integers(histogram)
+if bins:
     print(f"{len(bins)} bins received.")
     print("Sum of bins: " + str(sum(bins)))
     print("Bins: " + str(bins))
