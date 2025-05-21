@@ -45,7 +45,43 @@ except Exception as e:
 # Read FPGA Test
 print("\n[3] Read data from FPGA register...")
 try:
+    fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=4, device_addr=0x41, reg_addr=0x00, read_len=2)
+    if fpga_data is None:
+        print(f"Read FPGA Failed")
+    else:
+        print(f"Read FPGA Success")
+        print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
+
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
+print("\n[3] Read data from FPGA register...")
+try:
     fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=5, device_addr=0x41, reg_addr=0x00, read_len=2)
+    if fpga_data is None:
+        print(f"Read FPGA Failed")
+    else:
+        print(f"Read FPGA Success")
+        print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
+
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
+print("\n[3] Read data from FPGA register...")
+try:
+    fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=6, device_addr=0x41, reg_addr=0x00, read_len=2)
+    if fpga_data is None:
+        print(f"Read FPGA Failed")
+    else:
+        print(f"Read FPGA Success")
+        print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
+
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
+print("\n[3] Read data from FPGA register...")
+try:
+    fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=7, device_addr=0x41, reg_addr=0x00, read_len=2)
     if fpga_data is None:
         print(f"Read FPGA Failed")
     else:
@@ -58,9 +94,41 @@ except Exception as e:
 # Write FPGA Test
 print("\n[4] Write data to FPGA register...")
 try:
-    if interface.console_module.write_i2c_packet(mux_index=1, channel=5, device_addr=0x41, reg_addr=0x00, data=b'\x03\x21'):
+    if interface.console_module.write_i2c_packet(mux_index=1, channel=4, device_addr=0x41, reg_addr=0x00, data=b'\x01\x04'):
         print(f"Write FPGA Success")
     else:
         print(f"Write FPGA Failed")
 except Exception as e:
     print(f"Error writing FPGA register: {e}")
+
+
+# Write FPGA Test
+print("\n[4] Write data to FPGA register...")
+try:
+    if interface.console_module.write_i2c_packet(mux_index=1, channel=5, device_addr=0x41, reg_addr=0x00, data=b'\x01\x05'):
+        print(f"Write FPGA Success")
+    else:
+        print(f"Write FPGA Failed")
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
+# Write FPGA Test
+print("\n[4] Write data to FPGA register...")
+try:
+    if interface.console_module.write_i2c_packet(mux_index=1, channel=6, device_addr=0x41, reg_addr=0x00, data=b'\x01\x06'):
+        print(f"Write FPGA Success")
+    else:
+        print(f"Write FPGA Failed")
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
+# Write FPGA Test
+print("\n[4] Write data to FPGA register...")
+try:
+    if interface.console_module.write_i2c_packet(mux_index=1, channel=7, device_addr=0x41, reg_addr=0x00, data=b'\x01\x07'):
+        print(f"Write FPGA Success")
+    else:
+        print(f"Write FPGA Failed")
+except Exception as e:
+    print(f"Error writing FPGA register: {e}")
+
