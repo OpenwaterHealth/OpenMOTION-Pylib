@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MOTIONUart
-from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP
+from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CAMERA_STATUS, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
@@ -732,7 +732,7 @@ class MOTIONSensor:
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_USERCODE, addr=camera_position)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
-                logger.error("Error getting status")
+                logger.error("Error getting usercode")
                 return False
             else:
                 return True
@@ -1028,6 +1028,61 @@ class MOTIONSensor:
             logger.error("Exception during reset_camera_sensor: %s", e)
             raise
 
+    def get_camera_status(self, camera_position: int) -> dict[int, int] | None:
+        """
+        Get status flags from one or more cameras.
+
+        Each bit in the `camera_position` byte represents one camera (bit 0 = camera 0, ..., bit 7 = camera 7).
+        The status byte returned per camera includes:
+            Bit 0: Peripheral READY (SPI/USART)
+            Bit 1: Firmware programmed
+            Bit 2: Configured
+            Bit 7: Streaming enabled
+
+        Args:
+            camera_position (int): Bitmask of camera(s) to query (0x00–0xFF)
+
+        Returns:
+            dict[int, int] | None: Mapping of camera ID to status byte, or None on error
+
+        Raises:
+            ValueError: If input is invalid or UART not connected
+        """
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+            
+            if self.uart.demo_mode:
+                return {i: 0x07 for i in range(8) if (camera_position >> i) & 1}  # simulate READY + PROGRAMMED + CONFIGURED
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return None
+
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CAMERA,
+                command=OW_CAMERA_STATUS,
+                addr=camera_position,
+                timeout=5
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR or len(r.data) != 8:
+                logger.error("Error getting camera status")
+                return None
+
+            # Each camera returns 1 byte of status, indexed by position
+            return {
+                i: r.data[i]
+                for i in range(8)
+                if (camera_position >> i) & 1
+            }
+        
+        except Exception as e:
+            logger.error("Exception in get_camera_status: %s", e)
+            raise
+
     def soft_reset(self) -> bool:
         """
         Perform a soft reset on the Sensor device.
@@ -1079,3 +1134,21 @@ class MOTIONSensor:
             self.disconnect()
         except Exception as e:
             logger.warning("Error in MOTIONSensor destructor: %s", e)
+
+    @staticmethod
+    def decode_camera_status(status: int) -> str:
+        """
+        Decode the camera status byte into a human-readable string.
+
+        Args:
+            status (int): The status byte.
+
+        Returns:
+            str: Human-readable status flags.
+        """
+        flags = []
+        if status & (1 << 0): flags.append("READY")
+        if status & (1 << 1): flags.append("PROGRAMMED")
+        if status & (1 << 2): flags.append("CONFIGURED")
+        if status & (1 << 7): flags.append("STREAMING")
+        return ", ".join(flags) if flags else "NONE"

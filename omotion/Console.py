@@ -433,12 +433,11 @@ class MOTIONConsole:
             print(f"I2C Write failed: {str(e)}")
             return False
 
-    def set_fan_speed(self, fan_id: int = 0, fan_speed: int = 50) -> int:
+    def set_fan_speed(self, fan_speed: int = 50) -> int:
         """
         Get the current output fan percentage.
 
         Args:
-            fan_id (int): The desired fan to set (default is 0). bottom fans (0), and top fans (1).
             fan_speed (int): The desired fan speed (default is 50).
 
         Returns:
@@ -450,8 +449,6 @@ class MOTIONConsole:
         if not self.uart.is_connected():
             raise ValueError("High voltage controller not connected")
 
-        if fan_id not in [0, 1]:
-            raise ValueError("Invalid fan ID. Must be 0 or 1")
 
         if fan_speed not in range(101):
             raise ValueError("Invalid fan speed. Must be 0 to 100")
@@ -470,7 +467,6 @@ class MOTIONConsole:
 
             r = self.uart.send_packet(
                 id=None,
-                addr=fan_id,
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_SET_FAN,
                 data=data,
@@ -494,12 +490,9 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-    def get_fan_speed(self, fan_id: int = 0) -> int:
+    def get_fan_speed(self) -> int:
         """
         Get the current output fan percentage.
-
-        Args:
-            fan_id (int): The desired fan to read (default is 0). bottom fans (0), and top fans (1).
 
         Returns:
             int: The current output fan percentage.
@@ -510,9 +503,6 @@ class MOTIONConsole:
         if not self.uart.is_connected():
             raise ValueError("High voltage controller not connected")
 
-        if fan_id not in [0, 1]:
-            raise ValueError("Invalid fan ID. Must be 0 or 1")
-
         try:
             if self.uart.demo_mode:
                 return 40.0
@@ -520,7 +510,7 @@ class MOTIONConsole:
             logger.info("Getting current output voltage.")
 
             r = self.uart.send_packet(
-                id=None, addr=fan_id, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FAN
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FAN
             )
 
             self.uart.clear_buffer()
