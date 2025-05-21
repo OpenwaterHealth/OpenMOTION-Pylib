@@ -42,6 +42,8 @@ def parse_histogram_packet(packet: bytes):
         raise ValueError("Incomplete packet payload")
 
     histograms = {}
+    packet_ids = {}
+
     while offset < end_of_payload:
         if packet[offset] != 0xFF:
             raise ValueError(f"Missing SOH at offset {offset}")
@@ -61,7 +63,14 @@ def parse_histogram_packet(packet: bytes):
             raise ValueError("Missing EOH")
         offset += 1
 
+        # Extract and mask packet ID from last word
+        last_word = histogram[-1]
+        packet_id = (last_word >> 24) & 0xFF
+        histogram[-1] = last_word & 0x00FFFFFF
+
         histograms[cam_id] = histogram
+        packet_ids[cam_id] = packet_id
+        print(packet_id)
 
     # Footer
     crc_expected = struct.unpack_from("<H", packet, offset)[0]
@@ -75,47 +84,42 @@ def parse_histogram_packet(packet: bytes):
     # if crc_computed != crc_expected:
     #     raise ValueError(f"CRC mismatch: expected {crc_expected:04X}, got {crc_computed:04X}")
 
-    return histograms, offset + 1  # return dict + total packet size consumed
+    return histograms, packet_ids, offset + 1  # return dict + total packet size consumed
 
 # --- Process .bin file and convert to CSVs ---
-def process_bin_file(filename, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
+def process_bin_file(filename, output_csv):
+    import csv
+    import os
+
     with open(filename, "rb") as f:
         data = f.read()
 
     offset = 0
     packet_count = 0
-    camera_files = {}
 
-    while offset + PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE < len(data):
-        try:
-            histograms, consumed = parse_histogram_packet(data[offset:])
-            print("Packet Length: " + str(consumed))
-            offset += consumed
-            packet_count += 1
+    with open(output_csv, "w", newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        header = ["cam_id", "frame_id"] + [str(i) for i in range(HISTO_SIZE_WORDS)] + ["sum"]
+        writer.writerow(header)
 
-            for cam_id, histo in histograms.items():
-                csv_name = f"camera_{cam_id}.csv"
-                if cam_id not in camera_files:
-                    file_path = os.path.join(output_dir, csv_name)
-                    f = open(file_path, "w", newline='')
-                    writer = csv.writer(f)
-                    writer.writerow([f"{i}" for i in range(HISTO_SIZE_WORDS)])  # CSV header
-                    camera_files[cam_id] = (f, writer)
+        while offset + PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE < len(data):
+            try:
+                histograms, packet_ids, consumed = parse_histogram_packet(data[offset:])
+                offset += consumed
+                packet_count += 1
 
-                f, writer = camera_files[cam_id]
-                writer.writerow(histo)
+                for cam_id, histo in histograms.items():
+                    frame_id = packet_ids.get(cam_id, 0)
+                    row_sum = sum(histo)
+                    row = [cam_id, frame_id] + histo + [row_sum]
+                    writer.writerow(row)
 
-        except Exception as e:
-            print(f"Packet parse error at offset {offset}: {e}")
-            break
+            except Exception as e:
+                print(f"Packet parse error at offset {offset}: {e}")
+                break
 
-    # Close all files
-    for f, _ in camera_files.values():
-        f.close()
-
-    print(f"✅ Done: Parsed {packet_count} packets and wrote CSVs to '{output_dir}'")
+    print(f"✅ Done: Parsed {packet_count} packets and wrote data to '{output_csv}'")
 
 # --- Example usage ---
 if __name__ == "__main__":
-    process_bin_file("my_file.txt", "output_csvs")
+    process_bin_file("my_file.txt", "output.csv")

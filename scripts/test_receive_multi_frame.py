@@ -15,7 +15,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
+CAMERA_MASK = 0x01
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -106,9 +106,9 @@ except Exception as e:
 # if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
 #     print("Failed to configure default registers for camera FPGA.")
 
-# print ("Programming camera sensor set test pattern.")
-# if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
-#     print("Failed to set grayscale test pattern for camera FPGA.")
+print ("Programming camera sensor set test pattern.")
+if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
+    print("Failed to set grayscale test pattern for camera FPGA.")
 
 #step 1 enable cameras - this means turn on streaming mode and start the reception
 print("\n[3] Enable Cameras")
@@ -125,7 +125,7 @@ except Exception as e:
     
 # step 3 recieve frames -- for now do this in a dummy mode way
 print("\n[5] Rx Frames...")
-time.sleep(2) # Wait for a moment to ensure FSIN is activated
+time.sleep(10) # Wait for a moment to ensure FSIN is activated
 
 # step 4 turn off frame sync
 try:
