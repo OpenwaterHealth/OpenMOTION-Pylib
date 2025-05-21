@@ -67,6 +67,22 @@ try:
 except Exception as e:
     print(f"HWID read error: {e}")
 
+# Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
+mask = 0x89
+
+try:
+    status_map = interface.sensor_module.get_camera_status(mask)
+
+    if status_map is None:
+        print("Failed to get camera status.")
+    else:
+        for cam_id, status in status_map.items():
+            readable = interface.sensor_module.decode_camera_status(status)
+            print(f"Camera {cam_id} Status: 0x{status:02X} -> {readable}")
+
+except Exception as e:
+    print(f"Error reading camera status: {e}")
+
 # Disconnect and cleanup
 interface.sensor_module.disconnect()
 print("\nSensor Module Test Completed.")
