@@ -8,7 +8,7 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_receive_frame.py
+# python scripts\camera_tester.py
 
 
 print("Starting MOTION Sensor Module Test Script...")
@@ -20,6 +20,10 @@ CAMERA_MASK = 0xFF
 
 ENABLE_TEST_PATTERN = True
 TEST_PATTERN_ID = 0x04
+
+save_histo = True
+show_histo = False
+clean_printouts = True
 
 ## Test Patterns
 # 0 Gradient bars
@@ -67,8 +71,8 @@ def print_weighted_average(histogram):
         print("Weighted average is undefined (total count is zero).")
     else:
         average = weighted_sum / total_count
-        print(f"Image Mean: {average:.2f}")
-  
+        if(~clean_printouts): print(f"Image Mean: {average:.2f}")
+        else: print(f"{average:.2f}")
 def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin"):
     """Saves raw histogram bytes to a binary file."""
     try:
@@ -124,13 +128,13 @@ if not sensor_connected:
 
 
 user_inputs = []
+if(save_histo):
+    for i in range(8):
+        value = input(f"Enter the SN for camera #{i + 1}: ")
+        user_inputs.append(value)
 
-for i in range(8):
-    value = input(f"Enter the SN for camera #{i + 1}: ")
-    user_inputs.append(value)
-
-print("You entered:")
-print(user_inputs)
+    print("You entered:")
+    print(user_inputs)
 
 
 
@@ -141,7 +145,7 @@ for i in range(8):
         CAMERA_POSITIONS.append(i)
 
 for camera_position in CAMERA_POSITIONS:
-    print(f"\n[3] Capturing camera at position {camera_position +1}...")
+    if(~clean_printouts): print(f"Capturing camera at position {camera_position +1}...")
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position
@@ -156,7 +160,6 @@ for camera_position in CAMERA_POSITIONS:
             print("Failed to configure default registers for camera FPGA.")
 
 
-    print("Capture histogram frame.")
     if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK_SINGLE):
         print("Failed to capture histogram frame.")
     else:
@@ -165,20 +168,14 @@ for camera_position in CAMERA_POSITIONS:
         if histogram is None:
             print("Histogram frame is None.")
         else:
-            # print("Histogram frame received successfully.")
-            # print("Histogram frame length: " + str(len(histogram)))
             histogram = histogram[0:4096]
             (bins, hidden_numbers) = bytes_to_integers(histogram)
-            #print out sum of bins
-            # print("Sum of bins: " + str(sum(bins)))
-            # print("Frame ID: " + str(hidden_numbers[1023]))
-            # save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
+            if(save_histo): save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
             
-            # print("Saturated Pixels: " + str(bins[1023]))
+            if(bins[1023] != 0): print("Saturated Pixels: " + str(bins[1023]))
             bins[1023]=0
-
             print_weighted_average(bins)
-            # plot_10bit_histogram(bins, title="10-bit Histogram")
+            if(show_histo): plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()

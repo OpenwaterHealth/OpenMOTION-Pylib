@@ -1018,7 +1018,7 @@ class MOTIONSensor:
                 logger.error("Error programming FPGA")
                 return None
             else:
-                print(len(r.data))
+                # print(len(r.data))
                 return r.data
 
         except ValueError as v:
