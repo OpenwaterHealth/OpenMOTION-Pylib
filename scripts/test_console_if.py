@@ -85,15 +85,23 @@ except Exception as e:
     print(f"I2C scan error: {e}")
 
 print("\n[7] Test Fan...")
-fan_speed = interface.console_module.set_fan_speed(1, 40)
+fan_speed = interface.console_module.set_fan_speed(40)
 if fan_speed < 0:
     print("Failed to set Fan Speed.")
 else:
     print(f"Fan Speed: {fan_speed}")
 
-print("\n[7] Get Fan Speed...")
-fan_speed = interface.console_module.get_fan_speed(0)
+print("\n[8] Get Fan Speed...")
+fan_speed = interface.console_module.get_fan_speed()
 if fan_speed < 0:
     print("Failed to set Fan Speed.")
 else:
     print(f"Fan Speed: {fan_speed}")
+
+print("\n[9] Start trigger...")
+if not interface.console_module.start_trigger():
+    print("Failed to start trigger.")
+else:
+    print("Press [ENTER] to stop trigger...")
+    input()
+    interface.console_module.stop_trigger()

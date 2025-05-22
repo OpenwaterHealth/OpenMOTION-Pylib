@@ -1,12 +1,13 @@
 import logging
 import struct
+import json
 import sys
 import time
 import os
 from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,164 @@ class MOTIONConsole:
             logger.info(f"Current RGB LED state is {rgb_state}")
             return rgb_state
 
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+
+    def set_trigger_json(self, data=None) -> dict:
+        """
+        Set the trigger configuration for console device.
+
+        Args:
+            data (dict): A dictionary containing the trigger configuration.
+
+        Returns:
+            dict: JSON response from the device.
+
+        Raises:
+            ValueError: If `data` is None or the UART is not connected.
+            Exception: If an error occurs while setting the trigger.
+        """
+        try:
+            if self.uart.demo_mode:
+                return None
+
+            # Ensure data is not None and is a valid dictionary
+            if data is None:
+                logger.error("Data cannot be None.")
+                return None
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            try:
+                json_string = json.dumps(data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Data must be valid JSON: {e}")
+                return None
+
+            payload = json_string.encode('utf-8')
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_SET_TRIG, data=payload)
+            self.uart.clear_buffer()
+
+            if r.packet_type != OW_ERROR and r.data_len > 0:
+                # Parse response as JSON, if possible
+                try:
+                    response_json = json.loads(r.data.decode('utf-8'))
+                    return response_json
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding JSON: {e}")
+                    return None
+            else:
+                return None
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_trigger_json(self) -> dict:
+        """
+        Start the trigger on the Console device.
+
+        Returns:
+            bool: True if the trigger was started successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while starting the trigger.
+        """
+        try:
+            if self.uart.demo_mode:
+                return None
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_TRIG, data=None)
+            self.uart.clear_buffer()
+            data_object = None
+            try:
+                data_object = json.loads(r.data.decode('utf-8'))
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON: {e}")
+            return data_object
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def start_trigger(self) -> bool:
+        """
+        Start the trigger on the Console device.
+
+        Returns:
+            bool: True if the trigger was started successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while starting the trigger.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_START_TRIG, data=None)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error starting trigger")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def stop_trigger(self) -> bool:
+        """
+        Stop the trigger on the Console device.
+
+        Returns:
+            bool: True if the trigger was started successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while starting the trigger.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_STOP_TRIG, data=None)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error stopping trigger")
+                return False
+            else:
+                return True
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
