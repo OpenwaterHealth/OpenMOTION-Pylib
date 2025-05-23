@@ -32,11 +32,11 @@ def parse_histogram_packet(packet: bytes):
         raise ValueError("Unsupported packet type")
     offset += 1
 
-    payload_length = struct.unpack_from("<I", packet, offset)[0]
+    packet_length = struct.unpack_from("<I", packet, offset)[0]
     offset += 4
 
     start_of_payload = offset
-    end_of_payload = start_of_payload + payload_length
+    end_of_payload = packet_length - PACKET_FOOTER_SIZE #start_of_payload + payload_length
 
     if end_of_payload + PACKET_FOOTER_SIZE > len(packet):
         raise ValueError("Incomplete packet payload")
