@@ -89,7 +89,7 @@ def main_imu_data_stream():
                 for line in json_str.splitlines():
                     try:
                         data = json.loads(line)
-                        print("Received JSON:", data)
+                        # print("Received JSON:", data)
                     except json.JSONDecodeError:
                         print(f"Invalid JSON: {line}")                
             else:
@@ -114,7 +114,8 @@ def main_histo_dummy_data_stream():
             json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)            
             if json_str:
                 # print(json_str)
-                print("String length" + str(json_str.__len__()))
+                str_length = str(json_str.__len__())
+                if(str_length != 32801): print("String length" + str_length)
                 print(json_str[0:4])
                 with open("my_file.bin", "wb") as binary_file:
                     binary_file.write(json_str)                
@@ -269,5 +270,5 @@ if __name__ == "__main__":
     # main_imu_data_stream()
     # main_histo_dummy_data_stream()
     # main()
-    # run_both_streams()
-    run_all_streams()
+    run_both_streams()
+    # run_all_streams()

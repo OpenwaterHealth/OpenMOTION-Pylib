@@ -102,13 +102,13 @@ except Exception as e:
     print(f"Error reading version: {e}")
 
 
-# print ("Programming camera sensor registers.")
-# if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
-#     print("Failed to configure default registers for camera FPGA.")
+print ("Programming camera sensor registers.")
+if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
+    print("Failed to configure default registers for camera FPGA.")
 
-print ("Programming camera sensor set test pattern.")
-if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
-    print("Failed to set grayscale test pattern for camera FPGA.")
+# print ("Programming camera sensor set test pattern.")
+# if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
+#     print("Failed to set grayscale test pattern for camera FPGA.")
 
 #step 1 enable cameras - this means turn on streaming mode and start the reception
 print("\n[3] Enable Cameras")

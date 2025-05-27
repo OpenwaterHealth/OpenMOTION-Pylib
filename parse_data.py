@@ -122,4 +122,4 @@ def process_bin_file(filename, output_csv):
 
 # --- Example usage ---
 if __name__ == "__main__":
-    process_bin_file("my_file.bin", "output.csv")
+    process_bin_file("histogram.bin", "histogram.csv")

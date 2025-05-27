@@ -484,35 +484,37 @@ class MOTIONUart:
         log.info("    Serial Port: %s", self.port)
         log.info("    Serial Baud: %s", self.baudrate)
 
-    def _stream_histo_data(self):
-        try:
-            usb.util.claim_interface(self.dev, self.histo_interface)
-            data_packet = bytearray()
 
-                        
-            while not self.stop_event.is_set():
-                try:
-                    data = self.dev.read(self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize, timeout=100)
-                    if(len(data) == 0): continue
-                    # print("[HISTO] Data length:", len(data))
-                    # print("[HISTO] First bytes:", data[0:4])
-                    data_packet.extend(data)
-                    if(len(data)!=512): # recieved a full data packet
-                        # TODO(replace this with a better way of detecting an end of packet)
-                        with open("my_file.txt", "ab") as binary_file:
-                            binary_file.write(data_packet)
-                            # print("Data packet length: " + str(len(data_packet)))
-                            data_packet.clear()
-
-                    # Write to disk or handle here
-                except usb.core.USBError as e:
-                    if e.errno != 110:  # Not a timeout
-                        print("[HISTO] USB error:", e)
-        finally:
+    def read_usb_stream(self, dev, endpoint, endpoint_size, timeout=100):
+        data = bytearray()
+        while True:
             try:
-                usb.util.release_interface(self.dev, self.histo_interface)
-            except:
-                pass
+                chunk = dev.read(endpoint, endpoint_size, timeout=timeout)
+                data.extend(chunk)
+                # If packet is shorter than max size, it's the end
+                if len(chunk) < endpoint_size:
+                    break
+            except usb.core.USBError as e:
+                print(f"USB read error: {e}")
+                break
+        return data
+
+    def _stream_histo_data(self):
+        usb.util.claim_interface(self.dev, self.histo_interface)
+        with open("histogram.bin","wb") as binary_file:
+            binary_file.write(bytearray())
+        #TODO(remove the file writing from this and add in a proper handler)
+        try:
+            while not self.stop_event.is_set():
+                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
+                if data:
+                    with open("histogram.bin", "ab") as binary_file:
+                        binary_file.write(data)
+                time.sleep(0.0125)
+        except Exception as e:
+            print(f"[HISTO] Exception: {e}")
+        finally:
+            usb.util.release_interface(self.dev, 1)
 
     def _stream_imu_data(self):
         try:
