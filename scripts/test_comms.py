@@ -168,7 +168,7 @@ def threaded_imu_stream(dev):
                 for line in json_str.splitlines():
                     try:
                         data = json.loads(line)
-                        print("[IMU] Received JSON:", data)
+                        # print("[IMU] Received JSON:", data)
                     except json.JSONDecodeError:
                         print("[IMU] Invalid JSON:", line)
             time.sleep(0.0125)
@@ -182,10 +182,14 @@ def threaded_histo_stream(dev):
     try:
         while not stop_event.is_set():
             json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)
+
+            str_length = str(json_str.__len__())
+            if(str_length != "32801"): print("String length " + str_length)
+
             if json_str:
-                print("[HISTO] String length:", len(json_str))
-                print("[HISTO] First bytes:", json_str[0:4])
-                with open("my_file.bin", "wb") as binary_file:
+                # print("[HISTO] String length:", len(json_str))
+                # print("[HISTO] First bytes:", json_str[0:4])
+                with open("my_file.bin", "ab") as binary_file:
                     binary_file.write(json_str)
             time.sleep(0.0125)
     except Exception as e:
