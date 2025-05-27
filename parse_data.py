@@ -19,23 +19,23 @@ def parse_histogram_packet(packet: bytes):
     if len(packet) < PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE:
         raise ValueError("Packet too short")
 
-    offset = 0
+    packet_offset = 0
 
     # Header
-    sof = packet[offset]
+    sof = packet[packet_offset]
     if sof != 0xAA:
         raise ValueError("Invalid SOF")
-    offset += 1
+    packet_offset += 1
 
-    pkt_type = packet[offset]
+    pkt_type = packet[packet_offset]
     if pkt_type != 0x00:
         raise ValueError("Unsupported packet type")
-    offset += 1
+    packet_offset += 1
 
-    packet_length = struct.unpack_from("<I", packet, offset)[0]
-    offset += 4
+    packet_length = struct.unpack_from("<I", packet, packet_offset)[0]
+    packet_offset += 4
 
-    start_of_payload = offset
+    start_of_payload = packet_offset
     end_of_payload = packet_length - PACKET_FOOTER_SIZE #start_of_payload + payload_length
 
     if end_of_payload + PACKET_FOOTER_SIZE > len(packet):
@@ -44,24 +44,24 @@ def parse_histogram_packet(packet: bytes):
     histograms = {}
     packet_ids = {}
 
-    while offset < end_of_payload:
-        if packet[offset] != 0xFF:
-            raise ValueError(f"Missing SOH at offset {offset}")
-        offset += 1
+    while packet_offset < end_of_payload:
+        if packet[packet_offset] != 0xFF:
+            raise ValueError(f"Missing SOH at packet_offset {packet_offset}")
+        packet_offset += 1
 
-        cam_id = packet[offset]
-        offset += 1
+        cam_id = packet[packet_offset]
+        packet_offset += 1
 
-        histo_data = packet[offset : offset + HISTO_SIZE_WORDS * 4]
+        histo_data = packet[packet_offset : packet_offset + HISTO_SIZE_WORDS * 4]
         if len(histo_data) < HISTO_SIZE_WORDS * 4:
             raise ValueError("Histogram data too short")
 
         histogram = list(struct.unpack_from(f"<{HISTO_SIZE_WORDS}I", histo_data))
-        offset += HISTO_SIZE_WORDS * 4
+        packet_offset += HISTO_SIZE_WORDS * 4
 
-        if packet[offset] != 0xEE:
+        if packet[packet_offset] != 0xEE:
             raise ValueError("Missing EOH")
-        offset += 1
+        packet_offset += 1
 
         # Extract and mask packet ID from last word
         last_word = histogram[-1]
@@ -73,18 +73,18 @@ def parse_histogram_packet(packet: bytes):
         print(packet_id)
 
     # Footer
-    crc_expected = struct.unpack_from("<H", packet, offset)[0]
-    offset += 2
+    crc_expected = struct.unpack_from("<H", packet, packet_offset)[0]
+    packet_offset += 2
 
-    if packet[offset] != 0xDD:
+    if packet[packet_offset] != 0xDD:
         raise ValueError("Missing EOF")
 
     # CRC check
-    crc_computed = compute_crc16(packet[1 : offset - 2])  # from 'type' to EOH
+    crc_computed = compute_crc16(packet[1 : packet_offset - 2])  # from 'type' to EOH
     # if crc_computed != crc_expected:
     #     raise ValueError(f"CRC mismatch: expected {crc_expected:04X}, got {crc_computed:04X}")
 
-    return histograms, packet_ids, offset + 1  # return dict + total packet size consumed
+    return histograms, packet_ids, packet_offset + 1  # return dict + total packet size consumed
 
 # --- Process .bin file and convert to CSVs ---
 def process_bin_file(filename, output_csv):
@@ -122,4 +122,4 @@ def process_bin_file(filename, output_csv):
 
 # --- Example usage ---
 if __name__ == "__main__":
-    process_bin_file("my_file.txt", "output.csv")
+    process_bin_file("my_file.bin", "output.csv")
