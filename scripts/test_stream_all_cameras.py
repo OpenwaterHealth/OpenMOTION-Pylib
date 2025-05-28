@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 from omotion.Interface import MOTIONInterface
 from typing import Tuple, List
 
+# Run this script with:
+# set PYTHONPATH=%cd%;%PYTHONPATH%
+# python scripts/test_stream_all_cameras.py
+
 # Configuration
 CAMERA_MASK = 0x01
 HISTOGRAM_BINS = 1024
