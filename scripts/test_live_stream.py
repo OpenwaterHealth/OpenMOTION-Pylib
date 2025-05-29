@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 CAMERA_MASK = 0x01
 HISTOGRAM_BINS = 1024
 HISTOGRAM_BYTES = 4096  # 1024 bins * 4 bytes per bin
-TARGET_FPS = 3
+TARGET_FPS = 2
 
 class HistogramCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=8, height=6, dpi=100):
