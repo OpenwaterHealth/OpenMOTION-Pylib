@@ -1012,7 +1012,7 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return None
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=5)
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=2)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error programming FPGA")
