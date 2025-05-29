@@ -104,7 +104,7 @@ class MOTIONInterface:
         import time
 
         if not (1 <= camera_id <= 8):
-            print("Camera ID must be 1–8.")
+            logger.error("Camera ID must be 1–8.")
             return None
 
         CAMERA_MASK = 1 << (camera_id - 1)
@@ -113,64 +113,64 @@ class MOTIONInterface:
         # Get status
         status_map = self.sensor_module.get_camera_status(CAMERA_MASK)
         if not status_map or camera_id - 1 not in status_map:
-            print("Failed to get camera status.")
+            logger.error("Failed to get camera status.")
             return None
 
         status = status_map[camera_id - 1]
-        print(f"Camera {camera_id} status: 0x{status:02X} → {self.sensor_module.decode_camera_status(status)}")
+        logger.debug(f"Camera {camera_id} status: 0x{status:02X} → {self.sensor_module.decode_camera_status(status)}")
 
         if not status & (1 << 0):  # Not READY
-            print("Camera peripheral not READY.")
+            logger.debug("Camera peripheral not READY.")
             return None
 
         if not (status & (1 << 1) and status & (1 << 2)):  # Not programmed
-            print("FPGA Configuration Started")
+            logger.debug("FPGA Configuration Started")
             start_time = time.time()
 
             if auto_upload:
                 if not self.sensor_module.program_fpga(camera_position=CAMERA_MASK, manual_process=False):
-                    print("Failed to enter sram programming mode for camera FPGA.")
+                    logger.error("Failed to enter sram programming mode for camera FPGA.")
                     return None
                 
-            print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
+            logger.debug(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
         if not (status & (1 << 1) and status & (1 << 3)):  # Not configured
-            print ("Programming camera sensor registers.")
+            logger.debug ("Programming camera sensor registers.")
             if not self.sensor_module.camera_configure_registers(CAMERA_MASK):
-                print("Failed to configure default registers for camera FPGA.")
+                logger.error("Failed to configure default registers for camera FPGA.")
                 return None
         
-        print("Setting test pattern...")
+        logger.debug("Setting test pattern...")
         if not self.sensor_module.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
-            print("Failed to set test pattern.")
+            logger.error("Failed to set test pattern.")
             return None
 
         # Get status
         status_map = self.sensor_module.get_camera_status(CAMERA_MASK)
         if not status_map or camera_id - 1 not in status_map:
-            print("Failed to get camera status.")
+            logger.error("Failed to get camera status.")
             return None
 
         status = status_map[camera_id - 1]
-        print(f"Camera {camera_id} status: 0x{status:02X} → {self.sensor_module.decode_camera_status(status)}")
+        logger.debug(f"Camera {camera_id} status: 0x{status:02X} → {self.sensor_module.decode_camera_status(status)}")
 
         if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):  # Not ready for histo
-            print("Not configured.")
+            logger.error("Not configured.")
             return None
 
         # Capture + Get Histogram
-        print("Capturing histogram...")
+        logger.debug("Capturing histogram...")
         if not self.sensor_module.camera_capture_histogram(CAMERA_MASK):
-            print("Capture failed.")
+            logger.error("Capture failed.")
             return None
 
-        print("Retrieving histogram...")
+        logger.debug("Retrieving histogram...")
         histogram = self.sensor_module.camera_get_histogram(CAMERA_MASK)
         if histogram is None:
-            print("Histogram retrieval failed.")
+            logger.error("Histogram retrieval failed.")
             return None
 
-        print("Histogram frame received successfully.")
+        logger.debug("Histogram frame received successfully.")
         histogram = histogram[:4096]
         return self.bytes_to_integers(histogram)
 
@@ -205,5 +205,5 @@ class MOTIONInterface:
 
     @staticmethod
     def get_sdk_version() -> str:
-        return "1.0.8"
+        return "1.0.9"
         

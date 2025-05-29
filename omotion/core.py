@@ -63,7 +63,7 @@ class UartPacket:
 
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
-            print("length" + str(len(buffer)))
+            print("Missing Start or End Byte Packet LEN " + str(len(buffer)))
             print(buffer)
             raise ValueError("Invalid buffer format")
 
@@ -100,8 +100,8 @@ class UartPacket:
             f"addr=0x{self.addr:02X}, "
             f"reserved=0x{self.reserved:02X}, "
             f"data_len={self.data_len}, "
-            f"data={self.data.hex()})"
-            f"crc=0x{self.crc:04X})"
+            f"data={self.data.hex()}"
+            f"crc=0x{self.crc:04X}"
     )
 class MOTIONSignal:
     def __init__(self):
@@ -286,14 +286,18 @@ class MOTIONUart:
 
         # In async mode, run the reading loop in a thread
         while self.running:
+            bytes_waiting = 0
             try:
                 if not self.serial or not self.serial.is_open:
                     log.warning("Serial port closed during read loop.")
                     self.running = False
                     break
                 if self.serial.in_waiting > 0:
+                    time.sleep(0.002)  # Brief sleep to avoid a busy loop
+                    bytes_waiting = self.serial.in_waiting
                     data = self.serial.read(self.serial.in_waiting)
                     self.read_buffer.extend(data)
+                    
                     log.info("Data received on %s: %s", self.descriptor, data)
                     # Attempt to parse a complete packet from read_buffer.
                     try:
@@ -314,9 +318,10 @@ class MOTIONUart:
                             self.signal_data_received.emit(self.descriptor, packet)
 
                     except ValueError as ve:
+                        log.error(f"Data bytes {bytes_waiting}")
                         log.error("Error parsing packet: %s", ve)
                 else:
-                    time.sleep(0.05)  # Brief sleep to avoid a busy loop
+                    time.sleep(0.01)  # Brief sleep to avoid a busy loop
             except serial.SerialException as se:
                 self.running = False
             except Exception as e:
