@@ -63,7 +63,7 @@ class UartPacket:
 
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
-            print("length" + str(len(buffer)))
+            print("Missing Start or End Byte Packet LEN " + str(len(buffer)))
             print(buffer)
             raise ValueError("Invalid buffer format")
 
