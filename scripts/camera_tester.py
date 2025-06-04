@@ -71,7 +71,7 @@ def print_weighted_average(histogram):
         print("Weighted average is undefined (total count is zero).")
     else:
         average = weighted_sum / total_count
-        if(~clean_printouts): print(f"Image Mean: {average:.2f}")
+        if(not clean_printouts): print(f"Image Mean: {average:.2f}")
         else: print(f"{average:.2f}")
 def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin"):
     """Saves raw histogram bytes to a binary file."""
@@ -145,7 +145,7 @@ for i in range(8):
         CAMERA_POSITIONS.append(i)
 
 for camera_position in CAMERA_POSITIONS:
-    if(~clean_printouts): print(f"Capturing camera at position {camera_position +1}...")
+    if(not clean_printouts): print(f"Capturing camera at position {camera_position +1}...")
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position
