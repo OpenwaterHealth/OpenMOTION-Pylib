@@ -70,7 +70,7 @@ def parse_histogram_packet(packet: bytes):
 
         histograms[cam_id] = histogram
         packet_ids[cam_id] = packet_id
-        print(packet_id)
+        # print(packet_id)
 
     # Footer
     crc_expected = struct.unpack_from("<H", packet, packet_offset)[0]

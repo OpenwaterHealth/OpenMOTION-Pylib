@@ -172,7 +172,7 @@ class MOTIONUart:
         self.imu_thread = None
 
         self.stop_event = threading.Event()
-
+        self.pause_event = threading.Event()
 
         # Signals: each signal emits (descriptor, port or data)
         self.signal_connect = MOTIONSignal()
@@ -435,10 +435,13 @@ class MOTIONUart:
             packet.append(OW_END_BYTE)
 
             print("Sending packet: ", packet.hex())
+            self.pause_event.set()
             self._tx(packet)
 
             if not self.asyncMode:
-                return self.read_packet(timeout=timeout)
+                packet = self.read_packet(timeout=timeout)
+                self.pause_event.clear()
+                return packet
             else:
                 response_queue = queue.Queue()
                 with self.response_lock:
@@ -506,11 +509,13 @@ class MOTIONUart:
         #TODO(remove the file writing from this and add in a proper handler)
         try:
             while not self.stop_event.is_set():
-                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
+                if self.pause_event.is_set():
+                    continue
+                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize*4)               
                 if data:
                     with open("histogram.bin", "ab") as binary_file:
                         binary_file.write(data)
-                time.sleep(0.0125)
+                time.sleep(0.012)
         except Exception as e:
             print(f"[HISTO] Exception: {e}")
         finally:
