@@ -1,7 +1,7 @@
 import struct
 import csv
 import os
-
+from omotion.utils import util_crc16
 # --- Constants ---
 HISTO_SIZE_WORDS = 1024                  # 1024 32-bit integers
 PACKET_HEADER_SIZE = 6                  # SOF (1) + type (1) + length (4)
@@ -80,9 +80,10 @@ def parse_histogram_packet(packet: bytes):
         raise ValueError("Missing EOF")
 
     # CRC check
-    crc_computed = compute_crc16(packet[1 : packet_offset - 2])  # from 'type' to EOH
-    # if crc_computed != crc_expected:
-    #     raise ValueError(f"CRC mismatch: expected {crc_expected:04X}, got {crc_computed:04X}")
+    crc_computed = util_crc16(packet[0 : packet_offset - 3])  # from 'type' to EOH
+    if crc_computed != crc_expected:
+        print("CRC Computed: " + str(crc_computed) + " From Packet: " + str(crc_expected))
+        # raise ValueError(f"CRC mismatch: expected {crc_expected:04X}, got {crc_computed:04X}")
 
     return histograms, packet_ids, packet_offset + 1  # return dict + total packet size consumed
 
