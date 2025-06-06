@@ -511,7 +511,7 @@ class MOTIONUart:
             while not self.stop_event.is_set():
                 if self.pause_event.is_set():
                     continue
-                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize*4)               
+                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
                 if data:
                     with open("histogram.bin", "ab") as binary_file:
                         binary_file.write(data)

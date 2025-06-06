@@ -83,6 +83,8 @@ def parse_histogram_packet(packet: bytes):
     crc_computed = util_crc16(packet[0 : packet_offset - 3])  # from 'type' to EOH
     if crc_computed != crc_expected:
         print("CRC Computed: " + str(crc_computed) + " From Packet: " + str(crc_expected))
+        print("Frame ID: " + str(packet_ids))
+        histograms= {}
         # raise ValueError(f"CRC mismatch: expected {crc_expected:04X}, got {crc_computed:04X}")
 
     return histograms, packet_ids, packet_offset + 1  # return dict + total packet size consumed

@@ -125,7 +125,7 @@ except Exception as e:
     
 # step 3 recieve frames -- for now do this in a dummy mode way
 print("\n[5] Rx Frames...")
-time.sleep(10) # Wait for a moment to ensure FSIN is activated
+time.sleep(30.025) # Wait for a moment to ensure FSIN is activated
 
 # step 4 turn off frame sync
 try:
@@ -135,13 +135,13 @@ try:
 except Exception as e:
     print(f"FSIN activate error: {e}")
 
-time.sleep(.05) # wait a few frames for the camera to exhaust itself before disabling the camera
+time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
 
 # step 5 disable cameras, cancel reception etc
 print("\n[7] Deactivate Cameras...")
 if not interface.sensor_module.disable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
-
+time.sleep(1)
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
 print("\nSensor Module Test Completed.")
