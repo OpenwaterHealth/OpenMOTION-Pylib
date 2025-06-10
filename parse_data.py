@@ -62,7 +62,7 @@ def parse_histogram_packet(packet: bytes):
 
         temperature, = struct.unpack('<f', packet[packet_offset : packet_offset + 4])
         packet_offset += 4
-        print("Temperature: " + str(temperature))
+        # print("Temperature: " + str(temperature))
 
         if packet[packet_offset] != 0xEE:
             raise ValueError("Missing EOH")
@@ -103,8 +103,9 @@ def process_bin_file(filename, output_csv):
     with open(filename, "rb") as f:
         data = f.read()
 
-    offset = 0
+    offset = 23142303 - 10000
     packet_count = 0
+    packet_failures = 0
 
     with open(output_csv, "w", newline='') as csvfile:
         writer = csv.writer(csvfile)
@@ -116,7 +117,7 @@ def process_bin_file(filename, output_csv):
                 histograms, packet_ids, temperatures, consumed = parse_histogram_packet(data[offset:])
                 offset += consumed
                 packet_count += 1
-
+                if(histograms == {}): packet_failures += 1
                 for cam_id, histo in histograms.items():
                     frame_id = packet_ids.get(cam_id, 0)
                     row_sum = sum(histo)
@@ -126,9 +127,24 @@ def process_bin_file(filename, output_csv):
 
             except Exception as e:
                 print(f"Packet parse error at offset {offset}: {e}")
-                break
+                
+                skips = 0
+                while(True):
+                    if(data[offset] == 0xdd and data[offset+1] == 0xaa):
+                        offset += 1
+                        chunk = data[offset-10:offset+10]
+                        print(chunk.hex())
+                        subchunk = data[offset:offset+10]
+                        print(subchunk.hex())
+                        break
+                    offset += 1
+                    skips += 1
+                packet_failures +=1
+                print(f"Skipped {skips} bytes to find new packet")
 
     print(f"✅ Done: Parsed {packet_count} packets and wrote data to '{output_csv}'")
+    print(f"{packet_failures} packets failed to parse")
+
 
 # --- Example usage ---
 if __name__ == "__main__":
