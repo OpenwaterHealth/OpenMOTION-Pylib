@@ -49,13 +49,15 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     Returns histograms, frame‑ids, temperatures, bytes_consumed
     Raises ValueError on format errors (CRC mismatch, etc.)
     """
+
+    data = pkt[0:10].hex()
     if len(pkt) < MIN_PACKET_SIZE:
         raise ValueError("Packet too small")
 
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
     if sof != SOF or pkt_type != 0x00:
         raise ValueError("Bad header")
-
+    pkt_len_2 = len(pkt)
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
 
@@ -71,7 +73,7 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     while off < payload_end:
         soh, cam_id = _BLK_HEAD.unpack_from(mv, off)
         if soh != SOH:
-            raise ValueError(f"Missing SOH at {off}")
+            raise ValueError("Missing SOH")
         off += _BLK_HEAD.size
 
         # Histogram as a view – no copy!
@@ -118,7 +120,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
         data = memoryview(f.read())  # zero‑copy view
 
     off = start_offset
-    packet_ok = packet_fail = 0
+    packet_ok = packet_fail = crc_failure = other_fail = 0
     out_buf: List[List] = []
 
     with open(dst_csv, "w", newline="") as fcsv:
@@ -145,7 +147,13 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     wr.writerows(out_buf)
                     out_buf.clear()
             except Exception as exc:
-                packet_fail += 1
+                if(exc.args[0] == "CRC mismatch"):
+                    crc_failure += 1
+                elif(exc.args[0] == "Missing SOH"):
+                    packet_fail += 1
+                else:
+                    other_fail += 1
+                    print("other")
 
                 # ---------- fast resync ----------
                 pat = b"\xDD\xAA"        # EOF of bad packet + SOF of next
@@ -169,7 +177,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
         if out_buf:
             wr.writerows(out_buf)
 
-    print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed.")
+    print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed, {crc_failure} CRC failed, {other_fail} other fail")
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
