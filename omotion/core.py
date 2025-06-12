@@ -14,6 +14,7 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
+_LOG = logging.getLogger(__name__)
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
@@ -488,38 +489,132 @@ class MOTIONUart:
         log.info("    Serial Baud: %s", self.baudrate)
 
 
-    def read_usb_stream(self, dev, endpoint, endpoint_size, timeout=100):
-        data = bytearray()
-        while True:
-            try:
-                chunk = dev.read(endpoint, endpoint_size, timeout=timeout)
-                data.extend(chunk)
-                # If packet is shorter than max size, it's the end
-                if len(chunk) < endpoint_size:
-                    break
-            except usb.core.USBError as e:
-                print(f"USB read error: {e}")
-                break
-        return data
+    _USB_TIMEOUT_MS = 100          # tweak once, used everywhere
+    _PAUSE_POLL_S  = 0.01          # sleep while paused
 
-    def _stream_histo_data(self):
-        usb.util.claim_interface(self.dev, self.histo_interface)
-        with open("histogram.bin","wb") as binary_file:
-            binary_file.write(bytearray())
-        #TODO(remove the file writing from this and add in a proper handler)
+    # ──────────────────────────────────────────────────────────
+    #  public API – call this from the thread you start
+    # ──────────────────────────────────────────────────────────
+    def stream(self, out_path: str = "histogram.bin") -> None:
+        """
+        Claim the interface and start draining the histogram endpoint into
+        *out_path*.  The outer loop exits when:
+            • stop_event is set,
+            • a USB stall/IO error persists after one recovery attempt, or
+            • the device sends a “short packet” (protocol end‑marker).
+        """
+        # 1.  Ensure the file is empty before we begin.
+        open(out_path, "wb").close()
+
         try:
-            while not self.stop_event.is_set():
-                if self.pause_event.is_set():
-                    continue
-                data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
-                if data:
-                    with open("histogram.bin", "ab") as binary_file:
-                        binary_file.write(data)
-                time.sleep(0.012)
-        except Exception as e:
-            print(f"[HISTO] Exception: {e}")
+            usb.util.claim_interface(self.dev, self.histo_interface)
+
+            with open(out_path, "ab", buffering=0) as fh:  # unbuffered
+                while not self.stop_event.is_set():
+                    # honour a pause request without hammering the CPU
+                    if self.pause_event.is_set():
+                        time.sleep(self._PAUSE_POLL_S)
+                        continue
+
+                    try:
+                        for chunk in self._iter_chunks():
+                            fh.write(chunk)
+
+                    except Exception:
+                        # Any unrecovered USBError already logged in _iter_chunks
+                        break
+
         finally:
-            usb.util.release_interface(self.dev, 1)
+            # Always give the kernel the handle back.
+            try:
+                usb.util.release_interface(self.dev, self.histo_interface)
+            finally:
+                # In case the device was re‑enumerated we may get
+                # “Resource busy” – ignore it.
+                usb.util.dispose_resources(self.dev)
+    def _iter_chunks(self):
+        """
+        Generator that yields raw endpoint payloads.
+
+        It stops and returns normally when a short packet (< max‑packet‑size)
+        is encountered (end‑of‑transfer in USB bulk semantics).
+
+        If a recoverable timeout occurs (errno.ETIMEDOUT) we simply retry; for
+        other USB errors we *try once* to clear the stall/halt and retry the
+        failing read.  When that also fails we raise, handing control back to
+        the caller.
+        """
+        ep      = self.histo_ep_in.bEndpointAddress
+        max_pkt = self.histo_ep_in.wMaxPacketSize
+
+        while not self.stop_event.is_set():
+            try:
+                payload = self.dev.read(ep, max_pkt, timeout=self._USB_TIMEOUT_MS)
+
+                # Convert to a plain bytes object (payload may be array or mv)
+                payload = payload.tobytes() if hasattr(payload, "tobytes") else bytes(payload)
+                yield payload
+
+                if len(payload) < max_pkt:
+                    # Protocol‑level terminator: the device finished sending
+                    _LOG.debug("Short packet – end of histogram block")
+                    return
+
+            except usb.core.USBError as err:
+                # ── Benign timeout: retry unless user asked to stop.
+                if err.errno in {errno.ETIMEDOUT, getattr(usb.core, "USBError", None)}:
+                    if not self.stop_event.is_set():
+                        continue
+                    return
+
+                # ── Anything else: try to recover one time by clearing the halt
+                _LOG.warning("USB error on EP 0x%02X (%s); attempting recovery", ep, err)
+                try:
+                    self.dev.clear_halt(ep)
+                    time.sleep(0.01)
+                    continue  # retry the read once
+                except usb.core.USBError as clear_err:
+                    _LOG.error("Failed to clear HALT: %s", clear_err)
+                    raise  # unrecoverable – let caller deal with it
+    def _stream_histo_data(self):
+        try:
+            self.stream("histogram.bin")
+        except Exception as exc:
+            _LOG.exception("[HISTO] streaming aborted: %s", exc)
+
+
+    # def read_usb_stream(self, dev, endpoint, endpoint_size, timeout=100):
+    #     data = bytearray()
+    #     while True:
+    #         try:
+    #             chunk = dev.read(endpoint, endpoint_size, timeout=timeout)
+    #             data.extend(chunk)
+    #             # If packet is shorter than max size, it's the end
+    #             if len(chunk) < endpoint_size:
+    #                 break
+    #         except usb.core.USBError as e:
+    #             print(f"USB read error: {e}")
+    #             break
+    #     return data
+
+    # def _stream_histo_data(self):
+    #     usb.util.claim_interface(self.dev, self.histo_interface)
+    #     with open("histogram.bin","wb") as binary_file:
+    #         binary_file.write(bytearray())
+    #     #TODO(remove the file writing from this and add in a proper handler)
+    #     try:
+    #         while not self.stop_event.is_set():
+    #             if self.pause_event.is_set():
+    #                 continue
+    #             data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
+    #             if data:
+    #                 with open("histogram.bin", "ab") as binary_file:
+    #                     binary_file.write(data)
+    #             time.sleep(0.012)
+    #     except Exception as e:
+    #         print(f"[HISTO] Exception: {e}")
+    #     finally:
+    #         usb.util.release_interface(self.dev, 1)
 
     def _stream_imu_data(self):
         try:
