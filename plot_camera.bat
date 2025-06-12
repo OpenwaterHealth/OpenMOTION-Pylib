@@ -1,9 +1,9 @@
 @REM del histogram.bin
 @REM del histogram.csv
 
-python scripts\test_sensor_if.py
+python scripts\flash_sensors.py 01
 
-python scripts\test_receive_multi_frame.py
+python scripts\test_receive_multi_frame.py 01
 
 python data-processing/parse_data_v2.py
 

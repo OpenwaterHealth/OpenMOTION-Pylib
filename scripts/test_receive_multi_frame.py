@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +16,18 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x04
+CAMERA_MASK = 0xFF
+
+#if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
+if len(sys.argv) > 1:
+    try:
+        CAMERA_MASK = int(sys.argv[1], 16)
+        if CAMERA_MASK > 0xFF:
+            raise ValueError("Camera mask must be less than 0xFF")
+    except ValueError as e:
+        print(f"Invalid camera mask argument: {e}")
+        sys.exit(1)
+
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """

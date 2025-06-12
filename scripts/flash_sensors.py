@@ -1,5 +1,5 @@
 import asyncio
-import time
+import time, sys
 from omotion.Interface import MOTIONInterface
 
 # Run this script with:
@@ -12,6 +12,15 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
 CAMERA_MASK = 0xFF
+#if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
+if len(sys.argv) > 1:
+    try:
+        CAMERA_MASK = int(sys.argv[1], 16)
+        if CAMERA_MASK > 0xFF:
+            raise ValueError("Camera mask must be less than 0xFF")
+    except ValueError as e:
+        print(f"Invalid camera mask argument: {e}")
+        sys.exit(1)
 
 # Create an instance of the Sensor interface
 interface = MOTIONInterface()
