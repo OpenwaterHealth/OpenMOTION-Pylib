@@ -50,7 +50,6 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     Raises ValueError on format errors (CRC mismatch, etc.)
     """
 
-    data = pkt[0:10].hex()
     if len(pkt) < MIN_PACKET_SIZE:
         raise ValueError("Packet too small")
 
@@ -122,7 +121,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
     off = start_offset
     packet_ok = packet_fail = crc_failure = other_fail = 0
     out_buf: List[List] = []
-
+    bad_header_packets = []
     with open(dst_csv, "w", newline="") as fcsv:
         wr = csv.writer(fcsv)
         wr.writerow(
@@ -147,18 +146,21 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     wr.writerows(out_buf)
                     out_buf.clear()
             except Exception as exc:
+                print(f"Packet parse error at offset {off}: {exc}")
                 if(exc.args[0] == "CRC mismatch"):
+                    print(f"CRC mismatch at offset {off}: {exc}")
                     crc_failure += 1
                 elif(exc.args[0] == "Missing SOH"):
                     packet_fail += 1
-                else:
+                elif(exc.args[0] == "Bad header"):
                     other_fail += 1
-                    print("other")
+                else:
+                    print(f"Other error at offset {off}: {exc}")
 
                 # ---------- fast resync ----------
                 pat = b"\xDD\xAA"        # EOF of bad packet + SOF of next
                 mv_slice = data[off:]
-
+                old_off = off
                 if hasattr(mv_slice, "find"):            # Py ≥ 3.10
                     nxt = mv_slice.find(pat)
                     if nxt != -1:
@@ -168,6 +170,13 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     nxt = data.obj.find(pat, off)        # no extra copy
                     if nxt != -1:
                         off = nxt + 1
+
+                        print(f"Resync at {old_off} → {off} (found EOF)")
+                        print(f"Number of bytes skipped: {off-old_off}")
+                        
+                        mv = memoryview(data)  # shorthand
+                        chunk = mv[old_off:off]
+                        bad_header_packets.append((old_off, off, chunk))
                         continue
                 # --------------------------------------
 
@@ -176,9 +185,17 @@ def process_bin_file(src_bin: str, dst_csv: str,
         # write any remaining rows
         if out_buf:
             wr.writerows(out_buf)
-
+    print(f"Parsed {packet_ok + packet_fail + crc_failure + other_fail} packets")
     print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed, {crc_failure} CRC failed, {other_fail} other fail")
-
+    #print total number of bytes processed
+    print(f"Total bytes processed: {off} (from {start_offset})")
+    print(f"Bad header packets: {len(bad_header_packets)}")
+    for old_off, off, chunk in bad_header_packets:
+        print(f"Bad header packet at offset {len(chunk)}")
+        # print(f"  {old_off:04X} - {off:04X}: {chunk.hex()}")
+        # # count how many times 0xEEFF appears in the memoryview called chunk
+        # count = chunk.count(b'\xEE\xFF')
+        # print(f"  {old_off:04X} - {off:04X}: {chunk.hex()} (0xEEFF count: {count})")
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
