@@ -17,6 +17,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
 CAMERA_MASK = 0xFF
+SCAN_TIME = 10  # seconds
 
 #if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
 if len(sys.argv) > 1:
@@ -27,7 +28,14 @@ if len(sys.argv) > 1:
     except ValueError as e:
         print(f"Invalid camera mask argument: {e}")
         sys.exit(1)
-
+if len(sys.argv) > 2:
+    try:
+        SCAN_TIME = int(sys.argv[2])
+        if SCAN_TIME < 1:
+            raise ValueError("Scan time must be a positive integer")
+    except ValueError as e:
+        print(f"Invalid scan time argument: {e}")
+        sys.exit(1)
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -114,9 +122,9 @@ except Exception as e:
     print(f"Error reading version: {e}")
 
 
-print ("Programming camera sensor registers.")
-if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
-    print("Failed to configure default registers for camera FPGA.")
+# print ("Programming camera sensor registers.")
+# if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
+#     print("Failed to configure default registers for camera FPGA.")
 
 # print ("Programming camera sensor set test pattern.")
 # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
@@ -137,8 +145,13 @@ except Exception as e:
     
 # step 3 recieve frames -- for now do this in a dummy mode way
 print("\n[5] Rx Frames...")
-time.sleep(10) # Wait for a moment to ensure FSIN is activated
 
+
+time.sleep(5)
+print("ON")
+time.sleep(SCAN_TIME-10) # Wait for a moment to ensure FSIN is activated
+print("OFF")
+time.sleep(5) # Wait for a few frames to be received
 # step 4 turn off frame sync
 try:
 
