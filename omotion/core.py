@@ -166,6 +166,7 @@ class MOTIONUart:
         self.uart_interface = 0  # default interface index
         self.uart_ep_out = None
         self.uart_ep_in = None
+        self.histo_ep_in = None
 
         self.histo_interface = 1  # default interface index
         self.histo_thread = None
@@ -214,6 +215,7 @@ class MOTIONUart:
 
         # Start background threads
         self.stop_event.clear()
+        
         self.histo_thread = threading.Thread(target=self._stream_histo_data, daemon=True)
         self.histo_thread.start()
 
@@ -663,6 +665,7 @@ class MotionComposite:
         self.uart_interface = 0  # default interface index
         self.uart_ep_out = None
         self.uart_ep_in = None
+        self.histo_ep_in = None
 
         self.histo_interface = 1  # default interface index
         self.histo_thread = None
@@ -725,12 +728,7 @@ class MotionComposite:
         # self.imu_thread = threading.Thread(target=self._stream_imu_data, daemon=True)
         # self.imu_thread.start()
 
-#        self.running = True
-#        self.read_thread = threading.Thread(target=self._read_loop)
-#        self.read_thread.daemon = True
-#        self.read_thread.start()
-
-        self.start_monitoring()
+        self.running = True
         print(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
 
     def disconnect(self):
@@ -744,9 +742,16 @@ class MotionComposite:
 
         if self.read_thread:
             self.read_thread.join()
+
         if self.dev:
             usb.util.release_interface(self.dev, self.uart_interface)
             usb.util.dispose_resources(self.dev)
+        if self.uart_ep_in:
+            self.uart_ep_in = None
+        if self.uart_ep_out:
+            self.uart_ep_out = None
+        if self.histo_ep_in:
+            self.histo_ep_in = None
         self.signal_disconnect.emit(self.desc, "bulk_usb")
 
     def is_connected(self) -> bool:
@@ -769,10 +774,9 @@ class MotionComposite:
                 self.connect()
             except Exception as e:
                 log.error("Failed to connect to device: %s", e)
-        elif not device and self.is_connected():
+        elif not device and self.running:
             log.debug("USB device disconnected.")
             self.disconnect()
-        # print(f"self.running: {self.running}, device: {device is not None}, uart_ep_out: {self.uart_ep_out is not None}, uart_ep_in: {self.uart_ep_in is not None}")
 
     async def monitor_usb_status(self, interval=1):
         """Periodically check for USB device connection."""
@@ -786,6 +790,7 @@ class MotionComposite:
 
     def start_monitoring(self, interval=1):
         """Start the periodic USB device connection check."""
+        print(f"Starting monitoring with interval {interval} seconds")
         if self.demo_mode:
             log.debug("Monitoring in demo mode.")
             return
