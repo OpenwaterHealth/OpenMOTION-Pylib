@@ -15,6 +15,7 @@ from .utils import util_crc16
 # Set up logging
 log = logging.getLogger("UART")
 _LOG = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
@@ -205,7 +206,6 @@ class MOTIONUart:
 
         if self.uart_ep_out is None or self.uart_ep_in is None:
             raise ValueError("Bulk endpoints not found")
-
         # Set up HISTO interface
         histo_intf = cfg[(self.histo_interface, 0)]
         self.histo_ep_in = usb.util.find_descriptor(
@@ -226,6 +226,8 @@ class MOTIONUart:
 #        self.read_thread.start()
 
         self.signal_connect.emit(self.desc, "bulk_usb")
+        print(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
+
 
     def disconnect(self):
         self.running = False
@@ -557,7 +559,9 @@ class MOTIONUart:
 
                 if len(payload) < max_pkt:
                     # Protocol‑level terminator: the device finished sending
-                    _LOG.debug("Short packet – end of histogram block")
+                    if(len(payload) == 0):
+                        _LOG.debug("ZLP received on EP 0x%02X", ep)
+                    _LOG.debug(f"Short packet – end of histogram block , length: {len(payload)}")
                     return
 
             except usb.core.USBError as err:
@@ -674,12 +678,19 @@ class MotionComposite:
         self.signal_disconnect = MOTIONSignal()
         self.signal_data_received = MOTIONSignal()
 
+        self.attempt_count = 0
+
         if async_mode:
             self.loop = asyncio.get_event_loop()
             self.response_queues = {} 
             self.response_lock = threading.Lock()  # Lock for thread-safe access to response_queues
 
     def connect(self):
+        # print(f'Attempt Number {self.attempt_count} to connect to {self.desc}')
+        # self.attempt_count += 1
+        if(self.is_connected()):
+            # log.info("Already connected to %s", self.desc)
+            return
         self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
         if self.dev is None:
             raise ValueError("Device not found")
@@ -719,7 +730,8 @@ class MotionComposite:
 #        self.read_thread.daemon = True
 #        self.read_thread.start()
 
-        self.signal_connect.emit(self.desc, "bulk_usb")
+        self.start_monitoring()
+        print(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
 
     def disconnect(self):
         self.running = False
@@ -757,9 +769,10 @@ class MotionComposite:
                 self.connect()
             except Exception as e:
                 log.error("Failed to connect to device: %s", e)
-        elif not device and self.running:
+        elif not device and self.is_connected():
             log.debug("USB device disconnected.")
             self.disconnect()
+        # print(f"self.running: {self.running}, device: {device is not None}, uart_ep_out: {self.uart_ep_out is not None}, uart_ep_in: {self.uart_ep_in is not None}")
 
     async def monitor_usb_status(self, interval=1):
         """Periodically check for USB device connection."""
@@ -1050,8 +1063,8 @@ class MotionComposite:
                 yield payload
 
                 if len(payload) < max_pkt:
-                    # Protocol‑level terminator: the device finished sending
-                    _LOG.debug("Short packet – end of histogram block")
+                    if(len(payload) != 0):
+                        _LOG.debug(f"Short packet – end of histogram block , length: {len(payload)}")
                     return
 
             except usb.core.USBError as err:
