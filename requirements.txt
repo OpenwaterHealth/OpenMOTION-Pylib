@@ -4,3 +4,4 @@ numpy
 matplotlib
 pyusb
 libusb1
+keyboard

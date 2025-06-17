@@ -64,7 +64,7 @@ class UartPacket:
 
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
-            print("length" + str(len(buffer)))
+            print("Missing Start or End Byte Packet LEN " + str(len(buffer)))
             print(buffer)
             raise ValueError("Invalid buffer format")
 
@@ -101,8 +101,8 @@ class UartPacket:
             f"addr=0x{self.addr:02X}, "
             f"reserved=0x{self.reserved:02X}, "
             f"data_len={self.data_len}, "
-            f"data={self.data.hex()})"
-            f"crc=0x{self.crc:04X})"
+            f"data={self.data.hex()}"
+            f"crc=0x{self.crc:04X}"
     )
 
 class MOTIONSignal:

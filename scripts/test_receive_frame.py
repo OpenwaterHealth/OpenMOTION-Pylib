@@ -15,7 +15,17 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x02
+CAMERA_MASK = 0x01
+
+ENABLE_TEST_PATTERN = True
+TEST_PATTERN_ID = 0x04
+
+## Test Patterns
+# 0 Gradient bars
+# 1 Solid color
+# 2 Squares
+# 3 Continuous Gradient
+# 4 disabled
 
 ENABLE_TEST_PATTERN = True
 TEST_PATTERN_ID = 0x04
