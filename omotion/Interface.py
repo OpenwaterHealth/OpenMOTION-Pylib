@@ -3,7 +3,7 @@ import logging
 
 from omotion.Console import MOTIONConsole
 from omotion.Sensor import MOTIONSensor
-from omotion.core import MOTIONUart, MOTIONSignal
+from omotion.core import MOTIONUart, MOTIONSignal, MotionComposite
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class MOTIONInterface:
 
         # Create a MOTIONSensor Device instance as part of the interface
         logger.debug("Initializing Sensor Module of MOTIONInterface with VID: %s, PID: %s, baudrate: %s, timeout: %s", vid, sensor_pid, baudrate, timeout)
-        self._sensor_uart = MOTIONUart(vid=vid, pid=sensor_pid, baudrate=baudrate, timeout=timeout, desc="sensor", demo_mode=False, async_mode=run_async)
+        self._sensor_uart = MotionComposite(vid=vid, pid=sensor_pid, baudrate=baudrate, timeout=timeout, desc="sensor", demo_mode=False, async_mode=run_async)
         self.sensor_module = MOTIONSensor(uart=self._sensor_uart)
 
         # Connect signals to internal handlers

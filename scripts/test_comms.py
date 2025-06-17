@@ -3,7 +3,7 @@ import time
 import usb.core
 import usb.util
 import json
-from omotion.Interface import MOTIONUart
+from omotion.Interface import MotionComposite
 import threading
 
 # Run this script with:
@@ -137,7 +137,7 @@ def main_histo_dummy_data_stream():
 
 # ---- Main ----
 def main():
-    myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
+    myUart = MotionComposite(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
     if myUart == None:
         print("Error establishing uart object")
         sys.exit(1)
@@ -199,7 +199,7 @@ def threaded_histo_stream(dev):
 
 def threaded_uart_work():
     try:
-        myUart = MOTIONUart(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
+        myUart = MotionComposite(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
         if myUart is None:
             print("Error establishing uart object")
             return
