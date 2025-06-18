@@ -8,6 +8,8 @@ import csv
 import threading
 import usb.core
 import usb.util
+import serial
+import serial.tools.list_ports
 
 from .config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
 from .utils import util_crc16
@@ -316,6 +318,7 @@ class MOTIONUart:
                                     self.response_queues[packet.id].put(packet)
                                 else:
                                     log.warning("Received an unsolicited packet with ID %d", packet.id)
+                                    log.warning("Packet type: 0x%02X, Command: 0x%02X", packet.packet_type, packet.command)  
                         else:
                             self.signal_data_received.emit(self.descriptor, packet)
 
@@ -557,8 +560,16 @@ class MotionComposite:
         # self.imu_thread = threading.Thread(target=self._stream_imu_data, daemon=True)
         # self.imu_thread.start()
 
+        if self.asyncMode:
+            log.info("Starting read thread for %s.", self.desc)
+            self.running = True
+            self.read_thread = threading.Thread(target=self._read_data)
+            self.read_thread.daemon = True
+            self.read_thread.start()
+
         self.running = True
         print(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
+        self.signal_connect.emit(self.desc, "bulk_usb")
 
     def disconnect(self):
         self.running = False
@@ -641,7 +652,7 @@ class MotionComposite:
 
     def _read_data(self, timeout=20):
         """Read data from the serial port in a separate thread."""
-        log.debug("Starting data read loop for %s.", self.descriptor)
+        log.debug("Starting data read loop for %s.", self.desc)
         if self.demo_mode:
             log.info("Demo mode: Simulating UART read NOT IMPLEMENTED.")
             return
@@ -654,33 +665,28 @@ class MotionComposite:
                     self.running = False
                     break
                 else:
-                    data = self.dev.read(self.uart_ep_in.bEndpointAddress, self.uart_ep_in.wMaxPacketSize, timeout=self.timeout)
-                    self.read_buffer.extend(data)
-                    log.info("Data received on %s: %s", self.descriptor, data)
-                    # Attempt to parse a complete packet from read_buffer.
-                    try:
-                        packet = UartPacket(buffer=self.read_buffer)
-                        self.read_buffer.clear()
-                        
+                    packet = self.read_packet(timeout=timeout)
+                    if self.asyncMode:
+                        with self.response_lock:
+                            # Check if a queue is waiting for this packet ID.
+                            if packet.id in self.response_queues:
+                                self.response_queues[packet.id].put(packet)
+                            else:
+                                log.warning("Received an unsolicited packet with ID %d", packet.id)
+                    else:
+                        self.signal_data_received.emit(self.desc, packet)                        
 
-                        if self.asyncMode:
-                            with self.response_lock:
-                                # Check if a queue is waiting for this packet ID.
-                                if packet.id in self.response_queues:
-                                    self.response_queues[packet.id].put(packet)
-                                else:
-                                    log.warning("Received an unsolicited packet with ID %d", packet.id)
-                        else:
-                            self.signal_data_received.emit(self.descriptor, packet)
-
-                    except ValueError:
-                        # Incomplete packet, keep accumulating
-                        pass
             except usb.core.USBError as e:
                 if e.errno == 110:  # Timeout
+                    log.debug("USB read timeout on %s: %s", self.desc, e)
                     continue
                 print("USB read error:", e)
-                break
+                continue
+            except TimeoutError as te:
+                continue
+            except Exception as e:
+                log.error("Unexpected USB error on %s: %s", self.desc, e)
+                
 
     def _tx(self, data: bytes):
         """Send data over UART."""
@@ -735,8 +741,20 @@ class MotionComposite:
         
         if not self.read_buffer:
             raise TimeoutError("No data received")
-        
-        return UartPacket(buffer=self.read_buffer)
+        try: 
+            packet = UartPacket(buffer=self.read_buffer)
+        except Exception as e:
+            log.error("Error parsing packet: %s", e)
+            # Return an error packet
+            packet = UartPacket(
+                id=0,
+                packet_type=OW_ERROR,
+                command=0,
+                addr=0,
+                reserved=0,
+                data=[]
+            )
+        return packet
 
     def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=20):
         """
@@ -785,6 +803,7 @@ class MotionComposite:
                 self.pause_event.clear()
                 return packet
             else:
+                self.pause_event.clear()
                 response_queue = queue.Queue()
                 with self.response_lock:
                     self.response_queues[id] = response_queue
