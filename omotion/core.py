@@ -16,7 +16,6 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
-_LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
 class UartPacket:
@@ -476,6 +475,10 @@ class MOTIONUart:
         log.info("    Serial Baud: %s", self.baudrate)
 
 class MotionComposite:
+    
+    _USB_TIMEOUT_MS = 100          # tweak once, used everywhere
+    _PAUSE_POLL_S  = 0.01          # sleep while paused
+
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
         self.vid = vid
         self.pid = pid
@@ -521,11 +524,9 @@ class MotionComposite:
             self.response_lock = threading.Lock()  # Lock for thread-safe access to response_queues
 
     def connect(self):
-        # print(f'Attempt Number {self.attempt_count} to connect to {self.desc}')
-        # self.attempt_count += 1
         if(self.is_connected()):
-            # log.info("Already connected to %s", self.desc)
             return
+        
         self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
         if self.dev is None:
             raise ValueError("Device not found")
@@ -562,7 +563,6 @@ class MotionComposite:
 
         if self.asyncMode:
             log.info("Starting read thread for %s.", self.desc)
-            self.running = True
             self.read_thread = threading.Thread(target=self._read_data)
             self.read_thread.daemon = True
             self.read_thread.start()
@@ -660,27 +660,23 @@ class MotionComposite:
         # In async mode, run the reading loop in a thread
         while self.running:
             try:
-                if self.uart_ep_out is None:
-                    log.warning("RX port not available.")
-                    self.running = False
-                    break
+                packet = self.read_packet(timeout=timeout)
+                if self.asyncMode:
+                    with self.response_lock:
+                        # Check if a queue is waiting for this packet ID.
+                        if packet.id in self.response_queues:
+                            self.response_queues[packet.id].put(packet)
+                        else:
+                            log.warning("Received an unsolicited packet with ID %d", packet.id)
                 else:
-                    packet = self.read_packet(timeout=timeout)
-                    if self.asyncMode:
-                        with self.response_lock:
-                            # Check if a queue is waiting for this packet ID.
-                            if packet.id in self.response_queues:
-                                self.response_queues[packet.id].put(packet)
-                            else:
-                                log.warning("Received an unsolicited packet with ID %d", packet.id)
-                    else:
-                        self.signal_data_received.emit(self.desc, packet)                        
+                    self.signal_data_received.emit(self.desc, packet)                        
 
             except usb.core.USBError as e:
                 if e.errno == 110:  # Timeout
                     log.debug("USB read timeout on %s: %s", self.desc, e)
                     continue
-                print("USB read error:", e)
+                else:
+                    log.error("USB read error on %s: %s", self.desc, e)
                 continue
             except TimeoutError as te:
                 continue
@@ -702,7 +698,7 @@ class MotionComposite:
                     data += bytes([OW_END_BYTE])
             self.dev.write(self.uart_ep_out.bEndpointAddress, data, timeout=self.timeout)
         except usb.core.USBError as e:
-            print("USB write error:", e)
+            log.error("USB write error on %s: %s", self.desc, e)
             raise e
         
     def read_packet(self, timeout=20) -> UartPacket:
@@ -832,29 +828,15 @@ class MotionComposite:
             log.error("Unexpected error in send_packet: %s", e)
             raise
 
-    def clear_buffer(self):
-        """Clear the read buffer."""
-        self.read_buffer = []
-
-    def run_coroutine(self, coro):
-        """Run a coroutine using the internal event loop."""
-        if not self.loop.is_running():
-            return self.loop.run_until_complete(coro)
-        else:
-            return asyncio.create_task(coro)
-               
     def print(self):
         """Print the current UART configuration."""
         log.info("    Serial Port: %s", self.port)
         log.info("    Serial Baud: %s", self.baudrate)
+    
+    def clear_buffer(self):
+        """Clear the read buffer."""
+        self.read_buffer = []
 
-
-    _USB_TIMEOUT_MS = 100          # tweak once, used everywhere
-    _PAUSE_POLL_S  = 0.01          # sleep while paused
-
-    # ──────────────────────────────────────────────────────────
-    #  public API – call this from the thread you start
-    # ──────────────────────────────────────────────────────────
     def stream(self, out_path: str = "histogram.bin") -> None:
         """
         Claim the interface and start draining the histogram endpoint into
@@ -917,7 +899,7 @@ class MotionComposite:
 
                 if len(payload) < max_pkt:
                     if(len(payload) != 0):
-                        _LOG.debug(f"Short packet – end of histogram block , length: {len(payload)}")
+                        log.debug(f"Short packet – end of histogram block , length: {len(payload)}")
                     return
 
             except usb.core.USBError as err:
@@ -928,53 +910,20 @@ class MotionComposite:
                     return
 
                 # ── Anything else: try to recover one time by clearing the halt
-                _LOG.warning("USB error on EP 0x%02X (%s); attempting recovery", ep, err)
+                log.warning("USB error on EP 0x%02X (%s); attempting recovery", ep, err)
                 try:
                     self.dev.clear_halt(ep)
                     time.sleep(0.01)
                     continue  # retry the read once
                 except usb.core.USBError as clear_err:
-                    _LOG.error("Failed to clear HALT: %s", clear_err)
+                    log.error("Failed to clear HALT: %s", clear_err)
                     raise  # unrecoverable – let caller deal with it
+
     def _stream_histo_data(self):
         try:
             self.stream("histogram.bin")
         except Exception as exc:
-            _LOG.exception("[HISTO] streaming aborted: %s", exc)
-
-
-    # def read_usb_stream(self, dev, endpoint, endpoint_size, timeout=100):
-    #     data = bytearray()
-    #     while True:
-    #         try:
-    #             chunk = dev.read(endpoint, endpoint_size, timeout=timeout)
-    #             data.extend(chunk)
-    #             # If packet is shorter than max size, it's the end
-    #             if len(chunk) < endpoint_size:
-    #                 break
-    #         except usb.core.USBError as e:
-    #             print(f"USB read error: {e}")
-    #             break
-    #     return data
-
-    # def _stream_histo_data(self):
-    #     usb.util.claim_interface(self.dev, self.histo_interface)
-    #     with open("histogram.bin","wb") as binary_file:
-    #         binary_file.write(bytearray())
-    #     #TODO(remove the file writing from this and add in a proper handler)
-    #     try:
-    #         while not self.stop_event.is_set():
-    #             if self.pause_event.is_set():
-    #                 continue
-    #             data = self.read_usb_stream(self.dev, self.histo_ep_in.bEndpointAddress, self.histo_ep_in.wMaxPacketSize)               
-    #             if data:
-    #                 with open("histogram.bin", "ab") as binary_file:
-    #                     binary_file.write(data)
-    #             time.sleep(0.012)
-    #     except Exception as e:
-    #         print(f"[HISTO] Exception: {e}")
-    #     finally:
-    #         usb.util.release_interface(self.dev, 1)
+            log.exception("[HISTO] streaming aborted: %s", exc)
 
     def _stream_imu_data(self):
         try:
