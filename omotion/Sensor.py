@@ -1,14 +1,14 @@
 import logging
 import struct
 
-from omotion import MOTIONUart
-from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CAMERA_STATUS, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP
+from omotion import MotionComposite
+from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
 
 class MOTIONSensor:
-    def __init__(self, uart: MOTIONUart):
+    def __init__(self, uart: MotionComposite):
         """
         Initialize the MOTIONSensor Module.            
         """
@@ -899,7 +899,7 @@ class MOTIONSensor:
             logger.error("Exception during reset_camera_sensor: %s", e)
             raise
 
-    def camera_configure_test_pattern(self, camera_position: int, test_pattern_id: int) -> bool:
+    def camera_configure_test_pattern(self, camera_position: int, test_pattern: int = 0 ) -> bool:
         """
         Set camera sensor(s) Test Pattern Registers at the specified position(s).
 
@@ -908,6 +908,7 @@ class MOTIONSensor:
 
         Args:
             camera_position (int): Bitmask representing camera(s) to reset (0x00 - 0xFF).
+            test_pattern (int): optional defaults to bars
 
         Returns:
             bool: True if the FPGA command was sent successfully, False otherwise.
@@ -918,6 +919,9 @@ class MOTIONSensor:
         try:
             if not (0x00 <= camera_position <= 0xFF):
                 raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+            
+            if not (0x00 <= test_pattern <= 0x04):
+                raise ValueError(f"test_pattern must be a byte (0x00 to 0x04), got {test_pattern:#04x}")
 
             if self.uart.demo_mode:
                 return True
@@ -925,10 +929,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 logger.error("Sensor Module not connected")
                 return False
-            #convert test_pattern_id to bytearray of length 1
-            data = bytearray(1)
-            data[0] = test_pattern_id
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position,data=data, timeout=60)
+            
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
             self.uart.clear_buffer()
             if r.packet_type == OW_ERROR:
                 logger.error("Error programming FPGA")
@@ -1116,6 +1118,86 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
+
+    def enable_aggregator_fsin(self) -> bool:
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=1)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling aggregator")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+    def disable_aggregator_fsin(self) -> bool:
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=0)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling aggregator")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def enable_camera(self, camera_position) -> bool:
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True 
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+        
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling camera")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def disable_camera(self, camera_position) -> bool:
+        try:
+            if not (0x00 <= camera_position <= 0xFF):
+                raise ValueError(f"camera_position must be a byte (0x00 to 0xFF), got {camera_position:#04x}")
+
+            if self.uart.demo_mode:
+                return True 
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            self.uart.clear_buffer()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error enabling camera")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
 
     def disconnect(self):
         """

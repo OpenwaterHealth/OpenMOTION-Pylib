@@ -1,4 +1,4 @@
-import asyncio
+import asyncio, time
 from omotion.Interface import MOTIONInterface
 
 # Run this script with:
@@ -67,6 +67,20 @@ try:
 except Exception as e:
     print(f"HWID read error: {e}")
 
+# Activate then deactivate FSIN
+print("\n[6] Activate FSIN...")
+try:
+    fsin_result = interface.sensor_module.enable_aggregator_fsin()
+    print("FSIN activated." if fsin_result else "FSIN activation failed.")
+    
+    # Wait for a moment to ensure FSIN is activated
+    time.sleep(1)
+
+    print("\n[7] Deactivate FSIN...")
+    fsin_result = interface.sensor_module.disable_aggregator_fsin()
+    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
+except Exception as e:
+    print(f"FSIN activate error: {e}")
 # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
 mask = 0x89
 

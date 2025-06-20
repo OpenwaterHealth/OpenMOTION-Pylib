@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,7 +8,7 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_receive_frame.py
+# python scripts\test_receive_multi_frame.py
 
 
 print("Starting MOTION Sensor Module Test Script...")
@@ -15,27 +16,26 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0x01
+CAMERA_MASK = 0xFF
+SCAN_TIME = 10  # seconds
 
-ENABLE_TEST_PATTERN = True
-TEST_PATTERN_ID = 0x04
-
-## Test Patterns
-# 0 Gradient bars
-# 1 Solid color
-# 2 Squares
-# 3 Continuous Gradient
-# 4 disabled
-
-ENABLE_TEST_PATTERN = True
-TEST_PATTERN_ID = 0x04
-
-## Test Patterns
-# 0 Gradient bars
-# 1 Solid color
-# 2 Squares
-# 3 Continuous Gradient
-# 4 disabled
+#if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
+if len(sys.argv) > 1:
+    try:
+        CAMERA_MASK = int(sys.argv[1], 16)
+        if CAMERA_MASK > 0xFF:
+            raise ValueError("Camera mask must be less than 0xFF")
+    except ValueError as e:
+        print(f"Invalid camera mask argument: {e}")
+        sys.exit(1)
+if len(sys.argv) > 2:
+    try:
+        SCAN_TIME = int(sys.argv[2])
+        if SCAN_TIME < 1:
+            raise ValueError("Scan time must be a positive integer")
+    except ValueError as e:
+        print(f"Invalid scan time argument: {e}")
+        sys.exit(1)
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -121,37 +121,55 @@ try:
 except Exception as e:
     print(f"Error reading version: {e}")
 
-if(ENABLE_TEST_PATTERN):
-    print ("Programming camera sensor set test pattern.")
-    if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
-        print("Failed to set grayscale test pattern for camera FPGA.")
-else:
-    print ("Programming camera sensor registers.")
-    if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
-        print("Failed to configure default registers for camera FPGA.")
+
+# print ("Programming camera sensor registers.")
+# if not interface.sensor_module.camera_configure_registers(CAMERA_MASK):
+#     print("Failed to configure default registers for camera FPGA.")
+
+# print ("Programming camera sensor set test pattern.")
+# if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
+#     print("Failed to set grayscale test pattern for camera FPGA.")
+
+#step 1 enable cameras - this means turn on streaming mode and start the reception
+print("\n[3] Enable Cameras")
+if not interface.sensor_module.enable_camera(CAMERA_MASK):
+    print("Failed to enable cameras.")
+
+#step 2 turn on frame sync
+print("\n[4] Activate FSIN...")
+try:
+    fsin_result = interface.sensor_module.enable_aggregator_fsin()
+    print("FSIN activated." if fsin_result else "FSIN activation failed.")
+except Exception as e:
+    print(f"FSIN activate error: {e}")
+    
+# step 3 recieve frames -- for now do this in a dummy mode way
+print("\n[5] Rx Frames...")
 
 
-print("Capture histogram frame.")
-if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK):
-    print("Failed to capture histogram frame.")
-else:
-    print("Get histogram frame.")
-    histogram = interface.sensor_module.camera_get_histogram(CAMERA_MASK)
-    if histogram is None:
-        print("Histogram frame is None.")
-    else:
-        print("Histogram frame received successfully.")
-        print("Histogram frame length: " + str(len(histogram)))
-        histogram = histogram[0:4096]
-        (bins, hidden_numbers) = bytes_to_integers(histogram)
-        #print out sum of bins
-        print("Sum of bins: " + str(sum(bins)))
-        print("Bins: " + str(bins))
-        print("Frame ID: " + str(hidden_numbers[1023]))
-        # print("Hidden numbers: " + str(hidden_numbers))
-        # save_histogram_raw(histogram)    
-        plot_10bit_histogram(bins, title="10-bit Histogram")
+time.sleep(5)
+print("ON")
+time.sleep(SCAN_TIME-10) # Wait for a moment to ensure FSIN is activated
+print("OFF")
+time.sleep(5) # Wait for a few frames to be received
+# step 4 turn off frame sync
+try:
 
+    # step 5 disable cameras, cancel reception etc
+    print("\n[7] Deactivate Cameras...")
+    if not interface.sensor_module.disable_camera(CAMERA_MASK):
+        print("Failed to enable cameras.")
+
+    time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
+
+    print("\n[6] Deactivate FSIN...")
+    fsin_result = interface.sensor_module.disable_aggregator_fsin()
+    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
+except Exception as e:
+    print(f"FSIN activate error: {e}")
+
+
+time.sleep(1)
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
 print("\nSensor Module Test Completed.")
