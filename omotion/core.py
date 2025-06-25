@@ -16,7 +16,7 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.DEBUG)
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
@@ -672,11 +672,12 @@ class MotionComposite:
                     self.signal_data_received.emit(self.desc, packet)                        
 
             except usb.core.USBError as e:
-                if e.errno == 110:  # Timeout
-                    log.debug("USB read timeout on %s: %s", self.desc, e)
+                if e.errno == 10060:  # Timeout
+                    # log.debug("USB read timeout on %s: %s", self.desc, e)
                     continue
                 else:
-                    log.error("USB read error on %s: %s", self.desc, e)
+                    log.error("USB errno %d on %s: %s", e.errno, self.desc, e)
+                    # log.error("USB read error on %s: %s", self.desc, e)
                 continue
             except TimeoutError as te:
                 continue
