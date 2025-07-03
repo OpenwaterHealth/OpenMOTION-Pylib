@@ -162,6 +162,3 @@ cython_debug/
 #.idea/
 
 /data_captures
-/data
-histogram.bin
-histogram.csv

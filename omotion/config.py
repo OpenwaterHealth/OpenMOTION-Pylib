@@ -1,4 +1,4 @@
-SERIAL_PORT = 'COM24'  # Change this to your serial port
+SERIAL_PORT = 'COM5'  # Change this to your serial port
 BAUD_RATE = 921600
 
 CONSOLE_MODULE_PID = 0xA53E

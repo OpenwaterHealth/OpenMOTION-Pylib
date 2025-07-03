@@ -3,8 +3,11 @@ import time
 import usb.core
 import usb.util
 import json
-from omotion.Interface import MOTIONUart
+# from omotion.Interface import MOTIONUart
 import threading
+
+import usb.backend.libusb1 as lib1
+print(lib1.get_backend())
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%

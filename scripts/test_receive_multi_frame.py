@@ -1,5 +1,4 @@
 import asyncio
-import sys
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,19 +15,8 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
-
-#if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
-if len(sys.argv) > 1:
-    try:
-        CAMERA_MASK = int(sys.argv[1], 16)
-        if CAMERA_MASK > 0xFF:
-            raise ValueError("Camera mask must be less than 0xFF")
-    except ValueError as e:
-        print(f"Invalid camera mask argument: {e}")
-        sys.exit(1)
-
-
+CAMERA_MASK = 0xFF     ## 1.0.0.1 1.0.0.1 - 0x99, 1.1.1.1 0.0.0.0 0xF, 1.1.1.1 1.1.1.1 0xFF
+motion_timeout = 10000
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
     Plots a 10-bit histogram (0-1023) from raw byte data.
@@ -137,25 +125,22 @@ except Exception as e:
     
 # step 3 recieve frames -- for now do this in a dummy mode way
 print("\n[5] Rx Frames...")
-time.sleep(10) # Wait for a moment to ensure FSIN is activated
+time.sleep(motion_timeout) # Wait for a moment to ensure FSIN is activated
 
 # step 4 turn off frame sync
 try:
-
-    # step 5 disable cameras, cancel reception etc
-    print("\n[7] Deactivate Cameras...")
-    if not interface.sensor_module.disable_camera(CAMERA_MASK):
-        print("Failed to enable cameras.")
-
-    time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
-
     print("\n[6] Deactivate FSIN...")
     fsin_result = interface.sensor_module.disable_aggregator_fsin()
     print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
 except Exception as e:
     print(f"FSIN activate error: {e}")
 
+time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
 
+# step 5 disable cameras, cancel reception etc
+print("\n[7] Deactivate Cameras...")
+if not interface.sensor_module.disable_camera(CAMERA_MASK):
+    print("Failed to enable cameras.")
 time.sleep(1)
 # Disconnect and cleanup;'.l/m 1
 interface.sensor_module.disconnect()
