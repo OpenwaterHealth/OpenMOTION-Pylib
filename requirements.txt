@@ -1,7 +1,7 @@
-pyserial
-crcmod
-numpy
-matplotlib
-pyusb
-libusb1
-keyboard
+pyserial==3.5
+crcmod==1.7
+numpy==2.2.5
+matplotlib==3.10.1
+pyusb==1.3.1
+libusb1==3.3.1
+keyboard==0.13.5
