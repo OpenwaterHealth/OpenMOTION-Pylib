@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_IND, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -780,6 +780,87 @@ class MOTIONConsole:
                 return False
             else:
                 return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_fsync_pulsecount(self) -> int:
+        """
+        Get FSYNC pulse count from the Console device.
+
+        Returns:
+            int: The number of FSYNC pulses received.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving the pulse count.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FSYNC, data=None)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error retrieving FSYNC pulse count")
+                return 0
+            
+            if r.data_len == 4:
+                # Assuming the pulse count is returned as a 4-byte integer
+                pulse_count = struct.unpack('<I', r.data)[0]
+                return pulse_count
+            else:
+                logger.error("Unexpected data length for FSYNC pulse count")
+                return 0
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_lsync_pulsecount(self) -> int:
+        """
+        Get LSYNC pulse count from the Console device.
+
+        Returns:
+            int: The number of LSYNC pulses received.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving the pulse count.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_LSYNC, data=None)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error retrieving LSYNC pulse count")
+                return 0
+            if r.data_len == 4:
+                # Assuming the pulse count is returned as a 4-byte integer
+                pulse_count = struct.unpack('<I', r.data)[0]
+                return pulse_count
+            else:
+                logger.error("Unexpected data length for LSYNC pulse count")
+                return 0
+            
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle

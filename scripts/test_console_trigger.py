@@ -28,6 +28,22 @@ print("\n[1] Ping Sensor Module...")
 response = interface.console_module.ping()
 print("Ping successful." if response else "Ping failed.")
 
+print("\n[0] Set trigger...")
+json_trigger_data = {
+    "TriggerFrequencyHz": 40,
+    "TriggerPulseWidthUsec": 500,
+    "LaserPulseDelayUsec": 100,
+    "LaserPulseWidthUsec": 500,
+    "EnableSyncOut": True,
+    "EnableTaTrigger": True
+}
+
+new_setting = interface.console_module.set_trigger_json(data=json_trigger_data)
+if new_setting:
+    print(f"Trigger Setting: {new_setting}")
+else:
+    print("Failed to get trigger setting.")
+
 print("\n[1] Get trigger...")
 trigger_setting = interface.console_module.get_trigger_json()
 if trigger_setting:
@@ -68,6 +84,10 @@ else:
         print(f"Trigger Setting: {trigger_setting}")
     else:
         print("Failed to get trigger setting.")
+
+    time.sleep(1)
+    fsync_pulsecount = interface.console_module.get_fsync_pulsecount()
+    print(f"FSYNC PulseCount: {fsync_pulsecount}")
 
     print("Press [ENTER] to stop trigger...")
     input()
