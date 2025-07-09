@@ -34,6 +34,7 @@ json_trigger_data = {
     "TriggerPulseWidthUsec": 500,
     "LaserPulseDelayUsec": 100,
     "LaserPulseWidthUsec": 500,
+    "LaserPulseSkipInterval": 0,
     "EnableSyncOut": True,
     "EnableTaTrigger": True
 }
@@ -65,6 +66,7 @@ json_trigger_data = {
     "TriggerPulseWidthUsec": 500,
     "LaserPulseDelayUsec": 100,
     "LaserPulseWidthUsec": 500,
+    "LaserPulseSkipInterval": 5,
     "EnableSyncOut": True,
     "EnableTaTrigger": True
 }
