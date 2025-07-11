@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MotionComposite
-from omotion.config import OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class MOTIONSensor:
             logger.info("Received Ping from Device.")
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error sending ping")
                 return False
             else:
@@ -353,7 +353,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_RESET, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error resetting camera sensor")
                 return False
             else:
@@ -395,7 +395,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error activating fpga")
                 return False
             else:
@@ -437,7 +437,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling fpga")
                 return False
             else:
@@ -479,7 +479,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error disable fpga")
                 return False
             else:
@@ -521,7 +521,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ID, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error checking camera id")
                 return False
             else:
@@ -563,7 +563,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error entering prog")
                 return False
             else:
@@ -605,7 +605,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error entering prog")
                 return False
             else:
@@ -647,7 +647,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM, addr=camera_position, timeout=30)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error erasing SRAM")
                 return False
             else:
@@ -689,7 +689,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_STATUS, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting status")
                 return False
             else:
@@ -731,7 +731,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_USERCODE, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting usercode")
                 return False
             else:
@@ -781,7 +781,7 @@ class MOTIONSensor:
                         )
                         self.uart.clear_buffer()
 
-                        if r.packet_type == OW_ERROR:
+                        if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                             logger.error("Error sending final crc block")
                             return False
                         break
@@ -797,7 +797,7 @@ class MOTIONSensor:
                     )
                     self.uart.clear_buffer()
 
-                    if r.packet_type == OW_ERROR:
+                    if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                         logger.error(f"Error sending block {block_count}")
                         return False
 
@@ -844,7 +844,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position, reserved=1, timeout=60)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
             else:
@@ -886,7 +886,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG, addr=camera_position, timeout=60)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
             else:
@@ -932,7 +932,7 @@ class MOTIONSensor:
             
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
             else:
@@ -974,7 +974,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
             else:
@@ -1016,7 +1016,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=2)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return None
             else:
@@ -1106,7 +1106,7 @@ class MOTIONSensor:
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error resetting device")
                 return False
             else:
@@ -1130,7 +1130,7 @@ class MOTIONSensor:
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=1)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling aggregator")
                 return False
             else:
@@ -1149,7 +1149,7 @@ class MOTIONSensor:
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=0)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling aggregator")
                 return False
             else:
@@ -1170,7 +1170,7 @@ class MOTIONSensor:
         
             r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
                 return False
             else:
@@ -1190,7 +1190,7 @@ class MOTIONSensor:
                 raise ValueError("Sensor Module not connected")
             r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
                 return False
             else:
@@ -1218,7 +1218,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=1)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera FSIN")
                 return False
             else:
@@ -1246,7 +1246,7 @@ class MOTIONSensor:
 
             r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=0)
             self.uart.clear_buffer()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error disabling camera FSIN")
                 return False
             else:
