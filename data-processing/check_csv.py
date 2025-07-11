@@ -61,7 +61,7 @@ def check_csv_integrity(csv_path):
             print(f"[WARN] Row {row_idx}: frame_id skipped — expected {expected_fid}, got {fid} (cycle {cycle})")
             num_skipped = (fid - expected_fid + 256 -1) % 256
             error_counts['frame_id_skipped'] += num_skipped
-            expected_fids.append(expected_fid)
+            expected_fids.append((str(cycle), str(expected_fid)))
             expected_fid = fid
 
         expected_fid = (expected_fid + 1) % 256
@@ -74,9 +74,9 @@ def check_csv_integrity(csv_path):
     for k, v in error_counts.items():
         print(f"  {k}: {v}")
     
-    if expected_fids:
-        print("\n[INFO] Expected frame_ids that were skipped:")
-        print(expected_fids)
+    # if expected_fids:
+    #     print("\n[INFO] Expected frame_ids that were skipped:")
+    #     print(expected_fids)
 
     if not errors_found:
         print("\n[PASS] CSV passed all integrity checks.")

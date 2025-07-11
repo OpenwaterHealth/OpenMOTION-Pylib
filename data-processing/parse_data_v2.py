@@ -41,7 +41,6 @@ def _get_u32(buf: memoryview, offset: int) -> int:
 def _crc_matches(pkt: memoryview, crc_expected: int) -> bool:
     return _crc16(pkt) == crc_expected
 
-
 # ─── Packet parser (no Python loops inside the histogram) ───────────────────
 def parse_histogram_packet(pkt: memoryview) -> Tuple[
         Dict[int, np.ndarray], Dict[int, int], Dict[int, float], int]:
@@ -117,9 +116,9 @@ def process_bin_file(src_bin: str, dst_csv: str,
     """Convert binary → CSV quickly."""
     with open(src_bin, "rb") as f:
         data = memoryview(f.read())  # zero‑copy view
-
+    total_bytes = len(data)
     off = start_offset
-    packet_ok = packet_fail = crc_failure = other_fail = 0
+    packet_ok = packet_fail = crc_failure = other_fail = error_count = 0
     out_buf: List[List] = []
     bad_header_packets = []
     with open(dst_csv, "w", newline="") as fcsv:
@@ -146,38 +145,37 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     wr.writerows(out_buf)
                     out_buf.clear()
             except Exception as exc:
-                print(f"Packet parse error at offset {off}: {exc}")
+                error_count += 1
                 if(exc.args[0] == "CRC mismatch"):
-                    print(f"CRC mismatch at offset {off}: {exc}")
+                    # print(f"{error_count}. CRC mismatch at offset {off}")
                     crc_failure += 1
                 elif(exc.args[0] == "Missing SOH"):
+                    print(f"{error_count}. Missing SOH at offset {off*100/total_bytes:.2f}%")
                     packet_fail += 1
                 elif(exc.args[0] == "Bad header"):
+                    print(f"{error_count}. Bad header at offset {off*100/total_bytes:.2f}%")
                     other_fail += 1
                 else:
-                    print(f"Other error at offset {off}: {exc}")
+                    print(f"{error_count}. Other error at offset {off*100/total_bytes:.2f}%: {exc}")
+                    other_fail += 1
 
                 # ---------- fast resync ----------
                 pat = b"\xDD\xAA"        # EOF of bad packet + SOF of next
                 mv_slice = data[off:]
                 old_off = off
-                if hasattr(mv_slice, "find"):            # Py ≥ 3.10
-                    nxt = mv_slice.find(pat)
-                    if nxt != -1:
-                        off += nxt + 1                   # keep leading 0xAA
-                        continue
-                else:                                    # Py ≤ 3.9
-                    nxt = data.obj.find(pat, off)        # no extra copy
-                    if nxt != -1:
-                        off = nxt + 1
+                nxt = data.obj.find(pat, off)        # no extra copy
+                if nxt != -1:
+                    off = nxt + 1
 
-                        print(f"Resync at {old_off} → {off} (found EOF)")
-                        print(f"Number of bytes skipped: {off-old_off}")
-                        
-                        mv = memoryview(data)  # shorthand
-                        chunk = mv[old_off:off]
-                        bad_header_packets.append((old_off, off, chunk))
-                        continue
+                    skip_bytes = off - old_off
+                    skip_packets = skip_bytes / 32833
+                    if(skip_packets != 1):
+                        print(f"    Resyncing, skipped {skip_bytes} bytes")
+
+                    mv = memoryview(data)  # shorthand
+                    chunk = mv[old_off:off]
+                    bad_header_packets.append((old_off, off, chunk))
+                    continue
                 # --------------------------------------
 
                 break    # pattern not found → reached end of file
@@ -185,17 +183,17 @@ def process_bin_file(src_bin: str, dst_csv: str,
         # write any remaining rows
         if out_buf:
             wr.writerows(out_buf)
-    print(f"Parsed {packet_ok + packet_fail + crc_failure + other_fail} packets")
+    print("-----------------------------------------------------")
+
+    total_packets = packet_ok + packet_fail + crc_failure + other_fail
+    percent_good = (packet_ok / total_packets) * 100 if total_packets > 0 else 0
+    percent_crc_failure = (crc_failure / total_packets) * 100 if total_packets > 0 else 0
+
+    print(f"Parsed {total_packets} packets ({(off - start_offset)/1000000} MB) ")
     print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed, {crc_failure} CRC failed, {other_fail} other fail")
-    #print total number of bytes processed
-    print(f"Total bytes processed: {off} (from {start_offset})")
     print(f"Bad header packets: {len(bad_header_packets)}")
-    for old_off, off, chunk in bad_header_packets:
-        print(f"Bad header packet at offset {len(chunk)}")
-        # print(f"  {old_off:04X} - {off:04X}: {chunk.hex()}")
-        # # count how many times 0xEEFF appears in the memoryview called chunk
-        # count = chunk.count(b'\xEE\xFF')
-        # print(f"  {old_off:04X} - {off:04X}: {chunk.hex()} (0xEEFF count: {count})")
+    print(f"Percentage of good packets: {percent_good:.2f}%")
+    print(f"Percentage of CRC failures: {percent_crc_failure:.2f}%")
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
