@@ -59,7 +59,7 @@ def check_csv_integrity(csv_path):
             expected_fid = fid
         elif fid != expected_fid:
             print(f"[WARN] Row {row_idx}: frame_id skipped — expected {expected_fid}, got {fid} (cycle {cycle})")
-            num_skipped = (fid - expected_fid + 256 -1) % 256
+            num_skipped = (fid - expected_fid) % 256
             error_counts['frame_id_skipped'] += num_skipped
             expected_fids.append((str(cycle), str(expected_fid)))
             expected_fid = fid

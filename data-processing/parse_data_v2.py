@@ -147,25 +147,26 @@ def process_bin_file(src_bin: str, dst_csv: str,
             except Exception as exc:
                 error_count += 1
                 if(exc.args[0] == "CRC mismatch"):
-                    # print(f"{error_count}. CRC mismatch at offset {off}")
+                    print(f"{error_count}. CRC mismatch at offset {off*100/total_bytes:.2f}%", end="")
                     crc_failure += 1
                 elif(exc.args[0] == "Missing SOH"):
-                    print(f"{error_count}. Missing SOH at offset {off*100/total_bytes:.2f}%")
+                    print(f"{error_count}. Missing SOH at offset {off*100/total_bytes:.2f}% ", end="")
                     packet_fail += 1
                 elif(exc.args[0] == "Bad header"):
-                    print(f"{error_count}. Bad header at offset {off*100/total_bytes:.2f}%")
+                    print(f"{error_count}. Bad header at offset {off*100/total_bytes:.2f}%  ", end="")
                     other_fail += 1
                 else:
-                    print(f"{error_count}. Other error at offset {off*100/total_bytes:.2f}%: {exc}")
+                    print(f"{error_count}. Other error at offset {off*100/total_bytes:.2f}%: {exc}", end="" )
                     other_fail += 1
 
                 # ---------- fast resync ----------
-                pat = b"\xDD\xAA"        # EOF of bad packet + SOF of next
-                mv_slice = data[off:]
+                pat = b"\xAA\x00\x41"        # EOF of bad packet + SOF of next
                 old_off = off
+                off = off+1
+                mv_slice = data[off:]
                 nxt = data.obj.find(pat, off)        # no extra copy
                 if nxt != -1:
-                    off = nxt + 1
+                    off = nxt
 
                     skip_bytes = off - old_off
                     skip_packets = skip_bytes / 32833
