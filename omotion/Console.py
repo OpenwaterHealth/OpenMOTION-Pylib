@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_ERROR
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_ERROR, OW_UNKNOWN
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class MOTIONConsole:
             logger.info("Received Ping from Device.")
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error sending ping")
                 return False
             else:
@@ -238,7 +238,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_DFU)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error setting DFU mode for device")
                 return False
             else:
@@ -272,7 +272,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error resetting device")
                 return False
             else:
@@ -316,7 +316,7 @@ class MOTIONConsole:
             )
             self.uart.clear_buffer()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error scanning I2C mux %d channel %d", mux_index, channel)
                 return []
 
@@ -369,7 +369,7 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error Reading I2C Device")
                 return None, None
 
@@ -424,7 +424,7 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error Writing I2C Device")
                 return False
             else:
@@ -476,7 +476,7 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error setting Fan Speed")
                 return -1
 
@@ -517,7 +517,7 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             # r.print_packet()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error setting HV")
                 return 0.0
 
@@ -574,7 +574,7 @@ class MOTIONConsole:
 
             self.uart.clear_buffer()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error setting RGB LED state")
                 return -1
 
@@ -614,7 +614,7 @@ class MOTIONConsole:
 
             self.uart.clear_buffer()
 
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting RGB LED state")
                 return -1
 
@@ -741,7 +741,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_START_TRIG, data=None)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error starting trigger")
                 return False
             else:
@@ -775,7 +775,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_STOP_TRIG, data=None)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error stopping trigger")
                 return False
             else:
@@ -809,7 +809,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FSYNC, data=None)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error retrieving FSYNC pulse count")
                 return 0
             
@@ -850,7 +850,7 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_LSYNC, data=None)
             self.uart.clear_buffer()
             # r.print_packet()
-            if r.packet_type == OW_ERROR:
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error retrieving LSYNC pulse count")
                 return 0
             if r.data_len == 4:

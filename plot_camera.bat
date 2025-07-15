@@ -19,7 +19,7 @@ python data-processing/check_csv.py
 
 @REM python data-processing/plot_histo_average.py
 
-@REM python data-processing/plot_all_histo_average.py
+python data-processing/plot_all_histo_average.py
 
 @REM python data-processing/plot_single_spectrogram.py
 
