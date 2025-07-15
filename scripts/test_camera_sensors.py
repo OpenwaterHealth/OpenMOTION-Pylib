@@ -14,14 +14,7 @@ from omotion.Interface import MOTIONInterface
 
 
 print("Starting MOTION Sensor Module Test Script...")
-BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
-AUTO_UPLOAD = True
-# MANUAL_UPLOAD = True
-CAMERA_MASK = 0x01
-
-ENABLE_TEST_PATTERN = True
-TEST_PATTERN_ID = 0x04
 
 ## Test Patterns
 # 0 Gradient bars
@@ -29,9 +22,6 @@ TEST_PATTERN_ID = 0x04
 # 2 Squares
 # 3 Continuous Gradient
 # 4 disabled
-
-ENABLE_TEST_PATTERN = True
-TEST_PATTERN_ID = 0x04
 
 ## Test Patterns
 # 0 Gradient bars
@@ -114,7 +104,67 @@ def bytes_to_integers(byte_array):
             integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
         return (integers, hidden_figures)
 
-def run(args):
+def upload_camera_bitstream(interface, auto_upload: bool = False, bitfile: str = None, camera_position: int = 0) -> bool:
+    print("\n[FPGA Configuration Started]")
+
+    if auto_upload:
+        print("Programming camera FPGA using existing firmware (AUTO mode).")
+        if not interface.sensor_module.program_fpga(camera_position=camera_position, manual_process=False):
+            print("Failed to enter SRAM programming mode for camera FPGA.")
+            return False
+        return True
+
+    # Manual upload process
+    if not bitfile:
+        print("Error: No bitfile provided for manual upload.")
+        return False
+
+    print(f"Performing manual FPGA programming with bitfile: {bitfile}")
+    if not interface.sensor_module.reset_camera_sensor(camera_position):
+        print("Failed to reset camera sensor.")
+        return False
+
+    if not interface.sensor_module.activate_camera_fpga(camera_position):
+        print("Failed to activate camera FPGA.")
+        return False
+
+    if not interface.sensor_module.enable_camera_fpga(camera_position):
+        print("Failed to enable camera FPGA.")
+        return False
+
+    if not interface.sensor_module.check_camera_fpga(camera_position):
+        print("Failed to check ID of camera FPGA.")
+        return False
+
+    if not interface.sensor_module.enter_sram_prog_fpga(camera_position):
+        print("Failed to enter SRAM programming mode for camera FPGA.")
+        return False
+
+    if not interface.sensor_module.erase_sram_fpga(camera_position):
+        print("Failed to erase SRAM for camera FPGA.")
+        return False
+
+    print("Sending bitstream to camera FPGA...")
+    if not interface.sensor_module.send_bitstream_fpga(bitfile):
+        print("Failed to send bitstream to camera FPGA.")
+        return False
+
+    if not interface.sensor_module.get_status_fpga(camera_position):
+        print("Failed to get FPGA status after programming.")
+        return False
+
+    if not interface.sensor_module.get_usercode_fpga(camera_position):
+        print("Failed to get FPGA user code.")
+        return False
+
+    if not interface.sensor_module.get_status_fpga(camera_position):
+        print("Failed to get final FPGA status.")
+        return False
+
+    return True
+
+
+def run(args, visualize: bool = True):
     interface = MOTIONInterface()
     console_connected, sensor_connected = interface.is_device_connected()
 
@@ -127,12 +177,12 @@ def run(args):
         print("Ping successful.")
     else:
         print("Ping failed.")
-
-    print(f"Programming camera FPGA on mask 0x{args.mask:02X}.")
-    if not interface.sensor_module.program_fpga(camera_position=args.mask, manual_process=False):
-        print("Failed to enter sram programming mode for camera FPGA.")
-        return False
+        return
     
+    if not upload_camera_bitstream(interface, args.auto, args.bitfile, args.mask):
+        print("FPGA programming failed.")
+        return False
+        
     if args.pattern != 4:
         print(f"Programming camera test pattern {args.pattern} on mask 0x{args.mask:02X}.")
         if not interface.sensor_module.camera_configure_test_pattern(args.mask, args.pattern):
@@ -157,7 +207,9 @@ def run(args):
     bins, hidden_numbers = bytes_to_integers(histogram)
     print(f"Sum of bins: {sum(bins)}")
     print(f"Frame ID: {hidden_numbers[1023]}")
-    plot_10bit_histogram(bins, title="10-bit Histogram")
+
+    if visualize:
+        plot_10bit_histogram(bins, title="10-bit Histogram")
     interface.sensor_module.disconnect()
 
 def main():
@@ -176,8 +228,9 @@ def main():
         print(f"Loading firmware from: {args.bitfile}")
 
     for iteration in range(args.iter):
-        print(f"Iteration {iteration + 1}/{args.iter}: Running pattern {args.pattern} on mask 0x{args.mask:02X}")
-        run(args)
-
+        visualize = (iteration == args.iter - 1)
+        print(f"\nIteration {iteration + 1}/{args.iter}: Running pattern {args.pattern} on mask 0x{args.mask:02X}")
+        run(args, visualize=visualize)
+        
 if __name__ == "__main__":
     main()
