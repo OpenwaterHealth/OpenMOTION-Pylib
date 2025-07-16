@@ -160,7 +160,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     other_fail += 1
 
                 # ---------- fast resync ----------
-                pat = b"\xAA\x00\x41"        # EOF of bad packet + SOF of next
+                pat = b"\xAA\x00"        # EOF of bad packet + SOF of next
                 old_off = off
                 off = off+1
                 mv_slice = data[off:]
