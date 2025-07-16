@@ -118,7 +118,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
         data = memoryview(f.read())  # zero‑copy view
     total_bytes = len(data)
     off = start_offset
-    packet_ok = packet_fail = crc_failure = other_fail = error_count = 0
+    packet_ok = packet_fail = crc_failure = other_fail = bad_header_fail = error_count = 0
     out_buf: List[List] = []
     bad_header_packets = []
     with open(dst_csv, "w", newline="") as fcsv:
@@ -154,7 +154,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     packet_fail += 1
                 elif(exc.args[0] == "Bad header"):
                     print(f"{error_count}. Bad header at offset {off*100/total_bytes:.2f}%  ", end="")
-                    other_fail += 1
+                    bad_header_fail += 1
                 else:
                     print(f"{error_count}. Other error at offset {off*100/total_bytes:.2f}%: {exc}", end="" )
                     other_fail += 1
@@ -170,8 +170,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
 
                     skip_bytes = off - old_off
                     skip_packets = skip_bytes / 32833
-                    if(skip_packets != 1):
-                        print(f"    Resyncing, skipped {skip_bytes} bytes")
+                    print(f"    Resyncing, skipped {skip_bytes} bytes")
 
                     mv = memoryview(data)  # shorthand
                     chunk = mv[old_off:off]
@@ -186,16 +185,17 @@ def process_bin_file(src_bin: str, dst_csv: str,
             wr.writerows(out_buf)
     print("-----------------------------------------------------")
 
-    total_packets = packet_ok + packet_fail + crc_failure + other_fail
+    total_packets = packet_ok + packet_fail + crc_failure + other_fail + bad_header_fail
     percent_good = (packet_ok / total_packets) * 100 if total_packets > 0 else 0
     percent_crc_failure = (crc_failure / total_packets) * 100 if total_packets > 0 else 0
+    perceent_bad_header_fail = (bad_header_fail / total_packets) * 100 if total_packets > 0 else 0
 
     print(f"Parsed {total_packets} packets ({(off - start_offset)/1000000} MB) ")
-    print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed, {crc_failure} CRC failed, {other_fail} other fail")
+    print(f"✅ Done – {packet_ok} packets OK, {packet_fail} failed, {crc_failure} CRC failed, {other_fail} other fail, {bad_header_fail} bad header fail")
     print(f"Bad header packets: {len(bad_header_packets)}")
     print(f"Percentage of good packets: {percent_good:.2f}%")
     print(f"Percentage of CRC failures: {percent_crc_failure:.2f}%")
-
+    print(f"Percentage of bad header failures: {perceent_bad_header_fail:.2f}%")
 # ─── CLI ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     process_bin_file("histogram.bin", "histogram.csv",

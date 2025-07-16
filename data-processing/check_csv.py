@@ -68,11 +68,17 @@ def check_csv_integrity(csv_path):
 
     # --- Summary ---
     print("\n[INFO] Histogram count per cam_id:")
-    print(df['cam_id'].value_counts().sort_index())
+    value_counts = df['cam_id'].value_counts().sort_index()
+    print(value_counts)
 
     print("\n[INFO] Error type counts:")
     for k, v in error_counts.items():
         print(f"  {k}: {v}")
+
+    # Print percentage of skipped frame_ids out of the average value of histogram counts
+    if error_counts['frame_id_skipped'] > 0:
+        skipped_percentage = (error_counts['frame_id_skipped'] / ( value_counts[0] + error_counts['frame_id_skipped'])) * 100
+        print(f"[INFO] Percentage of skipped frame_ids: {skipped_percentage:.2f}%")
     
     # if expected_fids:
     #     print("\n[INFO] Expected frame_ids that were skipped:")
