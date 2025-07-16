@@ -4,11 +4,11 @@ import time
 import json
 import queue
 from omotion.MotionBulkCommand import MOTIONBulkCommand
-from omotion.config import OW_IMU, OW_IMU_ON, OW_IMU_OFF
+from omotion.config import OW_IMU, OW_IMU_ON, OW_IMU_OFF, OW_RESP
 
 EP_SIZE = 512
 
-class MotionComposite(MOTIONBulkCommand):
+class MOTIONComposite(MOTIONBulkCommand):
     def __init__(self, vid, pid, timeout=100, imu_queue=None):
         super().__init__(vid, pid, timeout)
         self.imu_interface = 2
@@ -33,23 +33,31 @@ class MotionComposite(MOTIONBulkCommand):
             raise RuntimeError("IMU IN endpoint not found on interface 2")
 
     def start_imu_stream(self):
-        self.send_packet(
+        r = self.send_packet(
             packetType=OW_IMU,
             command=OW_IMU_ON,
             addr=0,
             reserved=0,
             data=b''
         )
+        if r.packet_type == OW_RESP:
+            print("IMU Stream ON")
+        else:
+            print("IMU ON ERROR")
 
     def stop_imu_stream(self):
-        self.send_packet(
+        r = self.send_packet(
             packetType=OW_IMU,
             command=OW_IMU_OFF,
             addr=0,
             reserved=0,
             data=b''
         )
-    
+        if r.packet_type == OW_RESP:
+            print("IMU Stream OFF")
+        else:
+            print("IMU OFF ERROR")
+            
     def imu_thread_func(self):
         print(f"Reading IMU data from EP 0x{self.imu_ep.bEndpointAddress:X}")
         try:

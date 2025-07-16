@@ -2,7 +2,7 @@ import threading
 import time
 import json
 import queue
-from omotion.MotionComposite import MotionComposite
+from omotion.MotionComposite import MOTIONComposite
 
 # set PYTHONPATH=%cd%;%PYTHONPATH%
 # python scripts\test_bulk.py
@@ -110,7 +110,7 @@ monitor_thread = threading.Thread(
 )
 monitor_thread.start()
 
-with MotionComposite(vid=VID, pid=PID, imu_queue=frame_queue) as motion:
+with MOTIONComposite(vid=VID, pid=PID, imu_queue=frame_queue) as motion:
     try:
         while True:
             time.sleep(1)
