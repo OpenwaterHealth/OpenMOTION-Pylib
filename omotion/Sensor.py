@@ -2,7 +2,7 @@ import logging
 import struct
 
 from omotion import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_IMU_OFF, OW_IMU_ON, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger(__name__)
@@ -323,6 +323,76 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error in imu_get_gyroscope: %s", e)
             raise
+
+    def imu_data_stream_on(self) -> bool:
+        """
+        Turn IMU Data Stream ON.
+
+        Returns:
+            bool: True for success and False for failure.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs or the received data length is invalid.
+        """
+
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the OW_IMU_ON command
+            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_ON)
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error turning IMU data ON")
+                return False
+            else:
+                return True
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def imu_data_stream_off(self) -> bool:
+        """
+        Turn IMU Data Stream OFF.
+
+        Returns:
+            bool: True for success and False for failure.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs or the received data length is invalid.
+        """
+
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the OW_IMU_OFF command
+            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_OFF)
+            self.uart.clear_buffer()
+            # r.print_packet()
+
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error turning IMU data OFF")
+                return False
+            else:
+                return True
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
 
     def reset_camera_sensor(self, camera_position: int) -> bool:
         """

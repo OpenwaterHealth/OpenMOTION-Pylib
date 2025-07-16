@@ -501,6 +501,7 @@ class MotionComposite:
         self.uart_ep_out = None
         self.uart_ep_in = None
         self.histo_ep_in = None
+        self.imu_ep_in = None
 
         self.histo_interface = 1  # default interface index
         self.histo_thread = None
@@ -552,6 +553,14 @@ class MotionComposite:
         self.histo_ep_in = usb.util.find_descriptor(
             histo_intf,
             custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+
+
+        # Set up HISTO interface
+        imu_intf = cfg[(self.imu_interface, 0)]
+        self.imu_ep_in = usb.util.find_descriptor(
+            imu_intf,
+            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+
 
         # Start background threads
         self.stop_event.clear()

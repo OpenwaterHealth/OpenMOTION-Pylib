@@ -37,29 +37,42 @@ def run() -> bool:
         print("\n[1] Ping Sensor Module...")
         response = interface.sensor_module.ping()
         print("Ping successful." if response else "Ping failed.")
+        if not response:
+            return False
 
         # Get Firmware Version
         print("\n[2] Reading Firmware Version...")    
         version = interface.sensor_module.get_version()
         print(f"Firmware Version: {version}")
         
+        # Perform the version check
+        if version == "v1.1.0":
+            print(f"Firmware Version: {version}")
+        else:
+            print(f"Warning: Expected firmware v1.1.0, found {version}")
+            return False                    
 
         # Echo Test
         print("\n[3] Echo Test...")    
         echo_data = b"Hello LIFU!"
         echoed, echoed_len = interface.sensor_module.echo(echo_data)
         if echoed:
-            print(f"Echoed {echoed_len} bytes: {echoed.decode(errors='ignore')}")
+            echoed_str = echoed.decode(errors='ignore')
+            print(f"Echoed {echoed_len} bytes: {echoed_str}")
+            if echo_data != echoed:
+                print("Echo failed.")
+                return False
         else:
             print("Echo failed.")
-            return False\
+            return False
 
         # Toggle LED
         print("\n[4] Toggle LED...")
         led_result = interface.sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
-        if not led_result:             
+        if not led_result:  
             return False
+        
         # Get HWID
         print("\n[5] Read Hardware ID...")
         try:
@@ -82,11 +95,15 @@ def main():
 
     print(f"Iterations: {args.iter}")
 
+    failed = 0
 
     for iteration in range(args.iter):
         visualize = (iteration == args.iter - 1)
         print(f"\nIteration {iteration + 1}/{args.iter}")
-        run()
+        if not run():
+            failed = failed + 1
+        
+    print(f"failed {failed} times out of {args.iter} iterations.")
         
 if __name__ == "__main__":
     main()
