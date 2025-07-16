@@ -22,10 +22,11 @@ def print_worker(print_queue, stop_event):
             print_queue.task_done()
         except queue.Empty:
             continue
-
+        
 def frame_monitor_worker(frame_queue, print_queue, stop_event, stats_interval=1000):
     """Worker thread to monitor frame continuity and calculate bitrate."""
     expected_frame = 1
+    first_frame_seen = None
     total_frames = 0
     dropped_frames = 0
     last_stats_time = time.time()
@@ -38,6 +39,11 @@ def frame_monitor_worker(frame_queue, print_queue, stop_event, stats_interval=10
 
             if 'F' in data:
                 current_frame = data['F']
+
+                if first_frame_seen is None:
+                    first_frame_seen = current_frame
+                    expected_frame = current_frame + 1  # Start continuity from the first seen frame
+
                 total_frames += 1
 
                 # Estimate packet size on first frame
@@ -66,6 +72,7 @@ def frame_monitor_worker(frame_queue, print_queue, stop_event, stats_interval=10
 
                     stats_msg = (
                         f"\n=== Statistics [Frame {total_frames}] ===\n"
+                        f"First Frame Seen: {first_frame_seen}\n"
                         f"Frames: {total_frames}\n"
                         f"Dropped: {dropped_frames} ({dropped_frames/max(1,total_frames)*100:.2f}%)\n"
                         f"Current FPS: {fps:.1f}\n"
@@ -86,6 +93,7 @@ def frame_monitor_worker(frame_queue, print_queue, stop_event, stats_interval=10
 
     print_queue.put(
         f"\n=== Final Statistics ===\n"
+        f"First Frame Seen: {first_frame_seen}\n"
         f"Total Frames: {total_frames}\n"
         f"Dropped Frames: {dropped_frames} ({dropped_frames/max(1,total_frames)*100:.2f}%)\n"
         f"Average FPS: {avg_fps:.1f}\n"

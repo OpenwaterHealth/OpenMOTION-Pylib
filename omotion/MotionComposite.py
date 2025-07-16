@@ -55,7 +55,7 @@ class MotionComposite(MOTIONBulkCommand):
         try:
             while not self.stop_event.is_set():
                 try:
-                    data = self.dev.read(self.imu_ep.bEndpointAddress, EP_SIZE, timeout=10)
+                    data = self.dev.read(self.imu_ep.bEndpointAddress, EP_SIZE, timeout=5)
                     json_bytes = bytes(data)
                     for line in json_bytes.splitlines():
                         try:
