@@ -3,6 +3,8 @@ import time
 import queue
 import argparse
 from omotion.MotionComposite import MOTIONComposite
+from omotion.utils import util_crc16
+
 
 # set PYTHONPATH=%cd%;%PYTHONPATH%
 # python scripts\test_bulk_histo.py --cam 1
@@ -32,7 +34,7 @@ def print_worker(print_queue, stop_event):
             continue
 
 def histo_monitor_worker(histo_queue, print_queue, stop_event, camera_count, stats_interval=600):
-
+    PER_CAMERA_FRAME_BYTES = 4104
     expected_frame_size = 4 + (PER_CAMERA_FRAME_BYTES * camera_count) + 4  # SOF + camera data + EOF
 
     expected_frames = [None] * camera_count
@@ -63,13 +65,23 @@ def histo_monitor_worker(histo_queue, print_queue, stop_event, camera_count, sta
             valid = True
             for cam in range(camera_count):
                 frame_id = int.from_bytes(data[offset:offset+4], 'little')
-                # Skip histogram (4096 bytes)
-                meta_offset = offset + 4 + 4096
-                cam_id = int.from_bytes(data[meta_offset:meta_offset+4], 'little')
+                histogram_offset = offset + 4
+                meta_offset = histogram_offset + 4096
+                meta = int.from_bytes(data[meta_offset:meta_offset+4], 'little')
+                crc = (meta >> 16) & 0xFFFF
+                cam_id = meta & 0xFFFF
 
                 if cam_id != cam:
                     valid = False
                     print_queue.put(f"[HISTO] Bad camera ID {cam_id} at camera {cam}")
+                    break
+
+                # Validate CRC on histogram data
+                histogram_bytes = data[histogram_offset:histogram_offset + 4096]
+                calculated_crc = util_crc16(histogram_bytes)
+                if calculated_crc != crc:
+                    valid = False
+                    print_queue.put(f"[HISTO] CRC FAIL on cam {cam}: expected 0x{crc:04X}, got 0x{calculated_crc:04X}")
                     break
 
                 if expected_frames[cam] is None:
@@ -118,8 +130,6 @@ def histo_monitor_worker(histo_queue, print_queue, stop_event, camera_count, sta
             histo_queue.task_done()
         except queue.Empty:
             continue
-
-
 
 # Start Threads
 printer_thread = threading.Thread(target=print_worker, args=(print_queue, stop_event))
