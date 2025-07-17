@@ -17,6 +17,7 @@ class MOTIONComposite(MOTIONBulkCommand):
         self.imu_thread = None
         self.imu_queue = imu_queue or queue.Queue()
         self.histo_interface = 1
+        self.expected_frame_size = 4112
         self.histo_ep = None
         self.histo_thread = None
         self.histo_queue = histo_queue or queue.Queue()
@@ -50,15 +51,16 @@ class MOTIONComposite(MOTIONBulkCommand):
             raise RuntimeError("IMU IN endpoint not found on interface 2")
             
     def histo_thread_func(self):
-        print(f"Reading HISTO data from EP 0x{self.histo_ep.bEndpointAddress:X}")
+        expected_size = self.expected_frame_size
+        print(f"Reading HISTO data from EP 0x{self.histo_ep.bEndpointAddress:X}, Expected {expected_size} bytes per frame")
         try:
             while not self.stop_event.is_set():
                 try:
-                    data = self.dev.read(self.histo_ep.bEndpointAddress, 4112, timeout=100)
-                    if len(data) != 4112:
-                        continue  # Skip incomplete frames
+                    data = self.dev.read(self.histo_ep.bEndpointAddress, expected_size, timeout=100)
+                    if len(data) != expected_size:
+                        print(f"[HISTO] Skipping incomplete frame ({len(data)} bytes)")
+                        continue
 
-                    # Copy raw data into queue
                     self.histo_queue.put(bytes(data))
 
                 except usb.core.USBError as e:
@@ -70,11 +72,11 @@ class MOTIONComposite(MOTIONBulkCommand):
             usb.util.dispose_resources(self.dev)
             print("\nStopped HISTO read thread.")
 
-
-    def start_histo_thread(self):
+    def start_histo_thread(self, expected_frame_size):
         if self.histo_thread and self.histo_thread.is_alive():
             print("HISTO thread already running.")
             return
+        self.expected_frame_size = expected_frame_size  # Store for the thread to use
         self.stop_event.clear()
         self.histo_thread = threading.Thread(target=self.histo_thread_func, daemon=True)
         self.histo_thread.start()
