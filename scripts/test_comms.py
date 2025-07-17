@@ -3,7 +3,6 @@ import time
 import usb.core
 import usb.util
 import json
-from omotion.Interface import MotionComposite
 import threading
 
 # Run this script with:
@@ -101,64 +100,6 @@ def main_imu_data_stream():
         usb.util.release_interface(dev, 2)
         usb.util.dispose_resources(dev)
 
-def main_histo_dummy_data_stream():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
-    if dev is None:
-        print("Device not found")
-        return
-
-    dev.set_configuration()
-    usb.util.claim_interface(dev, 1)  # Interface #1 for HISTO
-    try:
-        while True:
-            json_str = read_usb_stream(dev, endpoint=EP_IN_HISTO)            
-            if json_str:
-                # print(json_str)
-                str_length = str(json_str.__len__())
-                if(str_length != 32801): print("String length" + str_length)
-                print(json_str[0:4])
-                with open("my_file.bin", "wb") as binary_file:
-                    binary_file.write(json_str)                
-                # for line in json_str.splitlines():
-                #     try:
-                #         data = json.loads(line)
-                #         print("Received JSON:", data)
-                #     except json.JSONDecodeError:
-                #         print(f"Invalid JSON: {line}")                
-            else:
-                print("No data received.")
-                # 25ms update rate, so sleep accordingly or adjust as needed
-            time.sleep(0.0125)
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
-        usb.util.release_interface(dev, 1)
-        usb.util.dispose_resources(dev)
-
-
-# ---- Main ----
-def main():
-    myUart = MotionComposite(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
-    if myUart == None:
-        print("Error establishing uart object")
-        sys.exit(1)
-
-    myUart.check_usb_status()
-    if myUart.is_connected():
-        print("MOTION MOTIONSensor connected.")
-    else:
-        print("MOTION MOTIONSensor NOT Connected.")
-
-    echo_data = b"Hello VCP COMMS, we want to test the length past 64 bytes which is the max packet size for FS!"
-
-    r = myUart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
-    myUart.clear_buffer()
-    if r.data_len > 0:
-        print(f"Received {r}")
-        print(f"Echoed: {r.data.decode(errors='ignore')}")
-    else:
-        print("Uart command error")
-
-
 def threaded_imu_stream(dev):
     usb.util.claim_interface(dev, 2)
     try:
@@ -196,78 +137,6 @@ def threaded_histo_stream(dev):
         print(f"[HISTO] Exception: {e}")
     finally:
         usb.util.release_interface(dev, 1)
-
-def threaded_uart_work():
-    try:
-        myUart = MotionComposite(vid=VID, pid=PID, baudrate=921600, timeout=5, desc="sensor", demo_mode=False, async_mode=False)
-        if myUart is None:
-            print("Error establishing uart object")
-            return
-
-        myUart.check_usb_status()
-        if myUart.is_connected():
-            print("[UART] MOTION Sensor connected.")
-        else:
-            print("[UART] MOTION Sensor NOT Connected.")
-            return
-
-        echo_data = b"Hello VCP COMMS, we want to test the length past 64 bytes which is the max packet size for FS!"
-        r = myUart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
-        myUart.clear_buffer()
-
-        if r.data_len > 0:
-            print(f"[UART] Received: {r}")
-            print(f"[UART] Echoed: {r.data.decode(errors='ignore')}")
-        else:
-            print("[UART] Command error")
-    except Exception as e:
-        print(f"[UART] Exception: {e}")
-
-def run_both_streams():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
-    if dev is None:
-        print("Device not found")
-        return
-
-    dev.set_configuration()
-
-    t1 = threading.Thread(target=threaded_imu_stream, args=(dev,), daemon=True)
-    t2 = threading.Thread(target=threaded_histo_stream, args=(dev,), daemon=True)
-
-    t1.start()
-    t2.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Exiting...")
-        usb.util.dispose_resources(dev)
-
-def run_all_streams():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
-    if dev is None:
-        print("Device not found")
-        return
-
-    dev.set_configuration()
-    print("set config")
-    t_imu = threading.Thread(target=threaded_imu_stream, args=(dev,), daemon=True)
-    t_histo = threading.Thread(target=threaded_histo_stream, args=(dev,), daemon=True)
-    t_uart = threading.Thread(target=threaded_uart_work, daemon=True)
-
-    # t_imu.start()
-    # t_histo.start()
-    t_uart.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Exiting...")
-        stop_event.set()
-        time.sleep(0.1)
-        usb.util.dispose_resources(dev)
 
 if __name__ == "__main__":
     enumerate_and_print_interfaces(vid=VID, pid=PID)

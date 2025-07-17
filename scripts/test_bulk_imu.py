@@ -5,7 +5,7 @@ import queue
 from omotion.MotionComposite import MOTIONComposite
 
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_bulk.py
+# python scripts\test_bulk_imu.py
 
 # Your VID/PID
 VID = 0x0483
@@ -112,10 +112,21 @@ monitor_thread.start()
 
 with MOTIONComposite(vid=VID, pid=PID, imu_queue=frame_queue) as motion:
     try:
+        # Start IMU manually
+        motion.start_imu_stream()
+        motion.start_imu_thread()
+
         while True:
             time.sleep(1)
+
     except KeyboardInterrupt:
         print("Stopping...")
+
+        # Stop IMU manually
+        motion.stop_imu_stream()
+        motion.stop_imu_thread()
+
+        # Stop worker threads
         stop_event.set()
         monitor_thread.join()
         printer_thread.join()
