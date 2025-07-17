@@ -86,17 +86,18 @@ class MOTIONComposite(MOTIONBulkCommand):
         if self.histo_thread:
             self.histo_thread.join()
 
-    def start_histo_stream(self):
+    def start_histo_stream(self, camera_count=1, frame_size=4112):
+        print(f'Camera Count {camera_count}')
         r = self.send_packet(
             packetType=OW_CMD,
             command=OW_CMD_HISTO_ON,
-            addr=0,
+            addr=camera_count,
             reserved=0,
             data=b''
         )
         if r.packet_type == OW_RESP:
             print("HISTO Stream ON")
-            self.start_histo_thread()
+            self.start_histo_thread(expected_frame_size=frame_size)
         else:
             print("HISTO ON ERROR")
 
@@ -183,4 +184,3 @@ class MOTIONComposite(MOTIONBulkCommand):
         self.stop_imu_stream()
         self.stop_imu_thread()
         self.stop_histo_stream()
-        self.stop_histo_thread()

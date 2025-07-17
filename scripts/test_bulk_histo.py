@@ -1,13 +1,22 @@
 import threading
 import time
 import queue
+import argparse
 from omotion.MotionComposite import MOTIONComposite
 
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_bulk_histo.py
+# python scripts\test_bulk_histo.py --cam 1
 
 VID = 0x0483
 PID = 0x5A5A
+PER_CAMERA_FRAME_BYTES = 4104
+
+parser = argparse.ArgumentParser(description="HISTO Streaming Test")
+parser.add_argument('--cam', type=int, default=1, help='Number of cameras to expect (default 1)')
+args = parser.parse_args()
+
+CAMERA_COUNT = args.cam
+expected_frame_size = 4 + (PER_CAMERA_FRAME_BYTES * CAMERA_COUNT) + 4  # SOF + data + EOF
 
 histo_queue = queue.Queue()
 print_queue = queue.Queue()
@@ -22,55 +31,83 @@ def print_worker(print_queue, stop_event):
         except queue.Empty:
             continue
 
-def histo_monitor_worker(histo_queue, print_queue, stop_event, stats_interval=600):
-    expected_frame = None
-    total_frames = 0
-    dropped_frames = 0
+def histo_monitor_worker(histo_queue, print_queue, stop_event, camera_count, stats_interval=600):
+
+    expected_frame_size = 4 + (PER_CAMERA_FRAME_BYTES * camera_count) + 4  # SOF + camera data + EOF
+
+    expected_frames = [None] * camera_count
+    dropped_frames = [0] * camera_count
     bad_frames = 0
+    total_frames = 0
     last_stats_time = time.time()
     total_bytes_received = 0
-    sample_packet_size = 4112  # Fixed size for your HISTO frames
 
     while not stop_event.is_set():
         try:
             data = histo_queue.get(timeout=0.1)
-            if len(data) != sample_packet_size:
+            if len(data) != expected_frame_size:
                 bad_frames += 1
                 histo_queue.task_done()
                 continue
 
-            sof = int.from_bytes(data[0:4], 'little')
-            frame_id = int.from_bytes(data[4:8], 'little')
-            meta = int.from_bytes(data[4104:4108], 'little')
-            eof = int.from_bytes(data[4108:4112], 'little')
-
-            if sof != 0xDEADBEEF or eof != 0xFEEDBEEF:
+            offset = 0
+            sof = int.from_bytes(data[offset:offset+4], 'little')
+            if sof != 0xDEADBEEF:
                 bad_frames += 1
-                print_queue.put(f"[HISTO] Bad markers SOF=0x{sof:X}, EOF=0x{eof:X}")
+                print_queue.put(f"[HISTO] Bad SOF marker 0x{sof:X}")
+                histo_queue.task_done()
+                continue
+
+            offset += 4  # Skip SOF marker
+
+            valid = True
+            for cam in range(camera_count):
+                frame_id = int.from_bytes(data[offset:offset+4], 'little')
+                # Skip histogram (4096 bytes)
+                meta_offset = offset + 4 + 4096
+                cam_id = int.from_bytes(data[meta_offset:meta_offset+4], 'little')
+
+                if cam_id != cam:
+                    valid = False
+                    print_queue.put(f"[HISTO] Bad camera ID {cam_id} at camera {cam}")
+                    break
+
+                if expected_frames[cam] is None:
+                    expected_frames[cam] = frame_id + 1
+                else:
+                    if frame_id != expected_frames[cam]:
+                        dropped_frames[cam] += 1
+                        print_queue.put(
+                            f"[HISTO] Camera {cam} dropped frame! Expected {expected_frames[cam]}, got {frame_id}"
+                        )
+                    expected_frames[cam] = frame_id + 1
+
+                offset += PER_CAMERA_FRAME_BYTES
+
+            eof = int.from_bytes(data[offset:offset+4], 'little')
+            if eof != 0xFEEDBEEF:
+                bad_frames += 1
+                print_queue.put(f"[HISTO] Bad EOF marker 0x{eof:X}")
+                histo_queue.task_done()
+                continue
+
+            if not valid:
+                bad_frames += 1
                 histo_queue.task_done()
                 continue
 
             total_frames += 1
-            total_bytes_received += sample_packet_size
-
-            if expected_frame is None:
-                expected_frame = frame_id + 1
-            else:
-                if frame_id != expected_frame:
-                    dropped_frames += 1
-                    print_queue.put(
-                        f"[HISTO] Dropped frame(s)! Expected {expected_frame}, got {frame_id}"
-                    )
-                expected_frame = frame_id + 1
+            total_bytes_received += expected_frame_size
 
             if total_frames % stats_interval == 0:
                 elapsed = time.time() - last_stats_time
                 fps = stats_interval / elapsed if elapsed > 0 else 0
-                bitrate_bps = (sample_packet_size * stats_interval * 8) / elapsed if elapsed > 0 else 0
+                bitrate_bps = (expected_frame_size * stats_interval * 8) / elapsed if elapsed > 0 else 0
 
+                drops_summary = ", ".join(f"Cam{c}: {d}" for c, d in enumerate(dropped_frames))
                 print_queue.put(
-                    f"\n=== HISTO Statistics [Frame {total_frames}] ===\n"
-                    f"Dropped Frames: {dropped_frames}\n"
+                    f"\n=== HISTO Statistics [Block Frame {total_frames}] ===\n"
+                    f"{drops_summary}\n"
                     f"Bad Frames: {bad_frames}\n"
                     f"FPS: {fps:.1f}\n"
                     f"Estimated Bitrate: {bitrate_bps / 1000:.2f} kbps\n"
@@ -83,31 +120,28 @@ def histo_monitor_worker(histo_queue, print_queue, stop_event, stats_interval=60
             continue
 
 
+
+# Start Threads
 printer_thread = threading.Thread(target=print_worker, args=(print_queue, stop_event))
 printer_thread.start()
 
 monitor_thread = threading.Thread(
     target=histo_monitor_worker,
-    args=(histo_queue, print_queue, stop_event, 600)
+    args=(histo_queue, print_queue, stop_event, CAMERA_COUNT, 800)
 )
 monitor_thread.start()
 
+
+# Main Streaming Session
 with MOTIONComposite(vid=VID, pid=PID, histo_queue=histo_queue) as motion:
     try:
-        # Start HISTO manually
-        motion.start_histo_stream()
-        motion.start_histo_thread()
+        motion.start_histo_stream(camera_count=CAMERA_COUNT, frame_size=expected_frame_size)
 
         while True:
             time.sleep(1)
 
     except KeyboardInterrupt:
         print("Stopping...")
-
-        # Stop HISTO manually
-        motion.stop_histo_stream()
-        motion.stop_histo_thread()
-
         stop_event.set()
         monitor_thread.join()
         printer_thread.join()
