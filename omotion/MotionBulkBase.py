@@ -103,8 +103,41 @@ class MOTIONBulkBase:
             usb.util.dispose_resources(self.right_dev)
             self.right_dev = None
 
-    def send(self, data: bytes):
-        self.right_dev.write(self.right_ep_out.bEndpointAddress, data, timeout=self.timeout)
+    def send(self, data: bytes, side="right"):
+        sides = []
+        if side == "right":
+            sides.append(("right", self.right_dev, self.right_ep_out))
+        elif side == "left":
+            sides.append(("left", self.left_dev, self.left_ep_out))
+        elif side == "both":
+            sides.extend([
+                ("left", self.left_dev, self.left_ep_out),
+                ("right", self.right_dev, self.right_ep_out),
+            ])
+        else:
+            raise ValueError(f"Unknown side: {side}")
 
-    def receive(self, length=512):
-        return self.right_dev.read(self.right_ep_in.bEndpointAddress, length, timeout=self.timeout)
+        for name, dev, ep_out in sides:
+            if dev is None or ep_out is None:
+                raise RuntimeError(f"{name.title()} device is not connected.")
+            dev.write(ep_out.bEndpointAddress, data, timeout=self.timeout)
+            log.debug(f"Sent {len(data)} bytes to {name} side.")
+
+    def receive(self, length=512, side="right"):
+        dev, ep_in = (self.right_dev, self.right_ep_in) if side == "right" else (self.left_dev, self.left_ep_in)
+        if dev is None or ep_in is None:
+            raise RuntimeError(f"{side.title()} device is not connected.")
+        data = dev.read(ep_in.bEndpointAddress, length, timeout=self.timeout)
+        log.debug(f"Received {len(data)} bytes from {side} side.")
+        return data
+    
+    def summary(self):
+        if self.left_dev:
+            log.info("Left device connected on Bus %d Address %d", self.left_dev.bus, self.left_dev.address)
+        else:
+            log.info("Left device not connected.")
+        if self.right_dev:
+            log.info("Right device connected on Bus %d Address %d", self.right_dev.bus, self.right_dev.address)
+        else:
+            log.info("Right device not connected.")
+            

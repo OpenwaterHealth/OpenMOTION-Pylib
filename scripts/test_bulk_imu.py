@@ -110,7 +110,7 @@ monitor_thread = threading.Thread(
 )
 monitor_thread.start()
 
-with MOTIONComposite(vid=VID, pid=PID, imu_queue=frame_queue) as motion:
+with MOTIONComposite(vid=VID, pid=PID, left_imu_queue=None, right_imu_queue=frame_queue) as motion:
     try:
         # Start IMU manually
         motion.start_imu_stream()

@@ -10,13 +10,17 @@ from omotion.config import OW_CAMERA, OW_CAMERA_FSIN, OW_CMD, OW_CMD_HISTO_OFF, 
 EP_SIZE = 512
 
 class MOTIONComposite(MOTIONBulkCommand):
-    def __init__(self, vid, pid, timeout=100, imu_queue=None, histo_queue=None):
+    def __init__(self, vid, pid, timeout=100, left_imu_queue=None, right_imu_queue=None, histo_queue=None):
         super().__init__(vid, pid, timeout)
         self.imu_interface = 2
-        self.imu_ep = None
-        self.stop_event = threading.Event()
-        self.imu_thread = None
-        self.imu_queue = imu_queue or queue.Queue()
+        self.left_imu_ep = None
+        self.right_imu_ep = None
+        self.left_stop_event = threading.Event()
+        self.right_stop_event = threading.Event()
+        self.left_imu_thread = None
+        self.right_imu_thread = None
+        self.left_imu_queue = left_imu_queue or queue.Queue()
+        self.right_imu_queue = right_imu_queue or queue.Queue()
         self.histo_interface = 1
         self.expected_frame_size = 4112
         self.histo_ep = None
@@ -26,36 +30,40 @@ class MOTIONComposite(MOTIONBulkCommand):
     def connect(self):
         super().connect()  # Claims interface 0
 
-        cfg = self.right_dev.get_active_configuration()
-    
-        # Claim HISTO Interface
-        histo_intf = cfg[(self.histo_interface, 0)]
-        usb.util.claim_interface(self.right_dev, self.histo_interface)
-        for ep in histo_intf:
-            if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
-                self.histo_ep = ep
-                break
+        if self.left_dev is not None:
+            pass
 
-        if not self.histo_ep:
-            raise RuntimeError("HISTO IN endpoint not found on interface 1")
+        if self.right_dev is not None:
+            right_cfg = self.right_dev.get_active_configuration()
         
-        # Claim IMU Interface
-        imu_intf = cfg[(self.imu_interface, 0)]
-        usb.util.claim_interface(self.right_dev, self.imu_interface)
+            # Claim HISTO Interface
+            right_histo_intf = right_cfg[(self.histo_interface, 0)]
+            usb.util.claim_interface(self.right_dev, self.histo_interface)
+            for ep in right_histo_intf:
+                if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
+                    self.histo_ep = ep
+                    break
 
-        for ep in imu_intf:
-            if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
-                self.imu_ep = ep
-                break
+            if not self.histo_ep:
+                raise RuntimeError("HISTO IN endpoint not found on interface 1")
+            
+            # Claim IMU Interface
+            right_imu_intf = right_cfg[(self.imu_interface, 0)]
+            usb.util.claim_interface(self.right_dev, self.imu_interface)
 
-        if not self.imu_ep:
-            raise RuntimeError("IMU IN endpoint not found on interface 2")
+            for ep in right_imu_intf:
+                if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
+                    self.right_imu_ep = ep
+                    break
+
+            if not self.right_imu_ep:
+                raise RuntimeError("IMU IN endpoint not found on interface 2")
             
     def histo_thread_func(self):
         expected_size = self.expected_frame_size
         print(f"Reading HISTO data from EP 0x{self.histo_ep.bEndpointAddress:X}, Expected {expected_size} bytes per frame")
         try:
-            while not self.stop_event.is_set():
+            while not self.right_stop_event.is_set():
                 try:
                     data = self.right_dev.read(self.histo_ep.bEndpointAddress, expected_size, timeout=500)
                     if len(data) != expected_size:
@@ -78,12 +86,12 @@ class MOTIONComposite(MOTIONBulkCommand):
             print("HISTO thread already running.")
             return
         self.expected_frame_size = expected_frame_size  # Store for the thread to use
-        self.stop_event.clear()
+        self.right_stop_event.clear()
         self.histo_thread = threading.Thread(target=self.histo_thread_func, daemon=True)
         self.histo_thread.start()
 
     def stop_histo_thread(self):
-        self.stop_event.set()
+        self.right_stop_event.set()
         if self.histo_thread:
             self.histo_thread.join()
 
@@ -142,16 +150,16 @@ class MOTIONComposite(MOTIONBulkCommand):
             print("IMU OFF ERROR")
             
     def imu_thread_func(self):
-        print(f"Reading IMU data from EP 0x{self.imu_ep.bEndpointAddress:X}")
+        print(f"Reading Right IMU data from EP 0x{self.right_imu_ep.bEndpointAddress:X}")
         try:
-            while not self.stop_event.is_set():
+            while not self.right_stop_event.is_set():
                 try:
-                    data = self.right_dev.read(self.imu_ep.bEndpointAddress, EP_SIZE, timeout=25)
+                    data = self.right_dev.read(self.right_imu_ep.bEndpointAddress, EP_SIZE, timeout=25)
                     json_bytes = bytes(data)
                     for line in json_bytes.splitlines():
                         try:
                             parsed = json.loads(line)
-                            self.imu_queue.put(parsed)
+                            self.right_imu_queue.put(parsed)
                         except json.JSONDecodeError:
                             print("[IMU] Invalid JSON:", line)
                 except usb.core.USBError as e:
@@ -164,17 +172,17 @@ class MOTIONComposite(MOTIONBulkCommand):
             print("\nStopped IMU read thread.")
 
     def start_imu_thread(self):
-        if self.imu_thread and self.imu_thread.is_alive():
+        if self.right_imu_thread and self.right_imu_thread.is_alive():
             print("IMU thread already running.")
             return
-        self.stop_event.clear()
-        self.imu_thread = threading.Thread(target=self.imu_thread_func, daemon=True)
-        self.imu_thread.start()
+        self.right_stop_event.clear()
+        self.right_imu_thread = threading.Thread(target=self.imu_thread_func, daemon=True)
+        self.right_imu_thread.start()
 
     def stop_imu_thread(self):
-        self.stop_event.set()
-        if self.imu_thread:
-            self.imu_thread.join()
+        self.right_stop_event.set()
+        if self.right_imu_thread:
+            self.right_imu_thread.join()
 
     def __enter__(self):
         self.connect()
