@@ -18,8 +18,10 @@ class MOTIONBulkBase:
         self.left_dev = None
         self.right_dev = None
         self.interface = 0
-        self.ep_in = None
-        self.ep_out = None
+        self.right_ep_in = None
+        self.right_ep_out = None
+        self.left_ep_in = None
+        self.left_ep_out = None
         self.response_queues = {}
         self.response_lock = threading.Lock()
 
@@ -47,25 +49,49 @@ class MOTIONBulkBase:
             except Exception as e:
                 print(f'exception {e}')
 
-        self.right_dev.set_configuration()
-        cfg = self.right_dev.get_active_configuration()
-        intf = cfg[(self.interface, 0)]
+        if self.right_dev is not None:
+            self.right_dev.set_configuration()
+            right_cfg = self.right_dev.get_active_configuration()
+            right_intf = right_cfg[(self.interface, 0)]
 
-        usb.util.claim_interface(self.right_dev, self.interface)
-        self.ep_out = usb.util.find_descriptor(
-            intf,
-            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-        )
-        self.ep_in = usb.util.find_descriptor(
-            intf,
-            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-        )
+            usb.util.claim_interface(self.right_dev, self.interface)
+            self.right_ep_out = usb.util.find_descriptor(
+                right_intf,
+                custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+            )
+            self.right_ep_in = usb.util.find_descriptor(
+                right_intf,
+                custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+            )
 
-        if not self.ep_out or not self.ep_in:
-            raise RuntimeError("Bulk IN/OUT endpoints not found.")
+            if not self.right_ep_out or not self.right_ep_in:
+                raise RuntimeError("Right Bulk IN/OUT endpoints not found.")
 
-        log.info("Connected to Interface #%d, EP_IN=0x%02X, EP_OUT=0x%02X",
-                 self.interface, self.ep_in.bEndpointAddress, self.ep_out.bEndpointAddress)
+            log.info("Connected to Right Interface #%d, EP_IN=0x%02X, EP_OUT=0x%02X",
+                    self.interface, self.right_ep_in.bEndpointAddress, self.right_ep_out.bEndpointAddress)
+
+        if self.left_dev is not None:
+            self.left_dev.set_configuration()
+            left_cfg = self.left_dev.get_active_configuration()
+            left_intf = left_cfg[(self.interface, 0)]
+
+            usb.util.claim_interface(self.left_dev, self.interface)
+            self.left_ep_out = usb.util.find_descriptor(
+                left_intf,
+                custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+            )
+            self.left_ep_in = usb.util.find_descriptor(
+                left_intf,
+                custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+            )
+
+            if not self.left_ep_out or not self.left_ep_in:
+                raise RuntimeError("Left Bulk IN/OUT endpoints not found.")
+
+            log.info("Connected to Left Interface #%d, EP_IN=0x%02X, EP_OUT=0x%02X",
+                    self.interface, self.left_ep_in.bEndpointAddress, self.left_ep_out.bEndpointAddress)
+
+
 
     def disconnect(self):
         if self.left_dev:
@@ -78,7 +104,7 @@ class MOTIONBulkBase:
             self.right_dev = None
 
     def send(self, data: bytes):
-        self.right_dev.write(self.ep_out.bEndpointAddress, data, timeout=self.timeout)
+        self.right_dev.write(self.right_ep_out.bEndpointAddress, data, timeout=self.timeout)
 
     def receive(self, length=512):
-        return self.right_dev.read(self.ep_in.bEndpointAddress, length, timeout=self.timeout)
+        return self.right_dev.read(self.right_ep_in.bEndpointAddress, length, timeout=self.timeout)
