@@ -146,7 +146,8 @@ monitor_thread.start()
 with MOTIONComposite(vid=VID, pid=PID, histo_queue=histo_queue) as motion:
     try:
         motion.start_histo_stream(camera_count=CAMERA_COUNT, frame_size=expected_frame_size)
-
+        time.sleep(0.01)
+        motion.start_histo_thread(expected_frame_size=expected_frame_size)
         while True:
             time.sleep(1)
 

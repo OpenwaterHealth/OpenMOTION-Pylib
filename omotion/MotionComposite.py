@@ -1,10 +1,11 @@
 import threading
 import usb.core
+import usb.util
 import time
 import json
 import queue
 from omotion.MotionBulkCommand import MOTIONBulkCommand
-from omotion.config import OW_CMD, OW_CMD_HISTO_OFF, OW_CMD_HISTO_ON, OW_IMU, OW_IMU_ON, OW_IMU_OFF, OW_RESP
+from omotion.config import OW_CAMERA, OW_CAMERA_FSIN, OW_CMD, OW_CMD_HISTO_OFF, OW_CMD_HISTO_ON, OW_IMU, OW_IMU_ON, OW_IMU_OFF, OW_RESP
 
 EP_SIZE = 512
 
@@ -25,11 +26,11 @@ class MOTIONComposite(MOTIONBulkCommand):
     def connect(self):
         super().connect()  # Claims interface 0
 
-        cfg = self.dev.get_active_configuration()
+        cfg = self.right_dev.get_active_configuration()
     
         # Claim HISTO Interface
         histo_intf = cfg[(self.histo_interface, 0)]
-        usb.util.claim_interface(self.dev, self.histo_interface)
+        usb.util.claim_interface(self.right_dev, self.histo_interface)
         for ep in histo_intf:
             if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
                 self.histo_ep = ep
@@ -40,7 +41,7 @@ class MOTIONComposite(MOTIONBulkCommand):
         
         # Claim IMU Interface
         imu_intf = cfg[(self.imu_interface, 0)]
-        usb.util.claim_interface(self.dev, self.imu_interface)
+        usb.util.claim_interface(self.right_dev, self.imu_interface)
 
         for ep in imu_intf:
             if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
@@ -56,7 +57,7 @@ class MOTIONComposite(MOTIONBulkCommand):
         try:
             while not self.stop_event.is_set():
                 try:
-                    data = self.dev.read(self.histo_ep.bEndpointAddress, expected_size, timeout=100)
+                    data = self.right_dev.read(self.histo_ep.bEndpointAddress, expected_size, timeout=500)
                     if len(data) != expected_size:
                         print(f"[HISTO] Skipping incomplete frame ({len(data)} bytes)")
                         continue
@@ -68,8 +69,8 @@ class MOTIONComposite(MOTIONBulkCommand):
                         print(f"[HISTO] USB error: {e}")
                     time.sleep(0.01)
         finally:
-            usb.util.release_interface(self.dev, self.histo_interface)
-            usb.util.dispose_resources(self.dev)
+            usb.util.release_interface(self.right_dev, self.histo_interface)
+            usb.util.dispose_resources(self.right_dev)
             print("\nStopped HISTO read thread.")
 
     def start_histo_thread(self, expected_frame_size):
@@ -97,7 +98,6 @@ class MOTIONComposite(MOTIONBulkCommand):
         )
         if r.packet_type == OW_RESP:
             print("HISTO Stream ON")
-            self.start_histo_thread(expected_frame_size=frame_size)
         else:
             print("HISTO ON ERROR")
 
@@ -146,7 +146,7 @@ class MOTIONComposite(MOTIONBulkCommand):
         try:
             while not self.stop_event.is_set():
                 try:
-                    data = self.dev.read(self.imu_ep.bEndpointAddress, EP_SIZE, timeout=25)
+                    data = self.right_dev.read(self.imu_ep.bEndpointAddress, EP_SIZE, timeout=25)
                     json_bytes = bytes(data)
                     for line in json_bytes.splitlines():
                         try:
@@ -159,8 +159,8 @@ class MOTIONComposite(MOTIONBulkCommand):
                         print(f"[IMU] USB error: {e}")
                     time.sleep(0.01)
         finally:
-            usb.util.release_interface(self.dev, self.imu_interface)
-            usb.util.dispose_resources(self.dev)
+            usb.util.release_interface(self.right_dev, self.imu_interface)
+            usb.util.dispose_resources(self.right_dev)
             print("\nStopped IMU read thread.")
 
     def start_imu_thread(self):
