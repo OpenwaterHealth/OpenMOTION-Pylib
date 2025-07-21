@@ -52,8 +52,12 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     if len(pkt) < MIN_PACKET_SIZE:
         raise ValueError("Packet too small")
 
+    max_packet_size = 32833  # 6 + 3 + 1024 * 4 + 1 + 4 + 1
+    
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
     if sof != SOF or pkt_type != 0x00:
+        #make a copy of the packet as bytes
+        pkt_bad = pkt.tobytes()
         raise ValueError("Bad header")
     pkt_len_2 = len(pkt)
     if pkt_len > len(pkt):
@@ -147,7 +151,7 @@ def process_bin_file(src_bin: str, dst_csv: str,
             except Exception as exc:
                 error_count += 1
                 if(exc.args[0] == "CRC mismatch"):
-                    print(f"{error_count}. CRC mismatch at offset {off*100/total_bytes:.2f}%", end="")
+                    print(f"{error_count}. CRC mismatch at offset {off*100/total_bytes:.2f}%  ", end="")
                     crc_failure += 1
                 elif(exc.args[0] == "Missing SOH"):
                     print(f"{error_count}. Missing SOH at offset {off*100/total_bytes:.2f}% ", end="")

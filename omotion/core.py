@@ -888,7 +888,7 @@ class MotionComposite:
         the caller.
         """
         ep      = self.histo_ep_in.bEndpointAddress
-        max_pkt = self.histo_ep_in.wMaxPacketSize
+        max_pkt = 32833
 
         while not self.stop_event.is_set():
             try:
@@ -905,6 +905,7 @@ class MotionComposite:
 
             except usb.core.USBError as err:
                 # ── Benign timeout: retry unless user asked to stop.
+                print("....") 
                 if err.errno in {errno.ETIMEDOUT, getattr(usb.core, "USBError", None)}:
                     if not self.stop_event.is_set():
                         continue
