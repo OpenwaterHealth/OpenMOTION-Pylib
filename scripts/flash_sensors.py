@@ -4,14 +4,14 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_sensor_if.py
+# python scripts\flash_sensors.py
 
 print("Starting MOTION Sensor Module Test Script...")
 BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
+CAMERA_MASK = 0x04
 #if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
 if len(sys.argv) > 1:
     try:

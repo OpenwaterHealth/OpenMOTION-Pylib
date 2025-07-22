@@ -1,5 +1,7 @@
 import asyncio
+import queue
 import sys
+import threading
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,8 +18,23 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 #BIT_FILE = "bitstream/testcustom_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
-CAMERA_MASK = 0xFF
+CAMERA_MASK = 0x04
 SCAN_TIME = 10  # seconds
+
+file_writer_queue = queue.Queue()
+histo_queue = queue.Queue()
+stop_event = threading.Event()
+
+def file_writer(file_writer_queue, stop_event, filename = 'histogram.bin'):
+    with open(filename, 'wb') as f:
+        while not stop_event.is_set() or not file_writer_queue.empty():
+            try:
+                msg = file_writer_queue.get(timeout=0.1)
+                if msg:
+                    f.write(msg)
+                file_writer_queue.task_done()
+            except queue.Empty:
+                continue
 
 #if there is a camera mask argued in to the program, replace CAMERA_MASK with that after checking that it is less than 0xFF
 if len(sys.argv) > 1:
@@ -130,7 +147,13 @@ except Exception as e:
 # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK,0):
 #     print("Failed to set grayscale test pattern for camera FPGA.")
 
+# Start Threads
+printer_thread = threading.Thread(target=file_writer, args=(file_writer_queue, stop_event))
+printer_thread.start()
 #step 1 enable cameras - this means turn on streaming mode and start the reception
+
+interface._sensor_uart.start_histo_thread(expected_frame_size=4112, histo_queue=file_writer_queue)
+
 print("\n[3] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
@@ -143,17 +166,13 @@ try:
 except Exception as e:
     print(f"FSIN activate error: {e}")
     
-# step 3 recieve frames -- for now do this in a dummy mode way
-print("\n[5] Rx Frames...")
-
-
-time.sleep(5)
-print("ON")
 time.sleep(SCAN_TIME-10) # Wait for a moment to ensure FSIN is activated
-print("OFF")
-time.sleep(5) # Wait for a few frames to be received
-# step 4 turn off frame sync
+
 try:
+
+    print("\n[6] Deactivate FSIN...")
+    fsin_result = interface.sensor_module.disable_aggregator_fsin()
+    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
 
     # step 5 disable cameras, cancel reception etc
     print("\n[7] Deactivate Cameras...")
@@ -162,9 +181,10 @@ try:
 
     time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
 
-    print("\n[6] Deactivate FSIN...")
-    fsin_result = interface.sensor_module.disable_aggregator_fsin()
-    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
+    print("Stopping...")
+    stop_event.set()
+    printer_thread.join()
+
 except Exception as e:
     print(f"FSIN activate error: {e}")
 

@@ -501,6 +501,8 @@ class MotionComposite:
         self.uart_ep_out = None
         self.uart_ep_in = None
         self.histo_ep_in = None
+        self.histo_expected_size = 4112
+        self.histo_queue = None
 
         self.histo_interface = 1  # default interface index
         self.histo_thread = None
@@ -546,17 +548,6 @@ class MotionComposite:
 
         if self.uart_ep_out is None or self.uart_ep_in is None:
             raise ValueError("Bulk endpoints not found")
-
-        # Set up HISTO interface
-        histo_intf = cfg[(self.histo_interface, 0)]
-        self.histo_ep_in = usb.util.find_descriptor(
-            histo_intf,
-            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
-
-        # Start background threads
-        self.stop_event.clear()
-        self.histo_thread = threading.Thread(target=self._stream_histo_data, daemon=True)
-        self.histo_thread.start()
 
         # self.imu_thread = threading.Thread(target=self._stream_imu_data, daemon=True)
         # self.imu_thread.start()
@@ -838,7 +829,7 @@ class MotionComposite:
         """Clear the read buffer."""
         self.read_buffer = []
 
-    def stream(self, out_path: str = "histogram.bin") -> None:
+    def histo_thread_func(self) -> None:
         """
         Claim the interface and start draining the histogram endpoint into
         *out_path*.  The outer loop exits when:
@@ -846,86 +837,49 @@ class MotionComposite:
             • a USB stall/IO error persists after one recovery attempt, or
             • the device sends a “short packet” (protocol end‑marker).
         """
-        # 1.  Ensure the file is empty before we begin.
-        open(out_path, "wb").close()
-
-        try:
+        try:            
+            cfg = self.dev.get_active_configuration()
+            histo_intf = cfg[(self.histo_interface, 0)]
             usb.util.claim_interface(self.dev, self.histo_interface)
+            for ep in histo_intf:
+                if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
+                    self.histo_ep_in = ep
+                    break
 
-            with open(out_path, "ab", buffering=0) as fh:  # unbuffered
-                while not self.stop_event.is_set():
-                    # honour a pause request without hammering the CPU
-                    if self.pause_event.is_set():
-                        time.sleep(self._PAUSE_POLL_S)
+            while not self.stop_event.is_set():
+                try:
+                    data = self.dev.read(self.histo_ep_in.bEndpointAddress, self.histo_expected_size, timeout=100)
+                    if len(data) != self.histo_expected_size:
+                        print(f"[HISTO] Skipping incomplete frame ({len(data)} bytes)")
                         continue
+                    else:
+                        if self.histo_queue:
+                            self.histo_queue.put(bytes(data))
 
-                    try:
-                        for chunk in self._iter_chunks():
-                            fh.write(chunk)
-
-                    except Exception:
-                        # Any unrecovered USBError already logged in _iter_chunks
-                        break
+                except usb.core.USBError as e:
+                    if e.errno != 110:
+                        print(f"[HISTO] USB error: {e}")
+                    time.sleep(0.01)
 
         finally:
-            # Always give the kernel the handle back.
-            try:
-                usb.util.release_interface(self.dev, self.histo_interface)
-            finally:
-                # In case the device was re‑enumerated we may get
-                # “Resource busy” – ignore it.
-                usb.util.dispose_resources(self.dev)
-    def _iter_chunks(self):
-        """
-        Generator that yields raw endpoint payloads.
+            usb.util.release_interface(self.dev, self.histo_interface)
+            usb.util.dispose_resources(self.dev)
+            print("\nStopped HISTO read thread.")
+            
+    def start_histo_thread(self, expected_frame_size, histo_queue:queue):
+        if self.histo_thread and self.histo_thread.is_alive():
+            print("HISTO thread already running.")
+            return
+        self.histo_queue = histo_queue
+        self.histo_expected_size = expected_frame_size  # Store for the thread to use
+        self.stop_event.clear()
+        self.histo_thread = threading.Thread(target=self.histo_thread_func, daemon=True)
+        self.histo_thread.start()
 
-        It stops and returns normally when a short packet (< max‑packet‑size)
-        is encountered (end‑of‑transfer in USB bulk semantics).
-
-        If a recoverable timeout occurs (errno.ETIMEDOUT) we simply retry; for
-        other USB errors we *try once* to clear the stall/halt and retry the
-        failing read.  When that also fails we raise, handing control back to
-        the caller.
-        """
-        ep      = self.histo_ep_in.bEndpointAddress
-        max_pkt = 32833
-
-        while not self.stop_event.is_set():
-            try:
-                payload = self.dev.read(ep, max_pkt, timeout=self._USB_TIMEOUT_MS)
-
-                # Convert to a plain bytes object (payload may be array or mv)
-                payload = payload.tobytes() if hasattr(payload, "tobytes") else bytes(payload)
-                yield payload
-
-                if len(payload) < max_pkt:
-                    if(len(payload) != 0):
-                        log.debug(f"Short packet – end of histogram block , length: {len(payload)}")
-                    return
-
-            except usb.core.USBError as err:
-                # ── Benign timeout: retry unless user asked to stop.
-                print("....") 
-                if err.errno in {errno.ETIMEDOUT, getattr(usb.core, "USBError", None)}:
-                    if not self.stop_event.is_set():
-                        continue
-                    return
-
-                # ── Anything else: try to recover one time by clearing the halt
-                log.warning("USB error on EP 0x%02X (%s); attempting recovery", ep, err)
-                try:
-                    self.dev.clear_halt(ep)
-                    time.sleep(0.01)
-                    continue  # retry the read once
-                except usb.core.USBError as clear_err:
-                    log.error("Failed to clear HALT: %s", clear_err)
-                    raise  # unrecoverable – let caller deal with it
-
-    def _stream_histo_data(self):
-        try:
-            self.stream("histogram.bin")
-        except Exception as exc:
-            log.exception("[HISTO] streaming aborted: %s", exc)
+    def stop_histo_thread(self):
+        self.stop_event.set()
+        if self.histo_thread:
+            self.histo_thread.join()
 
     def _stream_imu_data(self):
         try:
