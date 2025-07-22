@@ -82,7 +82,7 @@ try:
 except Exception as e:
     print(f"FSIN activate error: {e}")
 # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
-mask = 0x89
+mask = 0xFF
 
 try:
     status_map = interface.sensor_module.get_camera_status(mask)
