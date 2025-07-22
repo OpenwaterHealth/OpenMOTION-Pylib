@@ -152,7 +152,7 @@ printer_thread = threading.Thread(target=file_writer, args=(file_writer_queue, s
 printer_thread.start()
 #step 1 enable cameras - this means turn on streaming mode and start the reception
 
-interface._sensor_uart.start_histo_thread(expected_frame_size=4112, histo_queue=file_writer_queue)
+interface._sensor_uart.start_histo_thread(expected_frame_size=32833, histo_queue=file_writer_queue)
 
 print("\n[3] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
@@ -166,7 +166,7 @@ try:
 except Exception as e:
     print(f"FSIN activate error: {e}")
     
-time.sleep(SCAN_TIME-10) # Wait for a moment to ensure FSIN is activated
+time.sleep(SCAN_TIME) # Wait for a moment to ensure FSIN is activated
 
 try:
 

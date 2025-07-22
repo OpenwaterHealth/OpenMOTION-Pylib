@@ -501,7 +501,7 @@ class MotionComposite:
         self.uart_ep_out = None
         self.uart_ep_in = None
         self.histo_ep_in = None
-        self.histo_expected_size = 4112
+        self.histo_expected_size = 32833
         self.histo_queue = None
 
         self.histo_interface = 1  # default interface index
@@ -849,10 +849,7 @@ class MotionComposite:
             while not self.stop_event.is_set():
                 try:
                     data = self.dev.read(self.histo_ep_in.bEndpointAddress, self.histo_expected_size, timeout=100)
-                    if len(data) != self.histo_expected_size:
-                        print(f"[HISTO] Skipping incomplete frame ({len(data)} bytes)")
-                        continue
-                    else:
+                    if(data):
                         if self.histo_queue:
                             self.histo_queue.put(bytes(data))
 
