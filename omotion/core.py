@@ -16,7 +16,7 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.DEBUG)
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
