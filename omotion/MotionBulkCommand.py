@@ -1,6 +1,6 @@
 import time
 from omotion.MotionBulkBase import MOTIONBulkBase
-from omotion.config import OW_ACK, OW_CMD_NOP
+from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE
 from omotion.UartPacket import UartPacket
 from omotion.utils import util_crc16
 import usb.core
@@ -14,7 +14,7 @@ class MOTIONBulkCommand(MOTIONBulkBase):
         self.running = False
         self.packet_count = 0
 
-    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.010) -> UartPacket:        
+    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=1) -> UartPacket:        
 
         if id is None:
             self.packet_count += 1
@@ -49,7 +49,7 @@ class MOTIONBulkCommand(MOTIONBulkBase):
                 resp = self.receive()
                 if resp:
                     data.extend(resp)
-                    if data and data[-1] == 0xEE:  # OW_END_BYTE
+                    if data and data[-1] == OW_END_BYTE:
                         break
             except usb.core.USBError:
                 continue

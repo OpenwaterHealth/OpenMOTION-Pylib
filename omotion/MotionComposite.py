@@ -4,12 +4,13 @@ import time
 import json
 import queue
 from omotion.MotionBulkCommand import MOTIONBulkCommand
+from omotion.MotionSensorModule import MOTIONSensorModule
 from omotion.config import OW_CMD, OW_CMD_HISTO_OFF, OW_CMD_HISTO_ON, OW_IMU, OW_IMU_ON, OW_IMU_OFF, OW_RESP
 
 EP_SIZE = 512
 
 class MOTIONComposite(MOTIONBulkCommand):
-    def __init__(self, vid, pid, timeout=100, imu_queue=None, histo_queue=None):
+    def __init__(self, vid=0x0483, pid=0x5A5A, timeout=100, imu_queue=None, histo_queue=None):
         super().__init__(vid, pid, timeout)
         self.imu_interface = 2
         self.imu_ep = None
@@ -21,6 +22,7 @@ class MOTIONComposite(MOTIONBulkCommand):
         self.histo_ep = None
         self.histo_thread = None
         self.histo_queue = histo_queue or queue.Queue()
+        self.sensor_module = None
 
     def connect(self):
         super().connect()  # Claims interface 0
@@ -49,7 +51,9 @@ class MOTIONComposite(MOTIONBulkCommand):
 
         if not self.imu_ep:
             raise RuntimeError("IMU IN endpoint not found on interface 2")
-            
+        
+        self.sensor_module = MOTIONSensorModule(comms=self)
+
     def histo_thread_func(self):
         expected_size = self.expected_frame_size
         print(f"Reading HISTO data from EP 0x{self.histo_ep.bEndpointAddress:X}, Expected {expected_size} bytes per frame")

@@ -1,7 +1,7 @@
 import asyncio, time
 import argparse
 import sys
-from omotion.Interface import MOTIONInterface
+from omotion.MotionComposite import MOTIONComposite
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
@@ -18,20 +18,8 @@ def parse_args():
 def run(dur=1) -> bool:
     try:
         # Create an instance of the Sensor interface
-        interface = MOTIONInterface()
-
-        # Check if console and sensor are connected
-        console_connected, sensor_connected = interface.is_device_connected()
-
-        if console_connected and sensor_connected:
-            print("MOTION System fully connected.")
-        else:
-            print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR: {sensor_connected}')
-            
-        if not sensor_connected:
-            print("Sensor Module not connected.")
-            interface.sensor_module.disconnect()
-            return False
+        interface = MOTIONComposite()
+        interface.connect()
 
         # Ping Test
         print("\n[1] Ping Sensor Module...")
@@ -54,6 +42,7 @@ def run(dur=1) -> bool:
         if not fsin_result:
             return False
         
+        interface.disconnect()
     except Exception as e:
         print(f"Exception caught: {e}")
         return False
