@@ -4,7 +4,7 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_sensor_if.py
+# python scripts\flash_sensors.py
 
 print("Starting MOTION Sensor Module Test Script...")
 BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"

@@ -713,7 +713,7 @@ class MotionComposite:
             packet.extend(crc_value.to_bytes(2, 'big'))
             packet.append(OW_END_BYTE)
 
-            print("Sending packet: ", packet.hex())
+            logging.debug("Sending packet: ", packet.hex())
             self.pause_event.set()
             self._tx(packet)
 

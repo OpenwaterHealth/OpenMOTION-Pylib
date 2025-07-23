@@ -46,10 +46,10 @@ def run() -> bool:
         print(f"Firmware Version: {version}")
         
         # Perform the version check
-        if version == "v1.1.0":
+        if version == "v1.2.2":
             print(f"Firmware Version: {version}")
         else:
-            print(f"Warning: Expected firmware v1.1.0, found {version}")
+            print(f"Warning: Expected firmware v1.2.2, found {version}")
             return False                    
 
         # Echo Test
@@ -73,6 +73,15 @@ def run() -> bool:
         if not led_result:  
             return False
         
+        time.sleep(.5)
+
+        # Toggle LED
+        print("\n[4] Toggle LED...")
+        led_result = interface.sensor_module.toggle_led()
+        print("LED toggled." if led_result else "LED toggle failed.")
+        if not led_result:  
+            return False
+        
         # Get HWID
         print("\n[5] Read Hardware ID...")
         try:
@@ -85,6 +94,22 @@ def run() -> bool:
         except Exception as e:
             print(f"HWID read error: {e}")
 
+        # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
+        mask = 0xFF
+
+        try:
+            status_map = interface.sensor_module.get_camera_status(mask)
+
+            if status_map is None:
+                print("Failed to get camera status.")
+            else:
+                for cam_id, status in status_map.items():
+                    readable = interface.sensor_module.decode_camera_status(status)
+                    print(f"Camera {cam_id} Status: 0x{status:02X} -> {readable}")
+
+        except Exception as e:
+            print(f"Error reading camera status: {e}")
+            return False
         return True
     except Exception as e:
         print(f"Exception caught: {e}")
