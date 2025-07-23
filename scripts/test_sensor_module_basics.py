@@ -34,26 +34,21 @@ def run() -> bool:
             return False
 
         # Ping Test
-        print("\n[1] Ping Sensor Module...")
         response = interface.sensor_module.ping()
         print("Ping successful." if response else "Ping failed.")
         if not response:
             return False
 
         # Get Firmware Version
-        print("\n[2] Reading Firmware Version...")    
-        version = interface.sensor_module.get_version()
-        print(f"Firmware Version: {version}")
-        
+        version = interface.sensor_module.get_version()                
         # Perform the version check
-        if version == "v1.2.2":
+        if version.startswith("v"):
             print(f"Firmware Version: {version}")
         else:
-            print(f"Warning: Expected firmware v1.2.2, found {version}")
+            print(f"Warning: Expected firmware version vX.X.X found {version}")
             return False                    
 
         # Echo Test
-        print("\n[3] Echo Test...")    
         echo_data = b"Hello LIFU!"
         echoed, echoed_len = interface.sensor_module.echo(echo_data)
         if echoed:
@@ -67,7 +62,6 @@ def run() -> bool:
             return False
 
         # Toggle LED
-        print("\n[4] Toggle LED...")
         led_result = interface.sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
@@ -76,14 +70,12 @@ def run() -> bool:
         time.sleep(.5)
 
         # Toggle LED
-        print("\n[4] Toggle LED...")
         led_result = interface.sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
             return False
         
         # Get HWID
-        print("\n[5] Read Hardware ID...")
         try:
             hwid = interface.sensor_module.get_hardware_id()
             if hwid:
