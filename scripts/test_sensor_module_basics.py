@@ -15,24 +15,8 @@ def parse_args():
 
     return args
 
-def run() -> bool:
+def run(interface) -> bool:
     try:
-        # Create an instance of the Sensor interface
-        interface = MOTIONInterface()
-
-        # Check if console and sensor are connected
-        console_connected, sensor_connected = interface.is_device_connected()
-
-        if console_connected and sensor_connected:
-            print("MOTION System fully connected.")
-        else:
-            print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR: {sensor_connected}')
-            
-        if not sensor_connected:
-            print("Sensor Module not connected.")
-            interface.sensor_module.disconnect()
-            return False
-
         # Ping Test
         response = interface.sensor_module.ping()
         print("Ping successful." if response else "Ping failed.")
@@ -114,13 +98,31 @@ def main():
 
     failed = 0
 
+    # Create an instance of the Sensor interface
+    interface = MOTIONInterface()
+
+    # Check if console and sensor are connected
+    console_connected, sensor_connected = interface.is_device_connected()
+
+    if console_connected and sensor_connected:
+        print("MOTION System fully connected.")
+    else:
+        print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR: {sensor_connected}')
+        
+    if not sensor_connected:
+        print("Sensor Module not connected.")
+        interface.sensor_module.disconnect()
+        return False
+
     for iteration in range(args.iter):
         visualize = (iteration == args.iter - 1)
         print(f"\nIteration {iteration + 1}/{args.iter}")
-        if not run():
+        if not run(interface):
             failed = failed + 1
         
     print(f"failed {failed} times out of {args.iter} iterations.")
         
+    interface.sensor_module.disconnect()
+    
 if __name__ == "__main__":
     main()
