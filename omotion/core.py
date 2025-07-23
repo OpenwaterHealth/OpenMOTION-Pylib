@@ -398,6 +398,10 @@ class MOTIONUart:
 
             if id is None:
                 self.packet_count += 1
+                
+                if self.packet_count >= 0xFFFF:
+                    self.packet_count = 1
+                    
                 id = self.packet_count
 
             if data:
@@ -756,6 +760,10 @@ class MotionComposite:
 
             if id is None:
                 self.packet_count += 1
+                
+                if self.packet_count >= 0xFFFF:
+                    self.packet_count = 1
+
                 id = self.packet_count
 
             if data:
