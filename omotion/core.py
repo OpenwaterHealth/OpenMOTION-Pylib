@@ -796,7 +796,7 @@ class MotionComposite:
             
             if not self.asyncMode:
                 packet = self.read_packet(timeout=timeout)
-                time.sleep(0.001)
+                time.sleep(0.0001)
                 self.pause_event.clear()
                 return packet
             else:

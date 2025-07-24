@@ -70,9 +70,14 @@ def run(interface) -> bool:
         except Exception as e:
             print(f"HWID read error: {e}")
 
+        imu_temp = interface.sensor_module.imu_get_temperature()  
+        print(f"Temperature Data - IMU Temp: {imu_temp}")
+
+        accel = interface.sensor_module.imu_get_accelerometer()
+        print(f"Accel (raw): X={accel[0]}, Y={accel[1]}, Z={accel[2]}")
+
         # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
         mask = 0xFF
-
         try:
             status_map = interface.sensor_module.get_camera_status(mask)
 
