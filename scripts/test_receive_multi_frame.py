@@ -171,15 +171,16 @@ time.sleep(SCAN_TIME) # Wait for a moment to ensure FSIN is activated
 try:
 
     print("\n[6] Deactivate FSIN...")
-    fsin_result = interface.sensor_module.disable_aggregator_fsin()
-    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
 
     # step 5 disable cameras, cancel reception etc
     print("\n[7] Deactivate Cameras...")
     if not interface.sensor_module.disable_camera(CAMERA_MASK):
         print("Failed to enable cameras.")
 
-    time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
+    time.sleep(.01) # wait a few frames for the camera to exhaust itself before disabling the camera
+    fsin_result = interface.sensor_module.disable_aggregator_fsin()
+    
+    print("FSIN deactivated." if fsin_result else "FSIN deactivation failed.")
 
     print("Stopping...")
     stop_event.set()
