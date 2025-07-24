@@ -25,8 +25,6 @@ def run(interface) -> bool:
         if not response:
             return False
 
-        time.sleep(0.01)
-
         # Get Firmware Version
         version = interface.sensor_module.get_version()                
         # Perform the version check
@@ -35,8 +33,6 @@ def run(interface) -> bool:
         else:
             print(f"Warning: Expected firmware version vX.X.X found {version}")
             return False              
-
-        time.sleep(0.01)
 
         # Echo Test
         echo_data = b"Hello MOTION!"
@@ -51,24 +47,18 @@ def run(interface) -> bool:
             print("Echo failed.")
             return False
 
-        time.sleep(0.01)
-
         # Toggle LED
         led_result = interface.sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
             return False
         
-        time.sleep(0.01)
-
         # Toggle LED
         led_result = interface.sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
             return False
         
-        time.sleep(0.01)
-
         # Get HWID
         try:
             hwid = interface.sensor_module.get_hardware_id()
@@ -79,8 +69,6 @@ def run(interface) -> bool:
                 return False
         except Exception as e:
             print(f"HWID read error: {e}")
-
-        time.sleep(0.01)
 
         # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
         mask = 0xFF
