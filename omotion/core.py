@@ -16,7 +16,7 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.ERROR)
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
@@ -398,7 +398,7 @@ class MOTIONUart:
 
             if id is None:
                 self.packet_count += 1
-                
+
                 if self.packet_count >= 0xFFFF:
                     self.packet_count = 1
                     
@@ -793,9 +793,10 @@ class MotionComposite:
             print("Sending packet: ", packet.hex())
             self.pause_event.set()
             self._tx(packet)
-
+            time.sleep(0.001)
             if not self.asyncMode:
                 packet = self.read_packet(timeout=timeout)
+                time.sleep(0.001)
                 self.pause_event.clear()
                 return packet
             else:
