@@ -113,14 +113,19 @@ def main():
         print("Sensor Module not connected.")
         exit(1)
 
+    start_time = time.time()  # Start timer
+
     for iteration in range(args.iter):
-        visualize = (iteration == args.iter - 1)
         print(f"\nIteration {iteration + 1}/{args.iter}")
         if not run(interface):
             failed = failed + 1
+
+    end_time = time.time()  # End timer
         
-    print(f"failed {failed} times out of {args.iter} iterations.")
-    
+    elapsed_time = end_time - start_time
+    print(f"\nCompleted {args.iter} iterations in {elapsed_time:.2f} seconds.")
+    print(f"Failed {failed} times out of {args.iter} iterations.")
+        
    # time.sleep(.5)
     
    # metrics = interface.sensor_module.command_status(reset_status=True)
