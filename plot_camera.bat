@@ -9,9 +9,13 @@ del histogram.csv
     echo PYTHONPATH is currently set to: %PYTHONPATH%
 )
 
-python scripts\flash_sensors.py FF
+python scripts\flash_sensors.py F0
 
-python scripts\test_receive_multi_frame.py FF 30
+@REM python scripts\test_receive_frame.py --cam 5 --plot
+
+@REM python scripts\test_receive_multi_frame.py 04 10
+
+python scripts\test_receive_multi_frame_console.py F0 120
 
 python data-processing/parse_data_v2.py
 
@@ -19,7 +23,7 @@ python data-processing/check_csv.py
 
 @REM python data-processing/plot_histo_average.py
 
-@REM python data-processing/plot_all_histo_average.py
+python data-processing/plot_all_histo_average.py
 
 @REM python data-processing/plot_single_spectrogram.py
 
