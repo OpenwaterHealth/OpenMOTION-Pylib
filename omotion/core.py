@@ -793,7 +793,8 @@ class MotionComposite:
             print("Sending packet: ", packet.hex())
             self.pause_event.set()
             self._tx(packet)
-            
+            time.sleep(0.0001)
+
             if not self.asyncMode:
                 packet = self.read_packet(timeout=timeout)
                 time.sleep(0.0001)
