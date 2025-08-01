@@ -207,5 +207,5 @@ class MOTIONInterface(SignalWrapper):
 
     @staticmethod
     def get_sdk_version() -> str:
-        return "1.0.10"
+        return "1.1.0"
         
