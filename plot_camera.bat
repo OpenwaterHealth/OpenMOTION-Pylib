@@ -7,9 +7,9 @@ python scripts\flash_sensors.py 99
 
 @REM python scripts\test_receive_frame.py --cam 5 --plot
 
-python scripts\test_receive_multi_frame.py 66 120
+@REM python scripts\test_receive_multi_frame.py 66 120
 
-@REM python scripts\test_receive_multi_frame_console.py 99 120
+python scripts\test_receive_multi_frame_console.py 99 120
 
 python data-processing/parse_data_v2.py
 

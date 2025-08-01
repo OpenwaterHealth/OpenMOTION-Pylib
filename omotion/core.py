@@ -431,9 +431,12 @@ class MOTIONUart:
 
             # print("Sending packet: ", packet.hex())
             self._tx(packet)
-
+            time.sleep(0.0001)
+            
             if not self.asyncMode:
-                return self.read_packet(timeout=timeout)
+                ret_packet = self.read_packet(timeout=timeout)
+                time.sleep(0.0001)            
+                return ret_packet
             else:
                 response_queue = queue.Queue()
                 with self.response_lock:
