@@ -10,7 +10,7 @@ import usb.core
 import usb.util
 import serial
 import serial.tools.list_ports
-
+from .signal_wrapper import SignalWrapper, PYQT_AVAILABLE
 from .config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
 from .utils import util_crc16
 
@@ -145,8 +145,9 @@ class MOTIONSignal:
             except Exception as e:
                 log.error("Signal emit error in slot %s: %s", slot, e)
 
-class MOTIONUart:
+class MOTIONUart(SignalWrapper):
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
+        super().__init__() 
         self.vid = vid
         self.pid = pid
         self.port = None
@@ -163,11 +164,6 @@ class MOTIONUart:
         self.last_rx = time.monotonic()
         self.read_buffer = []
         self.serial = None
-
-        # Signals: each signal emits (descriptor, port or data)
-        self.signal_connect = MOTIONSignal()
-        self.signal_disconnect = MOTIONSignal()
-        self.signal_data_received = MOTIONSignal()
 
         if async_mode:
             self.loop = asyncio.get_event_loop()
@@ -482,12 +478,13 @@ class MOTIONUart:
         log.info("    Serial Port: %s", self.port)
         log.info("    Serial Baud: %s", self.baudrate)
 
-class MotionComposite:
+class MotionComposite(SignalWrapper):
     
     _USB_TIMEOUT_MS = 100          # tweak once, used everywhere
     _PAUSE_POLL_S  = 0.01          # sleep while paused
 
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
+        super().__init__() 
         self.vid = vid
         self.pid = pid
         self.port = None
@@ -521,10 +518,6 @@ class MotionComposite:
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
 
-        # Signals: each signal emits (descriptor, port or data)
-        self.signal_connect = MOTIONSignal()
-        self.signal_disconnect = MOTIONSignal()
-        self.signal_data_received = MOTIONSignal()
 
         self.attempt_count = 0
 

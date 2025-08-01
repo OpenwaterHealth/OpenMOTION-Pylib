@@ -5,15 +5,12 @@ from omotion.Console import MOTIONConsole
 from omotion.Sensor import MOTIONSensor
 from omotion.core import MOTIONUart, MOTIONSignal, MotionComposite
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
-from omotion.signal_wrapper import SignalWrapper
+from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
 class MOTIONInterface(SignalWrapper):
     
-    signal_connect: MOTIONSignal = MOTIONSignal()
-    signal_disconnect: MOTIONSignal = MOTIONSignal()
-    signal_data_received: MOTIONSignal = MOTIONSignal()
     sensor_module: MOTIONSensor = None
     
     def __init__(self, vid: int = 0x0483, sensor_pid: int = SENSOR_MODULE_PID, console_pid: int = CONSOLE_MODULE_PID, baudrate: int = 921600, timeout: int = 30, run_async: bool = False, demo_mode: bool = False) -> None:
@@ -43,12 +40,14 @@ class MOTIONInterface(SignalWrapper):
         self.sensor_module = MOTIONSensor(uart=self._sensor_uart)
 
         # Connect signals to internal handlers
-        if self._async_mode:
+        if PYQT_AVAILABLE:
             if self._console_uart:
+                logger.info("Connecting console UART signals to MOTIONInterface")
                 self._console_uart.signal_connect.connect(self.signal_connect.emit)
                 self._console_uart.signal_disconnect.connect(self.signal_disconnect.emit)
                 self._console_uart.signal_data_received.connect(self.signal_data_received.emit)
             if self._sensor_uart:
+                logger.info("Connecting sensor UART signals to MOTIONInterface")
                 self._sensor_uart.signal_connect.connect(self.signal_connect.emit)
                 self._sensor_uart.signal_disconnect.connect(self.signal_disconnect.emit)
                 self._sensor_uart.signal_data_received.connect(self.signal_data_received.emit)
