@@ -5,17 +5,20 @@ from omotion.Console import MOTIONConsole
 from omotion.Sensor import MOTIONSensor
 from omotion.core import MOTIONUart, MOTIONSignal, MotionComposite
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
+from omotion.signal_wrapper import SignalWrapper
 
 logger = logging.getLogger(__name__)
 
-class MOTIONInterface:
+class MOTIONInterface(SignalWrapper):
+    
     signal_connect: MOTIONSignal = MOTIONSignal()
     signal_disconnect: MOTIONSignal = MOTIONSignal()
     signal_data_received: MOTIONSignal = MOTIONSignal()
     sensor_module: MOTIONSensor = None
     
     def __init__(self, vid: int = 0x0483, sensor_pid: int = SENSOR_MODULE_PID, console_pid: int = CONSOLE_MODULE_PID, baudrate: int = 921600, timeout: int = 30, run_async: bool = False, demo_mode: bool = False) -> None:
-        
+        super().__init__()
+            
         # Store parameters in instance variables
         self.vid = vid
         self.sensor_pid = sensor_pid

@@ -1,21 +1,15 @@
 del histogram.bin
 del histogram.csv
 
-:: check if the current directory is in PYTHONPATH
-@echo off "%PYTHONPATH%"=="" (
-    echo PYTHONPATH is not set, setting it to the current directory.
-    set PYTHONPATH=%cd%;%PYTHONPATH%
-) else (
-    echo PYTHONPATH is currently set to: %PYTHONPATH%
-)
 
-python scripts\flash_sensors.py F0
+
+python scripts\flash_sensors.py 99
 
 @REM python scripts\test_receive_frame.py --cam 5 --plot
 
-@REM python scripts\test_receive_multi_frame.py 04 10
+python scripts\test_receive_multi_frame.py 66 120
 
-python scripts\test_receive_multi_frame_console.py F0 120
+@REM python scripts\test_receive_multi_frame_console.py 99 120
 
 python data-processing/parse_data_v2.py
 

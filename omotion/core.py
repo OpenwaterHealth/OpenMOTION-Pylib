@@ -16,7 +16,7 @@ from .utils import util_crc16
 
 # Set up logging
 log = logging.getLogger("UART")
-logging.basicConfig(level=logging.ERROR)
+log.setLevel(logging.INFO)  # or INFO depending on what you want to see
 
 class UartPacket:
     def __init__(self, id=None, packet_type=None, command=None, addr=None, reserved=None, data=[], buffer=None):
@@ -186,6 +186,7 @@ class MOTIONUart:
                 baudrate=self.baudrate,
                 timeout=self.timeout
             )
+
             log.info("Connected to UART on port %s.", self.port)
             self.signal_connect.emit(self.descriptor, self.port)
 
@@ -563,7 +564,7 @@ class MotionComposite:
             self.read_thread.start()
 
         self.running = True
-        print(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
+        log.info(f'Connected to {self.desc} with VID: {self.vid}, PID: {self.pid}')
         self.signal_connect.emit(self.desc, "bulk_usb")
 
     def disconnect(self):
@@ -587,6 +588,7 @@ class MotionComposite:
             self.uart_ep_out = None
         if self.histo_ep_in:
             self.histo_ep_in = None
+        log.info(f'Disconnected from {self.desc} with VID: {self.vid}, PID: {self.pid}')
         self.signal_disconnect.emit(self.desc, "bulk_usb")
 
     def is_connected(self) -> bool:
@@ -793,6 +795,7 @@ class MotionComposite:
             print("Sending packet: ", packet.hex())
             self.pause_event.set()
             self._tx(packet)
+            time.sleep(0.0001)
             
             if not self.asyncMode:
                 packet = self.read_packet(timeout=timeout)
