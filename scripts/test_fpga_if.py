@@ -18,10 +18,6 @@ def main():
     else:
         print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR (LEFT,RIGHT): {left_sensor}, {right_sensor}')
         
-    if not left_sensor and not right_sensor:
-        print("Sensor Modules not connected.")
-        exit(1)
-
     if not console_connected:
         print("Console Module not connected.")
         exit(1)
