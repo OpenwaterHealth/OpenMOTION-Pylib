@@ -60,6 +60,7 @@ class CommInterface(USBInterfaceBase):
         
         tx_bytes = uart_packet.to_bytes()
         self.write(tx_bytes)
+        time.sleep(0.0005)
 
         # Wait for response
         start = time.monotonic()
@@ -68,6 +69,7 @@ class CommInterface(USBInterfaceBase):
         while time.monotonic() - start < timeout:
             try:
                 resp = self.receive()
+                time.sleep(0.0005)
                 if resp:
                     data.extend(resp)
                     if data and data[-1] == 0xEE:  # OW_END_BYTE
