@@ -72,7 +72,7 @@ class CommInterface(USBInterfaceBase):
                 time.sleep(0.0005)
                 if resp:
                     data.extend(resp)
-                    if data and data[-1] == 0xEE:  # OW_END_BYTE
+                    if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
                         break
             except usb.core.USBError:
                 continue

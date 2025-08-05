@@ -3,24 +3,19 @@ import asyncio
 import time
 import queue
 import threading
+import logging
+import asyncio
 import serial
 import serial.tools.list_ports
 
-from omotion import UartPacket
-from .signal_wrapper import SignalWrapper, PYQT_AVAILABLE
-from .config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
-from .utils import util_crc16
-import time
-import threading
-import queue
-from .signal_wrapper import SignalWrapper
-import logging
-import asyncio
+from omotion.UartPacket import UartPacket
+from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
+from omotion.config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
+from omotion.utils import util_crc16
 
 # Set up logging
 logger = logging.getLogger("UART")
 logger.setLevel(logging.INFO)  # or INFO depending on what you want to see
-
 
 class MOTIONUart(SignalWrapper):
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):

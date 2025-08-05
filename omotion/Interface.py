@@ -84,7 +84,37 @@ class MOTIONInterface(SignalWrapper):
             logger.error("Error stopping monitoring: %s", e)
             raise e
 
+    def run_on_sensors(self, func_name: str, *args, **kwargs) -> dict[str, any]:
+        """
+        Run a MOTIONSensor method on all connected sensors and return results.
 
+        Args:
+            func_name (str): Name of the MOTIONSensor method to call.
+            *args: Positional arguments to pass to the method.
+            **kwargs: Keyword arguments to pass to the method.
+
+        Returns:
+            dict[str, any]: Dictionary mapping sensor position ('left', 'right') 
+                            to the method's return value, or None if not connected.
+        """
+        results = {}
+        for name, sensor in self.sensors.items():
+            if sensor and sensor.is_connected():
+                method = getattr(sensor, func_name, None)
+                if callable(method):
+                    try:
+                        results[name] = method(*args, **kwargs)
+                    except Exception as e:
+                        logger.error(f"Error running {func_name} on {name}: {e}")
+                        results[name] = None
+                else:
+                    logger.error(f"{func_name} is not a valid MOTIONSensor method")
+                    results[name] = None
+            else:
+                logger.warning(f"{name} sensor not connected.")
+                results[name] = None
+        return results
+    
     def is_device_connected(self) -> tuple[bool, bool, bool]:
         """
         Check if the console, left sensor, and right sensor are connected.
@@ -225,7 +255,6 @@ class MOTIONInterface(SignalWrapper):
     @staticmethod
     def get_sdk_version() -> str:
         return "1.1.0"
-        
 
     @staticmethod
     def acquire_motion_interface():
