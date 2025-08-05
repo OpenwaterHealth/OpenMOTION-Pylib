@@ -226,3 +226,14 @@ class MOTIONInterface(SignalWrapper):
     def get_sdk_version() -> str:
         return "1.1.0"
         
+
+    @staticmethod
+    def acquire_motion_interface():
+        """
+        Create a MOTIONInterface instance and check if devices are connected.
+        Returns:
+            tuple: (interface, console_connected, left_sensor, right_sensor)
+        """
+        interface = MOTIONInterface()
+        console_connected, left_sensor, right_sensor = interface.is_device_connected()
+        return interface, console_connected, left_sensor, right_sensor

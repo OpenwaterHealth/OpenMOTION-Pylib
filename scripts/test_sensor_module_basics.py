@@ -103,12 +103,9 @@ def main():
 
     left_failed = 0
     right_failed = 0
-
-    # Create an instance of the Sensor interface
-    interface = MOTIONInterface()
     
-    # Check if console and sensor are connected
-    console_connected, left_sensor, right_sensor = interface.is_device_connected()
+    # Acquire interface + connection state
+    interface, console_connected, left_sensor, right_sensor = MOTIONInterface.acquire_motion_interface()
 
     if console_connected and left_sensor and right_sensor:
         print("MOTION System fully connected.")
