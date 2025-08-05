@@ -17,16 +17,16 @@ def parse_args():
 
     return args
 
-def run(interface) -> bool:
+def run(sensor_module) -> bool:
     try:
         # Ping Test
-        response = interface.ping()
+        response = sensor_module.ping()
         print("Ping successful." if response else "Ping failed.")
         if not response:
             return False
 
         # Get Firmware Version
-        version = interface.get_version()                
+        version = sensor_module.get_version()                
         # Perform the version check
         if version.startswith("v"):
             print(f"Firmware Version: {version}")
@@ -36,7 +36,7 @@ def run(interface) -> bool:
 
         # Echo Test
         echo_data = b"Hello MOTION!"
-        echoed, echoed_len = interface.echo(echo_data)
+        echoed, echoed_len = sensor_module.echo(echo_data)
         if echoed:
             echoed_str = echoed.decode(errors='ignore')
             print(f"Echoed {echoed_len} bytes: {echoed_str}")
@@ -48,20 +48,20 @@ def run(interface) -> bool:
             return False
 
         # Toggle LED
-        led_result = interface.toggle_led()
+        led_result = sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
             return False
         
         # Toggle LED
-        led_result = interface.toggle_led()
+        led_result = sensor_module.toggle_led()
         print("LED toggled." if led_result else "LED toggle failed.")
         if not led_result:  
             return False
         
         # Get HWID
         try:
-            hwid = interface.get_hardware_id()
+            hwid = sensor_module.get_hardware_id()
             if hwid:
                 print(f"Hardware ID: {hwid}")
             else:
@@ -70,22 +70,22 @@ def run(interface) -> bool:
         except Exception as e:
             print(f"HWID read error: {e}")
 
-        imu_temp = interface.imu_get_temperature()  
+        imu_temp = sensor_module.imu_get_temperature()  
         print(f"Temperature Data - IMU Temp: {imu_temp}")
 
-        accel = interface.imu_get_accelerometer()
+        accel = sensor_module.imu_get_accelerometer()
         print(f"Accel (raw): X={accel[0]}, Y={accel[1]}, Z={accel[2]}")
 
         # Query status of camera 0, 3, and 7 (bitmask 0b10001001 = 0x89)
         mask = 0xFF
         try:
-            status_map = interface.get_camera_status(mask)
+            status_map = sensor_module.get_camera_status(mask)
 
             if status_map is None:
                 print("Failed to get camera status.")
             else:
                 for cam_id, status in status_map.items():
-                    readable = interface.decode_camera_status(status)
+                    readable = sensor_module.decode_camera_status(status)
                     print(f"Camera {cam_id} Status: 0x{status:02X} -> {readable}")
 
         except Exception as e:
