@@ -1,2 +1,4 @@
 from .config import *
-from .core import MOTIONSignal, MOTIONUart, MotionComposite
+from .MotionUart import MOTIONUart
+from .MotionSignal import MOTIONSignal
+from .MotionComposite import MotionComposite
