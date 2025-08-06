@@ -13,12 +13,19 @@ from omotion.Interface import MOTIONInterface
 MAX_DURATION = 120  # seconds
 
 def parse_args():
+    def parse_mask(x):
+        try:
+            return int(x, 0)  # allows hex like 0x11 or decimal like 17
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid camera mask value: {x}")
+        
     parser = argparse.ArgumentParser(description="Capture MOTION camera data")
+
     parser.add_argument(
         "--camera-mask",
-        type=lambda x: int(x, 0),  # allows 0x01 or 1
-        required=True,
-        help="Camera bitmask (e.g., 0x01 = camera 0, 0xFF = all 8 cameras)"
+        type=parse_mask,
+        default=0xFF,
+        help="Bitmask for cameras (e.g., 0x11 for cameras 0 and 4, default 0xFF)"
     )
     parser.add_argument(
         "--duration",

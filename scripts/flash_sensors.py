@@ -14,12 +14,19 @@ AUTO_UPLOAD = True
 CAMERA_MASK = 0xFF
 
 def parse_args():
+    def parse_mask(x):
+        try:
+            return int(x, 0)  # allows hex like 0x11 or decimal like 17
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid camera mask value: {x}")
+
     parser = argparse.ArgumentParser(description="MOTION Sensor FPGA Test")
+    
     parser.add_argument(
         "--camera-mask",
-        type=lambda x: int(x, 0),  # allows 0xFF or decimal
+        type=parse_mask,
         default=0xFF,
-        help="Bitmask for cameras (default 0xFF)"
+        help="Bitmask for cameras (e.g., 0x11 for cameras 0 and 4, default 0xFF)"
     )
     parser.add_argument(
         "--auto-upload",
@@ -127,6 +134,8 @@ def configure_camera_sensors(interface, camera_mask, auto_upload: bool, bit_file
 
     # turn camera mask into camera positions
     camera_positions = [i for i in range(8) if camera_mask & (1 << i)]
+
+    print(f"Using filtered camera mask: 0x{camera_mask:02X} (sensors {camera_positions})")
 
     for pos in camera_positions:
         print(f"\nProgramming camera FPGA at position {pos + 1}...")

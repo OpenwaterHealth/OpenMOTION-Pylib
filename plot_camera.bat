@@ -1,9 +1,9 @@
 del histogram.bin
 del histogram.csv
 
-python scripts\flash_sensors.py --camera-mask 99
+python scripts\flash_sensors.py --camera-mask 0x11
 python scripts\set_trigger_laser.py
-python scripts\capture_data.py --camera-mask 99 --subject-id Test --duration 30
+python scripts\capture_data.py --camera-mask 0x11 --subject-id Test --duration 15
 
 
 @REM python scripts\test_receive_multi_frame.py 66 120
