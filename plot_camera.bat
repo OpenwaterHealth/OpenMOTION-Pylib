@@ -1,11 +1,8 @@
 del histogram.bin
 del histogram.csv
 
-
-
 python scripts\flash_sensors.py --camera-mask 99
-
-@REM python scripts\test_receive_frame.py --cam 5 --plot
+python scripts\set_trigger_laser.py
 
 @REM python scripts\test_receive_multi_frame.py 66 120
 
