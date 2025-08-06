@@ -24,7 +24,7 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 def parse_args():
     parser = argparse.ArgumentParser(description="MOTION Sensor Histogram Capture Test")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera ID (0-7)")
-    parser.add_argument("--test-pattern", type=int, default=4, help="Test Pattern ID (0=gradient, 1=solid, 2=squares, 3=grad, 4=disabled)")
+    parser.add_argument("--test-pattern", type=int, default=4, help="Test Pattern ID (0=bars, 1=solid, 2=squares, 3=grad, 4=disabled)")
     parser.add_argument("--manual-upload", action="store_true", help="Manually upload the FPGA bitstream")
     parser.add_argument("--save", action="store_true", help="Save histogram to file")
     parser.add_argument("--plot", action="store_true", help="Plot histogram")

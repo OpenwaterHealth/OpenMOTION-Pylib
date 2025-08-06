@@ -1,10 +1,11 @@
 import asyncio
 import time
+import argparse
 from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_sensor_if.py
+# python scripts\test_sensor_if.py --camera-mask 0x01
 
 print("Starting MOTION Sensor Module Test Script...")
 BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
@@ -12,6 +13,32 @@ BIT_FILE = "bitstream/HistoFPGAFw_impl1_agg.bit"
 AUTO_UPLOAD = True
 # MANUAL_UPLOAD = True
 CAMERA_MASK = 0xFF
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="MOTION Sensor FPGA Test")
+    parser.add_argument(
+        "--camera-mask",
+        type=lambda x: int(x, 0),  # allows 0xFF or decimal
+        default=0xFF,
+        help="Bitmask for cameras (default 0xFF)"
+    )
+    parser.add_argument(
+        "--auto-upload",
+        action="store_true",
+        default=True,
+        help="Enable auto-upload of FPGA bitstream (default True)"
+    )
+    parser.add_argument(
+        "--manual-upload",
+        action="store_true",
+        help="Force manual upload (overrides --auto-upload)"
+    )
+    parser.add_argument(
+        "--bit-file",
+        type=str,
+        help="Path to FPGA bitstream file (required if manual upload)"
+    )
+    return parser.parse_args()
 
 def program_all_sensors(interface, camera_position, bit_file):
     steps = [
@@ -70,7 +97,8 @@ def program_all_sensors(interface, camera_position, bit_file):
     print("✅ Camera FPGA programming complete for all connected sensors.")
     return True
 
-def upload_camera_bitstream(interface, auto_upload: bool = False, camera_position: int =0) -> bool:
+def upload_camera_bitstream(interface, auto_upload: bool, camera_position: int, bit_file: str) -> bool:
+ 
     print("FPGA Configuration Started")
     
     if auto_upload:
@@ -95,7 +123,7 @@ def upload_camera_bitstream(interface, auto_upload: bool = False, camera_positio
         
     return True
 
-def run_sensor_tests(interface) -> bool:
+def run_sensor_tests(interface, camera_mask, auto_upload, bit_file) -> bool:
     # Ping Test
     print("\n[1] Ping Sensor Module...")
     ping_results = interface.run_on_sensors("ping")
@@ -112,26 +140,21 @@ def run_sensor_tests(interface) -> bool:
     print(hwid_results)  
 
     # turn camera mask into camera positions
-    CAMERA_POSITIONS = []
-    for i in range(8):
-        if CAMERA_MASK & (1 << i):
-            CAMERA_POSITIONS.append(i)
+    camera_positions = [i for i in range(8) if camera_mask & (1 << i)]
 
-
-    for camera_position in CAMERA_POSITIONS:
-        print(f"\n[3] Programming camera FPGA at position {camera_position+1}...")
-
-        # turn camera position into camera mask
-        CAMERA_MASK_SINGLE = 1 << camera_position
+    for pos in camera_positions:
+        print(f"\nProgramming camera FPGA at position {pos + 1}...")
+        cam_mask_single = 1 << pos
         start_time = time.time()
-        if not upload_camera_bitstream(interface=interface, auto_upload=AUTO_UPLOAD, camera_position=CAMERA_MASK_SINGLE):
+        if not upload_camera_bitstream(interface, auto_upload, cam_mask_single, bit_file):
             print("Failed to upload camera bitstream.")
             exit(1)
         print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
         print ("Programming camera sensor registers.")
-        config_results = interface.run_on_sensors("camera_configure_registers", CAMERA_MASK_SINGLE)
-        print(config_results)
+        
+        print("Programming camera sensor registers.")
+        print(interface.run_on_sensors("camera_configure_registers", cam_mask_single))
 
         # print ("Programming camera sensor set test pattern.")
         # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
@@ -145,6 +168,12 @@ def run_sensor_tests(interface) -> bool:
 
 def main():
 
+    args = parse_args()
+
+    if not args.auto_upload and not args.bit_file:
+        print("❌ --bit-file is required when manual upload is selected.")
+        exit(1)
+
     # Acquire interface + connection state
     interface, console_connected, left_sensor, right_sensor = MOTIONInterface.acquire_motion_interface()
 
@@ -157,7 +186,7 @@ def main():
         print("Sensor Module not connected.")
         exit(1)
 
-    run_sensor_tests(interface)
+    run_sensor_tests(interface, args.camera_mask, not args.manual_upload, args.bit_file)
 
     print("\nSensor Module Test Completed.")
     

@@ -135,104 +135,108 @@ class MOTIONInterface(SignalWrapper):
     
     def get_camera_histogram(
         self,
+        sensor_side: str,         # "left" or "right"
         camera_id: int,
         test_pattern_id: int = 4,
         auto_upload: bool = True
     ) -> tuple[list[int], list[int]] | None:
         """
-        High-level method to get a histogram from a specific camera.
-
-        Args:
-            camera_id (int): Camera index (1–8).
-            test_pattern_id (int): Test pattern ID to use (if enabled).
-            auto_upload (bool): Whether to upload bitstream if needed.
-
-        Returns:
-            bytearray | None: Histogram data or None if failed.
+        High-level method to get a histogram from a specific camera
+        on a specific sensor module ("left" or "right").
         """
+
         import time
+
+        if sensor_side not in ("left", "right"):
+            logger.error("sensor_side must be 'left' or 'right'.")
+            return None
 
         if not (1 <= camera_id <= 8):
             logger.error("Camera ID must be 1–8.")
             return None
 
-        CAMERA_MASK = 1 << (camera_id - 1)
-        TEST_PATTERN_ID = test_pattern_id
+        sensor = self.sensors[sensor_side]
+        camera_mask = 1 << (camera_id - 1)
+        test_pattern = test_pattern_id
 
-        # Get status
-        status_map = self.sensors.get_camera_status(CAMERA_MASK)
+        # Step 1: Get status
+        status_map = sensor.get_camera_status(camera_mask)
+        print(f"[{sensor_side.capitalize()}] Camera {camera_id} Status: {status_map}")
         if not status_map or camera_id - 1 not in status_map:
-            logger.error("Failed to get camera status.")
+            logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
         status = status_map[camera_id - 1]
-        logger.debug(f"Camera {camera_id} status: 0x{status:02X} → {self.sensors.decode_camera_status(status)}")
+        logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
 
         if not status & (1 << 0):  # Not READY
-            logger.debug("Camera peripheral not READY.")
+            logger.debug(f"[{sensor_side.capitalize()}] Camera peripheral not READY.")
             return None
 
-        if not (status & (1 << 1) and status & (1 << 2)):  # Not programmed
-            logger.debug("FPGA Configuration Started")
+        # Step 2: Program FPGA if needed
+        if not (status & (1 << 1) and status & (1 << 2)):
+            logger.debug(f"[{sensor_side.capitalize()}] FPGA Configuration Started")
             start_time = time.time()
-
             if auto_upload:
-                if not self.sensors.program_fpga(camera_position=CAMERA_MASK, manual_process=False):
-                    logger.error("Failed to enter sram programming mode for camera FPGA.")
+                if not sensor.program_fpga(camera_position=camera_mask, manual_process=False):
+                    logger.error(f"[{sensor_side.capitalize()}] Failed to program FPGA.")
                     return None
-                
-            logger.debug(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
+            logger.debug(f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
-        if not (status & (1 << 1) and status & (1 << 3)):  # Not configured
-            logger.debug ("Programming camera sensor registers.")
-            if not self.sensors.camera_configure_registers(CAMERA_MASK):
-                logger.error("Failed to configure default registers for camera FPGA.")
+        # Step 3: Configure registers if needed
+        if not (status & (1 << 1) and status & (1 << 3)):
+            logger.debug(f"[{sensor_side.capitalize()}] Programming camera sensor registers.")
+            if not sensor.camera_configure_registers(camera_mask):
+                logger.error(f"[{sensor_side.capitalize()}] Failed to configure registers.")
                 return None
-        
-        logger.debug("Setting test pattern...")
-        if not self.sensors.camera_configure_test_pattern(CAMERA_MASK, TEST_PATTERN_ID):
-            logger.error("Failed to set test pattern.")
+
+        # Step 4: Set test pattern
+        logger.debug(f"[{sensor_side.capitalize()}] Setting test pattern...")
+        if not sensor.camera_configure_test_pattern(camera_mask, test_pattern):
+            logger.error(f"[{sensor_side.capitalize()}] Failed to set test pattern.")
             return None
 
-        # Get status
-        status_map = self.sensors.get_camera_status(CAMERA_MASK)
+        # Step 5: Verify ready for histogram
+        status_map = sensor.get_camera_status(camera_mask)
         if not status_map or camera_id - 1 not in status_map:
-            logger.error("Failed to get camera status.")
+            logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
         status = status_map[camera_id - 1]
-        logger.debug(f"Camera {camera_id} status: 0x{status:02X} → {self.sensors.decode_camera_status(status)}")
-
-        if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):  # Not ready for histo
-            logger.error("Not configured.")
+        logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
+        if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):
+            logger.error(f"[{sensor_side.capitalize()}] Not configured for histogram.")
             return None
 
-        # Capture + Get Histogram
-        logger.debug("Capturing histogram...")
-        if not self.sensors.camera_capture_histogram(CAMERA_MASK):
-            logger.error("Capture failed.")
+        # Step 6: Capture histogram
+        logger.debug(f"[{sensor_side.capitalize()}] Capturing histogram...")
+        if not sensor.camera_capture_histogram(camera_mask):
+            logger.error(f"[{sensor_side.capitalize()}] Capture failed.")
             return None
 
-        logger.debug("Retrieving histogram...")
-        histogram = self.sensors.camera_get_histogram(CAMERA_MASK)
+        # Step 7: Retrieve histogram
+        logger.debug(f"[{sensor_side.capitalize()}] Retrieving histogram...")
+        histogram = sensor.camera_get_histogram(camera_mask)
         if histogram is None:
-            logger.error("Histogram retrieval failed.")
+            logger.error(f"[{sensor_side.capitalize()}] Histogram retrieval failed.")
             return None
 
-        logger.debug("Histogram frame received successfully.")
+        logger.debug(f"[{sensor_side.capitalize()}] Histogram frame received successfully.")
         histogram = histogram[:4096]
         return self.bytes_to_integers(histogram)
 
     def __del__(self):
-        """Finalizer: clean up if object is garbage collected."""
-        logger.debug("Exiting MOTIONInterface...")
-        # Clean up resources
-        self.stop_monitoring()
-        if self.console_module:
-            self.console_module.disconnect()
-        if self._dual_composite:
-            self._dual_composite.disconnect()
-            
+        try:
+            self.stop_monitoring()
+            if self.console_module:
+                self.console_module.disconnect()
+            if self._dual_composite:
+                self._dual_composite.disconnect()
+        except RuntimeError as e:
+            logger.debug(f"Destructor skipped due to RuntimeError: {e}")
+        except Exception as e:
+            logger.debug(f"Destructor skipped due to: {e}")
+
     @staticmethod
     def bytes_to_integers(byte_array):
         # Check that the byte array is exactly 4096 bytes

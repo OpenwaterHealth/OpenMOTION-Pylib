@@ -406,7 +406,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during activate_camera_fpga: %s", e)
             raise
 
     def enable_camera_fpga(self, camera_position: int) -> bool:
@@ -448,7 +448,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during enable_camera_fpga: %s", e)
             raise
 
     def disable_camera_fpga(self, camera_position: int) -> bool:
@@ -490,7 +490,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during disable_camera_fpga: %s", e)
             raise
 
     def check_camera_fpga(self, camera_position: int) -> bool:
@@ -532,7 +532,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during check_camera_fpga: %s", e)
             raise
 
     def enter_sram_prog_fpga(self, camera_position: int) -> bool:
@@ -574,7 +574,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during enter_sram_prog_fpga: %s", e)
             raise
 
     def exit_sram_prog_fpga(self, camera_position: int) -> bool:
@@ -616,7 +616,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during exit_sram_prog_fpga: %s", e)
             raise
 
     def erase_sram_fpga(self, camera_position: int) -> bool:
@@ -658,7 +658,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during erase_sram_fpga: %s", e)
             raise
 
     def get_status_fpga(self, camera_position: int) -> bool:
@@ -700,7 +700,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during get_status_fpga: %s", e)
             raise
 
     def get_usercode_fpga(self, camera_position: int) -> bool:
@@ -742,7 +742,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during get_usercode_fpga: %s", e)
             raise
 
     def send_bitstream_fpga(self, filename=None) -> bool:
@@ -855,7 +855,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during program_fpga: %s", e)
             raise
 
     def camera_configure_registers(self, camera_position: int) -> bool:
@@ -897,7 +897,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_configure_registers: %s", e)
             raise
 
     def camera_configure_test_pattern(self, camera_position: int, test_pattern: int = 0 ) -> bool:
@@ -943,7 +943,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_configure_test_pattern: %s", e)
             raise
 
     def camera_capture_histogram(self, camera_position: int) -> bool:
@@ -973,7 +973,7 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
@@ -985,7 +985,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_capture_histogram: %s", e)
             raise
 
     def camera_get_histogram(self, camera_position: int) -> bytearray:
@@ -1015,7 +1015,7 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return None
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=2)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
@@ -1028,7 +1028,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_get_histogram: %s", e)
             raise
 
     def get_camera_status(self, camera_position: int) -> dict[int, int] | None:

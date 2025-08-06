@@ -299,11 +299,11 @@ class MOTIONUart(SignalWrapper):
 
             # print("Sending packet: ", packet.hex())
             self._tx(packet)
-            time.sleep(0.0001)
+            time.sleep(0.0005)
             
             if not self.asyncMode:
                 ret_packet = self.read_packet(timeout=timeout)
-                time.sleep(0.0001)            
+                time.sleep(0.0005)            
                 return ret_packet
             else:
                 response_queue = queue.Queue()
