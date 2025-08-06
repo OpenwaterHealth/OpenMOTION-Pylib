@@ -104,12 +104,14 @@ class CommInterface(USBInterfaceBase):
         self.stop_event.clear()
         self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self.read_thread.start()
+        logger.info(f"{self.desc}: Read thread started")
 
     def stop_read_thread(self):
         self.stop_event.set()
         if self.read_thread:
             self.read_thread.join()
-
+        logger.info(f"{self.desc}: Read thread stopped")
+        
     def _read_loop(self):
         while not self.stop_event.is_set():
             try:

@@ -66,23 +66,49 @@ class MOTIONInterface(SignalWrapper):
     async def start_monitoring(self, interval: int = 1) -> None:
         """Start monitoring for USB device connections."""
         try:
-            await asyncio.gather(
-                self._console_uart.monitor_usb_status(interval),
-                self._dual_composite.monitor_usb_status(interval)
-            )
+            tasks = []
+            if self._console_uart:
+                coro = self._console_uart.monitor_usb_status(interval)
+                if asyncio.iscoroutine(coro):
+                    tasks.append(coro)
 
+            if self._dual_composite:
+                if self._dual_composite.left:
+                    coro = self._dual_composite.left.monitor_usb_status(interval)
+                    if asyncio.iscoroutine(coro):
+                        tasks.append(coro)
+                if self._dual_composite.right:
+                    coro = self._dual_composite.right.monitor_usb_status(interval)
+                    if asyncio.iscoroutine(coro):
+                        tasks.append(coro)
+
+            if tasks:
+                await asyncio.gather(*tasks)
+                
         except Exception as e:
             logger.error("Error starting monitoring: %s", e)
-            raise e
+            raise
 
     def stop_monitoring(self) -> None:
         """Stop monitoring for USB device connections."""
         try:
-            self._console_uart.stop_monitoring()
-            self._dual_composite.stop_monitoring()
+            if self._console_uart and hasattr(self._console_uart, "stop_monitoring"):
+                self._console_uart.stop_monitoring()
+
+            if self._dual_composite:
+                if hasattr(self._dual_composite, "stop_monitoring"):
+                    # If DualMotionComposite has a single stop method for both
+                    self._dual_composite.stop_monitoring()
+                else:
+                    # Stop individually if needed
+                    if self._dual_composite.left and hasattr(self._dual_composite.left, "stop_monitoring"):
+                        self._dual_composite.left.stop_monitoring()
+                    if self._dual_composite.right and hasattr(self._dual_composite.right, "stop_monitoring"):
+                        self._dual_composite.right.stop_monitoring()
+                        
         except Exception as e:
             logger.error("Error stopping monitoring: %s", e)
-            raise e
+            raise
 
     def run_on_sensors(self, func_name: str, *args, **kwargs) -> dict[str, any]:
         """

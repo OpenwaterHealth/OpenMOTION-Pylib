@@ -18,6 +18,7 @@ class StreamInterface(USBInterfaceBase):
         self.stop_event = threading.Event()
         self.data_queue = None
         self.expected_size = None
+        self.isStreaming = False
 
     def start_streaming(self, queue_obj, expected_size):
         if self.thread and self.thread.is_alive():
@@ -28,11 +29,17 @@ class StreamInterface(USBInterfaceBase):
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._stream_loop, daemon=True)
         self.thread.start()
+        self.isStreaming = True
+        logger.info(f"{self.desc}: Streaming started")
 
     def stop_streaming(self):
         self.stop_event.set()
         if self.thread:
             self.thread.join()
+        self.isStreaming = False
+        self.data_queue = None
+        self.expected_size = None
+        logger.info(f"{self.desc}: Streaming stopped")
 
     def _stream_loop(self):
         while not self.stop_event.is_set():

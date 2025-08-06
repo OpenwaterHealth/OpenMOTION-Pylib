@@ -28,5 +28,7 @@ class USBInterfaceBase:
     def release(self):
         try:
             usb.util.release_interface(self.dev, self.interface_index)
+            self.ep_in = None
+            
         except usb.core.USBError as e:
             logger.warning(f"{self.desc}: Release failed: {e}")
