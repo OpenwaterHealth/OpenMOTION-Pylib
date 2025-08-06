@@ -143,7 +143,7 @@ printer_thread.start()
 interface._sensor_uart.start_histo_thread(expected_frame_size=32833, histo_queue=file_writer_queue)
 
 interface.sensor_module.enable_camera_fsin_ext() # Enable cameras with FSIN ext from console
-
+interface.sensor_module.camera_set_gain(16) 
 
 # Ping Test
 print("\n[1] Ping Sensor Module...")

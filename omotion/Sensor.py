@@ -1,6 +1,6 @@
 import logging
 import struct
-
+import time
 import queue
 from omotion.MotionComposite import MotionComposite
 from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
@@ -1256,6 +1256,67 @@ class MOTIONSensor:
             logger.error("Unexpected error during process: %s", e)
             raise
 
+    def camera_i2c_write(self, packet, packet_id=None):
+        """
+        Write data to a camera sensor's I2C register.
+        
+        Args:
+            packet (I2CPacket): The I2C packet containing the device address, register address, and data to write.
+            packet_id (int, optional): The ID for the packet. Defaults to None.
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+        
+        Raises:
+            ValueError: If the UART is not connected or if the packet is invalid.   
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+            
+            data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')
+            response = self.uart.send_packet(packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data)
+        
+            self.uart.clear_buffer()
+            if response.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error sending I2C write command")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def camera_set_gain(self,gain,packet_id=None):
+
+        gain_bytes = gain.to_bytes(2,'big')
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain_bytes[1]))
+        time.sleep(0.05)
+
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=gain_bytes[0]))
+        time.sleep(0.05)
+        print(f"Set Gain to {gain} (0x{gain_bytes[0]:02X}{gain_bytes[1]:02X})")
+        return 0
+
+    async def camera_set_exposure(self,exposure_selection,packet_id=None):
+    
+        exposures = [0x1F,0x20,0x2C,0x2D]
+        exposure_byte = exposures[exposure_selection]
+        # ;; exp=242.83us --> {0x3501,0x3502} = 0x001F
+        # ;; exp=250.67us --> {0x3501,0x3502} = 0x0020
+        # ;; exp=344.67us --> {0x3501,0x3502} = 0x002C
+        # ;; exp=352.50us --> {0x3501,0x3502} = 0x002D
+
+        self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3501,data=0x00))
+        time.sleep(0.05)
+        self.packet_count += 1
+        self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
+        time.sleep(0.05)
+        return 0
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
@@ -1291,3 +1352,5 @@ class MOTIONSensor:
         if status & (1 << 2): flags.append("CONFIGURED")
         if status & (1 << 7): flags.append("STREAMING")
         return ", ".join(flags) if flags else "NONE"
+
+
