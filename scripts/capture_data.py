@@ -86,7 +86,7 @@ def main():
     if not args.disable_laser:
         # enable external frame sync
         print("\nEnabling external frame sync...")
-        results = interface.run_on_sensors("enable_camera_fsin_ext", args.camera_mask)
+        results = interface.run_on_sensors("enable_camera_fsin_ext")
         for side, success in results.items():
             if not success:
                 print(f"Failed to enable external frame sync on {side}.")
