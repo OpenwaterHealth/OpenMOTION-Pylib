@@ -3,13 +3,13 @@ del histogram.csv
 
 
 
-python scripts\flash_sensors.py 99
+python scripts\flash_sensors.py 01
 
 @REM python scripts\test_receive_frame.py --cam 5 --plot
 
 @REM python scripts\test_receive_multi_frame.py 66 120
 
-python scripts\test_receive_multi_frame_console.py 99 120
+python scripts\test_receive_multi_frame_console.py 01 10
 
 python data-processing/parse_data_v2.py
 
