@@ -110,7 +110,7 @@ class MOTIONInterface(SignalWrapper):
             logger.error("Error stopping monitoring: %s", e)
             raise
 
-    def run_on_sensors(self, func_name: str, *args, **kwargs) -> dict[str, any]:
+    def run_on_sensors(self, func_name: str, *args, target: str | None = None, **kwargs) -> dict[str, any]:
         """
         Run a MOTIONSensor method on all connected sensors and return results.
 

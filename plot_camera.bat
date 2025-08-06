@@ -3,7 +3,7 @@ del histogram.csv
 
 
 
-python scripts\flash_sensors.py 99
+python scripts\flash_sensors.py --camera-mask 99
 
 @REM python scripts\test_receive_frame.py --cam 5 --plot
 
