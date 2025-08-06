@@ -3,10 +3,12 @@ del histogram.csv
 
 python scripts\flash_sensors.py --camera-mask 99
 python scripts\set_trigger_laser.py
+python scripts\capture_data.py --camera-mask 99 --subject-id Test --duration 30
+
 
 @REM python scripts\test_receive_multi_frame.py 66 120
 
-python scripts\test_receive_multi_frame_console.py 99 30
+@rem python scripts\test_receive_multi_frame_console.py 99 30
 
 python data-processing/parse_data_v2.py
 
