@@ -142,9 +142,9 @@ for camera_position in CAMERA_POSITIONS:
         exit(1)
     print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
-    # print ("Programming camera sensor registers.")
-    # if not interface.sensor_module.camera_configure_registers(CAMERA_MASK_SINGLE):
-    #     print("Failed to configure default registers for camera FPGA.")
+    print ("Programming camera sensor registers.")
+    if not interface.sensor_module.camera_configure_registers(CAMERA_MASK_SINGLE):
+        print("Failed to configure default registers for camera FPGA.")
 
     # print ("Programming camera sensor set test pattern.")
     # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):

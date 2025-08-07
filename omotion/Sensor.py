@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_I2C_PASSTHRU
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CAMERA_SWITCH, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_I2C_PASSTHRU
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
 
@@ -1294,13 +1294,14 @@ class MOTIONSensor:
 
     def camera_set_gain(self,gain,packet_id=None):
 
-        gain_bytes = gain.to_bytes(2,'big')
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain_bytes[1]))
+        gain = gain & 0x0F
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
         time.sleep(0.05)
 
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=gain_bytes[0]))
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
         time.sleep(0.05)
-        print(f"Set Gain to {gain} (0x{gain_bytes[0]:02X}{gain_bytes[1]:02X})")
+
+        print(f"Gain set to {gain}")
         return 0
 
     async def camera_set_exposure(self,exposure_selection,packet_id=None):
@@ -1318,6 +1319,13 @@ class MOTIONSensor:
         self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
         time.sleep(0.05)
         return 0
+    
+    def switch_camera(self, camera_id, packet_id=None):
+        camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
+        bytes_val = camera_id.to_bytes(1, 'big')
+        response = self.uart.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.clear_buffer()
+        return response
 
     def disconnect(self):
         """
