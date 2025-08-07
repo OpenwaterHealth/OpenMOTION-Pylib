@@ -1293,13 +1293,14 @@ class MOTIONSensor:
 
     def camera_set_gain(self,gain,packet_id=None):
 
-        gain_bytes = gain.to_bytes(2,'big')
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain_bytes[1]))
+        gain = gain & 0x0F
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
         time.sleep(0.05)
 
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=gain_bytes[0]))
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
         time.sleep(0.05)
-        print(f"Set Gain to {gain} (0x{gain_bytes[0]:02X}{gain_bytes[1]:02X})")
+
+        print(f"Gain set to {gain}")
         return 0
 
     async def camera_set_exposure(self,exposure_selection,packet_id=None):
@@ -1317,6 +1318,13 @@ class MOTIONSensor:
         self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
         time.sleep(0.05)
         return 0
+    
+    def switch_camera(self, camera_id, packet_id=None):
+        camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
+        bytes_val = camera_id.to_bytes(1, 'big')
+        response = self.uart.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.clear_buffer()
+        return response
 
     def disconnect(self):
         """

@@ -143,7 +143,7 @@ printer_thread.start()
 interface._sensor_uart.start_histo_thread(expected_frame_size=32833, histo_queue=file_writer_queue)
 
 interface.sensor_module.enable_camera_fsin_ext() # Enable cameras with FSIN ext from console
-interface.sensor_module.camera_set_gain(16) 
+
 
 # Ping Test
 print("\n[1] Ping Sensor Module...")
@@ -236,6 +236,9 @@ for laser_param in laser_params:
 
     if not interface.console_module.write_i2c_packet(mux_index=muxIdx, channel=channel, device_addr=i2cAddr, reg_addr=offset, data=dataToSend):
         print("Failed to set laser power.")
+
+# interface.sensor_module.switch_camera(1) # Switch to camera 1  
+# interface.sensor_module.camera_set_gain(10) 
 
 print("\n[3] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
