@@ -1,8 +1,23 @@
 import pandas as pd
+import argparse
+
+# Run this script with:
+# set PYTHONPATH=%cd%;%PYTHONPATH%
+# python data-processing/check_csv.py
 
 CSV_FILE = "histogram.csv"
 EXPECTED_SUM = 2457606
 MAX_FRAME_ID = 255
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Check histogram CSV integrity")
+    parser.add_argument(
+        "--csv",
+        type=str,
+        required=True,
+        help="Path to input CSV file to check"
+    )
+    return parser.parse_args()
 
 def check_csv_integrity(csv_path):
     df = pd.read_csv(csv_path)
@@ -90,4 +105,5 @@ def check_csv_integrity(csv_path):
         print("\n[FAIL] One or more checks failed.")
 
 if __name__ == "__main__":
-    check_csv_integrity(CSV_FILE)
+    args = parse_args()
+    check_csv_integrity(args.csv)
