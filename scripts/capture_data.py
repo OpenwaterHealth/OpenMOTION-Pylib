@@ -1,6 +1,7 @@
 
 import argparse
 import time
+import os
 import threading
 import queue
 from datetime import datetime
@@ -10,6 +11,7 @@ from omotion.Interface import MOTIONInterface
 # set PYTHONPATH=%cd%;%PYTHONPATH%
 # python scripts\capture_frames.py
 
+DATA_DIR = "scan_data"
 MAX_DURATION = 120  # seconds
 
 def parse_args():
@@ -44,6 +46,12 @@ def parse_args():
         action="store_true",
         help="If set, disables external frame sync (laser). Otherwise, enables external frame sync by default."
     )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="scan_data",
+        help="Directory to save scan files (default: scan_data)"
+    )
     return parser.parse_args()
 
 def write_stream_to_file(queue_obj, stop_event, filename):
@@ -69,6 +77,9 @@ def main():
     print("Starting MOTION Capture Data Script...")
     print(f"Camera Mask: 0x{args.camera_mask:02X}")
     print(f"Duration: {args.duration} seconds")
+    
+    DATA_DIR = args.data_dir
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     # Acquire interface + connection state
     interface, console_connected, left_sensor, right_sensor = MOTIONInterface.acquire_motion_interface()
@@ -109,8 +120,11 @@ def main():
             q = queue.Queue()
             stop_evt = threading.Event()
             sensor.uart.histo.start_streaming(q, expected_size=32833)  # adjust size if needed probably should be exact based on mask
+            
             filename = f"scan_{args.subject_id}_{timestamp}_{side}_mask{args.camera_mask:02X}.raw"
-            t = threading.Thread(target=write_stream_to_file, args=(q, stop_evt, filename), daemon=True)
+            filepath = os.path.join(DATA_DIR, filename)
+            
+            t = threading.Thread(target=write_stream_to_file, args=(q, stop_evt, filepath), daemon=True)
             t.start()
             stream_threads.append((t, stop_evt))
             stop_events.append(stop_evt)
