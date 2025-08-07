@@ -237,8 +237,14 @@ for laser_param in laser_params:
     if not interface.console_module.write_i2c_packet(mux_index=muxIdx, channel=channel, device_addr=i2cAddr, reg_addr=offset, data=dataToSend):
         print("Failed to set laser power.")
 
-# interface.sensor_module.switch_camera(1) # Switch to camera 1  
-# interface.sensor_module.camera_set_gain(10) 
+
+# Set camera parameters
+# ensure that the camera is flashed before doing this
+#BRAD USE THIS FOR CHANGING GAINS AND EXPOSURES
+# interface.sensor_module.switch_camera(1)
+# interface.sensor_module.camera_set_gain(8)
+# interface.sensor_module.camera_set_exposure(2) 
+
 
 print("\n[3] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
