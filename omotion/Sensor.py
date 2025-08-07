@@ -1293,7 +1293,7 @@ class MOTIONSensor:
 
     def camera_set_gain(self,gain,packet_id=None):
 
-        gain = gain & 0x0F
+        gain = gain & 0xFF
         self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
         time.sleep(0.05)
 
