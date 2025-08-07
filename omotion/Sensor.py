@@ -1304,19 +1304,20 @@ class MOTIONSensor:
         print(f"Gain set to {gain}")
         return 0
 
-    async def camera_set_exposure(self,exposure_selection,packet_id=None):
+    def camera_set_exposure(self,exposure_selection):
     
-        exposures = [0x1F,0x20,0x2C,0x2D]
+        exposures = [0x1F,0x20,0x2C,0x2D, 0x7a]
         exposure_byte = exposures[exposure_selection]
         # ;; exp=242.83us --> {0x3501,0x3502} = 0x001F
         # ;; exp=250.67us --> {0x3501,0x3502} = 0x0020
         # ;; exp=344.67us --> {0x3501,0x3502} = 0x002C
         # ;; exp=352.50us --> {0x3501,0x3502} = 0x002D
+        # ;; exp=1098.00us --> {0x3501,0x3502} = 0x007A
 
-        self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3501,data=0x00))
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3501,data=0x00))
         time.sleep(0.05)
-        self.packet_count += 1
-        self.camera_i2c_write(I2C_Packet(id=self.packet_count,device_address=0x36,register_address=0x3502,data=exposure_byte))
+
+        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3502,data=exposure_byte))
         time.sleep(0.05)
         return 0
     
