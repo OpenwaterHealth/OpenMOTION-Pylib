@@ -10,7 +10,19 @@ Plot weighted average (μ) and standard deviation (σ) for cameras 0-7 in a
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import argparse
 import numpy as np
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Check histogram CSV integrity")
+    parser.add_argument(
+        "--csv",
+        type=str,
+        required=True,
+        help="Path to input CSV file to check"
+    )
+    return parser.parse_args()
+
 
 CSV_FILE     = "histogram.csv"
 NUM_BINS     = 1024
@@ -53,7 +65,10 @@ def cam_stats(cam_df: pd.DataFrame):
 
 
 def main():
-    df = pd.read_csv(CSV_FILE)
+    args = parse_args()
+    print(f"Reading CSV file: {args.csv}")
+
+    df = pd.read_csv(args.csv)
 
     fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 10), sharex=False)
     axes = axes.flatten()  # easier indexing
