@@ -1,11 +1,34 @@
 import csv
 import io
 import os
+import argparse
+import numpy as np
 import struct
 from typing import Dict, Tuple, List
 
-import numpy as np
+# Run this script with:
+# set PYTHONPATH=%cd%;%PYTHONPATH%
+# python data-processing/parse_data_v2.py
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Process a histogram .bin file and output .csv")
+
+    parser.add_argument(
+        "--file",
+        type=str,
+        default="histogram.bin",
+        help="Path to input .bin file (default: histogram.bin)"
+    )
+
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional CSV output filename. If not provided, defaults to <input>.csv"
+    )
+
+    return parser.parse_args()
 try:
     # Your accelerated C implementation
     from omotion.utils import util_crc16 as _crc16
@@ -202,5 +225,9 @@ def process_bin_file(src_bin: str, dst_csv: str,
     print(f"Percentage of bad header failures: {perceent_bad_header_fail:.2f}%")
 # ─── CLI ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    process_bin_file("histogram.bin", "histogram.csv",
-                     start_offset=0)
+    args = parse_args()
+
+    input_file = args.file
+    output_file = args.output if args.output else os.path.splitext(input_file)[0] + ".csv"
+
+    process_bin_file(input_file, output_file, start_offset=0)

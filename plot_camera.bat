@@ -1,26 +1,17 @@
-del histogram.bin
-del histogram.csv
+@echo off
 
+python scripts\flash_sensors.py --camera-mask 0x99
+python scripts\set_trigger_laser.py
+python scripts\capture_data.py --camera-mask 0x99 --subject-id Test --duration 15
 
+@REM Data Processing Scripts
+@REM python data-processing/parse_data_v2.py
+@REM python data-processing/check_csv.py
 
-python scripts\flash_sensors.py 99
-
-@REM python scripts\test_receive_frame.py --cam 5 --plot
-
-@REM python scripts\test_receive_multi_frame.py 66 120
-
-python scripts\test_receive_multi_frame_console.py 99 120
-
-python data-processing/parse_data_v2.py
-
-python data-processing/check_csv.py
+@REM Data Visualization Scripts
 
 @REM python data-processing/plot_histo_average.py
-
-python data-processing/plot_all_histo_average.py
-
+@REM python data-processing/plot_all_histo_average.py
 @REM python data-processing/plot_single_spectrogram.py
-
 @REM python data-processing/plot_all_spectrogram.py 
-
 @REM python data-processing/plot_single_histogram.py --csv histogram.csv --cam 0  --row 100 --style bar

@@ -163,5 +163,6 @@ cython_debug/
 
 /data_captures
 /data
+/scan_Data
 histogram.bin
 histogram.csv

@@ -2,11 +2,11 @@ import logging
 import struct
 
 import queue
-from omotion import MotionComposite
+from omotion.MotionComposite import MotionComposite
 from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
 from omotion.utils import calculate_file_crc
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("Sensor")
 
 class MOTIONSensor:
     def __init__(self, uart: MotionComposite):
@@ -16,7 +16,7 @@ class MOTIONSensor:
 
         self.uart = uart
 
-        if self.uart and not self.uart.asyncMode:
+        if self.uart and not self.uart.async_mode:
             self.uart.check_usb_status()
             if self.uart.is_connected():
                 logger.info("MOTION MOTIONSensor connected.")
@@ -46,8 +46,8 @@ class MOTIONSensor:
                 raise ValueError("Console Device not connected")
 
             logger.info("Send Ping to Device.")
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_PING)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_PING)
+            self.uart.comm.clear_buffer()
             logger.info("Received Ping from Device.")
             # r.print_packet()
 
@@ -84,8 +84,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return 'v0.0.0'
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.data_len == 3:
                 ver = f'v{r.data[0]}.{r.data[1]}.{r.data[2]}'
@@ -129,8 +129,8 @@ class MOTIONSensor:
             if echo_data is not None and not isinstance(echo_data, (bytes, bytearray)):
                 raise TypeError("echo_data must be a byte array")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.data_len > 0:
                 return r.data, r.data_len
@@ -165,8 +165,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             return True
 
@@ -197,8 +197,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return None
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_HWID)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_HWID)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.data_len == 16:
                 return r.data.hex()
@@ -234,8 +234,8 @@ class MOTIONSensor:
 
 
             # Send the OW_IMU_GET_TEMP command
-            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_TEMP)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_TEMP)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
 
             # Check if the data length matches a float (4 bytes)
@@ -274,8 +274,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 raise ValueError("UART is not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_ACCEL)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_ACCEL)
+            self.uart.comm.clear_buffer()
 
             if r.data_len == 6:
                 x, y, z = struct.unpack('<hhh', r.data)  # 3 × int16_t (little endian)
@@ -309,8 +309,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 raise ValueError("UART is not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_GYRO)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_IMU, command=OW_IMU_GET_GYRO)
+            self.uart.comm.clear_buffer()
 
             if r.data_len == 6:
                 x, y, z = struct.unpack('<hhh', r.data)  # 3 × int16_t (little endian)
@@ -352,8 +352,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_RESET, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_RESET, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error resetting camera sensor")
                 return False
@@ -394,8 +394,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ACTIVATE, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error activating fpga")
                 return False
@@ -406,7 +406,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during activate_camera_fpga: %s", e)
             raise
 
     def enable_camera_fpga(self, camera_position: int) -> bool:
@@ -436,8 +436,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling fpga")
                 return False
@@ -448,7 +448,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during enable_camera_fpga: %s", e)
             raise
 
     def disable_camera_fpga(self, camera_position: int) -> bool:
@@ -478,8 +478,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error disable fpga")
                 return False
@@ -490,7 +490,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during disable_camera_fpga: %s", e)
             raise
 
     def check_camera_fpga(self, camera_position: int) -> bool:
@@ -520,8 +520,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ID, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ID, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error checking camera id")
                 return False
@@ -532,7 +532,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during check_camera_fpga: %s", e)
             raise
 
     def enter_sram_prog_fpga(self, camera_position: int) -> bool:
@@ -562,8 +562,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ENTER_SRAM_PROG, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error entering prog")
                 return False
@@ -574,7 +574,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during enter_sram_prog_fpga: %s", e)
             raise
 
     def exit_sram_prog_fpga(self, camera_position: int) -> bool:
@@ -604,8 +604,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_EXIT_SRAM_PROG, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error entering prog")
                 return False
@@ -616,7 +616,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during exit_sram_prog_fpga: %s", e)
             raise
 
     def erase_sram_fpga(self, camera_position: int) -> bool:
@@ -646,8 +646,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM, addr=camera_position, timeout=30)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ERASE_SRAM, addr=camera_position, timeout=30)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error erasing SRAM")
                 return False
@@ -658,7 +658,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during erase_sram_fpga: %s", e)
             raise
 
     def get_status_fpga(self, camera_position: int) -> bool:
@@ -688,8 +688,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_STATUS, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_STATUS, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting status")
                 return False
@@ -700,7 +700,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during get_status_fpga: %s", e)
             raise
 
     def get_usercode_fpga(self, camera_position: int) -> bool:
@@ -730,8 +730,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_USERCODE, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_USERCODE, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting usercode")
                 return False
@@ -742,7 +742,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during get_usercode_fpga: %s", e)
             raise
 
     def send_bitstream_fpga(self, filename=None) -> bool:
@@ -772,7 +772,7 @@ class MOTIONSensor:
 
                     if not data:                        
                         crc_bytes = file_crc.to_bytes(2, byteorder='big')
-                        r = self.uart.send_packet(
+                        r = self.uart.comm.send_packet(
                             id=None,
                             packetType=OW_FPGA,
                             command=OW_FPGA_BITSTREAM,
@@ -780,7 +780,7 @@ class MOTIONSensor:
                             reserved=1,  # Final block / EOF marker
                             data=crc_bytes
                         )
-                        self.uart.clear_buffer()
+                        self.uart.comm.clear_buffer()
 
                         if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                             logger.error("Error sending final crc block")
@@ -788,7 +788,7 @@ class MOTIONSensor:
                         break
 
                     # Send actual data chunk
-                    r = self.uart.send_packet(
+                    r = self.uart.comm.send_packet(
                         id=None,
                         packetType=OW_FPGA,
                         command=OW_FPGA_BITSTREAM,
@@ -796,7 +796,7 @@ class MOTIONSensor:
                         reserved=0,
                         data=data
                     )
-                    self.uart.clear_buffer()
+                    self.uart.comm.clear_buffer()
 
                     if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                         logger.error(f"Error sending block {block_count}")
@@ -843,8 +843,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position, reserved=1, timeout=60)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_PROG_SRAM, addr=camera_position, reserved=1, timeout=60)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
@@ -855,7 +855,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during program_fpga: %s", e)
             raise
 
     def camera_configure_registers(self, camera_position: int) -> bool:
@@ -885,8 +885,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG, addr=camera_position, timeout=60)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG, addr=camera_position, timeout=60)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
@@ -897,7 +897,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_configure_registers: %s", e)
             raise
 
     def camera_configure_test_pattern(self, camera_position: int, test_pattern: int = 0 ) -> bool:
@@ -931,8 +931,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
             
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
@@ -943,7 +943,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_configure_test_pattern: %s", e)
             raise
 
     def camera_capture_histogram(self, camera_position: int) -> bool:
@@ -973,8 +973,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0, timeout=15)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return False
@@ -985,7 +985,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_capture_histogram: %s", e)
             raise
 
     def camera_get_histogram(self, camera_position: int) -> bytearray:
@@ -1015,8 +1015,8 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return None
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=2)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=15)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error programming FPGA")
                 return None
@@ -1028,7 +1028,7 @@ class MOTIONSensor:
             logger.error("ValueError: %s", v)
             raise
         except Exception as e:
-            logger.error("Exception during reset_camera_sensor: %s", e)
+            logger.error("Exception during camera_get_histogram: %s", e)
             raise
 
     def get_camera_status(self, camera_position: int) -> dict[int, int] | None:
@@ -1062,14 +1062,13 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return None
 
-            r = self.uart.send_packet(
+            r = self.uart.comm.send_packet(
                 id=None,
                 packetType=OW_CAMERA,
                 command=OW_CAMERA_STATUS,
-                addr=camera_position,
-                timeout=5
+                addr=camera_position
             )
-            self.uart.clear_buffer()
+            self.uart.comm.clear_buffer()
 
             if r.packet_type == OW_ERROR or len(r.data) != 8:
                 logger.error("Error getting camera status")
@@ -1104,8 +1103,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error resetting device")
@@ -1128,8 +1127,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=1)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=1)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling aggregator")
@@ -1147,8 +1146,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=0)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN,reserved=0)
+            self.uart.comm.clear_buffer()
             # r.print_packet()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling aggregator")
@@ -1169,8 +1168,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
         
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
                 return False
@@ -1190,8 +1189,8 @@ class MOTIONSensor:
                 return True 
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
                 return False
@@ -1218,8 +1217,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=1)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=1)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera FSIN")
                 return False
@@ -1246,8 +1245,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=0)
-            self.uart.clear_buffer()
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=0)
+            self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error disabling camera FSIN")
                 return False
