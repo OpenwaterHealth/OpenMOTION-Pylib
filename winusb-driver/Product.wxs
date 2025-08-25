@@ -1,0 +1,105 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="OpenMotion WinUSB Driver"
+           Manufacturer="Openwater"
+           Version="1.0.0"
+           UpgradeCode="{F6F5B7B5-98B8-4E6D-9E68-4C7A8A0A1234}"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OpenMotion WinUSB Driver is already installed."/>
+    <MediaTemplate/>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="OpenMotion">
+        <Directory Id="DriverDir" Name="Driver"/>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- One file per Component (Guid="*") -->
+    <DirectoryRef Id="DriverDir">
+      <Component Id="cmpCert" Guid="*">
+        <File Id="filCert" Source="OpenMotion_signing_cert.cer" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpInf0" Guid="*">
+        <File Id="filInf0" Source="COMMS_HISTO_IMU(HS)_(Interface_0).inf" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpCat0" Guid="*">
+        <File Id="filCat0" Source="comms_histo_imu(hs)_(interface_0).cat" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpInf1" Guid="*">
+        <File Id="filInf1" Source="COMMS_HISTO_IMU(HS)_(Interface_1).inf" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpCat1" Guid="*">
+        <File Id="filCat1" Source="comms_histo_imu(hs)_(interface_1).cat" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpInf2" Guid="*">
+        <File Id="filInf2" Source="COMMS_HISTO_IMU(HS)_(Interface_2).inf" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpCat2" Guid="*">
+        <File Id="filCat2" Source="comms_histo_imu(hs)_(interface_2).cat" KeyPath="yes"/>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="OpenMotion Driver" Level="1">
+      <ComponentRef Id="cmpCert"/>
+      <ComponentRef Id="cmpInf0"/>
+      <ComponentRef Id="cmpCat0"/>
+      <ComponentRef Id="cmpInf1"/>
+      <ComponentRef Id="cmpCat1"/>
+      <ComponentRef Id="cmpInf2"/>
+      <ComponentRef Id="cmpCat2"/>
+    </Feature>
+
+    <!-- QuietExec custom actions (WiX v4) -->
+    <SetProperty Id="InstallCertTrustedPublisher"
+                 Value="&quot;[System32Folder]certutil.exe&quot; -f -addstore &quot;TrustedPublisher&quot; &quot;[#filCert]&quot;"
+                 Before="InstallCertTrustedPublisher" Sequence="execute"/>
+    <CustomAction Id="InstallCertTrustedPublisher"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check"/>
+
+    <SetProperty Id="InstallCertRoot"
+                 Value="&quot;[System32Folder]certutil.exe&quot; -f -addstore &quot;Root&quot; &quot;[#filCert]&quot;"
+                 Before="InstallCertRoot" Sequence="execute"/>
+    <CustomAction Id="InstallCertRoot"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check"/>
+
+    <SetProperty Id="AddDriverIf0"
+                 Value="&quot;[System32Folder]pnputil.exe&quot; /add-driver &quot;[#filInf0]&quot; /install"
+                 Before="AddDriverIf0" Sequence="execute"/>
+    <CustomAction Id="AddDriverIf0"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check"/>
+
+    <SetProperty Id="AddDriverIf1"
+                 Value="&quot;[System32Folder]pnputil.exe&quot; /add-driver &quot;[#filInf1]&quot; /install"
+                 Before="AddDriverIf1" Sequence="execute"/>
+    <CustomAction Id="AddDriverIf1"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check"/>
+
+    <SetProperty Id="AddDriverIf2"
+                 Value="&quot;[System32Folder]pnputil.exe&quot; /add-driver &quot;[#filInf2]&quot; /install"
+                 Before="AddDriverIf2" Sequence="execute"/>
+    <CustomAction Id="AddDriverIf2"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallCertTrustedPublisher" After="InstallFiles" Condition="NOT Installed OR REINSTALL"/>
+      <Custom Action="InstallCertRoot"             After="InstallCertTrustedPublisher" Condition="NOT Installed OR REINSTALL"/>
+      <Custom Action="AddDriverIf0"                After="InstallCertRoot" Condition="NOT Installed OR REINSTALL"/>
+      <Custom Action="AddDriverIf1"                After="AddDriverIf0" Condition="NOT Installed OR REINSTALL"/>
+      <Custom Action="AddDriverIf2"                After="AddDriverIf1" Condition="NOT Installed OR REINSTALL"/>
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>
