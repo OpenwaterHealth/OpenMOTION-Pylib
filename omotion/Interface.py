@@ -1,6 +1,6 @@
 import asyncio
 import logging
-
+from typing import Any, Iterable
 from omotion.Console import MOTIONConsole
 from omotion.DualMotionComposite import DualMotionComposite
 from omotion.Sensor import MOTIONSensor
@@ -109,22 +109,53 @@ class MOTIONInterface(SignalWrapper):
         except Exception as e:
             logger.error("Error stopping monitoring: %s", e)
             raise
-
-    def run_on_sensors(self, func_name: str, *args, target: str | None = None, **kwargs) -> dict[str, any]:
+        
+    def run_on_sensors(
+        self,
+        func_name: str,
+        *args,
+        target: str | Iterable[str] | None = None,
+        include_disconnected: bool = True,
+        **kwargs
+    ) -> dict[str, Any]:
         """
-        Run a MOTIONSensor method on all connected sensors and return results.
+        Run a MOTIONSensor method on selected sensors and return results.
 
         Args:
-            func_name (str): Name of the MOTIONSensor method to call.
-            *args: Positional arguments to pass to the method.
-            **kwargs: Keyword arguments to pass to the method.
+            func_name: Name of the MOTIONSensor method to call.
+            *args: Positional args to pass to the method.
+            target: Which sensor(s) to target:
+                - None (default): run on all sensors in self.sensors
+                - "left" or "right": run only on that sensor
+                - "all" or "*": same as None
+                - Iterable[str]: e.g. ["left", "right"]
+            include_disconnected: If True, include keys for selected sensors
+                that are not connected with value None; if False, skip them.
+            **kwargs: Keyword args to pass to the method.
 
         Returns:
-            dict[str, any]: Dictionary mapping sensor position ('left', 'right') 
-                            to the method's return value, or None if not connected.
+            dict[str, Any]: {sensor_name: return_value or None}
         """
-        results = {}
+        # Normalize target(s)
+        if target is None or (isinstance(target, str) and target.lower() in ("all", "*")):
+            selected_names = set(self.sensors.keys())
+        elif isinstance(target, str):
+            selected_names = {target.lower()}
+        else:
+            selected_names = {str(t).lower() for t in target}
+
+        results: dict[str, Any] = {}
+
+        # Validate requested targets exist
+        unknown = selected_names - {n.lower() for n in self.sensors.keys()}
+        if unknown:
+            logger.warning(f"Unknown sensor target(s): {sorted(unknown)}")
+
+        # Iterate over requested sensors only
         for name, sensor in self.sensors.items():
+            if name.lower() not in selected_names:
+                continue
+
             if sensor and sensor.is_connected():
                 method = getattr(sensor, func_name, None)
                 if callable(method):
@@ -137,8 +168,11 @@ class MOTIONInterface(SignalWrapper):
                     logger.error(f"{func_name} is not a valid MOTIONSensor method")
                     results[name] = None
             else:
-                logger.warning(f"{name} sensor not connected.")
-                results[name] = None
+                if include_disconnected:
+                    logger.warning(f"{name} sensor not connected.")
+                    results[name] = None
+                # else skip disconnected sensor entirely
+
         return results
     
     def is_device_connected(self) -> tuple[bool, bool, bool]:

@@ -16,6 +16,20 @@ def run_sensor_tests(interface) -> bool:
     ping_results = interface.run_on_sensors("ping")
     print(ping_results)  
 
+    # Explicit both (same as default)
+    ping_results = interface.run_on_sensors("ping", target=["left", "right"])
+    print(ping_results) 
+
+
+    # target left
+    ping_results = interface.run_on_sensors("ping", target="left")
+    print(ping_results) 
+
+    # target right
+    ping_results = interface.run_on_sensors("ping", target="right")
+    print(ping_results) 
+
+
     # Get Firmware Version
     print("\n[2] Reading Firmware Version...")
     version_results = interface.run_on_sensors("get_version")
