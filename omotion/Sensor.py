@@ -1292,19 +1292,19 @@ class MOTIONSensor:
             raise
 
     def camera_set_gain(self,gain,packet_id=None):
-
+        ret = True
         gain = gain & 0xFF
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
         time.sleep(0.05)
 
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
         time.sleep(0.05)
 
         print(f"Gain set to {gain}")
-        return 0
+        return ret
 
-    def camera_set_exposure(self,exposure_selection):
-    
+    def camera_set_exposure(self,exposure_selection,us=None):
+        ret = True
         exposures = [0x1F,0x20,0x2C,0x2D, 0x7a]
         exposure_byte = exposures[exposure_selection]
         # ;; exp=242.83us --> {0x3501,0x3502} = 0x001F
@@ -1312,13 +1312,17 @@ class MOTIONSensor:
         # ;; exp=344.67us --> {0x3501,0x3502} = 0x002C
         # ;; exp=352.50us --> {0x3501,0x3502} = 0x002D
         # ;; exp=1098.00us --> {0x3501,0x3502} = 0x007A
+        if us is not None:
+            exposure_byte = int((us/9)) & 0xFF
 
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3501,data=0x00))
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3501,data=0x00))
         time.sleep(0.05)
 
-        self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3502,data=exposure_byte))
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3502,data=exposure_byte))
         time.sleep(0.05)
-        return 0
+        exp_us = exposure_byte * 9
+        print(f"Exposure set to {exposure_byte} ({exp_us}us)")
+        return ret
     
     def switch_camera(self, camera_id, packet_id=None):
         camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
