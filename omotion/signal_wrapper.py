@@ -32,13 +32,13 @@ class SignalWrapper(QObject if PYQT_AVAILABLE else object):
 
         def __init__(self):
             super().__init__()
-            logger.info("SignalWrapper initialized with real signals.")
+            logger.debug("SignalWrapper initialized with real signals.")
     else:
         def __init__(self):
             self.signal_connect = self._noop
             self.signal_disconnect = self._noop
             self.signal_data_received = self._noop
-            logger.info("SignalWrapper initialized with no-op signals.")
+            logger.debug("SignalWrapper initialized with no-op signals.")
 
         def _noop(self, *args, **kwargs):
             logger.debug(f"Called no-op signal with args={args}, kwargs={kwargs}")
