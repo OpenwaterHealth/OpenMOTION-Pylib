@@ -44,6 +44,13 @@ def parse_args():
         type=str,
         help="Path to FPGA bitstream file (required if manual upload)"
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        choices=["left", "right", "both"],
+        default="left",
+        help="Specify which side to run the flash on (default: both)"
+    )
     return parser.parse_args()
 
 
@@ -59,7 +66,7 @@ def program_sensor_bitstream(interface, camera_position, bit_file):
 
     # Run the initial steps
     for method, error_msg in steps:
-        results = interface.run_on_sensors(method, camera_position)
+        results = interface.run_on_sensors(method, camera_position, target=target)
         for side, success in results.items():
             if not success:
                 print(f"{error_msg} ({side})")
@@ -67,35 +74,35 @@ def program_sensor_bitstream(interface, camera_position, bit_file):
 
     # Send bitstream
     print("Sending bitstream to camera FPGA")
-    results = interface.run_on_sensors("send_bitstream_fpga", filename=bit_file)
+    results = interface.run_on_sensors("send_bitstream_fpga", target=target, filename=bit_file)
     for side, success in results.items():
         if not success:
             print(f"Failed to send bitstream to camera FPGA ({side})")
             return False
 
     # Status after bitstream
-    results = interface.run_on_sensors("get_status_fpga", camera_position)
+    results = interface.run_on_sensors("get_status_fpga", camera_position, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to get status for camera FPGA ({side})")
             return False
 
     # Program FPGA
-    results = interface.run_on_sensors("program_fpga", camera_position=camera_position, manual_process=True)
+    results = interface.run_on_sensors("program_fpga", camera_position=camera_position, manual_process=True, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to program FPGA ({side})")
             return False
 
     # Get usercode
-    results = interface.run_on_sensors("get_usercode_fpga", camera_position)
+    results = interface.run_on_sensors("get_usercode_fpga", camera_position, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to get usercode for camera FPGA ({side})")
             return False
 
     # Final status
-    results = interface.run_on_sensors("get_status_fpga", camera_position)
+    results = interface.run_on_sensors("get_status_fpga", camera_position, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to get status for camera FPGA ({side})")
@@ -104,8 +111,8 @@ def program_sensor_bitstream(interface, camera_position, bit_file):
     print("✅ Camera FPGA programming complete for all connected sensors.")
     return True
 
-def upload_camera_bitstream(interface, auto_upload: bool, camera_position: int, bit_file: str) -> bool:
- 
+def upload_camera_bitstream(interface, auto_upload: bool, camera_position: int, target: str, bit_file: str) -> bool:
+
     print("FPGA Configuration Started")
     
     if auto_upload:
@@ -116,6 +123,7 @@ def upload_camera_bitstream(interface, auto_upload: bool, camera_position: int, 
         results = interface.run_on_sensors(
             "program_fpga", 
             camera_position=camera_position, 
+            target=target,
             manual_process=False
         )
         
@@ -125,12 +133,12 @@ def upload_camera_bitstream(interface, auto_upload: bool, camera_position: int, 
                 return False
     else:
         # Manual upload process
-        if not program_sensor_bitstream(interface, camera_position, BIT_FILE):
+        if not program_sensor_bitstream(interface, camera_position, BIT_FILE, target=target):
             return False
         
     return True
 
-def configure_camera_sensors(interface, camera_mask, auto_upload: bool, bit_file: str) -> bool:   
+def configure_camera_sensors(interface, camera_mask, auto_upload: bool, target: str, bit_file: str) -> bool:   
 
     # turn camera mask into camera positions
     camera_positions = [i for i in range(8) if camera_mask & (1 << i)]
@@ -141,15 +149,16 @@ def configure_camera_sensors(interface, camera_mask, auto_upload: bool, bit_file
         print(f"\nProgramming camera FPGA at position {pos + 1}...")
         cam_mask_single = 1 << pos
         start_time = time.time()
-        if not upload_camera_bitstream(interface, auto_upload, cam_mask_single, bit_file):
+        if not upload_camera_bitstream(interface, auto_upload, cam_mask_single, target, bit_file):
             print("Failed to upload camera bitstream.")
             exit(1)
         print(f"FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
-
-        print ("Programming camera sensor registers.")
         
         print("Programming camera sensor registers.")
-        print(interface.run_on_sensors("camera_configure_registers", cam_mask_single))
+        results = interface.run_on_sensors("camera_configure_registers", cam_mask_single,target=target)
+        for side, success in results.items():
+            if success == False:
+                print(f"❌ Failed to program Camera sensor on {side} sensor.")
 
         # print ("Programming camera sensor set test pattern.")
         # if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK):
@@ -179,11 +188,20 @@ def main():
     else:
         print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR (LEFT,RIGHT): {left_sensor}, {right_sensor}')
 
-    if not left_sensor and not right_sensor:
-        print("Sensor Module not connected.")
-        exit(1)
+    if args.target == "left":   
+        if not left_sensor:
+            print("Left sensor module not connected.")
+            exit(1)
+    elif args.target == "right":
+        if not right_sensor:
+            print("Right sensor module not connected.")
+            exit(1)
+    elif args.target == "both":
+        if not (left_sensor and right_sensor):
+            print("Both sensor modules not connected.")
+            exit(1)
 
-    configure_camera_sensors(interface, args.camera_mask, not args.manual_upload, args.bit_file)
+    configure_camera_sensors(interface, args.camera_mask, not args.manual_upload, args.target, args.bit_file)
 
     print("\nSensor Module Test Completed.")
     
