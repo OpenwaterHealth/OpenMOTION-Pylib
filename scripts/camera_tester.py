@@ -27,6 +27,8 @@ save_histo = False
 show_histo = False
 clean_printouts = False
 
+gain = 16
+exposure = 600
 
 def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
     """
@@ -56,6 +58,7 @@ def plot_10bit_histogram(histogram_data, title="10-bit Histogram"):
         
     except Exception as e:
         print(f"Error plotting histogram: {e}")
+
 def print_weighted_average(histogram):
     if len(histogram) != 1024:
         raise ValueError("Histogram must have 1024 bins.")
@@ -69,6 +72,7 @@ def print_weighted_average(histogram):
         average = weighted_sum / total_count
         if(not clean_printouts): print(f"Image Mean: {average:.2f}")
         else: print(f"{average:.2f}")
+
 def save_histogram_raw(histogram_data: bytearray, filename: str = "histogram.bin"):
     """Saves raw histogram bytes to a binary file."""
     try:
@@ -100,18 +104,17 @@ def bytes_to_integers(byte_array):
         for i in range(0, len(byte_array), 4):
             bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
-#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            # integer = struct.unpack_from('<I', byte_array, i)[0]
             # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
             #     print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
             integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
         return (integers, hidden_figures)
 
-# Create an instance of the Sensor interface
-interface = MOTIONInterface()
-
 # Check if console and sensor are connected
-console_connected, sensor_connected = interface.is_device_connected()
+interface, console_connected, left_sensor, right_sensor = MOTIONInterface.acquire_motion_interface()
+
+sensor_connected = left_sensor #default to left sensor
 
 if console_connected and sensor_connected:
     print("MOTION System fully connected.")
@@ -132,8 +135,6 @@ if(save_histo):
     print("You entered:")
     print(user_inputs)
 
-
-
 # turn camera mask into camera positions
 CAMERA_POSITIONS = []
 for i in range(8):
@@ -145,44 +146,35 @@ for camera_position in CAMERA_POSITIONS:
 
     # turn camera position into camera mask
     CAMERA_MASK_SINGLE = 1 << camera_position
-
+    target = "left"
     if(ENABLE_TEST_PATTERN):
         # print ("Programming camera sensor set test pattern.")
-        if not interface.sensor_module.camera_configure_test_pattern(CAMERA_MASK_SINGLE, TEST_PATTERN_ID):
-            print("Failed to set grayscale test pattern for camera FPGA.")
+        interface.run_on_sensors("camera_configure_test_pattern", CAMERA_MASK_SINGLE, TEST_PATTERN_ID, target=target)
     else:
         # print ("Programming camera sensor registers.")
-        if not interface.sensor_module.camera_configure_registers(CAMERA_MASK_SINGLE):
-            print("Failed to configure default registers for camera FPGA.")
+        interface.run_on_sensors("camera_configure_registers", CAMERA_MASK_SINGLE, target=target)
 
-    if not interface.sensor_module.switch_camera(camera_position+1):
-        print("Failed to switch camera.")
-
-    if not interface.sensor_module.camera_set_gain(16):
-        print("Failed to set camera gain.")
-    
-    if not interface.sensor_module.camera_set_exposure(0,us=600):
-        print("Failed to set camera exposure.")
-
-    if not interface.sensor_module.camera_capture_histogram(CAMERA_MASK_SINGLE):
-        print("Failed to capture histogram frame.")
+    interface.run_on_sensors("switch_camera", camera_position+1, target=target)
+    interface.run_on_sensors("camera_set_gain", gain, target=target)
+    interface.run_on_sensors("camera_set_exposure", 0, us=exposure, target=target)
+    interface.run_on_sensors("camera_capture_histogram", CAMERA_MASK_SINGLE, target=target)
+    histogram = interface.run_on_sensors("camera_get_histogram", CAMERA_MASK_SINGLE, target=target) # returns a list of histograms, one per sensor
+    histogram = histogram[target]
+    print(histogram)
+    if histogram is None:
+        print("Histogram frame is None.")
     else:
-        # print("Get histogram frame.")
-        histogram = interface.sensor_module.camera_get_histogram(CAMERA_MASK_SINGLE)
-        if histogram is None:
-            print("Histogram frame is None.")
-        else:
-            histogram = histogram[0:4096]
-            (bins, hidden_numbers) = bytes_to_integers(histogram)
-            if(save_histo): save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
-            
-            if(bins[1023] != 0): print("Saturated Pixels: " + str(bins[1023]))
-            bins[1023]=0
-            print_weighted_average(bins)
-            if(show_histo): plot_10bit_histogram(bins, title="10-bit Histogram")
+        histogram = histogram[0:4096]
+        (bins, hidden_numbers) = bytes_to_integers(histogram)
+        if(save_histo): save_histogram_csv(bins, filename=("histo_cam_"+user_inputs[camera_position]+".csv"))    
+        
+        if(bins[1023] != 0): print("Saturated Pixels: " + str(bins[1023]))
+        bins[1023]=0
+        print_weighted_average(bins)
+        if(show_histo): plot_10bit_histogram(bins, title="10-bit Histogram")
 
 # Disconnect and cleanup;'.l/m 1
-interface.sensor_module.disconnect()
+interface.sensors["left"].disconnect()
 print("\nSensor Module Test Completed.")
 
 exit(0)

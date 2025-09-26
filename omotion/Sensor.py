@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
 
@@ -889,7 +889,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG, addr=camera_position, timeout=60)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error configuring camera registers")
                 return False
             else:
                 return True
@@ -935,7 +935,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error configuring camera test pattern")
                 return False
             else:
                 return True
@@ -977,7 +977,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error capturing histogram")
                 return False
             else:
                 return True
@@ -1019,7 +1019,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error getting histogram")
                 return None
             else:
                 logger.debug(f"HIST Data Len: {len(r.data)}")
@@ -1279,9 +1279,9 @@ class MOTIONSensor:
                 raise ValueError("Sensor Module not connected")
             
             data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')
-            response = self.uart.send_packet(packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data)
+            response = self.uart.comm.send_packet(packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data)
         
-            self.uart.clear_buffer()
+            self.uart.comm.clear_buffer()
             if response.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error sending I2C write command")
                 return False
@@ -1327,8 +1327,8 @@ class MOTIONSensor:
     def switch_camera(self, camera_id, packet_id=None):
         camera_id = camera_id - 1 # convert from 1 indexed to 0 indexed
         bytes_val = camera_id.to_bytes(1, 'big')
-        response = self.uart.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
-        self.uart.clear_buffer()
+        response = self.uart.comm.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.comm.clear_buffer()
         return response
 
     def disconnect(self):
