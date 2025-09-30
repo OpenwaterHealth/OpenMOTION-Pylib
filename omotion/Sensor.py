@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
 
@@ -1330,6 +1330,69 @@ class MOTIONSensor:
         response = self.uart.comm.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
         self.uart.comm.clear_buffer()
         return response
+
+    def enable_camera_power(self,camera_mask: int) -> bool:
+        """
+        Enable power to the specified camera(s).
+
+        Args:
+            camera_mask (int): A bitmask representing the cameras to power on (0x01 to 0xFF).
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+        """
+        try:
+            if not (0x01 <= camera_mask <= 0xFF):
+                raise ValueError(f"camera_mask must be between 0x01 and 0xFF, got {camera_mask:#04x}")
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_ON, addr=camera_mask)
+            self.uart.comm.clear_buffer()
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error enabling camera power")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def disable_camera_power(self,camera_mask: int) -> bool:
+        """
+        Disable power to the specified camera(s).
+
+        Args:
+            camera_mask (int): A bitmask representing the cameras to power off (0x01 to 0xFF).
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+        """
+        try:
+            if not (0x01 <= camera_mask <= 0xFF):
+                raise ValueError(f"camera_mask must be between 0x01 and 0xFF, got {camera_mask:#04x}")
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_OFF, addr=camera_mask)
+            self.uart.comm.clear_buffer()
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error disabling camera power")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
 
     def disconnect(self):
         """
