@@ -253,10 +253,12 @@ print("\n[9] Stop trigger...")
 if not interface.console_module.stop_trigger():
     print("Failed to stop trigger.")
 
+time.sleep(1) # wait a few frames to ensure all frames are received
+
 # step 5 disable cameras, cancel reception etc
 print("\n[10] Deactivate Cameras...")
 if not interface.sensor_module.disable_camera(CAMERA_MASK):
-    print("Failed to enable cameras.")
+    print("Failed to disable cameras.")
 
 time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
 
