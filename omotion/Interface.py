@@ -244,7 +244,7 @@ class MOTIONInterface(SignalWrapper):
             logger.debug(f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
         # Step 3: Configure registers if needed
-        if not (status & (1 << 1) and status & (1 << 3)):
+        if not (status & (1 << 1) and status & (1 << 2)):
             logger.debug(f"[{sensor_side.capitalize()}] Programming camera sensor registers.")
             if not sensor.camera_configure_registers(camera_mask):
                 logger.error(f"[{sensor_side.capitalize()}] Failed to configure registers.")
