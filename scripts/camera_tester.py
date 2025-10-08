@@ -154,7 +154,7 @@ for camera_position in CAMERA_POSITIONS:
         # print ("Programming camera sensor registers.")
         interface.run_on_sensors("camera_configure_registers", CAMERA_MASK_SINGLE, target=target)
 
-    interface.run_on_sensors("switch_camera", camera_position+1, target=target)
+    interface.run_on_sensors("switch_camera", camera_position, target=target)
     interface.run_on_sensors("camera_set_gain", gain, target=target)
     interface.run_on_sensors("camera_set_exposure", 0, us=exposure, target=target)
     interface.run_on_sensors("camera_capture_histogram", CAMERA_MASK_SINGLE, target=target)
