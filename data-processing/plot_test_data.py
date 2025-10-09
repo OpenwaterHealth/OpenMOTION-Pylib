@@ -89,7 +89,7 @@ def plot_histograms(serial_number):
     pylib_dir = script_dir.parent
     captures_dir = pylib_dir / "camera_test_captures"
     
-    light_file = captures_dir / f"{serial_number}_histogram.csv"
+    light_file = captures_dir / f"{serial_number}_histogram_light.csv"
     dark_file = captures_dir / f"{serial_number}_histogram_dark.csv"
     
     # Check if files exist
