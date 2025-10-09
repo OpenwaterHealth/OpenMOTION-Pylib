@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
 
@@ -177,6 +177,90 @@ class MOTIONSensor:
 
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def set_fan_control(self, fan_on: bool) -> bool:
+        """
+        Set the fan control pin state on the Sensor Module.
+
+        Args:
+            fan_on (bool): True to turn fan ON (HIGH), False to turn fan OFF (LOW).
+
+        Returns:
+            bool: True if command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while setting fan control.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info(f"Demo mode: Fan control set to {'ON' if fan_on else 'OFF'}")
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the SET_FAN_CTL command with reserved field set to 1 for ON, 0 for OFF
+            reserved = 1 if fan_on else 0
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_SET_FAN_CTL, reserved=reserved)
+            self.uart.comm.clear_buffer()
+            
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error setting fan control")
+                return False
+            else:
+                logger.info(f"Fan control set to {'ON' if fan_on else 'OFF'}")
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during fan control: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_fan_control_status(self) -> bool:
+        """
+        Get the current fan control pin state from the Sensor Module.
+
+        Returns:
+            bool: True if fan is ON (HIGH), False if fan is OFF (LOW).
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while getting fan control status.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: Fan control status is ON")
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the GET_FAN_CTL command
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_GET_FAN_CTL)
+            self.uart.comm.clear_buffer()
+            
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error getting fan control status")
+                return False
+            else:
+                # The fan status is returned in the reserved field
+                fan_status = r.reserved == 1
+                logger.info(f"Fan control status: {'ON' if fan_status else 'OFF'}")
+                return fan_status
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during fan status query: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_hardware_id(self) -> str:
