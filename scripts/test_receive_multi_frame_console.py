@@ -101,7 +101,7 @@ def bytes_to_integers(byte_array):
         hidden_figures = []
         # Iterate over the byte array in chunks of 4 bytes
         for i in range(0, len(byte_array), 4):
-            # bytes = byte_array[i:i+4]
+            bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
             integer = struct.unpack_from('<I', byte_array, i)[0]
             # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
