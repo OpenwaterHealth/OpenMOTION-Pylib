@@ -1274,7 +1274,7 @@ class MOTIONSensor:
                 return True 
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position,timeout=0.3)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
