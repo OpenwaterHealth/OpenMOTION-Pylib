@@ -103,7 +103,7 @@ def bytes_to_integers(byte_array):
         for i in range(0, len(byte_array), 4):
             bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
-#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            integer = struct.unpack_from('<I', byte_array, i)[0]
             # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
             #     print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
@@ -127,30 +127,33 @@ print("\n[1] Ping Sensor Module...")
 response = interface.sensor_module.ping()
 print("Ping successful." if response else "Ping failed.")
 
+print("\n[2] Ping Console...")
+response = interface.console_module.ping()
+print("Ping successful." if response else "Ping failed.")
+
 # Get Firmware Version
-print("\n[2] Reading Firmware Version...")
+print("\n[3] Reading Firmware Version...")
 try:
     version = interface.sensor_module.get_version()
-    print(f"Firmware Version: {version}")
+    print(f"Sensor Firmware Version: {version}")
+except Exception as e:
+    print(f"Error reading version: {e}")
+
+# Get Firmware Version
+print("\n[4] Reading Firmware Version...")
+try:
+    version = interface.console_module.get_version()
+    print(f"Console Firmware Version: {version}")
 except Exception as e:
     print(f"Error reading version: {e}")
 
 # Start Threads
 printer_thread = threading.Thread(target=file_writer, args=(file_writer_queue, stop_event))
 printer_thread.start()
-#step 1 enable cameras - this means turn on streaming mode and start the reception
-
 interface._sensor_uart.start_histo_thread(expected_frame_size=32833, histo_queue=file_writer_queue)
 
 interface.sensor_module.enable_camera_fsin_ext() # Enable cameras with FSIN ext from console
 
-
-# Ping Test
-print("\n[1] Ping Sensor Module...")
-response = interface.console_module.ping()
-print("Ping successful." if response else "Ping failed.")
-
-print("\n[0] Set trigger...")
 json_trigger_data = {
     "TriggerFrequencyHz": 40,
     "TriggerPulseWidthUsec": 500,
@@ -160,24 +163,22 @@ json_trigger_data = {
     "EnableSyncOut": True,
     "EnableTaTrigger": True
 }
-
+print("\n[5] Setting trigger...")
 new_setting = interface.console_module.set_trigger_json(data=json_trigger_data)
 if new_setting:
     print(f"Trigger Setting: {new_setting}")
 else:
     print("Failed to get trigger setting.")
 
-print("\n[1] Get trigger...")
-trigger_setting = interface.console_module.get_trigger_json()
-if trigger_setting:
-    print(f"Trigger Setting: {trigger_setting}")
-else:
-    print("Failed to get trigger setting.")
-
-
+# print("\n[1] Get trigger...")
+# trigger_setting = interface.console_module.get_trigger_json()
+# if trigger_setting:
+#     print(f"Trigger Setting: {trigger_setting}")
+# else:
+#     print("Failed to get trigger setting.")
 
 #Set laser power
-print("\n[2] Set laser power...")
+print("\n[6] Set laser power...")
 
 laser_params = []
 #TA params
@@ -237,24 +238,29 @@ for laser_param in laser_params:
     if not interface.console_module.write_i2c_packet(mux_index=muxIdx, channel=channel, device_addr=i2cAddr, reg_addr=offset, data=dataToSend):
         print("Failed to set laser power.")
 
-print("\n[3] Enable Cameras")
+print("\n[7] Enable Cameras")
 if not interface.sensor_module.enable_camera(CAMERA_MASK):
     print("Failed to enable cameras.")
 
 # Activate Laser
-print("\n[2] Start trigger...")
+print("\n[8] Start trigger...")
 if not interface.console_module.start_trigger():
     print("Failed to start trigger.")
     
 time.sleep(SCAN_TIME) # Wait for a moment to ensure FSIN is activated
-interface.console_module.stop_trigger()
+
+print("\n[9] Stop trigger...")
+if not interface.console_module.stop_trigger():
+    print("Failed to stop trigger.")
+
+time.sleep(1) # wait a few frames to ensure all frames are received
 
 # step 5 disable cameras, cancel reception etc
-print("\n[7] Deactivate Cameras...")
+print("\n[10] Deactivate Cameras...")
 if not interface.sensor_module.disable_camera(CAMERA_MASK):
-    print("Failed to enable cameras.")
-time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
+    print("Failed to disable cameras.")
 
+time.sleep(1) # wait a few frames for the camera to exhaust itself before disabling the camera
 
 stop_event.set()
 printer_thread.join()

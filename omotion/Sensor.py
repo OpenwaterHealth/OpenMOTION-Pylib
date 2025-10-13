@@ -1,9 +1,10 @@
 import logging
 import struct
-
+import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS
+from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
 
 logger = logging.getLogger("Sensor")
@@ -176,6 +177,90 @@ class MOTIONSensor:
 
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def set_fan_control(self, fan_on: bool) -> bool:
+        """
+        Set the fan control pin state on the Sensor Module.
+
+        Args:
+            fan_on (bool): True to turn fan ON (HIGH), False to turn fan OFF (LOW).
+
+        Returns:
+            bool: True if command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while setting fan control.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info(f"Demo mode: Fan control set to {'ON' if fan_on else 'OFF'}")
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the SET_FAN_CTL command with reserved field set to 1 for ON, 0 for OFF
+            reserved = 1 if fan_on else 0
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_SET_FAN_CTL, reserved=reserved)
+            self.uart.comm.clear_buffer()
+            
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error setting fan control")
+                return False
+            else:
+                logger.info(f"Fan control set to {'ON' if fan_on else 'OFF'}")
+                return True
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during fan control: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_fan_control_status(self) -> bool:
+        """
+        Get the current fan control pin state from the Sensor Module.
+
+        Returns:
+            bool: True if fan is ON (HIGH), False if fan is OFF (LOW).
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while getting fan control status.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: Fan control status is ON")
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            # Send the GET_FAN_CTL command
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_GET_FAN_CTL)
+            self.uart.comm.clear_buffer()
+            
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error getting fan control status")
+                return False
+            else:
+                # The fan status is returned in the reserved field
+                fan_status = r.reserved == 1
+                logger.info(f"Fan control status: {'ON' if fan_status else 'OFF'}")
+                return fan_status
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during fan status query: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_hardware_id(self) -> str:
@@ -764,7 +849,7 @@ class MOTIONSensor:
 
         try:
             file_crc = calculate_file_crc(filename)
-            print(f"CRC16 of file: {hex(file_crc)}")
+            logger.info(f"CRC16 of file: {hex(file_crc)}")
 
             with open(filename, "rb") as f:
                 while True:
@@ -805,7 +890,7 @@ class MOTIONSensor:
                     total_bytes_sent += len(data)
                     block_count += 1
 
-            print(f"Bitstream upload complete. Blocks sent: {block_count}, Total bytes: {total_bytes_sent}")
+            logger.info(f"Bitstream upload complete. Blocks sent: {block_count}, Total bytes: {total_bytes_sent}")
             return True
 
         except FileNotFoundError:
@@ -888,7 +973,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_CONFIG, addr=camera_position, timeout=60)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error configuring camera registers")
                 return False
             else:
                 return True
@@ -934,7 +1019,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SET_TESTPATTERN, addr=camera_position, data=bytearray([test_pattern]), timeout=60)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error configuring camera test pattern")
                 return False
             else:
                 return True
@@ -976,7 +1061,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_SINGLE_HISTOGRAM, addr=camera_position, reserved=0, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error capturing histogram")
                 return False
             else:
                 return True
@@ -1018,7 +1103,7 @@ class MOTIONSensor:
             r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_GET_HISTOGRAM, addr=camera_position, timeout=15)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
-                logger.error("Error programming FPGA")
+                logger.error("Error getting histogram")
                 return None
             else:
                 logger.debug(f"HIST Data Len: {len(r.data)}")
@@ -1189,7 +1274,7 @@ class MOTIONSensor:
                 return True 
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=0, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position,timeout=0.3)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
@@ -1256,6 +1341,175 @@ class MOTIONSensor:
             logger.error("Unexpected error during process: %s", e)
             raise
 
+    def camera_i2c_write(self, packet, packet_id=None):
+        """
+        Write data to a camera sensor's I2C register.
+        
+        Args:
+            packet (I2CPacket): The I2C packet containing the device address, register address, and data to write.
+            packet_id (int, optional): The ID for the packet. Defaults to None.
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+        
+        Raises:
+            ValueError: If the UART is not connected or if the packet is invalid.   
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+            
+            data = packet.register_address.to_bytes(2,'big') + packet.data.to_bytes(1,'big')
+            response = self.uart.comm.send_packet(packetType=OW_I2C_PASSTHRU, command=packet.device_address, data=data)
+        
+            self.uart.comm.clear_buffer()
+            if response.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error sending I2C write command")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def camera_set_gain(self,gain,packet_id=None):
+        ret = True
+        gain = gain & 0xFF
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3508,data=gain))
+        time.sleep(0.05)
+
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
+        time.sleep(0.05)
+
+        logger.info(f"Gain set to {gain}")
+        return ret
+
+    def camera_set_exposure(self,exposure_selection,us=None):
+        ret = True
+        exposures = [0x1F,0x20,0x2C,0x2D, 0x7a]
+        exposure_byte = exposures[exposure_selection]
+        # ;; exp=242.83us --> {0x3501,0x3502} = 0x001F
+        # ;; exp=250.67us --> {0x3501,0x3502} = 0x0020
+        # ;; exp=344.67us --> {0x3501,0x3502} = 0x002C
+        # ;; exp=352.50us --> {0x3501,0x3502} = 0x002D
+        # ;; exp=1098.00us --> {0x3501,0x3502} = 0x007A
+        if us is not None:
+            exposure_byte = int((us/9)) & 0xFF
+
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3501,data=0x00))
+        time.sleep(0.05)
+
+        ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3502,data=exposure_byte))
+        time.sleep(0.05)
+        exp_us = exposure_byte * 9
+        logger.info(f"Exposure set to {exposure_byte} ({exp_us}us)")
+        return ret
+    
+    def switch_camera(self, camera_id, packet_id=None):
+        bytes_val = camera_id.to_bytes(1, 'big')
+        response = self.uart.comm.send_packet(packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val)
+        self.uart.comm.clear_buffer()
+        return response
+
+    def enable_camera_power(self,camera_mask: int) -> bool:
+        """
+        Enable power to the specified camera(s).
+
+        Args:
+            camera_mask (int): A bitmask representing the cameras to power on (0x01 to 0xFF).
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+        """
+        try:
+            if not (0x01 <= camera_mask <= 0xFF):
+                raise ValueError(f"camera_mask must be between 0x01 and 0xFF, got {camera_mask:#04x}")
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_ON, addr=camera_mask)
+            self.uart.comm.clear_buffer()
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error enabling camera power")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def disable_camera_power(self,camera_mask: int) -> bool:
+        """
+        Disable power to the specified camera(s).
+
+        Args:
+            camera_mask (int): A bitmask representing the cameras to power off (0x01 to 0xFF).
+
+        Returns:
+            bool: True if the command was sent successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+        """
+        try:
+            if not (0x01 <= camera_mask <= 0xFF):
+                raise ValueError(f"camera_mask must be between 0x01 and 0xFF, got {camera_mask:#04x}")
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_OFF, addr=camera_mask)
+            self.uart.comm.clear_buffer()
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error disabling camera power")
+                return False
+            else:
+                return True
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def get_camera_power_status(self) -> list:
+        """
+        Get power status for all cameras.
+
+        Returns:
+            list: A list of 8 booleans representing the power status of cameras 0-7.
+                 True indicates the camera is powered on, False indicates it's powered off.
+
+        Raises:
+            ValueError: If the UART is not connected.
+        """
+        try:
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            # Query all cameras (0xFF mask)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_STATUS, addr=0xFF)
+            self.uart.comm.clear_buffer()
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error getting camera power status")
+                return [False] * 8
+            else:
+                # Parse the response data - single byte mask where each bit represents power status for camera 0-7
+                power_status = [False] * 8
+                if r.data and len(r.data) >= 1:
+                    power_mask = r.data[0]
+                    for i in range(8):
+                        power_status[i] = bool(power_mask & (1 << i))
+                return power_status
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise
+
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
@@ -1291,3 +1545,5 @@ class MOTIONSensor:
         if status & (1 << 2): flags.append("CONFIGURED")
         if status & (1 << 7): flags.append("STREAMING")
         return ", ".join(flags) if flags else "NONE"
+
+

@@ -211,22 +211,22 @@ class MOTIONInterface(SignalWrapper):
             logger.error("sensor_side must be 'left' or 'right'.")
             return None
 
-        if not (1 <= camera_id <= 8):
+        if not (0 <= camera_id <= 7):
             logger.error("Camera ID must be 1–8.")
             return None
 
         sensor = self.sensors[sensor_side]
-        camera_mask = 1 << (camera_id - 1)
+        camera_mask = 1 << (camera_id)
         test_pattern = test_pattern_id
 
         # Step 1: Get status
         status_map = sensor.get_camera_status(camera_mask)
         print(f"[{sensor_side.capitalize()}] Camera {camera_id} Status: {status_map}")
-        if not status_map or camera_id - 1 not in status_map:
+        if not status_map or camera_id  not in status_map:
             logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
-        status = status_map[camera_id - 1]
+        status = status_map[camera_id ]
         logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
 
         if not status & (1 << 0):  # Not READY
@@ -244,7 +244,7 @@ class MOTIONInterface(SignalWrapper):
             logger.debug(f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
 
         # Step 3: Configure registers if needed
-        if not (status & (1 << 1) and status & (1 << 3)):
+        if not (status & (1 << 1) and status & (1 << 2)):
             logger.debug(f"[{sensor_side.capitalize()}] Programming camera sensor registers.")
             if not sensor.camera_configure_registers(camera_mask):
                 logger.error(f"[{sensor_side.capitalize()}] Failed to configure registers.")
@@ -258,11 +258,11 @@ class MOTIONInterface(SignalWrapper):
 
         # Step 5: Verify ready for histogram
         status_map = sensor.get_camera_status(camera_mask)
-        if not status_map or camera_id - 1 not in status_map:
+        if not status_map or camera_id  not in status_map:
             logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
-        status = status_map[camera_id - 1]
+        status = status_map[camera_id ]
         logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
         if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):
             logger.error(f"[{sensor_side.capitalize()}] Not configured for histogram.")
