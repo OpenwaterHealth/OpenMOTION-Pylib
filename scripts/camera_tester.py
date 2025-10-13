@@ -12,7 +12,7 @@ from omotion.Interface import MOTIONInterface
 
 print("Starting MOTION Sensor Module Test Script...")
 
-CAMERA_MASK = 0x0F
+CAMERA_MASK = 0x01
 
 ## Test Patterns
 # 0 Gradient bars
@@ -160,7 +160,6 @@ for camera_position in CAMERA_POSITIONS:
     interface.run_on_sensors("camera_capture_histogram", CAMERA_MASK_SINGLE, target=target)
     histogram = interface.run_on_sensors("camera_get_histogram", CAMERA_MASK_SINGLE, target=target) # returns a list of histograms, one per sensor
     histogram = histogram[target]
-    print(histogram)
     if histogram is None:
         print("Histogram frame is None.")
     else:
