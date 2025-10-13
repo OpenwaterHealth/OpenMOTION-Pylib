@@ -54,7 +54,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def program_sensor_bitstream(interface, camera_position, bit_file):
+def program_sensor_bitstream(interface, camera_position, bit_file, target: str):
     steps = [
         ("reset_camera_sensor", "Failed to reset camera sensor."),
         ("activate_camera_fpga", "Failed to activate camera FPGA."),

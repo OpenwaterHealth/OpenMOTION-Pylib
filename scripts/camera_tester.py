@@ -172,7 +172,7 @@ for camera_position in CAMERA_POSITIONS:
         print_weighted_average(bins)
         if(show_histo): plot_10bit_histogram(bins, title="10-bit Histogram")
 
-# Disconnect and cleanup;'.l/m 1
+# Disconnect and cleanup
 interface.sensors["left"].disconnect()
 print("\nSensor Module Test Completed.")
 

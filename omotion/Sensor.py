@@ -849,7 +849,7 @@ class MOTIONSensor:
 
         try:
             file_crc = calculate_file_crc(filename)
-            print(f"CRC16 of file: {hex(file_crc)}")
+            logger.info(f"CRC16 of file: {hex(file_crc)}")
 
             with open(filename, "rb") as f:
                 while True:
@@ -890,7 +890,7 @@ class MOTIONSensor:
                     total_bytes_sent += len(data)
                     block_count += 1
 
-            print(f"Bitstream upload complete. Blocks sent: {block_count}, Total bytes: {total_bytes_sent}")
+            logger.info(f"Bitstream upload complete. Blocks sent: {block_count}, Total bytes: {total_bytes_sent}")
             return True
 
         except FileNotFoundError:
@@ -1384,7 +1384,7 @@ class MOTIONSensor:
         ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3509,data=0x00))  # this is for fine tuning and can be set to 0x00
         time.sleep(0.05)
 
-        print(f"Gain set to {gain}")
+        logger.info(f"Gain set to {gain}")
         return ret
 
     def camera_set_exposure(self,exposure_selection,us=None):
@@ -1405,7 +1405,7 @@ class MOTIONSensor:
         ret |= self.camera_i2c_write(I2C_Packet(device_address=0x36,register_address=0x3502,data=exposure_byte))
         time.sleep(0.05)
         exp_us = exposure_byte * 9
-        print(f"Exposure set to {exposure_byte} ({exp_us}us)")
+        logger.info(f"Exposure set to {exposure_byte} ({exp_us}us)")
         return ret
     
     def switch_camera(self, camera_id, packet_id=None):
