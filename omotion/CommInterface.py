@@ -34,7 +34,6 @@ class CommInterface(USBInterfaceBase):
         if not self.ep_out:
             raise RuntimeError(f"{self.desc}: No OUT endpoint found")
 
-
     def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.010) -> UartPacket:        
         if id is None:
             self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
@@ -81,7 +80,6 @@ class CommInterface(USBInterfaceBase):
             raise TimeoutError("No response")
 
         return UartPacket(buffer=data)
-
             
     def clear_buffer(self):
         while not self.read_queue.empty():
@@ -89,6 +87,7 @@ class CommInterface(USBInterfaceBase):
                 self.read_queue.get_nowait()
             except queue.Empty:
                 break
+
     def write(self, data, timeout=100):
         return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
 

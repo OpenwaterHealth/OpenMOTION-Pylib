@@ -83,9 +83,15 @@ def main():
 
     # Acquire interface + connection state
     interface, console_connected, left_sensor, right_sensor = MOTIONInterface.acquire_motion_interface()
-
+    target = "none"
     if console_connected and left_sensor and right_sensor:
         print("MOTION System fully connected.")
+        target = "both"
+    elif console_connected and left_sensor or right_sensor:
+        if left_sensor:
+            target = "left"
+        if right_sensor:
+            target = "right"
     else:
         print(f'MOTION System NOT Fully Connected. CONSOLE: {console_connected}, SENSOR (LEFT,RIGHT): {left_sensor}, {right_sensor}')
         exit(1)
@@ -97,7 +103,7 @@ def main():
     if not args.disable_laser:
         # enable external frame sync
         print("\nEnabling external frame sync...")
-        results = interface.run_on_sensors("enable_camera_fsin_ext")
+        results = interface.run_on_sensors("enable_camera_fsin_ext", target=target)
         for side, success in results.items():
             if not success:
                 print(f"Failed to enable external frame sync on {side}.")
@@ -107,7 +113,7 @@ def main():
 
     # Enable cameras
     print("\nEnabling cameras...")
-    results = interface.run_on_sensors("enable_camera", args.camera_mask)
+    results = interface.run_on_sensors("enable_camera", args.camera_mask, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to enable camera on {side}.")
@@ -152,16 +158,15 @@ def main():
     if not interface.console_module.stop_trigger():
         print("Failed to stop trigger.")
 
-    results = interface.run_on_sensors("disable_camera", args.camera_mask)
+    results = interface.run_on_sensors("disable_camera", args.camera_mask, target=target)
     for side, success in results.items():
         if not success:
             print(f"Failed to disable camera on {side}.")
-            
 
     # Stop streaming threads
     for side in ("left", "right"):
         sensor = interface.sensors.get(side)
-        if sensor:
+        if sensor and sensor.uart:
             sensor.uart.histo.stop_streaming()
 
     # Signal all threads to stop

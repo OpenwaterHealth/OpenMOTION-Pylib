@@ -1,8 +1,8 @@
 @echo off
 
-python scripts\flash_sensors.py --camera-mask 0x99
+python scripts\flash_sensors.py --camera-mask 0x01
 python scripts\set_trigger_laser.py
-python scripts\capture_data.py --camera-mask 0x99 --subject-id Test --duration 15
+python scripts\capture_data.py --camera-mask 0x01 --subject-id Test --duration 15
 
 @REM Data Processing Scripts
 @REM python data-processing/parse_data_v2.py

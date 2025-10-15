@@ -117,7 +117,7 @@ class MOTIONInterface(SignalWrapper):
         target: str | Iterable[str] | None = None,
         include_disconnected: bool = True,
         **kwargs
-    ) -> dict[str, Any]:
+        ) -> dict[str, Any]:
         """
         Run a MOTIONSensor method on selected sensors and return results.
 
@@ -199,7 +199,7 @@ class MOTIONInterface(SignalWrapper):
         camera_id: int,
         test_pattern_id: int = 4,
         auto_upload: bool = True
-    ) -> tuple[list[int], list[int]] | None:
+        ) -> tuple[list[int], list[int]] | None:
         """
         High-level method to get a histogram from a specific camera
         on a specific sensor module ("left" or "right").
@@ -309,7 +309,7 @@ class MOTIONInterface(SignalWrapper):
         for i in range(0, len(byte_array), 4):
             bytes = byte_array[i:i+4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
-#            integer = struct.unpack_from('<I', byte_array, i)[0]
+            # integer = struct.unpack_from('<I', byte_array, i)[0]
             # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
             #     print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
