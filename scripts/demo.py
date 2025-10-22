@@ -10,7 +10,7 @@ HELP = """\
 Commands:
   get                 - Read current TEC setpoint (volts)
   set <volts>         - Set TEC setpoint to <volts> and read back
-  read <channel>      - Read TEC ADC voltage on specified channel (0-3)
+  read <channel>      - Read TEC ADC voltage on specified channel (0-3 or 4 for all)
   help                - Show this help
   quit / exit         - Leave the console
 """
@@ -116,8 +116,12 @@ def main():
 
             try:
                 ch_volts = console.tec_adc(cahannel)  # read channel
-                # Short pause in case firmware updates asynchronously
-                print(f"TEC ADC CH{cahannel} voltage: {ch_volts:.6f} V")
+                # Short pause in case firmware updates asynchronously     
+                if cahannel == 4:
+                    formatted = ", ".join(f"{v:.6f} V" for v in ch_volts)
+                    print(f"CHANNELS 0-3: {formatted}") 
+                else:          
+                    print(f"CHANNEL {cahannel}: {ch_volts:.6f} V")
             except Exception as e:
                 print(f"TEC ADC read failed: {e}")
             continue

@@ -1039,7 +1039,6 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-
     def tec_adc(self, channel: int) -> float:
         """
         Get TEC ADC voltages.
@@ -1058,8 +1057,8 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("High voltage controller not connected")
             
-            if channel not in [0, 1, 2, 3]:
-                raise ValueError("Invalid channel. Must be 0, 1, 2, or 3")
+            if channel not in [0, 1, 2, 3, 4]:
+                raise ValueError("Invalid channel. Must be 0, 1, 2, 3 or 4")
         
             # Get TEC Voltage
             logger.info(f'Getting TEC ADC CH{channel} Voltage')
@@ -1074,6 +1073,14 @@ class MOTIONConsole:
                 tec_voltage = struct.unpack('<f', r.data)[0]
                 logger.info(f"CHANNEL {channel}: {tec_voltage} V")
                 return tec_voltage
+            elif r.data_len == 16:            
+                ch0, ch1, ch2, ch3 = struct.unpack('<4f', r.data)
+                vals = [ch0, ch1, ch2, ch3]
+                logger.info(f"CHANNELS 0-3: {vals} V")
+                return vals 
+            else:
+                logger.error("Unexpected data length for TEC ADC voltage")
+                raise ValueError("Unexpected data length for TEC ADC voltage")
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
