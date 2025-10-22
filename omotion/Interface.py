@@ -318,7 +318,7 @@ class MOTIONInterface(SignalWrapper):
 
     @staticmethod
     def get_sdk_version() -> str:
-        return "1.3.2"
+        return "1.3.3"
 
     @staticmethod
     def acquire_motion_interface():
