@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TECADC, OW_ERROR
 
 logger = logging.getLogger("Console")
 
@@ -1029,6 +1029,50 @@ class MOTIONConsole:
             elif r.data_len == 4:
                 tec_voltage = struct.unpack('<f', r.data)[0]
                 logger.info(f"TEC Voltage is {tec_voltage} V")
+                return tec_voltage
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+
+    def tec_adc(self, channel: int) -> float:
+        """
+        Get TEC ADC voltages.
+
+        Returns:
+            float: The TEC ADC voltage for the specified channel.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving the TEC Enable.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+            
+            if channel not in [0, 1, 2, 3]:
+                raise ValueError("Invalid channel. Must be 0, 1, 2, or 3")
+        
+            # Get TEC Voltage
+            logger.info(f'Getting TEC ADC CH{channel} Voltage')
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TECADC, reserved=channel, data=None)
+        
+            self.uart.clear_buffer()
+            # r.print_packet()    
+            if r.packet_type == OW_ERROR:
+                logger.error("Error executing tec_adc command")
+                return 0
+            elif r.data_len == 4:            
+                tec_voltage = struct.unpack('<f', r.data)[0]
+                logger.info(f"CHANNEL {channel}: {tec_voltage} V")
                 return tec_voltage
             
         except ValueError as v:

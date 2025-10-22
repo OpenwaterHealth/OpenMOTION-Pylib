@@ -4,12 +4,13 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\semo.py
+# python scripts\demo.py
 
 HELP = """\
 Commands:
   get                 - Read current TEC setpoint (volts)
   set <volts>         - Set TEC setpoint to <volts> and read back
+  read <channel>      - Read TEC ADC voltage on specified channel (0-3)
   help                - Show this help
   quit / exit         - Leave the console
 """
@@ -102,6 +103,25 @@ def main():
             except Exception as e:
                 print(f"SET failed: {e}")
             continue
+
+        if cmd.lower() == "read":
+            if not args:
+                print("Usage: read <channel>")
+                continue
+            try:
+                cahannel = int(args[0])
+            except ValueError:
+                print("Invalid number; try e.g. 'read 1'")
+                continue
+
+            try:
+                ch_volts = console.tec_adc(cahannel)  # read channel
+                # Short pause in case firmware updates asynchronously
+                print(f"TEC ADC CH{cahannel} voltage: {ch_volts:.6f} V")
+            except Exception as e:
+                print(f"TEC ADC read failed: {e}")
+            continue
+
 
         print("Unknown command. Type 'help' for a list of commands.")
 
