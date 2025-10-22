@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_STATUS, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_ERROR
 
 logger = logging.getLogger("Console")
 
@@ -951,13 +951,52 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-
-    def get_tec_enabled(self) -> bool:
+    def get_temperatures(self) -> tuple[float, float, float]:
         """
-        Get TEC Enabled from the Console device.
+        Get the current temperatures from the Console device.
 
         Returns:
-            bool: returns true if TEC DAC initialized properly.
+            tuple[float, float, float]: (mcu_temp, safety_temp, ta_temp) in °C.
+
+        Raises:
+            ValueError: If the UART is not connected or the payload size is unexpected.
+        """
+        try:
+            if self.uart.demo_mode:
+                # Demo values: stable 3-tuple
+                return (35.0, 45.0, 25.0)
+
+            if not self.uart.is_connected():
+                raise ValueError("Console controller not connected")
+
+            # (Optional) self.uart.clear_buffer()  # If you intend to clear BEFORE request
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_GET_TEMPS
+            )
+            self.uart.clear_buffer()  # OK if your send_packet fully returns the response
+
+            if r.packet_type == OW_ERROR:
+                raise ValueError("Device returned OW_ERROR for temperatures")
+
+            if r.data_len != 12:
+                raise ValueError(f"Unexpected temperature payload length: {r.data_len} (expected 12)")
+
+            mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
+            logger.info("MCU: %.2f °C, Safety: %.2f °C, TA: %.2f °C", mcu_temp, safety_temp, ta_temp)
+            return (mcu_temp, safety_temp, ta_temp)
+
+        except Exception:
+            # Let caller handle; preserve your existing behavior
+            logger.exception("Failed to get temperatures")
+            raise
+
+    def tec_voltage(self, voltage: float | None = None) -> float:
+        """
+        Get/Set TEC Setpoint voltage.
+
+        Returns:
 
         Raises:
             ValueError: If the UART is not connected.
@@ -969,19 +1008,28 @@ class MOTIONConsole:
 
             if not self.uart.is_connected():
                 raise ValueError("High voltage controller not connected")
-
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_STATUS, data=None)
+        
+            if voltage is not None and voltage >= 0 and voltage <= 5.0:
+                # Set TEC Voltage
+                logger.info("Setting TEC Voltage to %.2f V", voltage)
+                data = struct.pack('<f', float(voltage)) # Convert to 2-byte unsigned int
+                r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=1, data=data)
+            elif voltage is None:
+                # Get TEC Voltage
+                logger.info("Getting TEC Voltage")
+                r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=0, data=None)
+            else:   
+                raise ValueError("Invalid voltage value. Must be between 0 and 5.0 V")
+            
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
-                logger.error("Error retrieving TEC Enabled")
-                return False
-            if r.data_len == 1:
-                # Assuming the TEC enabled is returned as a boolean
-                return bool(r.data[0])
-            else:
-                logger.error("Unexpected data length for TEC enabled")
-                return False
+                logger.error("Error executing tec_voltage command")
+                return 0
+            elif r.data_len == 4:
+                tec_voltage = struct.unpack('<f', r.data)[0]
+                logger.info(f"TEC Voltage is {tec_voltage} V")
+                return tec_voltage
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
