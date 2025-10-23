@@ -4,10 +4,10 @@ import json
 import sys
 import time
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 
 logger = logging.getLogger("Console")
 
@@ -1086,6 +1086,66 @@ class MOTIONConsole:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
 
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def tec_status(self) -> Tuple[float, float, float, float, bool]:
+        """
+        Get TEC status: (voltage, current, power, temperature, enabled)
+
+        Returns:
+            tuple: (tec_voltage, tec_current, tec_power, tec_temp, tec_enabled)
+
+        Raises:
+            ValueError: If not connected or response lengths are unexpected.
+            Exception:  If the device reports an OW_ERROR.
+        """
+        try:
+            # Demo mode mock
+            if getattr(self.uart, "demo_mode", False):
+                return (1.0, 0.5, 0.5, 25.0, True)
+
+            if not self.uart.is_connected():
+                raise ValueError("High voltage controller not connected")
+
+            logger.info("Getting TEC Status")
+
+            # 1) Enabled flag
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_TEC_STATUS,
+                data=None
+            )
+            if r.packet_type == OW_ERROR:
+                logger.error("Device returned OW_ERROR for OW_CTRL_TEC_STATUS")
+                raise Exception("Error executing tec_status command")
+            if r.data_len != 1:
+                raise ValueError(f"Unexpected data length for TEC status flag: {r.data_len}, expected 1")
+            tec_enabled = bool(r.data[0])
+
+            # 2) Read all four ADC channels (reserved=4 => all)
+            s = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_TECADC,
+                reserved=4,
+                data=None
+            )
+            if s.packet_type == OW_ERROR:
+                logger.error("Device returned OW_ERROR for OW_CTRL_TECADC(all)")
+                raise Exception("Error executing tec_adc(all) command")
+            if s.data_len != 16:
+                raise ValueError(f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16")
+
+            tec_voltage, tec_current, tec_power, tec_temp = struct.unpack('<4f', s.data)
+
+            logger.info(
+                "TEC Status - V: %.6f V, I: %.6f A, P: %.6f W, T: %.6f °C, Enabled: %s",
+                tec_voltage, tec_current, tec_power, tec_temp, tec_enabled
+            )
+            return (f"{tec_voltage:.6f}", f"{tec_current:.6f}", f"{tec_power:.6f}", f"{tec_temp:.6f}", tec_enabled)
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
