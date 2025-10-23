@@ -1092,10 +1092,10 @@ class MOTIONConsole:
 
     def tec_status(self) -> Tuple[float, float, float, float, bool]:
         """
-        Get TEC status: (voltage, current, power, temperature, enabled)
+        Get TEC status: (voltage, Temperature Setpoint, TEC Current, TEC Voltage, TEC Good)
 
         Returns:
-            tuple: (tec_voltage, tec_current, tec_power, tec_temp, tec_enabled)
+            tuple: (volt, temp_set, tec_curr, tec_volt, tec_good)
 
         Raises:
             ValueError: If not connected or response lengths are unexpected.
@@ -1123,7 +1123,7 @@ class MOTIONConsole:
                 raise Exception("Error executing tec_status command")
             if r.data_len != 1:
                 raise ValueError(f"Unexpected data length for TEC status flag: {r.data_len}, expected 1")
-            tec_enabled = bool(r.data[0])
+            tec_good = bool(r.data[0])
 
             # 2) Read all four ADC channels (reserved=4 => all)
             s = self.uart.send_packet(
@@ -1139,13 +1139,13 @@ class MOTIONConsole:
             if s.data_len != 16:
                 raise ValueError(f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16")
 
-            tec_voltage, tec_current, tec_power, tec_temp = struct.unpack('<4f', s.data)
+            vout, temp_set, tec_curr, tec_volt = struct.unpack('<4f', s.data)
 
             logger.info(
-                "TEC Status - V: %.6f V, I: %.6f A, P: %.6f W, T: %.6f °C, Enabled: %s",
-                tec_voltage, tec_current, tec_power, tec_temp, tec_enabled
+                "TEC Status - V: %.6f V, SET: %.6f V, TEC_C: %.6f V, TEC_V: %.6f V, GOOD: %s",
+                vout, temp_set, tec_curr, tec_volt, tec_good
             )
-            return (f"{tec_voltage:.6f}", f"{tec_current:.6f}", f"{tec_power:.6f}", f"{tec_temp:.6f}", tec_enabled)
+            return (f"{vout:.6f}", f"{temp_set:.6f}", f"{tec_curr:.6f}", f"{tec_volt:.6f}", tec_good)
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
