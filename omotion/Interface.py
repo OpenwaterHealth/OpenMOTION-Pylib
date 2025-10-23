@@ -9,6 +9,7 @@ from omotion.MotionComposite import MotionComposite
 
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
 from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
+from omotion import __version__ as _SDK_VERSION
 
 logger = logging.getLogger("Interface")
 logger.setLevel(logging.INFO)
@@ -313,7 +314,7 @@ class MOTIONInterface(SignalWrapper):
 
     @staticmethod
     def get_sdk_version() -> str:
-        return "1.3.3"
+        return _SDK_VERSION
 
     @staticmethod
     def acquire_motion_interface():

@@ -43,6 +43,7 @@ def main():
     ok = False
     try:
         ok = bool(console.ping())
+        print(f'SDK Version: {interface.get_sdk_version()}')
     except Exception as e:
         print(f"Ping failed: {e}")
     print("Ping successful." if ok else "Ping failed (continuing).")
