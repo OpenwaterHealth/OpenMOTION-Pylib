@@ -7,6 +7,7 @@ import usb.util
 import time
 import threading
 import queue
+from omotion.usb_backend import get_libusb1_backend
 from omotion.USBInterfaceBase import USBInterfaceBase
 
 

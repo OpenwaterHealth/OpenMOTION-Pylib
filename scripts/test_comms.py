@@ -3,8 +3,11 @@ import time
 import usb.core
 import usb.util
 import json
+from omotion.usb_backend import get_libusb1_backend
 from omotion.Interface import MotionComposite
 import threading
+
+backend = get_libusb1_backend()
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
@@ -44,7 +47,7 @@ def read_usb_stream(dev, endpoint=EP_IN, timeout=TIMEOUT):
     return data
 
 def enumerate_and_print_interfaces(vid, pid):
-    dev = usb.core.find(idVendor=vid, idProduct=pid)
+    dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
     if dev is None:
         print("Device not found.")
         return
@@ -75,7 +78,7 @@ def enumerate_and_print_interfaces(vid, pid):
                     print(f"      No data or timeout (err: {e})")
 
 def main_imu_data_stream():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     if dev is None:
         print("Device not found")
         return
@@ -102,7 +105,7 @@ def main_imu_data_stream():
         usb.util.dispose_resources(dev)
 
 def main_histo_dummy_data_stream():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     if dev is None:
         print("Device not found")
         return
@@ -224,7 +227,7 @@ def threaded_uart_work():
         print(f"[UART] Exception: {e}")
 
 def run_both_streams():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     if dev is None:
         print("Device not found")
         return
@@ -245,7 +248,7 @@ def run_both_streams():
         usb.util.dispose_resources(dev)
 
 def run_all_streams():
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     if dev is None:
         print("Device not found")
         return

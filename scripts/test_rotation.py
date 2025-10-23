@@ -4,10 +4,13 @@ import usb.util
 import json
 import numpy as np
 import time
+from omotion.usb_backend import get_libusb1_backend
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
 # python scripts\test_rotation.py
+
+backend = get_libusb1_backend()
 
 VID = 0x0483
 PID = 0x5750
@@ -37,7 +40,7 @@ scene.range = 1.5
 imu_cube = box(length=1, height=0.2, width=0.5, color=vector(0,1,0))
 
 # ---- USB IMU ----
-dev = usb.core.find(idVendor=VID, idProduct=PID)
+dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
 dev.set_configuration()
 usb.util.claim_interface(dev, 2)
 

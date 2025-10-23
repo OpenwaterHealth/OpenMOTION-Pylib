@@ -2,11 +2,13 @@ import logging
 import usb.core
 import usb.util
 
+from omotion.usb_backend import get_libusb1_backend
 from omotion.MotionComposite import MotionComposite
 
 logger = logging.getLogger("DualMotionComposite")
 logger.setLevel(logging.INFO)
 
+backend = get_libusb1_backend()
 
 # ===============================
 # Left/Right Device Manager
@@ -24,7 +26,7 @@ class DualMotionComposite:
 
     def connect(self):
         """Scan USB for matching VID/PID and connect left/right sensors if present."""
-        devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid))
+        devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid, backend=backend))
         if not devices:
             logger.info(f"No sensor devices found (VID=0x{self.vid:X}, PID=0x{self.pid:X})")
             return

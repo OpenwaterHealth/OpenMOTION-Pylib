@@ -5,6 +5,9 @@ import logging
 import usb.core
 import usb.util
 import numpy as np
+from omotion.usb_backend import get_libusb1_backend
+
+backend = get_libusb1_backend()
 
 # Configure logging
 logging.basicConfig(
@@ -15,7 +18,7 @@ logging.basicConfig(
 
 # Check USB devices for UVC camera
 def check_usb_devices():
-    devices = usb.core.find(find_all=True)
+    devices = usb.core.find(find_all=True, backend=backend)
     for device in devices:
         logging.info(f"USB Device Found: ID {device.idVendor}:{device.idProduct}")
 

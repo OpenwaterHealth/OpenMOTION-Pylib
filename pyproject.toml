@@ -4,35 +4,56 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openmotion-pylib"
-version = "1.3.1"
+version = "1.3.3"
 description = "Python library to communicate with STM32 for loading FPGA and camera sensors (OpenMOTION)."
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"
-license = "AGPL-3.0-or-later"
+license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "OpenwaterHealth", email = "george@openwater.health" }]
 
+# Core runtime deps
 dependencies = [
   "pyserial>=3.5",
   "crcmod>=1.7",
-  "numpy~=2.2",
-  "matplotlib~=3.10",
+  "numpy>=2.0,<3",          # keep wide unless your CI pins 2.2+
+  "matplotlib>=3.8,<4",     # keep wide unless your CI pins 3.10
   "pyusb>=1.3.1",
+  # `libusb1` Python binding is not strictly required if you load libusb via PyUSB,
+  # but keep it if your code imports it directly somewhere:
   "libusb1>=3.3.1",
-  "keyboard>=0.13.5",
 ]
+
+[project.optional-dependencies]
+# Users can opt-in; keyboard may need elevated permissions on Linux
+keyboard = ["keyboard>=0.13.5"]
 
 [project.urls]
 Repository = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib"
 Issues     = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib/issues"
 
+# --- Packaging / discovery ---
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["omotion"]          # exact package name; no wildcard
+include = ["omotion"]      # package folder must contain __init__.py
 
-# EITHER target the specific package:
-#[tool.setuptools.package-data]
-#omotion = ["**/*.bin", "**/*.json", "**/*.cfg", "**/*.txt"]
+[tool.setuptools]
+include-package-data = true
 
-# OR apply to all packages:
+# Include your data + vendored DLLs in wheels & sdists
 [tool.setuptools.package-data]
-"*" = ["**/*.bin", "**/*.json", "**/*.cfg", "**/*.txt"]
+# tighten if size grows; these match your repo assets
+"*" = ["**/*.bin", "**/*.json", "**/*.cfg", "**/*.txt", "**/*.dll"]
+
+# (Optional) exclude dev/test payloads from wheels if needed
+# [tool.setuptools.exclude-package-data]
+# "*" = ["**/tests/**", "**/examples/**", "**/*.log", "**/.DS_Store"]
+
+# PyPI metadata (must live on the [project] table)
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Operating System :: OS Independent"
+]
+keywords = ["stm32", "fpga", "camera", "usb", "serial", "openmotion"]
