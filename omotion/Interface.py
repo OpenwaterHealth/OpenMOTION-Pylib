@@ -50,18 +50,13 @@ class MOTIONInterface(SignalWrapper):
             "right": MOTIONSensor(uart=self._dual_composite.right)
         }
 
-        # Connect signals to internal handlers
-        if PYQT_AVAILABLE:
-            if self._console_uart:
-                logger.info("Connecting console COMM signals to MOTIONInterface")
-                self._console_uart.signal_connect.connect(self.signal_connect.emit)
-                self._console_uart.signal_disconnect.connect(self.signal_disconnect.emit)
-                self._console_uart.signal_data_received.connect(self.signal_data_received.emit)
-            if self._sensor_uart:
-                logger.info("Connecting sensor COMM signals to MOTIONInterface")
-                self._dual_composite.signal_disconnect.connect(self.signal_connect.emit)
-                self._dual_composite.signal_disconnect.disconnect(self.signal_disconnect.emit)
-                self._dual_composite.signal_data_received.connect(self.signal_data_received.emit)
+        # Connect console UART signals to interface (works with PyQt or MOTIONSignal shim)
+        if self._console_uart:
+            logger.info("Connecting console COMM signals to MOTIONInterface")
+            self._console_uart.signal_connect.connect(self.signal_connect)
+            self._console_uart.signal_disconnect.connect(self.signal_disconnect)
+            self._console_uart.signal_data_received.connect(self.signal_data_received)
+        # Sensor composites are wired internally when async_mode is True (see DualMotionComposite.connect)
             
     async def start_monitoring(self, interval: int = 1) -> None:
         """Start monitoring for USB device connections."""

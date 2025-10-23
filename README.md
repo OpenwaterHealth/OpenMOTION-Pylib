@@ -11,4 +11,10 @@ A library called `omotion` is imported in many of the python scripts listed here
 4. Run `python multicam_setup.py` - this will flash each camera sensor one by one. Alternatively, you may flash just a single camera sensor by usising `python flash_camera.py 1` - this will flash just camera 1
 5. Run `python monitor.py 1` - this will flash the camera with a few parameters (test modes, exposure times, gain settings, etc), start the camera streaming, start the frame sync generating, and then put the cameras into streaming mode. It will then recieve the histogram data for the defined number of seconds then close down. Modify the parameters at the top of this file if you want to adjust the gain, exposure time, etc. Change the number in the command line arguments to change the camera you'd like to interrogate. Cameras are numbered 1-8 and correspond to J1-J8 on the aggregator board.
 
+# from repo root
+python -m pip install --upgrade build twine
+python -m build          # creates wheel + sdist under dist/
+python -m pip install --force-reinstall dist/openmotion_pylib-1.3.3-py3-none-any.whl
 
+# quick runtime check (on Windows box with your device bound to WinUSB/libusbK)
+python -c "import usb, omotion.usb_backend as ub; print(ub.get_libusb1_backend())"

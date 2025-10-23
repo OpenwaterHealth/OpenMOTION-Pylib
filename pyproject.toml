@@ -8,7 +8,7 @@ version = "1.3.3"
 description = "Python library to communicate with STM32 for loading FPGA and camera sensors (OpenMOTION)."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"
-license = { text = "AGPL-3.0-or-later" }
+license = "AGPL-3.0-or-later"
 authors = [{ name = "OpenwaterHealth", email = "george@openwater.health" }]
 
 # Core runtime deps
@@ -35,9 +35,11 @@ Issues     = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["omotion"]      # package folder must contain __init__.py
+namespaces = false
 
 [tool.setuptools]
 include-package-data = true
+license-files = ["LICENSE"]
 
 # Include your data + vendored DLLs in wheels & sdists
 [tool.setuptools.package-data]

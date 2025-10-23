@@ -19,6 +19,8 @@ except ImportError:
     PYQT_AVAILABLE = False
     logger.warning("PyQt6 is NOT available. SignalWrapper will use no-op fallbacks.")
     QObject = object
+    # use lightweight signal shim
+    from omotion.MotionSignal import MOTIONSignal
 
 class SignalWrapper(QObject if PYQT_AVAILABLE else object):
     """
@@ -35,10 +37,8 @@ class SignalWrapper(QObject if PYQT_AVAILABLE else object):
             logger.debug("SignalWrapper initialized with real signals.")
     else:
         def __init__(self):
-            self.signal_connect = self._noop
-            self.signal_disconnect = self._noop
-            self.signal_data_received = self._noop
-            logger.debug("SignalWrapper initialized with no-op signals.")
-
-        def _noop(self, *args, **kwargs):
-            logger.debug(f"Called no-op signal with args={args}, kwargs={kwargs}")
+            # real objects that implement .connect/.disconnect/.emit
+            self.signal_connect = MOTIONSignal()
+            self.signal_disconnect = MOTIONSignal()
+            self.signal_data_received = MOTIONSignal()
+            logger.debug("SignalWrapper initialized with shim signals (no PyQt).")
