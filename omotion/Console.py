@@ -4,12 +4,27 @@ import json
 import sys
 import time
 import os
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 
 logger = logging.getLogger("Console")
+
+@dataclass
+class PDUMon:
+    raws: List[int]     # 16 uint16
+    volts: List[float]  # 16 float32
+
+def _parse_pdu_mon(payload: bytes) -> PDUMon:
+    if len(payload) != 96:
+        raise ValueError(f"Expected 96 bytes, got {len(payload)}")
+    # <  = little-endian; 16H = 16 uint16; 16f = 16 float32
+    raws_and_volts = struct.unpack("<16H16f", payload)
+    raws  = list(raws_and_volts[0:16])
+    volts = list(raws_and_volts[16:32])
+    return PDUMon(raws=raws, volts=volts)
 
 
 class MOTIONConsole:
@@ -1182,6 +1197,54 @@ class MOTIONConsole:
                 logger.error("Unexpected data length for Board ID")
                 return 0
             
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def read_pdu_mon(self) -> Optional[PDUMon]:
+        """
+        Read PDU MON
+
+        Returns:
+            int: 16 raw values read from ADC.
+            float: 16 voltage values converted.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving PDU MON data.
+        """
+        try:
+            if self.uart.demo_mode:
+                # Return a fake structure in demo mode
+                return PDUMon(
+                    raws=[0]*16,
+                    volts=[0.0]*16
+                )
+
+            if not self.uart.is_connected():
+                raise ValueError("Console controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_PDUMON, data=None)
+            self.uart.clear_buffer()
+            r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error retrieving PDU MON data")
+                return None
+
+            if r.data_len != 96 or r.data is None:
+                logger.error("Unexpected data length for PDU MON data: %s", r.data_len)
+                return None
+
+            # r.data should be a bytes-like object
+            pdu = _parse_pdu_mon(bytes(r.data[:96]))
+            logger.info("PDU MON: raws=%s", pdu.raws)
+            logger.info("PDU MON: volts=%s", ["%.3f" % v for v in pdu.volts])
+            return pdu
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle

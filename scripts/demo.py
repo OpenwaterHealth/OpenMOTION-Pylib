@@ -58,6 +58,26 @@ def main():
     except Exception as e:
         print(f"Temperature read failed: {e}")
 
+    # PDU MON readout
+    try:
+        pdu = console.read_pdu_mon()
+        if pdu is None:
+            print("PDU MON: no data")
+        else:
+            # First 8 belong to ADC0, next 8 to ADC0
+            print("ADC0 (ch 0-7)")
+            print(f"{'Ch':>2}  {'Raw':>6}  {'Value':>10}")
+            for i in range(8):
+                print(f"{i:>2}  {pdu.raws[i]:>6}  {pdu.volts[i]:>10.3f}")
+
+            print("\nADC1 (ch 0-7)")
+            print(f"{'Ch':>2}  {'Raw':>6}  {'Value':>10}")
+            for i in range(8, 16):
+                ch = i - 8
+                print(f"{ch:>2}  {pdu.raws[i]:>6}  {pdu.volts[i]:>10.3f}")                
+                
+    except Exception as e:
+        print(f"PDU MON read failed: {e}")
 
     while True:
         try:
