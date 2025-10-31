@@ -48,6 +48,7 @@ def main():
         print(f"Ping failed: {e}")
     print("Ping successful." if ok else "Ping failed (continuing).")
 
+    print(f"BoardID: {console.read_board_id()}")
     print("\nType 'help' for commands.\n")
 
     # Initial temperature readout

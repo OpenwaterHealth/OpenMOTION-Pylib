@@ -7,7 +7,7 @@ import os
 from typing import Optional, Tuple
 
 from omotion import MOTIONUart
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 
 logger = logging.getLogger("Console")
 
@@ -1146,6 +1146,46 @@ class MOTIONConsole:
                 vout, temp_set, tec_curr, tec_volt, tec_good
             )
             return (f"{vout:.6f}", f"{temp_set:.6f}", f"{tec_curr:.6f}", f"{tec_volt:.6f}", tec_good)
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def read_board_id(self) -> int:
+        """
+        Read Board ID
+
+        Returns:
+            int: The read value.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving Board ID.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Console controller not connected")
+
+            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_BOARDID, data=None)
+            self.uart.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error retrieving Board ID")
+                return 0
+            if r.data_len == 1:
+                # Assuming the pulse count is returned as a 4-byte integer
+                boardID = r.data[0]
+                return boardID
+            else:
+                logger.error("Unexpected data length for Board ID")
+                return 0
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
