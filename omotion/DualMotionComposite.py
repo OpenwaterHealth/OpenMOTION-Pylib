@@ -96,43 +96,38 @@ class DualMotionComposite:
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
-        print("checking dual composite usb status")
+        # scan for devices with the same VID and PID and connect to them if they are not already connected
         devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid, backend=backend))
-
         for dev in devices:
-            # print(f"dev: {dev}")
             try:
                 port_numbers = getattr(dev, "port_numbers", [])
-                # print(f"port_numbers: {port_numbers}")
                 if not port_numbers:
                     logger.warning(f"Device at bus {dev.bus} addr {dev.address} has no port_numbers; skipping")
                     continue
                 # Left sensor (port ends with 2)
                 if port_numbers[-1] == 2:
                     if not self.left:
-                        print("left is not connected, connecting")
+                        print("Connecting to left sensor")
                         self.connect(target = "left")                
-                    print("left is connected")                          
+                    # print("left is connected")                          
                 # Right sensor (port ends with 3)
                 if port_numbers[-1] == 3:
                     if not self.right:
-                        print("right is not connected, connecting")
+                        print("Connecting to right sensor")
                         self.connect(target = "right")
-                    print("right is connected")
+                    # print("right is connected")
             except Exception as e:
-                logger.error(f"Error connecting to sensor device: {e}")
-        print(f"self.left: {self.left}")
-        print(f"self.right: {self.right}")
-        
+                logger.error(f"Error connecting to sensor device: {e}")        
 
+        # if there is no device with port_numbers[-1] == 2 or 3, disconnect the left or right sensor
         try:
             #if there is not a device with port_numbers[-1] == 2, disconnect the left sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 2 for dev in devices) and self.left:
-                print("no left device found, disconnecting left")
+                print("Disconnecting left sensor")
                 self.disconnect(target = "left")
             #if there is not a device with port_numbers[-1] == 3, disconnect the right sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 3 for dev in devices) and self.right:
-                print("no right device found, disconnecting right")
+                print("Disconnecting right sensor")
                 self.disconnect(target = "right")
         except Exception as e:
                 logger.error(f"Error disconnecting from sensor device")
