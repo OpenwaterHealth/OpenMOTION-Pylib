@@ -43,9 +43,8 @@ class MOTIONInterface(SignalWrapper):
         # Create a MOTIONSensor Device instance as part of the interface
         logger.debug("Initializing Sensor Module of MOTIONInterface with VID: %s, PID: %s, timeout: %s", vid, sensor_pid, timeout)
         self._dual_composite = DualMotionComposite(vid=vid, pid=sensor_pid, async_mode=run_async)
-        self._dual_composite.connect()
 
-        # Wrap them in MOTIONSensor
+        # Wrap them in MOTIONSensor TODO FIX
         self.sensors = {
             "left": MOTIONSensor(uart=self._dual_composite.left),
             "right": MOTIONSensor(uart=self._dual_composite.right)
@@ -57,7 +56,13 @@ class MOTIONInterface(SignalWrapper):
             self._console_uart.signal_connect.connect(self.signal_connect)
             self._console_uart.signal_disconnect.connect(self.signal_disconnect)
             self._console_uart.signal_data_received.connect(self.signal_data_received)
-        # Sensor composites are wired internally when async_mode is True (see DualMotionComposite.connect)
+        
+        # Connect DualMotionComposite signals to interface (works with PyQt or MOTIONSignal shim)
+        if self._dual_composite:
+            logger.info("Connecting dual composite signals to MOTIONInterface")
+            self._dual_composite.signal_connect.connect(self.signal_connect)
+            self._dual_composite.signal_disconnect.connect(self.signal_disconnect)
+            self._dual_composite.signal_data_received.connect(self.signal_data_received)
             
     async def start_monitoring(self, interval: int = 1) -> None:
         """Start monitoring for USB device connections."""

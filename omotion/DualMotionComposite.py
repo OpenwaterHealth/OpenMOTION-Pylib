@@ -6,6 +6,7 @@ import time
 
 from omotion.usb_backend import get_libusb1_backend
 from omotion.MotionComposite import MotionComposite
+from omotion.signal_wrapper import SignalWrapper
 
 logger = logging.getLogger("DualMotionComposite")
 logger.setLevel(logging.INFO)
@@ -15,7 +16,7 @@ backend = get_libusb1_backend()
 # ===============================
 # Left/Right Device Manager
 # ===============================
-class DualMotionComposite:
+class DualMotionComposite(SignalWrapper):
     def __init__(self, vid, pid, async_mode=False):
         super().__init__()
         self.vid = vid
@@ -48,14 +49,9 @@ class DualMotionComposite:
                         logger.info(f"Connecting LEFT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._left_dev = dev
                         self.left = MotionComposite(dev, desc="LEFT", async_mode=self.async_mode)
-                        if self.async_mode:
-                            self.left.signal_connect.connect(self.signal_connect.emit)
-                            self.left.signal_disconnect.connect(self.signal_disconnect.emit)
-                            self.left.signal_data_received.connect(self.signal_data_received.emit)
 
                         self.left.connect()
-                        if self.async_mode:
-                            self.signal_connect.emit("LEFT", "composite_usb")
+                        self.signal_connect.emit("SENSOR_LEFT", "composite_usb")
                             
 
                 # Right sensor (port ends with 3)
@@ -64,14 +60,9 @@ class DualMotionComposite:
                         logger.info(f"Connecting RIGHT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._right_dev = dev
                         self.right = MotionComposite(dev, desc="RIGHT", async_mode=self.async_mode)
-                        if self.async_mode:
-                            self.right.signal_connect.connect(self.signal_connect.emit)
-                            self.right.signal_disconnect.connect(self.signal_disconnect.emit)
-                            self.right.signal_data_received.connect(self.signal_data_received.emit)
 
                         self.right.connect()
-                        if self.async_mode:
-                            self.signal_connect.emit("RIGHT", "composite_usb")
+                        self.signal_connect.emit("SENSOR_RIGHT", "composite_usb")
 
             except Exception as e:
                 logger.error(f"Error connecting to sensor device: {e}")
@@ -83,16 +74,14 @@ class DualMotionComposite:
             self.left.disconnect()
             self.left = None
             self._left_dev = None
-            if self.async_mode:
-                self.signal_disconnect.emit("LEFT", "composite_usb")
+            self.signal_disconnect.emit("SENSOR_LEFT", "composite_usb")
 
         if self.right and target == "right":
             logger.info("Disconnecting RIGHT sensor")
             self.right.disconnect()
             self.right = None
             self._right_dev = None
-            if self.async_mode:
-                self.signal_disconnect.emit("RIGHT", "composite_usb")
+            self.signal_disconnect.emit("SENSOR_RIGHT", "composite_usb")
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
@@ -148,7 +137,7 @@ class DualMotionComposite:
         if self.demo_mode:
             logger.debug("Monitoring in demo mode.")
             return
-        if not self.monitoring_task and self.asyncMode:
+        if not self.monitoring_task and self.async_mode:
             self.monitoring_task = asyncio.create_task(self.monitor_usb_status(interval))
 
     def stop_monitoring(self):
