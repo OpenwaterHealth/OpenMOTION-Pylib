@@ -69,14 +69,10 @@ class MOTIONInterface(SignalWrapper):
                     tasks.append(coro)
 
             if self._dual_composite:
-                if self._dual_composite.left:
-                    coro = self._dual_composite.left.monitor_usb_status(interval)
-                    if asyncio.iscoroutine(coro):
-                        tasks.append(coro)
-                if self._dual_composite.right:
-                    coro = self._dual_composite.right.monitor_usb_status(interval)
-                    if asyncio.iscoroutine(coro):
-                        tasks.append(coro)
+                print("starting monitoring dual composite")
+                coro = self._dual_composite.monitor_usb_status(interval)
+                if asyncio.iscoroutine(coro):
+                    tasks.append(coro)
 
             if tasks:
                 await asyncio.gather(*tasks)
