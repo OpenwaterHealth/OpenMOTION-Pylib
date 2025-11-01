@@ -1022,7 +1022,7 @@ class MOTIONConsole:
                 return True
 
             if not self.uart.is_connected():
-                raise ValueError("High voltage controller not connected")
+                raise ValueError("Motion Console not connected")
         
             if voltage is not None and voltage >= 0 and voltage <= 5.0:
                 # Set TEC Voltage
@@ -1070,7 +1070,7 @@ class MOTIONConsole:
                 return True
 
             if not self.uart.is_connected():
-                raise ValueError("High voltage controller not connected")
+                raise ValueError("Motion Console not connected")
             
             if channel not in [0, 1, 2, 3, 4]:
                 raise ValueError("Invalid channel. Must be 0, 1, 2, 3 or 4")
@@ -1122,7 +1122,7 @@ class MOTIONConsole:
                 return (1.0, 0.5, 0.5, 25.0, True)
 
             if not self.uart.is_connected():
-                raise ValueError("High voltage controller not connected")
+                raise ValueError("Motion Console not connected")
 
             logger.info("Getting TEC Status")
 

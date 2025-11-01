@@ -32,7 +32,7 @@ class DualMotionComposite:
         """Scan USB for matching VID/PID and connect left/right sensors if present."""
         devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid, backend=backend))
         if not devices:
-            logger.info(f"No sensor devices found (VID=0x{self.vid:X}, PID=0x{self.pid:X})")
+            logger.debug(f"No sensor devices found (VID=0x{self.vid:X}, PID=0x{self.pid:X})")
             return
 
         for dev in devices:
@@ -45,7 +45,7 @@ class DualMotionComposite:
                 # Left sensor (port ends with 2)
                 if port_numbers[-1] == 2:
                     if not self.left and target == "left":
-                        logger.info(f"Connecting LEFT sensor (bus {dev.bus}, ports {port_numbers})")
+                        logger.debug(f"Connecting LEFT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._left_dev = dev
                         self.left = MotionComposite(dev, desc="LEFT", async_mode=self.async_mode)
                         if self.async_mode:
@@ -61,7 +61,7 @@ class DualMotionComposite:
                 # Right sensor (port ends with 3)
                 elif port_numbers[-1] == 3:
                     if not self.right and target == "right":
-                        logger.info(f"Connecting RIGHT sensor (bus {dev.bus}, ports {port_numbers})")
+                        logger.debug(f"Connecting RIGHT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._right_dev = dev
                         self.right = MotionComposite(dev, desc="RIGHT", async_mode=self.async_mode)
                         if self.async_mode:
@@ -79,7 +79,7 @@ class DualMotionComposite:
     def disconnect(self,target = None):
         """Disconnect any connected sensors."""
         if self.left and target == "left":
-            logger.info("Disconnecting LEFT sensor")
+            logger.debug("Disconnecting LEFT sensor")
             self.left.disconnect()
             self.left = None
             self._left_dev = None
@@ -87,7 +87,7 @@ class DualMotionComposite:
                 self.signal_disconnect.emit("LEFT", "composite_usb")
 
         if self.right and target == "right":
-            logger.info("Disconnecting RIGHT sensor")
+            logger.debug("Disconnecting RIGHT sensor")
             self.right.disconnect()
             self.right = None
             self._right_dev = None
@@ -96,7 +96,7 @@ class DualMotionComposite:
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
-        print("checking dual composite usb status")
+        logger.debug("checking dual composite usb status")
         devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid, backend=backend))
 
         for dev in devices:
@@ -110,29 +110,29 @@ class DualMotionComposite:
                 # Left sensor (port ends with 2)
                 if port_numbers[-1] == 2:
                     if not self.left:
-                        print("left is not connected, connecting")
+                        logger.debug("left is not connected, connecting")
                         self.connect(target = "left")                
                     print("left is connected")                          
                 # Right sensor (port ends with 3)
                 if port_numbers[-1] == 3:
                     if not self.right:
-                        print("right is not connected, connecting")
+                        logger.debug("right is not connected, connecting")
                         self.connect(target = "right")
                     print("right is connected")
             except Exception as e:
                 logger.error(f"Error connecting to sensor device: {e}")
-        print(f"self.left: {self.left}")
-        print(f"self.right: {self.right}")
+        logger.debug(f"self.left: {self.left}")
+        logger.debug(f"self.right: {self.right}")
         
 
         try:
             #if there is not a device with port_numbers[-1] == 2, disconnect the left sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 2 for dev in devices) and self.left:
-                print("no left device found, disconnecting left")
+                logger.debug("no left device found, disconnecting left")
                 self.disconnect(target = "left")
             #if there is not a device with port_numbers[-1] == 3, disconnect the right sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 3 for dev in devices) and self.right:
-                print("no right device found, disconnecting right")
+                logger.debug("no right device found, disconnecting right")
                 self.disconnect(target = "right")
         except Exception as e:
                 logger.error(f"Error disconnecting from sensor device")
@@ -159,7 +159,7 @@ class DualMotionComposite:
     def stop_monitoring(self):
         """Stop the periodic USB device connection check."""
         if self.demo_mode:
-            logger.info("Monitoring in demo mode.")
+            logger.debug("Monitoring in demo mode.")
             return
         if self.monitoring_task:
             self.monitoring_task.cancel()
