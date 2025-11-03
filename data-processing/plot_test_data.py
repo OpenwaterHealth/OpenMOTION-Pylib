@@ -3,13 +3,19 @@
 Plot test data from camera test rig.
 
 This script plots light and dark histogram data from camera test captures.
-Takes a single parameter (serial number) and plots both histograms on the same plot.
+Takes two parameters: serial number and revision number.
 
 Usage:
-    python plot_test_data.py <serial_number>
+    python plot_test_data.py <serial_number> <revision>
 
-Example:
-    python plot_test_data.py 1
+Arguments:
+    serial_number: Serial number of the camera
+    revision: Revision number (0 = no suffix, 1 = _1, 2 = _2, etc.)
+
+Examples:
+    python plot_test_data.py 1 0
+    python plot_test_data.py 1 1
+    python plot_test_data.py 1 2
 """
 
 import sys
@@ -77,20 +83,27 @@ def calculate_weighted_mean(histogram_data):
         return 0.0
 
 
-def plot_histograms(serial_number):
+def plot_histograms(serial_number, revision=0):
     """
-    Plot light and dark histograms for the given serial number.
+    Plot light and dark histograms for the given serial number and revision.
     
     Args:
         serial_number (str): Serial number of the camera
+        revision (int): Revision number (0 = no suffix, 1 = _1, 2 = _2, etc.)
     """
     # Define file paths
     script_dir = Path(__file__).parent
     pylib_dir = script_dir.parent
-    captures_dir = pylib_dir / "camera_test_captures"
+    captures_dir = pylib_dir / "qisda_data"
     
-    light_file = captures_dir / f"{serial_number}_histogram_light.csv"
-    dark_file = captures_dir / f"{serial_number}_histogram_dark.csv"
+    # Construct filename suffix based on revision
+    if revision == 0:
+        suffix = ""
+    else:
+        suffix = f"_{revision}"
+    
+    light_file = captures_dir / f"{serial_number}_histogram_light{suffix}.csv"
+    dark_file = captures_dir / f"{serial_number}_histogram_dark{suffix}.csv"
     
     # Check if files exist
     if not light_file.exists():
@@ -132,7 +145,8 @@ def plot_histograms(serial_number):
     # Customize the plot
     plt.xlabel('Pixel Value (Bin)', fontsize=12)
     plt.ylabel('Count (Log Scale)', fontsize=12)
-    plt.title(f'Camera {serial_number} Test Data\n'
+    title_serial = f"{serial_number}_{revision}" if revision > 0 else serial_number
+    plt.title(f'Camera {title_serial} Test Data\n'
               f'Light Mean: {light_mean:.1f}, Dark Mean: {dark_mean:.1f}\n'
               f'Light Temp: {light_temp:.1f}°C, Dark Temp: {dark_temp:.1f}°C', 
               fontsize=14)
@@ -149,7 +163,7 @@ def plot_histograms(serial_number):
     plt.tight_layout()
     
     # Save the plot
-    output_file = captures_dir / f"{serial_number}_test_plot.png"
+    output_file = captures_dir / f"{serial_number}_test_plot{suffix}.png"
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Plot saved to: {output_file}")
     
@@ -157,7 +171,8 @@ def plot_histograms(serial_number):
     plt.show()
     
     # Print summary statistics
-    print(f"\nSummary for Camera {serial_number}:")
+    summary_serial = f"{serial_number}_{revision}" if revision > 0 else serial_number
+    print(f"\nSummary for Camera {summary_serial}:")
     print(f"  Light histogram - Weighted Mean: {light_mean:.1f}, Temp: {light_temp:.1f}°C")
     print(f"  Dark histogram  - Weighted Mean: {dark_mean:.1f}, Temp: {dark_temp:.1f}°C")
     print(f"  Dynamic range: {light_mean - dark_mean:.1f}")
@@ -165,15 +180,27 @@ def plot_histograms(serial_number):
 
 def main():
     """Main function to handle command line arguments and run the plotting."""
-    if len(sys.argv) != 2:
-        print("Usage: python plot_test_data.py <serial_number>")
-        print("Example: python plot_test_data.py 1")
+    if len(sys.argv) != 3:
+        print("Usage: python plot_test_data.py <serial_number> <revision>")
+        print("Example: python plot_test_data.py 1 0")
+        print("Example: python plot_test_data.py 1 1")
         sys.exit(1)
     
     serial_number = sys.argv[1]
     
-    print(f"Plotting test data for camera serial number: {serial_number}")
-    plot_histograms(serial_number)
+    try:
+        revision = int(sys.argv[2])
+    except ValueError:
+        print(f"Error: Revision must be an integer, got: {sys.argv[2]}")
+        sys.exit(1)
+    
+    if revision < 0:
+        print(f"Error: Revision must be >= 0, got: {revision}")
+        sys.exit(1)
+    
+    revision_str = f"_{revision}" if revision > 0 else "(no suffix)"
+    print(f"Plotting test data for camera serial number: {serial_number}, revision: {revision_str}")
+    plot_histograms(serial_number, revision)
 
 
 if __name__ == "__main__":
