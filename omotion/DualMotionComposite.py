@@ -33,7 +33,7 @@ class DualMotionComposite(SignalWrapper):
         """Scan USB for matching VID/PID and connect left/right sensors if present."""
         devices = list(usb.core.find(find_all=True, idVendor=self.vid, idProduct=self.pid, backend=backend))
         if not devices:
-            logger.info(f"No sensor devices found (VID=0x{self.vid:X}, PID=0x{self.pid:X})")
+            logger.debug(f"No sensor devices found (VID=0x{self.vid:X}, PID=0x{self.pid:X})")
             return
 
         for dev in devices:
@@ -46,7 +46,7 @@ class DualMotionComposite(SignalWrapper):
                 # Left sensor (port ends with 2)
                 if port_numbers[-1] == 2:
                     if not self.left and target == "left":
-                        logger.info(f"Connecting LEFT sensor (bus {dev.bus}, ports {port_numbers})")
+                        logger.debug(f"Connecting LEFT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._left_dev = dev
                         self.left = MotionComposite(dev, desc="LEFT", async_mode=self.async_mode)
 
@@ -57,7 +57,7 @@ class DualMotionComposite(SignalWrapper):
                 # Right sensor (port ends with 3)
                 elif port_numbers[-1] == 3:
                     if not self.right and target == "right":
-                        logger.info(f"Connecting RIGHT sensor (bus {dev.bus}, ports {port_numbers})")
+                        logger.debug(f"Connecting RIGHT sensor (bus {dev.bus}, ports {port_numbers})")
                         self._right_dev = dev
                         self.right = MotionComposite(dev, desc="RIGHT", async_mode=self.async_mode)
 
@@ -70,14 +70,14 @@ class DualMotionComposite(SignalWrapper):
     def disconnect(self,target = None):
         """Disconnect any connected sensors."""
         if self.left and target == "left":
-            logger.info("Disconnecting LEFT sensor")
+            logger.debug("Disconnecting LEFT sensor")
             self.left.disconnect()
             self.left = None
             self._left_dev = None
             self.signal_disconnect.emit("SENSOR_LEFT", "composite_usb")
 
         if self.right and target == "right":
-            logger.info("Disconnecting RIGHT sensor")
+            logger.debug("Disconnecting RIGHT sensor")
             self.right.disconnect()
             self.right = None
             self._right_dev = None
@@ -143,7 +143,7 @@ class DualMotionComposite(SignalWrapper):
     def stop_monitoring(self):
         """Stop the periodic USB device connection check."""
         if self.demo_mode:
-            logger.info("Monitoring in demo mode.")
+            logger.debug("Monitoring in demo mode.")
             return
         if self.monitoring_task:
             self.monitoring_task.cancel()
