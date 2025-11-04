@@ -148,15 +148,59 @@ def plot_boxplot_by_aperture(df_light, df_dark, ax):
         patch.set_alpha(0.7)
     
     # Add data point markers with jitter
-    for i, (data, color) in enumerate(zip(data_to_plot, colors)):
+    for i, data in enumerate(data_to_plot):
         # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
         y_pos = i + 1
         y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
-        ax.scatter(data, y_jittered, c=color, alpha=0.5, s=20, zorder=3)
+        ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
     
     ax.set_xlabel('Weighted Mean', fontsize=10)
     ax.set_ylabel('Aperture Size', fontsize=10)
-    ax.set_title('Distribution of Means by Aperture Size', fontsize=12, fontweight='bold')
+    ax.set_title('Distribution of Means by Aperture Size (Light)', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    plt.tight_layout()
+
+
+def plot_boxplot_by_aperture_dark(df_light, df_dark, ax):
+    """
+    Create horizontal box plot of means grouped by aperture size (dark histograms only).
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data (not used, kept for API compatibility)
+        df_dark (pd.DataFrame): Dark histogram data
+        ax: Matplotlib axis
+    """
+    # Dark histograms only
+    data_to_plot = []
+    labels = []
+    
+    apertures = sorted(df_dark['aperture_size'].unique())
+    
+    for aperture in apertures:
+        dark_data = df_dark[df_dark['aperture_size'] == aperture]['weighted_mean'].values
+        
+        if len(dark_data) > 0:
+            data_to_plot.append(dark_data)
+            labels.append(f'{aperture}')
+    
+    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+    
+    # Color the boxes (using red tones for dark histograms)
+    colors = plt.cm.Reds(np.linspace(0.4, 0.8, len(bp['boxes'])))
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    # Add data point markers with jitter
+    for i, data in enumerate(data_to_plot):
+        # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
+        y_pos = i + 1
+        y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
+        ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+    
+    ax.set_xlabel('Weighted Mean', fontsize=10)
+    ax.set_ylabel('Aperture Size', fontsize=10)
+    ax.set_title('Distribution of Means by Aperture Size (Dark)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     plt.tight_layout()
 
@@ -197,11 +241,11 @@ def plot_boxplot_by_position(df_light, df_dark, ax):
         patch.set_alpha(0.7)
     
     # Add data point markers with jitter
-    for i, (data, color) in enumerate(zip(data_to_plot, colors)):
+    for i, data in enumerate(data_to_plot):
         # For vertical boxplots, x-position is the box number (1-indexed), add jitter
         x_pos = i + 1
         x_jittered = x_pos + np.random.normal(0, 0.05, size=len(data))
-        ax.scatter(x_jittered, data, c=color, alpha=0.5, s=20, zorder=3)
+        ax.scatter(x_jittered, data, c='black', alpha=0.5, s=20, zorder=3)
     
     ax.set_ylabel('Weighted Mean', fontsize=10)
     ax.set_title('Distribution of Means by Position (cam_id)', fontsize=12, fontweight='bold')
@@ -251,7 +295,7 @@ def plot_scatter_aperture_vs_mean(df_light, df_dark, ax):
         # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
         y_pos = i + 1
         y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
-        ax.scatter(data, y_jittered, c=color, alpha=0.5, s=20, zorder=3)
+        ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
     
     ax.set_xlabel('Weighted Mean', fontsize=10)
     ax.set_ylabel('Position (cam_id)', fontsize=10)
@@ -353,9 +397,15 @@ def generate_pdf_report(csv_path, output_path=None):
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
     
-    # Page 3: Box plot by aperture
+    # Page 3: Box plot by aperture (light)
     fig, ax = plt.subplots(figsize=(11, 8.5))
     plot_boxplot_by_aperture(df_light, df_dark, ax)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    
+    # Page 4: Box plot by aperture (dark)
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    plot_boxplot_by_aperture_dark(df_light, df_dark, ax)
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
     
@@ -392,11 +442,59 @@ def generate_pdf_report(csv_path, output_path=None):
             patch.set_alpha(0.7)
         
         # Add data point markers with jitter
-        for i, (data, color) in enumerate(zip(data_to_plot, colors)):
+        for i, data in enumerate(data_to_plot):
             # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
             y_pos = i + 1
             y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
-            ax.scatter(data, y_jittered, c=color, alpha=0.5, s=20, zorder=3)
+            ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+        
+        ax.set_xlabel('Weighted Mean', fontsize=10)
+        ax.set_ylabel('Position (cam_id)', fontsize=10)
+        ax.set_title('Distribution of Means by Position', fontsize=12)
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+    
+    # Additional pages: Individual aperture analysis (dark histograms only, horizontal boxplots)
+    apertures = sorted(df_dark['aperture_size'].unique())
+    for aperture in apertures:
+        if aperture == "Unknown":
+            continue
+        
+        fig, ax = plt.subplots(figsize=(11, 8.5))
+        fig.suptitle(f'Aperture Size: {aperture} - Dark Histograms', fontsize=14, fontweight='bold')
+        
+        # Dark histogram by position - horizontal boxplot
+        dark_ap = df_dark[df_dark['aperture_size'] == aperture]
+        positions = sorted(dark_ap['position'].unique())
+        positions_1indexed = [p + 1 for p in positions]  # 1-indexed for display
+        
+        # Prepare data for boxplot
+        data_to_plot = []
+        labels = []
+        for pos in positions:
+            pos_data = dark_ap[dark_ap['position'] == pos]['weighted_mean'].values
+            if len(pos_data) > 0:
+                data_to_plot.append(pos_data)
+                labels.append(f'Pos {pos + 1}')  # 1-indexed
+        
+        # Create horizontal boxplot
+        bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+        
+        # Color the boxes (using red tones for dark histograms)
+        colors = plt.cm.Reds(np.linspace(0.4, 0.8, len(bp['boxes'])))
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        # Add data point markers with jitter
+        for i, data in enumerate(data_to_plot):
+            # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
+            y_pos = i + 1
+            y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
+            ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
         
         ax.set_xlabel('Weighted Mean', fontsize=10)
         ax.set_ylabel('Position (cam_id)', fontsize=10)
