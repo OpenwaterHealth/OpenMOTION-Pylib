@@ -268,8 +268,14 @@ def plot_histograms(light_file, dark_file, output_dir, serial_number, suffix="",
     # Add some styling
     plt.tight_layout()
     
-    # Save the plot
-    output_filename = f"{serial_number}_test_plot{suffix}.png"
+    # Extract aperture size from file path for filename
+    aperture_size = extract_aperture_size(light_file)
+    
+    # Save the plot with aperture size at the front of the filename
+    if aperture_size != "Unknown":
+        output_filename = f"{aperture_size}_{serial_number}_test_plot{suffix}.png"
+    else:
+        output_filename = f"{serial_number}_test_plot{suffix}.png"
     output_file = output_dir / output_filename
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Plot saved to: {output_file}")
