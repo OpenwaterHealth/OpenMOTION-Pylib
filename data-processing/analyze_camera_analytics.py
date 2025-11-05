@@ -304,6 +304,250 @@ def plot_scatter_aperture_vs_mean(df_light, df_dark, ax):
     plt.tight_layout()
 
 
+def detect_boxplot_outliers(df_light):
+    """
+    Detect outliers from light histograms using boxplot statistics (IQR method).
+    Outliers are detected per aperture size AND position combination.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data
+        
+    Returns:
+        list: List of outlier dictionaries with all metadata
+    """
+    outliers = []
+    
+    # Process each aperture size AND position combination separately
+    for aperture in sorted(df_light['aperture_size'].unique()):
+        if aperture == "Unknown":
+            continue
+        
+        aperture_data = df_light[df_light['aperture_size'] == aperture].copy()
+        
+        # Process each position within this aperture size
+        for position in sorted(aperture_data['position'].unique()):
+            position_data = aperture_data[aperture_data['position'] == position].copy()
+            
+            if len(position_data) < 4:  # Need at least 4 points for meaningful boxplot
+                continue
+            
+            # Calculate boxplot statistics for this aperture + position combination
+            Q1 = np.percentile(position_data['weighted_mean'], 25)
+            Q3 = np.percentile(position_data['weighted_mean'], 75)
+            IQR = Q3 - Q1
+            
+            # Calculate whisker bounds (standard boxplot: 1.5 * IQR)
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            # Find outliers
+            outlier_mask = (position_data['weighted_mean'] < lower_bound) | (position_data['weighted_mean'] > upper_bound)
+            outlier_rows = position_data[outlier_mask]
+            
+            # Store outlier information
+            for _, row in outlier_rows.iterrows():
+                outlier_type = "High" if row['weighted_mean'] > upper_bound else "Low"
+                outliers.append({
+                    'serial_number': row['serial_number'],
+                    'aperture_size': aperture,
+                    'position': row['position'] + 1,  # 1-indexed
+                    'weighted_mean': row['weighted_mean'],
+                    'temperature': row['temperature'],
+                    'relative_path': row['relative_path'],
+                    'filename': row['filename'],
+                    'outlier_type': outlier_type,
+                    'lower_bound': lower_bound,
+                    'upper_bound': upper_bound
+                })
+    
+    return outliers
+
+
+def load_histogram_from_csv(filepath):
+    """
+    Load histogram data from CSV file.
+    
+    Args:
+        filepath (Path): Path to the CSV file
+        
+    Returns:
+        tuple: (histogram_values, temperature, cam_id) or (None, None, None) if error
+    """
+    try:
+        df = pd.read_csv(filepath)
+        
+        # Extract histogram data (columns 0 to 1023, which are bins 0-1023)
+        histogram_cols = [str(i) for i in range(1024)]
+        histogram_values = df[histogram_cols].iloc[0].values
+        
+        # Extract temperature
+        temperature = df['temperature'].iloc[0]
+        
+        # Extract cam_id (position)
+        cam_id = df['cam_id'].iloc[0]
+        
+        return histogram_values, temperature, cam_id
+        
+    except Exception as e:
+        print(f"Error loading histogram from {filepath}: {e}")
+        return None, None, None
+
+
+def plot_histogram(histogram_values, ax, title, temperature, cam_id, weighted_mean):
+    """
+    Plot a single histogram.
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        ax: Matplotlib axis
+        title (str): Plot title
+        temperature (float): Temperature value
+        cam_id (int): Camera position
+        weighted_mean (float): Weighted mean value
+    """
+    bins = np.arange(1024)
+    
+    # Handle log scale - add small value to avoid log(0)
+    hist_log = histogram_values + 1e-6
+    
+    # Plot histogram
+    ax.semilogy(bins, hist_log, 'b-', linewidth=1.5, alpha=0.8)
+    ax.fill_between(bins, hist_log, alpha=0.3, color='blue')
+    
+    ax.set_xlabel('Pixel Value (Bin)', fontsize=10)
+    ax.set_ylabel('Count (Log Scale)', fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1023)
+    ax.set_ylim(bottom=1.0)
+    
+    # Add text with stats
+    stats_text = f'Mean: {weighted_mean:.1f}, Temp: {temperature:.1f}°C, Pos: {cam_id + 1}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+           fontsize=9, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+
+def create_outlier_summary_and_plots(df_light, csv_base_path, pdf):
+    """
+    Create outlier summary page and individual histogram plots for each outlier.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data
+        csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
+        pdf: PDF pages object
+    """
+    # Find outliers
+    outliers = detect_boxplot_outliers(df_light)
+    
+    if len(outliers) == 0:
+        # Create a page saying no outliers
+        fig = plt.figure(figsize=(11, 8.5))
+        fig.suptitle('Outlier Analysis - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+        ax = fig.add_subplot(1, 1, 1)
+        ax.axis('off')
+        ax.text(0.5, 0.5, 'No outliers detected in light histograms!', 
+               fontsize=14, ha='center', va='center',
+               transform=ax.transAxes, 
+               bbox=dict(boxstyle='round', facecolor='#90EE90', alpha=0.5))
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+        return
+    
+    # Create summary page
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.suptitle('Outlier Summary - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+    
+    # Summary table
+    ax_table = fig.add_subplot(1, 1, 1)
+    ax_table.axis('off')
+    
+    # Prepare table data
+    table_data = []
+    for outlier in outliers:
+        table_data.append([
+            outlier['serial_number'],
+            outlier['aperture_size'],
+            str(outlier['position']),
+            f"{outlier['weighted_mean']:.2f}",
+            outlier['outlier_type'],
+            f"{outlier['temperature']:.1f}"
+        ])
+    
+    # Create table
+    table = ax_table.table(cellText=table_data,
+                          colLabels=['Serial Number', 'Aperture', 'Position', 'Weighted Mean', 'Type', 'Temp (°C)'],
+                          cellLoc='center',
+                          loc='center',
+                          bbox=[0, 0, 1, 1])
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 1.2)
+    
+    # Style the header
+    for i in range(6):
+        table[(0, i)].set_facecolor('#E74C3C')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+    
+    # Highlight rows by outlier type
+    for i, outlier in enumerate(outliers, start=1):
+        if outlier['outlier_type'] == "High":
+            # Red for high outliers
+            for j in range(6):
+                table[(i, j)].set_facecolor('#FFE5E5')
+        else:
+            # Orange for low outliers
+            for j in range(6):
+                table[(i, j)].set_facecolor('#FFF4E5')
+    
+    ax_table.set_title(f'Outliers Detected: {len(outliers)}', fontsize=12, fontweight='bold', pad=20)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    
+    # Create individual histogram plots for each outlier
+    for outlier in outliers:
+        # Resolve file path
+        # csv_base_path is the summary.csv file (e.g., qisda_data/output/summary.csv)
+        # relative_path is relative to the folder passed to plot_test_data.py (e.g., qisda_data)
+        # So if summary.csv is in qisda_data/output/, relative_path is relative to qisda_data/
+        relative_path = outlier['relative_path']
+        # Convert forward slashes to OS-appropriate separators if needed
+        relative_path_str = str(relative_path).replace('\\', '/')
+        # csv_base_path.parent.parent gets us from output/ to qisda_data/
+        file_path = csv_base_path.parent.parent / relative_path_str
+        
+        # Load histogram
+        hist_values, temp, cam_id = load_histogram_from_csv(file_path)
+        
+        if hist_values is None:
+            # Create error page
+            fig = plt.figure(figsize=(11, 8.5))
+            fig.suptitle(f'Outlier: {outlier["serial_number"]} - {outlier["aperture_size"]}', 
+                        fontsize=14, fontweight='bold')
+            ax = fig.add_subplot(1, 1, 1)
+            ax.axis('off')
+            ax.text(0.5, 0.5, f'Error loading histogram:\n{file_path}', 
+                   fontsize=12, ha='center', va='center',
+                   transform=ax.transAxes)
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close()
+            continue
+        
+        # Create histogram plot
+        fig, ax = plt.subplots(figsize=(11, 8.5))
+        title = f'Outlier: {outlier["serial_number"]} - {outlier["aperture_size"]} - Pos {outlier["position"]}'
+        subtitle = f'Mean: {outlier["weighted_mean"]:.2f} ({outlier["outlier_type"]} outlier, Bounds: {outlier["lower_bound"]:.2f} - {outlier["upper_bound"]:.2f})'
+        plot_histogram(hist_values, ax, f'{title}\n{subtitle}', 
+                      temp, cam_id, outlier['weighted_mean'])
+        
+        plt.tight_layout()
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+
+
 def create_table_plot(df_stats, title, ax):
     """
     Create a table plot from statistics DataFrame.
@@ -457,53 +701,8 @@ def generate_pdf_report(csv_path, output_path=None):
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
     
-    # Additional pages: Individual aperture analysis (dark histograms only, horizontal boxplots)
-    apertures = sorted(df_dark['aperture_size'].unique())
-    for aperture in apertures:
-        if aperture == "Unknown":
-            continue
-        
-        fig, ax = plt.subplots(figsize=(11, 8.5))
-        fig.suptitle(f'Aperture Size: {aperture} - Dark Histograms', fontsize=14, fontweight='bold')
-        
-        # Dark histogram by position - horizontal boxplot
-        dark_ap = df_dark[df_dark['aperture_size'] == aperture]
-        positions = sorted(dark_ap['position'].unique())
-        positions_1indexed = [p + 1 for p in positions]  # 1-indexed for display
-        
-        # Prepare data for boxplot
-        data_to_plot = []
-        labels = []
-        for pos in positions:
-            pos_data = dark_ap[dark_ap['position'] == pos]['weighted_mean'].values
-            if len(pos_data) > 0:
-                data_to_plot.append(pos_data)
-                labels.append(f'Pos {pos + 1}')  # 1-indexed
-        
-        # Create horizontal boxplot
-        bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
-        
-        # Color the boxes (using red tones for dark histograms)
-        colors = plt.cm.Reds(np.linspace(0.4, 0.8, len(bp['boxes'])))
-        for patch, color in zip(bp['boxes'], colors):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
-        
-        # Add data point markers with jitter
-        for i, data in enumerate(data_to_plot):
-            # For horizontal boxplots, y-position is the box number (1-indexed), add jitter
-            y_pos = i + 1
-            y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
-            ax.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
-        
-        ax.set_xlabel('Weighted Mean', fontsize=10)
-        ax.set_ylabel('Position (cam_id)', fontsize=10)
-        ax.set_title('Distribution of Means by Position', fontsize=12)
-        ax.grid(True, alpha=0.3, axis='x')
-        
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close()
+    # Outlier analysis pages at the end
+    create_outlier_summary_and_plots(df_light, csv_file, pdf)
     
     pdf.close()
     print(f"\nPDF report saved to: {output_path}")
