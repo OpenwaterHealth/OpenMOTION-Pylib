@@ -83,13 +83,21 @@ def plot_means_by_aperture_and_position(df_light, df_dark, ax):
     light_means = df_light.groupby(['aperture_size', 'position'])['weighted_mean'].mean().reset_index()
     dark_means = df_dark.groupby(['aperture_size', 'position'])['weighted_mean'].mean().reset_index()
     
-    # Get unique apertures and positions
-    apertures = sorted(df_light['aperture_size'].unique())
-    positions = sorted(df_light['position'].unique())
+    # Get unique apertures and positions (combine from both light and dark)
+    apertures = sorted(set(df_light['aperture_size'].unique()) | set(df_dark['aperture_size'].unique()))
+    positions = sorted(set(df_light['position'].unique()) | set(df_dark['position'].unique()))
     positions_1indexed = [p + 1 for p in positions]  # Convert to 1-indexed for display
     
     x = np.arange(len(positions))
-    width = 0.35 / len(apertures)  # Adjust width based on number of apertures
+    # Each aperture gets 2 bars (light + dark), so total width per position group
+    # should accommodate all aperture pairs with some spacing
+    n_bars_per_position = len(apertures) * 2  # 2 bars (light/dark) per aperture
+    total_width = 0.8  # Total width available per position group
+    bar_width = total_width / n_bars_per_position
+    
+    # Calculate starting offset for each position group to center all bars
+    group_width = n_bars_per_position * bar_width
+    start_offset = -group_width / 2 + bar_width / 2
     
     # Plot bars for each aperture
     for i, aperture in enumerate(apertures):
@@ -100,12 +108,17 @@ def plot_means_by_aperture_and_position(df_light, df_dark, ax):
                                    (light_means['position'] == pos)]['weighted_mean']
             dark_val = dark_means[(dark_means['aperture_size'] == aperture) & 
                                  (dark_means['position'] == pos)]['weighted_mean']
-            light_vals.append(light_val.values[0] if len(light_val) > 0 else 0)
-            dark_vals.append(dark_val.values[0] if len(dark_val) > 0 else 0)
+            light_vals.append(light_val.values[0] if len(light_val) > 0 else np.nan)
+            dark_vals.append(dark_val.values[0] if len(dark_val) > 0 else np.nan)
         
-        offset = (i - len(apertures)/2 + 0.5) * width * 2
-        ax.bar(x + offset, light_vals, width, label=f'{aperture} Light', alpha=0.8)
-        ax.bar(x + offset + width, dark_vals, width, label=f'{aperture} Dark', alpha=0.8)
+        # Calculate x positions for this aperture's bars
+        # Each aperture gets 2 consecutive bars (light, then dark)
+        aperture_offset = i * 2 * bar_width  # Offset for this aperture's pair of bars
+        light_x = x + start_offset + aperture_offset
+        dark_x = x + start_offset + aperture_offset + bar_width
+        
+        ax.bar(light_x, light_vals, bar_width, label=f'{aperture} Light', alpha=0.8)
+        ax.bar(dark_x, dark_vals, bar_width, label=f'{aperture} Dark', alpha=0.8)
     
     ax.set_xlabel('Position (cam_id)', fontsize=10)
     ax.set_ylabel('Weighted Mean', fontsize=10)
