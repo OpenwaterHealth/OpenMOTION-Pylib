@@ -180,6 +180,28 @@ def extract_serial_number(filename):
     return filename.replace('_histogram_light', '').replace('_histogram_dark', '').replace('.csv', '')
 
 
+def extract_aperture_size(file_path):
+    """
+    Extract aperture size from file path.
+    Looks for patterns like "3mm", "1.5mm", "0.75mm", etc.
+    
+    Args:
+        file_path (Path or str): Path to the file or path string
+        
+    Returns:
+        str: Aperture size (e.g., "3mm", "1.5mm", "0.75mm") or "Unknown"
+    """
+    path_str = str(file_path)
+    
+    # Look for patterns like Xmm, X.Xmm, X.XXmm in the path
+    # Pattern: digits, optional decimal point, more digits, then "mm"
+    match = re.search(r'(\d+\.?\d*)mm', path_str)
+    if match:
+        return match.group(1) + "mm"
+    
+    return "Unknown"
+
+
 def plot_histograms(light_file, dark_file, output_dir, serial_number, suffix="", display_serial=None):
     """
     Plot light and dark histograms for the given files.
@@ -313,12 +335,16 @@ def process_folder(folder_path):
         light_relative_path = light_file.relative_to(folder)
         dark_relative_path = dark_file.relative_to(folder)
         
+        # Extract aperture size from file path
+        aperture_size = extract_aperture_size(light_file)
+        
         # Add to results
         results.append({
             'filename': light_file.name,
             'relative_path': str(light_relative_path).replace('\\', '/'),  # Use forward slashes for consistency
             'histogram_type': 'light',
             'serial_number': serial_number,
+            'aperture_size': aperture_size,
             'position': light_cam_id,
             'temperature': light_temp,
             'weighted_mean': light_mean,
@@ -330,6 +356,7 @@ def process_folder(folder_path):
             'relative_path': str(dark_relative_path).replace('\\', '/'),  # Use forward slashes for consistency
             'histogram_type': 'dark',
             'serial_number': serial_number,
+            'aperture_size': aperture_size,
             'position': dark_cam_id,
             'temperature': dark_temp,
             'weighted_mean': dark_mean,
