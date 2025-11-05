@@ -376,6 +376,165 @@ def detect_boxplot_outliers(df_light):
     return outliers
 
 
+def detect_bimodal_histograms(df_light, csv_base_path):
+    """
+    Detect light histograms that have a bimodal distribution (two or more peaks).
+    Uses peak detection on the histogram data.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data
+        csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
+        
+    Returns:
+        list: List of bimodal histogram dictionaries with all metadata
+    """
+    bimodal_histograms = []
+    
+    for _, row in df_light.iterrows():
+        # Resolve file path
+        relative_path = row['relative_path']
+        relative_path_str = str(relative_path).replace('\\', '/')
+        file_path = csv_base_path.parent.parent / relative_path_str
+        
+        # Load histogram
+        hist_values, temp, cam_id = load_histogram_from_csv(file_path)
+        
+        if hist_values is None:
+            continue
+        
+        # Check if histogram is bimodal
+        is_bimodal, num_peaks, peak_positions = check_bimodal(hist_values)
+        
+        if is_bimodal:
+            bimodal_histograms.append({
+                'serial_number': row['serial_number'],
+                'aperture_size': row['aperture_size'],
+                'position': row['position'] + 1,  # 1-indexed
+                'weighted_mean': row['weighted_mean'],
+                'temperature': row['temperature'],
+                'relative_path': row['relative_path'],
+                'filename': row['filename'],
+                'num_peaks': num_peaks,
+                'peak_positions': peak_positions
+            })
+    
+    return bimodal_histograms
+
+
+def find_peaks_simple(signal, height=None, distance=None, prominence=None):
+    """
+    Simple peak detection algorithm using numpy only.
+    Finds local maxima that meet height, distance, and prominence criteria.
+    
+    Args:
+        signal (array): Input signal
+        height (float): Minimum height of peaks
+        distance (int): Minimum distance between peaks
+        prominence (float): Minimum prominence of peaks
+        
+    Returns:
+        tuple: (peaks: array, properties: dict)
+    """
+    signal = np.array(signal)
+    
+    # Find local maxima (peaks)
+    # A point is a peak if it's greater than its neighbors
+    peaks = []
+    for i in range(1, len(signal) - 1):
+        if signal[i] > signal[i-1] and signal[i] > signal[i+1]:
+            peaks.append(i)
+    
+    if len(peaks) == 0:
+        return np.array([]), {}
+    
+    peaks = np.array(peaks)
+    
+    # Filter by height
+    if height is not None:
+        peak_heights = signal[peaks]
+        peaks = peaks[peak_heights >= height]
+    
+    if len(peaks) == 0:
+        return np.array([]), {}
+    
+    # Filter by distance (keep only peaks that are far enough apart)
+    if distance is not None and len(peaks) > 1:
+        filtered_peaks = [peaks[0]]
+        for peak in peaks[1:]:
+            if peak - filtered_peaks[-1] >= distance:
+                filtered_peaks.append(peak)
+        peaks = np.array(filtered_peaks)
+    
+    # Filter by prominence
+    # Prominence is the height of the peak above the higher of the two surrounding minima
+    if prominence is not None and len(peaks) > 0:
+        filtered_peaks = []
+        for peak in peaks:
+            peak_val = signal[peak]
+            
+            # Find minimum on left side (up to previous peak or start)
+            left_min = np.min(signal[:peak+1]) if peak > 0 else peak_val
+            
+            # Find minimum on right side (up to next peak or end)
+            right_min = np.min(signal[peak:]) if peak < len(signal) - 1 else peak_val
+            
+            # Prominence is peak height minus the higher of the two surrounding minima
+            surrounding_min = max(left_min, right_min)
+            peak_prominence = peak_val - surrounding_min
+            
+            if peak_prominence >= prominence:
+                filtered_peaks.append(peak)
+        
+        peaks = np.array(filtered_peaks)
+    
+    properties = {'peak_heights': signal[peaks] if len(peaks) > 0 else np.array([])}
+    return peaks, properties
+
+
+def check_bimodal(histogram_values):
+    """
+    Check if a histogram has a bimodal distribution (two or more significant peaks).
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        
+    Returns:
+        tuple: (is_bimodal: bool, num_peaks: int, peak_positions: list)
+    """
+    # Smooth the histogram slightly to reduce noise (using simple moving average)
+    # This helps with peak detection
+    window_size = 5
+    if len(histogram_values) > window_size:
+        smoothed = np.convolve(histogram_values, np.ones(window_size)/window_size, mode='same')
+    else:
+        smoothed = histogram_values
+    
+    # Find peaks in the smoothed histogram
+    # height: minimum height of peaks (relative to max value)
+    # distance: minimum distance between peaks (in bins)
+    # prominence: minimum prominence of peaks (relative to max value)
+    max_value = np.max(smoothed)
+    if max_value == 0:
+        return False, 0, []
+    
+    # Set thresholds for peak detection
+    # height: peaks must be at least 5% of max value
+    # distance: peaks must be at least 50 bins apart
+    # prominence: peaks must be at least 10% of max value above surrounding values
+    peaks, properties = find_peaks_simple(smoothed, 
+                                         height=max_value * 0.05,  # At least 5% of max
+                                         distance=50,              # At least 50 bins apart
+                                         prominence=max_value * 0.10)  # At least 10% prominence
+    
+    num_peaks = len(peaks)
+    peak_positions = peaks.tolist()
+    
+    # Consider it bimodal if there are 2 or more significant peaks
+    is_bimodal = num_peaks >= 2
+    
+    return is_bimodal, num_peaks, peak_positions
+
+
 def load_histogram_from_csv(filepath):
     """
     Load histogram data from CSV file.
@@ -561,6 +720,167 @@ def create_outlier_summary_and_plots(df_light, csv_base_path, pdf):
         plt.close()
 
 
+def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
+    """
+    Create bimodal histogram summary page and individual histogram plots for each bimodal histogram.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data
+        csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
+        pdf: PDF pages object
+    """
+    # Find bimodal histograms
+    bimodal_histograms = detect_bimodal_histograms(df_light, csv_base_path)
+    
+    if len(bimodal_histograms) == 0:
+        # Create a page saying no bimodal histograms
+        fig = plt.figure(figsize=(11, 8.5))
+        fig.suptitle('Bimodal Distribution Analysis - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+        ax = fig.add_subplot(1, 1, 1)
+        ax.axis('off')
+        ax.text(0.5, 0.5, 'No bimodal distributions detected in light histograms!\nAll histograms appear to have normal/unimodal distributions.', 
+               fontsize=14, ha='center', va='center',
+               transform=ax.transAxes, 
+               bbox=dict(boxstyle='round', facecolor='#90EE90', alpha=0.5))
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+        return
+    
+    # Create summary page
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.suptitle('Bimodal Distribution Summary - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+    
+    # Summary table
+    ax_table = fig.add_subplot(1, 1, 1)
+    ax_table.axis('off')
+    
+    # Prepare table data
+    table_data = []
+    for bimodal in bimodal_histograms:
+        peak_str = ', '.join(map(str, bimodal['peak_positions'][:5]))  # Show first 5 peaks
+        if len(bimodal['peak_positions']) > 5:
+            peak_str += '...'
+        table_data.append([
+            bimodal['serial_number'],
+            bimodal['aperture_size'],
+            str(bimodal['position']),
+            f"{bimodal['weighted_mean']:.2f}",
+            str(bimodal['num_peaks']),
+            peak_str,
+            f"{bimodal['temperature']:.1f}"
+        ])
+    
+    # Create table
+    table = ax_table.table(cellText=table_data,
+                          colLabels=['Serial Number', 'Aperture', 'Position', 'Weighted Mean', 'Num Peaks', 'Peak Positions', 'Temp (°C)'],
+                          cellLoc='center',
+                          loc='center',
+                          bbox=[0, 0, 1, 1])
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 1.2)
+    
+    # Style the header
+    for i in range(7):
+        table[(0, i)].set_facecolor('#9B59B6')  # Purple for bimodal
+        table[(0, i)].set_text_props(weight='bold', color='white')
+    
+    # Highlight rows
+    for i in range(len(bimodal_histograms)):
+        for j in range(7):
+            table[(i + 1, j)].set_facecolor('#E8DAEF')  # Light purple
+    
+    ax_table.set_title(f'Bimodal Histograms Detected: {len(bimodal_histograms)}', fontsize=12, fontweight='bold', pad=20)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    
+    # Create individual histogram plots for each bimodal histogram
+    for bimodal in bimodal_histograms:
+        # Resolve file path
+        relative_path = bimodal['relative_path']
+        relative_path_str = str(relative_path).replace('\\', '/')
+        file_path = csv_base_path.parent.parent / relative_path_str
+        
+        # Load histogram
+        hist_values, temp, cam_id = load_histogram_from_csv(file_path)
+        
+        if hist_values is None:
+            # Create error page
+            fig = plt.figure(figsize=(11, 8.5))
+            fig.suptitle(f'Bimodal: {bimodal["serial_number"]} - {bimodal["aperture_size"]}', 
+                        fontsize=14, fontweight='bold')
+            ax = fig.add_subplot(1, 1, 1)
+            ax.axis('off')
+            ax.text(0.5, 0.5, f'Error loading histogram:\n{file_path}', 
+                   fontsize=12, ha='center', va='center',
+                   transform=ax.transAxes)
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close()
+            continue
+        
+        # Create histogram plot with peak markers
+        fig, ax = plt.subplots(figsize=(11, 8.5))
+        title = f'Bimodal Distribution: {bimodal["serial_number"]} - {bimodal["aperture_size"]} - Pos {bimodal["position"]}'
+        subtitle = f'Mean: {bimodal["weighted_mean"]:.2f}, Peaks: {bimodal["num_peaks"]} at positions {", ".join(map(str, bimodal["peak_positions"]))}'
+        plot_histogram_with_peaks(hist_values, ax, f'{title}\n{subtitle}', 
+                                  temp, cam_id, bimodal['weighted_mean'], 
+                                  bimodal['peak_positions'])
+        
+        plt.tight_layout()
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+
+
+def plot_histogram_with_peaks(histogram_values, ax, title, temperature, cam_id, weighted_mean, peak_positions):
+    """
+    Plot a single histogram with peak positions marked.
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        ax: Matplotlib axis
+        title (str): Plot title
+        temperature (float): Temperature value
+        cam_id (int): Camera position
+        weighted_mean (float): Weighted mean value
+        peak_positions (list): List of peak positions to mark
+    """
+    bins = np.arange(1024)
+    
+    # Handle log scale - add small value to avoid log(0)
+    hist_log = histogram_values + 1e-6
+    
+    # Plot histogram
+    ax.semilogy(bins, hist_log, 'b-', linewidth=1.5, alpha=0.8)
+    ax.fill_between(bins, hist_log, alpha=0.3, color='blue')
+    
+    # Mark peak positions
+    for peak_pos in peak_positions:
+        if 0 <= peak_pos < len(hist_log):
+            peak_value = hist_log[peak_pos]
+            ax.plot(peak_pos, peak_value, 'ro', markersize=10, markeredgecolor='darkred', 
+                   markeredgewidth=2, label='Peak' if peak_pos == peak_positions[0] else '')
+    
+    ax.set_xlabel('Pixel Value (Bin)', fontsize=10)
+    ax.set_ylabel('Count (Log Scale)', fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1023)
+    ax.set_ylim(bottom=1.0)
+    
+    # Add text with stats
+    stats_text = f'Mean: {weighted_mean:.1f}, Temp: {temperature:.1f}°C, Pos: {cam_id + 1}, Peaks: {len(peak_positions)}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+           fontsize=9, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    # Add legend if peaks are marked
+    if peak_positions:
+        ax.legend(loc='upper right', fontsize=9)
+
+
 def create_table_plot(df_stats, title, ax):
     """
     Create a table plot from statistics DataFrame.
@@ -716,6 +1036,9 @@ def generate_pdf_report(csv_path, output_path=None):
     
     # Outlier analysis pages at the end
     create_outlier_summary_and_plots(df_light, csv_file, pdf)
+    
+    # Bimodal distribution analysis pages at the end
+    create_bimodal_summary_and_plots(df_light, csv_file, pdf)
     
     pdf.close()
     print(f"\nPDF report saved to: {output_path}")
