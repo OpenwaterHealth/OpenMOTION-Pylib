@@ -127,7 +127,6 @@ def plot_means_by_aperture_and_position(df_light, df_dark, ax):
     ax.set_xticklabels(positions_1indexed)
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
 
 
 def plot_boxplot_by_aperture(df_light, df_dark, ax):
@@ -171,7 +170,6 @@ def plot_boxplot_by_aperture(df_light, df_dark, ax):
     ax.set_ylabel('Aperture Size', fontsize=10)
     ax.set_title('Distribution of Means by Aperture Size (Light)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
-    plt.tight_layout()
 
 
 def plot_boxplot_by_aperture_dark(df_light, df_dark, ax):
@@ -215,7 +213,6 @@ def plot_boxplot_by_aperture_dark(df_light, df_dark, ax):
     ax.set_ylabel('Aperture Size', fontsize=10)
     ax.set_title('Distribution of Means by Aperture Size (Dark)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
-    plt.tight_layout()
 
 
 def plot_boxplot_by_position(df_light, df_dark, ax):
@@ -263,8 +260,9 @@ def plot_boxplot_by_position(df_light, df_dark, ax):
     ax.set_ylabel('Weighted Mean', fontsize=10)
     ax.set_title('Distribution of Means by Position (cam_id)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='y')
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
+    ax.tick_params(axis='x', rotation=45)
+    for label in ax.get_xticklabels():
+        label.set_ha('right')
 
 
 def plot_scatter_aperture_vs_mean(df_light, df_dark, ax):
@@ -314,7 +312,6 @@ def plot_scatter_aperture_vs_mean(df_light, df_dark, ax):
     ax.set_ylabel('Position (cam_id)', fontsize=10)
     ax.set_title('Mean vs Aperture Size by Position', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
-    plt.tight_layout()
 
 
 def detect_boxplot_outliers(df_light):
@@ -376,19 +373,19 @@ def detect_boxplot_outliers(df_light):
     return outliers
 
 
-def detect_bimodal_histograms(df_light, csv_base_path):
+def detect_non_normal_histograms(df_light, csv_base_path):
     """
-    Detect light histograms that have a bimodal distribution (two or more peaks).
-    Uses peak detection on the histogram data.
+    Detect light histograms that deviate from a normal distribution.
+    Uses multiple criteria: multiple peaks, skewness, kurtosis, and secondary humps.
     
     Args:
         df_light (pd.DataFrame): Light histogram data
         csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
         
     Returns:
-        list: List of bimodal histogram dictionaries with all metadata
+        list: List of non-normal histogram dictionaries with all metadata
     """
-    bimodal_histograms = []
+    non_normal_histograms = []
     
     for _, row in df_light.iterrows():
         # Resolve file path
@@ -402,11 +399,11 @@ def detect_bimodal_histograms(df_light, csv_base_path):
         if hist_values is None:
             continue
         
-        # Check if histogram is bimodal
-        is_bimodal, num_peaks, peak_positions = check_bimodal(hist_values)
+        # Check if histogram deviates from normal
+        is_non_normal, num_peaks, peak_positions, reasons, skewness, kurtosis = check_non_normal(hist_values)
         
-        if is_bimodal:
-            bimodal_histograms.append({
+        if is_non_normal:
+            non_normal_histograms.append({
                 'serial_number': row['serial_number'],
                 'aperture_size': row['aperture_size'],
                 'position': row['position'] + 1,  # 1-indexed
@@ -415,10 +412,13 @@ def detect_bimodal_histograms(df_light, csv_base_path):
                 'relative_path': row['relative_path'],
                 'filename': row['filename'],
                 'num_peaks': num_peaks,
-                'peak_positions': peak_positions
+                'peak_positions': peak_positions,
+                'reasons': reasons,
+                'skewness': skewness,
+                'kurtosis': kurtosis
             })
     
-    return bimodal_histograms
+    return non_normal_histograms
 
 
 def find_peaks_simple(signal, height=None, distance=None, prominence=None):
@@ -491,48 +491,213 @@ def find_peaks_simple(signal, height=None, distance=None, prominence=None):
     return peaks, properties
 
 
-def check_bimodal(histogram_values):
+def calculate_skewness(histogram_values):
     """
-    Check if a histogram has a bimodal distribution (two or more significant peaks).
+    Calculate skewness of a distribution.
+    Normal distributions have skewness ≈ 0.
     
     Args:
         histogram_values (array): Histogram bin values
         
     Returns:
-        tuple: (is_bimodal: bool, num_peaks: int, peak_positions: list)
+        float: Skewness value
     """
-    # Smooth the histogram slightly to reduce noise (using simple moving average)
-    # This helps with peak detection
+    # Create weighted distribution
+    bins = np.arange(len(histogram_values))
+    total = np.sum(histogram_values)
+    if total == 0:
+        return 0.0
+    
+    # Calculate weighted mean
+    mean = np.sum(bins * histogram_values) / total
+    
+    # Calculate weighted variance
+    variance = np.sum(histogram_values * (bins - mean) ** 2) / total
+    
+    if variance == 0:
+        return 0.0
+    
+    std = np.sqrt(variance)
+    
+    # Calculate skewness (third moment)
+    skewness = np.sum(histogram_values * ((bins - mean) / std) ** 3) / total
+    
+    return skewness
+
+
+def calculate_kurtosis(histogram_values):
+    """
+    Calculate kurtosis of a distribution.
+    Normal distributions have kurtosis ≈ 3 (excess kurtosis ≈ 0).
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        
+    Returns:
+        float: Kurtosis value
+    """
+    # Create weighted distribution
+    bins = np.arange(len(histogram_values))
+    total = np.sum(histogram_values)
+    if total == 0:
+        return 3.0  # Normal distribution kurtosis
+    
+    # Calculate weighted mean and std
+    mean = np.sum(bins * histogram_values) / total
+    variance = np.sum(histogram_values * (bins - mean) ** 2) / total
+    
+    if variance == 0:
+        return 3.0
+    
+    std = np.sqrt(variance)
+    
+    # Calculate kurtosis (fourth moment)
+    kurtosis = np.sum(histogram_values * ((bins - mean) / std) ** 4) / total
+    
+    return kurtosis
+
+
+def detect_secondary_hump(histogram_values, max_position):
+    """
+    Detect if there's a secondary hump/shoulder in the distribution,
+    even without a clear peak. This catches cases where there's a
+    second hump that doesn't form a distinct peak.
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        max_position (int): Position of the main peak
+        
+    Returns:
+        tuple: (has_secondary_hump: bool, hump_position: int or None)
+    """
+    # Smooth the histogram
     window_size = 5
     if len(histogram_values) > window_size:
         smoothed = np.convolve(histogram_values, np.ones(window_size)/window_size, mode='same')
     else:
         smoothed = histogram_values
     
-    # Find peaks in the smoothed histogram
-    # height: minimum height of peaks (relative to max value)
-    # distance: minimum distance between peaks (in bins)
-    # prominence: minimum prominence of peaks (relative to max value)
     max_value = np.max(smoothed)
     if max_value == 0:
-        return False, 0, []
+        return False, None
     
-    # Set thresholds for peak detection
-    # height: peaks must be at least 5% of max value
-    # distance: peaks must be at least 50 bins apart
-    # prominence: peaks must be at least 10% of max value above surrounding values
+    # Find the main peak region (around max_position)
+    # Look for a secondary hump on the other side of the distribution
+    # A hump is a region where values are significantly elevated
+    
+    # Split the distribution into left and right halves relative to the main peak
+    left_side = smoothed[:max_position]
+    right_side = smoothed[max_position+1:]
+    
+    # Threshold for significant elevation: at least 15% of max value
+    threshold = max_value * 0.15
+    
+    # Check left side for secondary hump
+    if len(left_side) > 50:
+        # Find the maximum in the left half (excluding the edge near main peak)
+        left_half = left_side[:len(left_side)//2]
+        if len(left_half) > 0:
+            left_max_idx_in_half = np.argmax(left_half)
+            left_max_val = left_half[left_max_idx_in_half]
+            if left_max_val >= threshold:
+                # Check if this is a distinct hump (not just noise)
+                # Look for a region around this max that's elevated
+                region_start = max(0, left_max_idx_in_half - 20)
+                region_end = min(len(left_half), left_max_idx_in_half + 20)
+                region_avg = np.mean(left_half[region_start:region_end])
+                if region_avg >= threshold * 0.7:
+                    # Return absolute position in the full array
+                    # left_max_idx_in_half is relative to left_half, which starts at index 0
+                    # left_half is the first half of left_side, which starts at index 0
+                    # left_side is [:max_position], so absolute position is just left_max_idx_in_half
+                    return True, left_max_idx_in_half
+    
+    # Check right side for secondary hump
+    if len(right_side) > 50:
+        # Find the maximum in the right half (excluding the edge near main peak)
+        right_half = right_side[len(right_side)//2:]
+        if len(right_half) > 0:
+            right_max_idx_in_half = np.argmax(right_half)
+            right_max_idx = len(right_side)//2 + right_max_idx_in_half
+            right_max_val = right_half[right_max_idx_in_half]
+            if right_max_val >= threshold:
+                # Check if this is a distinct hump
+                region_start = max(0, right_max_idx_in_half - 20)
+                region_end = min(len(right_half), right_max_idx_in_half + 20)
+                region_avg = np.mean(right_half[region_start:region_end])
+                if region_avg >= threshold * 0.7:
+                    return True, max_position + 1 + right_max_idx
+    
+    return False, None
+
+
+def check_non_normal(histogram_values):
+    """
+    Check if a histogram deviates from a normal distribution.
+    Uses multiple criteria:
+    1. Multiple peaks (bimodal/multimodal)
+    2. High skewness (asymmetry)
+    3. Abnormal kurtosis (tail heaviness)
+    4. Secondary humps/shoulders
+    
+    Args:
+        histogram_values (array): Histogram bin values
+        
+    Returns:
+        tuple: (is_non_normal: bool, num_peaks: int, peak_positions: list, 
+                reasons: list, skewness: float, kurtosis: float)
+    """
+    reasons = []
+    
+    # Smooth the histogram slightly to reduce noise
+    window_size = 5
+    if len(histogram_values) > window_size:
+        smoothed = np.convolve(histogram_values, np.ones(window_size)/window_size, mode='same')
+    else:
+        smoothed = histogram_values
+    
+    max_value = np.max(smoothed)
+    if max_value == 0:
+        return False, 0, [], [], 0.0, 3.0
+    
+    max_position = np.argmax(smoothed)
+    
+    # 1. Check for multiple peaks (bimodal/multimodal)
     peaks, properties = find_peaks_simple(smoothed, 
                                          height=max_value * 0.05,  # At least 5% of max
                                          distance=50,              # At least 50 bins apart
-                                         prominence=max_value * 0.10)  # At least 10% prominence
+                                         prominence=max_value * 0.08)  # Lower prominence to catch more cases
     
     num_peaks = len(peaks)
     peak_positions = peaks.tolist()
     
-    # Consider it bimodal if there are 2 or more significant peaks
-    is_bimodal = num_peaks >= 2
+    if num_peaks >= 2:
+        reasons.append(f"Multiple peaks ({num_peaks})")
     
-    return is_bimodal, num_peaks, peak_positions
+    # 2. Check for skewness (normal distribution should have skewness ≈ 0)
+    skewness = calculate_skewness(histogram_values)
+    if abs(skewness) > 0.5:  # Significant skewness
+        reasons.append(f"High skewness ({skewness:.2f})")
+    
+    # 3. Check for kurtosis (normal distribution should have kurtosis ≈ 3)
+    kurtosis = calculate_kurtosis(histogram_values)
+    excess_kurtosis = kurtosis - 3.0
+    if abs(excess_kurtosis) > 1.0:  # Significant deviation from normal
+        reasons.append(f"Abnormal kurtosis ({kurtosis:.2f})")
+    
+    # 4. Check for secondary humps/shoulders
+    has_secondary_hump, hump_position = detect_secondary_hump(histogram_values, max_position)
+    if has_secondary_hump:
+        reasons.append("Secondary hump detected")
+        if hump_position is not None and hump_position not in peak_positions:
+            peak_positions.append(hump_position)
+            peak_positions.sort()
+            num_peaks = len(peak_positions)
+    
+    # Consider it non-normal if it fails any criterion
+    is_non_normal = len(reasons) > 0
+    
+    return is_non_normal, num_peaks, peak_positions, reasons, skewness, kurtosis
 
 
 def load_histogram_from_csv(filepath):
@@ -675,7 +840,7 @@ def create_outlier_summary_and_plots(df_light, csv_base_path, pdf):
     
     ax_table.set_title(f'Outliers Detected: {len(outliers)}', fontsize=12, fontweight='bold', pad=20)
     
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
     
@@ -715,30 +880,30 @@ def create_outlier_summary_and_plots(df_light, csv_base_path, pdf):
         plot_histogram(hist_values, ax, f'{title}\n{subtitle}', 
                       temp, cam_id, outlier['weighted_mean'])
         
-        plt.tight_layout()
+        fig.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
 
 
 def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
     """
-    Create bimodal histogram summary page and individual histogram plots for each bimodal histogram.
+    Create non-normal histogram summary page and individual histogram plots for each non-normal histogram.
     
     Args:
         df_light (pd.DataFrame): Light histogram data
         csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
         pdf: PDF pages object
     """
-    # Find bimodal histograms
-    bimodal_histograms = detect_bimodal_histograms(df_light, csv_base_path)
+    # Find non-normal histograms
+    non_normal_histograms = detect_non_normal_histograms(df_light, csv_base_path)
     
-    if len(bimodal_histograms) == 0:
-        # Create a page saying no bimodal histograms
+    if len(non_normal_histograms) == 0:
+        # Create a page saying all histograms are normal
         fig = plt.figure(figsize=(11, 8.5))
-        fig.suptitle('Bimodal Distribution Analysis - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+        fig.suptitle('Non-Normal Distribution Analysis - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
         ax = fig.add_subplot(1, 1, 1)
         ax.axis('off')
-        ax.text(0.5, 0.5, 'No bimodal distributions detected in light histograms!\nAll histograms appear to have normal/unimodal distributions.', 
+        ax.text(0.5, 0.5, 'All light histograms appear to have normal distributions!\nNo deviations detected.', 
                fontsize=14, ha='center', va='center',
                transform=ax.transAxes, 
                bbox=dict(boxstyle='round', facecolor='#90EE90', alpha=0.5))
@@ -748,7 +913,7 @@ def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
     
     # Create summary page
     fig = plt.figure(figsize=(11, 8.5))
-    fig.suptitle('Bimodal Distribution Summary - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
+    fig.suptitle('Non-Normal Distribution Summary - Light Histograms', fontsize=16, fontweight='bold', y=0.98)
     
     # Summary table
     ax_table = fig.add_subplot(1, 1, 1)
@@ -756,51 +921,55 @@ def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
     
     # Prepare table data
     table_data = []
-    for bimodal in bimodal_histograms:
-        peak_str = ', '.join(map(str, bimodal['peak_positions'][:5]))  # Show first 5 peaks
-        if len(bimodal['peak_positions']) > 5:
+    for non_normal in non_normal_histograms:
+        peak_str = ', '.join(map(str, non_normal['peak_positions'][:3]))  # Show first 3 peaks
+        if len(non_normal['peak_positions']) > 3:
             peak_str += '...'
+        reasons_str = '; '.join(non_normal['reasons'][:2])  # Show first 2 reasons
+        if len(non_normal['reasons']) > 2:
+            reasons_str += '...'
         table_data.append([
-            bimodal['serial_number'],
-            bimodal['aperture_size'],
-            str(bimodal['position']),
-            f"{bimodal['weighted_mean']:.2f}",
-            str(bimodal['num_peaks']),
-            peak_str,
-            f"{bimodal['temperature']:.1f}"
+            non_normal['serial_number'],
+            non_normal['aperture_size'],
+            str(non_normal['position']),
+            f"{non_normal['weighted_mean']:.2f}",
+            reasons_str,
+            f"{non_normal['skewness']:.2f}",
+            f"{non_normal['kurtosis']:.2f}",
+            f"{non_normal['temperature']:.1f}"
         ])
     
     # Create table
     table = ax_table.table(cellText=table_data,
-                          colLabels=['Serial Number', 'Aperture', 'Position', 'Weighted Mean', 'Num Peaks', 'Peak Positions', 'Temp (°C)'],
+                          colLabels=['Serial Number', 'Aperture', 'Position', 'Weighted Mean', 'Reasons', 'Skewness', 'Kurtosis', 'Temp (°C)'],
                           cellLoc='center',
                           loc='center',
                           bbox=[0, 0, 1, 1])
     
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
+    table.set_fontsize(7)
     table.scale(1, 1.2)
     
     # Style the header
-    for i in range(7):
-        table[(0, i)].set_facecolor('#9B59B6')  # Purple for bimodal
+    for i in range(8):
+        table[(0, i)].set_facecolor('#9B59B6')  # Purple for non-normal
         table[(0, i)].set_text_props(weight='bold', color='white')
     
     # Highlight rows
-    for i in range(len(bimodal_histograms)):
-        for j in range(7):
+    for i in range(len(non_normal_histograms)):
+        for j in range(8):
             table[(i + 1, j)].set_facecolor('#E8DAEF')  # Light purple
     
-    ax_table.set_title(f'Bimodal Histograms Detected: {len(bimodal_histograms)}', fontsize=12, fontweight='bold', pad=20)
+    ax_table.set_title(f'Non-Normal Histograms Detected: {len(non_normal_histograms)}', fontsize=12, fontweight='bold', pad=20)
     
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
     
-    # Create individual histogram plots for each bimodal histogram
-    for bimodal in bimodal_histograms:
+    # Create individual histogram plots for each non-normal histogram
+    for non_normal in non_normal_histograms:
         # Resolve file path
-        relative_path = bimodal['relative_path']
+        relative_path = non_normal['relative_path']
         relative_path_str = str(relative_path).replace('\\', '/')
         file_path = csv_base_path.parent.parent / relative_path_str
         
@@ -810,7 +979,7 @@ def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
         if hist_values is None:
             # Create error page
             fig = plt.figure(figsize=(11, 8.5))
-            fig.suptitle(f'Bimodal: {bimodal["serial_number"]} - {bimodal["aperture_size"]}', 
+            fig.suptitle(f'Non-Normal: {non_normal["serial_number"]} - {non_normal["aperture_size"]}', 
                         fontsize=14, fontweight='bold')
             ax = fig.add_subplot(1, 1, 1)
             ax.axis('off')
@@ -823,13 +992,15 @@ def create_bimodal_summary_and_plots(df_light, csv_base_path, pdf):
         
         # Create histogram plot with peak markers
         fig, ax = plt.subplots(figsize=(11, 8.5))
-        title = f'Bimodal Distribution: {bimodal["serial_number"]} - {bimodal["aperture_size"]} - Pos {bimodal["position"]}'
-        subtitle = f'Mean: {bimodal["weighted_mean"]:.2f}, Peaks: {bimodal["num_peaks"]} at positions {", ".join(map(str, bimodal["peak_positions"]))}'
-        plot_histogram_with_peaks(hist_values, ax, f'{title}\n{subtitle}', 
-                                  temp, cam_id, bimodal['weighted_mean'], 
-                                  bimodal['peak_positions'])
+        reasons_str = '; '.join(non_normal['reasons'])
+        title = f'Non-Normal Distribution: {non_normal["serial_number"]} - {non_normal["aperture_size"]} - Pos {non_normal["position"]}'
+        subtitle = f'Mean: {non_normal["weighted_mean"]:.2f}, Skew: {non_normal["skewness"]:.2f}, Kurt: {non_normal["kurtosis"]:.2f}'
+        subtitle2 = f'Reasons: {reasons_str}'
+        plot_histogram_with_peaks(hist_values, ax, f'{title}\n{subtitle}\n{subtitle2}', 
+                                  temp, cam_id, non_normal['weighted_mean'], 
+                                  non_normal['peak_positions'])
         
-        plt.tight_layout()
+        fig.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
 
@@ -964,7 +1135,7 @@ def generate_pdf_report(csv_path, output_path=None):
     ax_text.text(0.1, 0.5, summary_text, fontsize=10, verticalalignment='center',
                 family='monospace', transform=ax_text.transAxes)
     
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
     
@@ -1030,7 +1201,7 @@ def generate_pdf_report(csv_path, output_path=None):
         ax.set_title('Distribution of Means by Position', fontsize=12)
         ax.grid(True, alpha=0.3, axis='x')
         
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
     
