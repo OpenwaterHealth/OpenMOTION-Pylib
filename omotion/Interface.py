@@ -17,7 +17,7 @@ logger.setLevel(logging.INFO)
 
 class MOTIONInterface(SignalWrapper):
     
-    sensors: MOTIONSensor = None
+    sensors: dict[str, MOTIONSensor | None] = None
     
     def __init__(self, vid: int = 0x0483, sensor_pid: int = SENSOR_MODULE_PID, console_pid: int = CONSOLE_MODULE_PID, baudrate: int = 921600, timeout: int = 30, run_async: bool = False, demo_mode: bool = False) -> None:
         super().__init__()
@@ -43,13 +43,16 @@ class MOTIONInterface(SignalWrapper):
         # Create a MOTIONSensor Device instance as part of the interface
         logger.debug("Initializing Sensor Module of MOTIONInterface with VID: %s, PID: %s, timeout: %s", vid, sensor_pid, timeout)
         self._dual_composite = DualMotionComposite(vid=vid, pid=sensor_pid, async_mode=run_async)
-        self._dual_composite.connect()
 
-        # Wrap them in MOTIONSensor
+        # Initialize sensors dict - will be populated dynamically when devices connect
         self.sensors = {
-            "left": MOTIONSensor(uart=self._dual_composite.left),
-            "right": MOTIONSensor(uart=self._dual_composite.right)
+            "left": None,
+            "right": None
         }
+        
+        # Initialize any already connected devices
+        self._dual_composite.check_usb_status()
+        self._initialize_sensors()
 
         # Connect console UART signals to interface (works with PyQt or MOTIONSignal shim)
         if self._console_uart:
@@ -57,8 +60,56 @@ class MOTIONInterface(SignalWrapper):
             self._console_uart.signal_connect.connect(self.signal_connect)
             self._console_uart.signal_disconnect.connect(self.signal_disconnect)
             self._console_uart.signal_data_received.connect(self.signal_data_received)
-        # Sensor composites are wired internally when async_mode is True (see DualMotionComposite.connect)
+        
+        # Connect DualMotionComposite signals to interface (works with PyQt or MOTIONSignal shim)
+        if self._dual_composite:
+            logger.info("Connecting dual composite signals to MOTIONInterface")
+            self._dual_composite.signal_connect.connect(self._on_sensor_connect)
+            self._dual_composite.signal_disconnect.connect(self._on_sensor_disconnect)
+            self._dual_composite.signal_data_received.connect(self.signal_data_received)
             
+    def _initialize_sensors(self):
+        """Initialize MOTIONSensor instances for any currently connected MotionComposite devices."""
+        if self._dual_composite.left:
+            logger.info("Initializing left sensor from existing connection")
+            self.sensors["left"] = MOTIONSensor(uart=self._dual_composite.left)
+        
+        if self._dual_composite.right:
+            logger.info("Initializing right sensor from existing connection")
+            self.sensors["right"] = MOTIONSensor(uart=self._dual_composite.right)
+    
+    def _on_sensor_connect(self, sensor_id: str, connection_type: str):
+        """Handle sensor connection signal from DualMotionComposite."""
+        logger.info(f"Sensor connect signal received: {sensor_id}")
+        
+        if sensor_id == "SENSOR_LEFT" and self._dual_composite.left:
+            if self.sensors["left"] is None:
+                logger.info("Initializing new LEFT sensor")
+                self.sensors["left"] = MOTIONSensor(uart=self._dual_composite.left)
+        
+        elif sensor_id == "SENSOR_RIGHT" and self._dual_composite.right:
+            if self.sensors["right"] is None:
+                logger.info("Initializing new RIGHT sensor")
+                self.sensors["right"] = MOTIONSensor(uart=self._dual_composite.right)
+        
+        # Forward the signal to any external listeners
+        self.signal_connect.emit(sensor_id, connection_type)
+    
+    def _on_sensor_disconnect(self, sensor_id: str, connection_type: str):
+        """Handle sensor disconnection signal from DualMotionComposite."""
+        logger.info(f"Sensor disconnect signal received: {sensor_id}")
+        
+        if sensor_id == "SENSOR_LEFT":
+            logger.info("Clearing LEFT sensor")
+            self.sensors["left"] = None
+        
+        elif sensor_id == "SENSOR_RIGHT":
+            logger.info("Clearing RIGHT sensor")
+            self.sensors["right"] = None
+        
+        # Forward the signal to any external listeners
+        self.signal_disconnect.emit(sensor_id, connection_type)
+    
     async def start_monitoring(self, interval: int = 1) -> None:
         """Start monitoring for USB device connections."""
         try:
@@ -69,7 +120,6 @@ class MOTIONInterface(SignalWrapper):
                     tasks.append(coro)
 
             if self._dual_composite:
-                logger.debug("starting monitoring dual composite")
                 coro = self._dual_composite.monitor_usb_status(interval)
                 if asyncio.iscoroutine(coro):
                     tasks.append(coro)
@@ -208,6 +258,10 @@ class MOTIONInterface(SignalWrapper):
             return None
 
         sensor = self.sensors[sensor_side]
+        if sensor is None:
+            logger.error(f"{sensor_side.capitalize()} sensor not connected.")
+            return None
+        
         camera_mask = 1 << (camera_id)
         test_pattern = test_pattern_id
 
