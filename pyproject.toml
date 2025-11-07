@@ -23,6 +23,16 @@ dependencies = [
   "libusb1>=3.3.1",
 ]
 
+# PyPI metadata (must live on the [project] table)
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Operating System :: OS Independent"
+]
+keywords = ["stm32", "fpga", "camera", "usb", "serial", "openmotion"]
+
 [project.optional-dependencies]
 # Users can opt-in; keyboard may need elevated permissions on Linux
 keyboard = ["keyboard>=0.13.5"]
@@ -34,7 +44,7 @@ Issues     = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib/issues"
 # --- Packaging / discovery ---
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["omotion"]      # package folder must contain __init__.py
+include = ["omotion"]      
 namespaces = false
 
 [tool.setuptools]
@@ -54,13 +64,3 @@ license-files = ["LICENSE"]
 tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
 version_scheme = "no-guess-dev"
 local_scheme = "no-local-version"
-
-# PyPI metadata (must live on the [project] table)
-classifiers = [
-  "Development Status :: 4 - Beta",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.12",
-  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-  "Operating System :: OS Independent"
-]
-keywords = ["stm32", "fpga", "camera", "usb", "serial", "openmotion"]
