@@ -1,0 +1,41 @@
+name: Build & attach wheel/sdist on Release (setuptools-scm)
+
+on:
+  release:
+    types: [published]   # fires when you click "Publish release" in GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # lets us upload assets to the release
+      id-token: write     # needed if you use PyPI Trusted Publishing (optional)
+    steps:
+      - name: Check out with full history (tags needed by setuptools-scm)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+
+      - name: Build sdist & wheel (version comes from the release tag)
+        run: python -m build
+
+      # Upload dist/* back to the same release you just published
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # OPTIONAL: publish to PyPI via Trusted Publishing (enable it in PyPI first)
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: pypa/gh-action-pypi-publish@release/v1
