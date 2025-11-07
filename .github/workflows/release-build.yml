@@ -1,20 +1,46 @@
-name: Build & attach wheel/sdist on Release (setuptools-scm)
+name: Build package (release + manual)
 
 on:
   release:
-    types: [published]   # fires when you click "Publish release" in GitHub
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      pretend_version:
+        description: "Optional: override version for manual test (e.g. 0.0.0-test1)"
+        required: false
+        type: string
+      tag_like_release:
+        description: "Create a temporary git tag in the job (instead of pretend version)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # lets us upload assets to the release
-      id-token: write     # needed if you use PyPI Trusted Publishing (optional)
+      contents: write
+      id-token: write
+
     steps:
-      - name: Check out with full history (tags needed by setuptools-scm)
+      - name: Checkout (need tags for setuptools-scm)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # ----- Manual test helpers (only on workflow_dispatch) -----
+      - name: Set pretend version via env
+        if: github.event_name == 'workflow_dispatch' && inputs.pretend_version != ''
+        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${{ inputs.pretend_version }}" >> $GITHUB_ENV
+
+      - name: Create a temporary tag (alternative to pretend version)
+        if: github.event_name == 'workflow_dispatch' && inputs.tag_like_release == true
+        run: |
+          # Use provided pretend_version or fallback
+          VERSION="${{ inputs.pretend_version }}"
+          if [ -z "$VERSION" ]; then VERSION="0.0.0-test"; fi
+          git tag -a "v$VERSION" -m "temp test tag v$VERSION"
+          git describe --tags --always
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,20 +48,24 @@ jobs:
           python-version: "3.12"
 
       - name: Install build tooling
-        run: python -m pip install --upgrade build
+        run: python -m pip install --upgrade build setuptools-scm
 
-      - name: Build sdist & wheel (version comes from the release tag)
+      - name: Build sdist & wheel
         run: python -m build
 
-      # Upload dist/* back to the same release you just published
-      - name: Upload artifacts to release
+      # Upload to the Release (ONLY when actually triggered by a release)
+      - name: Upload artifacts to the release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # OPTIONAL: publish to PyPI via Trusted Publishing (enable it in PyPI first)
-      - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: pypa/gh-action-pypi-publish@release/v1
+      # For manual runs, save artifacts to the workflow run instead
+      - name: Upload artifacts to run (manual tests)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
