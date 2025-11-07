@@ -38,9 +38,6 @@ include = ["omotion"]      # package folder must contain __init__.py
 namespaces = false
 
 [tool.setuptools]
-tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
-version_scheme = "no-guess-dev"
-local_scheme = "no-local-version"
 include-package-data = true
 license-files = ["LICENSE"]
 
@@ -52,6 +49,11 @@ license-files = ["LICENSE"]
 # (Optional) exclude dev/test payloads from wheels if needed
 # [tool.setuptools.exclude-package-data]
 # "*" = ["**/tests/**", "**/examples/**", "**/*.log", "**/.DS_Store"]
+
+[tool.setuptools_scm]
+tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+version_scheme = "no-guess-dev"
+local_scheme = "no-local-version"
 
 # PyPI metadata (must live on the [project] table)
 classifiers = [
