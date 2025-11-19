@@ -20,6 +20,9 @@ import numpy as np
 import re
 from pathlib import Path
 
+    
+kurtosis_threshold = 0.4
+skewness_threshold = 0.1
 
 def extract_aperture_size(relative_path):
     """
@@ -151,7 +154,7 @@ def plot_boxplot_by_aperture(df_light, df_dark, ax):
             data_to_plot.append(light_data)
             labels.append(f'{aperture}')
     
-    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+    bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True, vert=False)
     
     # Color the boxes
     colors = plt.cm.Set3(np.linspace(0, 1, len(bp['boxes'])))
@@ -194,7 +197,7 @@ def plot_boxplot_by_aperture_dark(df_light, df_dark, ax):
             data_to_plot.append(dark_data)
             labels.append(f'{aperture}')
     
-    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+    bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True, vert=False)
     
     # Color the boxes (using red tones for dark histograms)
     colors = plt.cm.Reds(np.linspace(0.4, 0.8, len(bp['boxes'])))
@@ -242,7 +245,7 @@ def plot_boxplot_by_position(df_light, df_dark, ax):
             data_to_plot.append(dark_data)
             labels.append(f'Pos {pos + 1}\nDark')  # 1-indexed
     
-    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True)
+    bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True)
     
     # Color the boxes
     colors = plt.cm.Set2(np.linspace(0, 1, len(bp['boxes'])))
@@ -293,7 +296,7 @@ def plot_scatter_aperture_vs_mean(df_light, df_dark, ax):
             labels.append(f'Pos {pos + 1}')  # 1-indexed
     
     # Create horizontal boxplot
-    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+    bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True, vert=False)
     
     # Use a single color scheme (no color coding by position)
     color = '#4A90E2'  # Single blue color
@@ -673,16 +676,16 @@ def check_non_normal(histogram_values):
     
     if num_peaks >= 2:
         reasons.append(f"Multiple peaks ({num_peaks})")
-    
+
     # 2. Check for skewness (normal distribution should have skewness ≈ 0)
     skewness = calculate_skewness(histogram_values)
-    if abs(skewness) > 0.2:  # Significant skewness
+    if abs(skewness) > skewness_threshold:  # Significant skewness
         reasons.append(f"High skewness ({skewness:.2f})")
     
     # 3. Check for kurtosis (normal distribution should have kurtosis ≈ 3)
     kurtosis = calculate_kurtosis(histogram_values)
     excess_kurtosis = kurtosis - 3.0
-    if abs(excess_kurtosis) > .4:  # Significant deviation from normal
+    if abs(excess_kurtosis) > kurtosis_threshold:  # Significant deviation from normal
         reasons.append(f"Abnormal kurtosis ({kurtosis:.2f})")
     
     # 4. Check for secondary humps/shoulders
@@ -1087,6 +1090,243 @@ def create_table_plot(df_stats, title, ax):
     ax.set_title(title, fontsize=12, fontweight='bold', pad=20)
 
 
+def plot_skewness_kurtosis_by_aperture(df_light, fig):
+    """
+    Create boxplots of skewness and kurtosis grouped by aperture size.
+    Shows threshold lines on each plot.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data with skewness and kurtosis columns
+        fig: Matplotlib figure object
+    """
+    # Filter out rows where skewness or kurtosis is NaN
+    df_plot = df_light.dropna(subset=['skewness', 'kurtosis']).copy()
+    
+    if len(df_plot) == 0:
+        ax = fig.add_subplot(1, 1, 1)
+        ax.axis('off')
+        ax.text(0.5, 0.5, 'No skewness/kurtosis data available for plotting.', 
+               fontsize=14, ha='center', va='center',
+               transform=ax.transAxes)
+        return
+    
+    apertures = sorted([a for a in df_plot['aperture_size'].unique() if a != "Unknown"])
+    
+    # Left subplot: Skewness
+    ax1 = fig.add_subplot(1, 2, 1)
+    data_to_plot_skew = []
+    labels_skew = []
+    
+    for aperture in apertures:
+        aperture_data = df_plot[df_plot['aperture_size'] == aperture]['skewness'].values
+        if len(aperture_data) > 0:
+            data_to_plot_skew.append(aperture_data)
+            labels_skew.append(f'{aperture}')
+    
+    if len(data_to_plot_skew) > 0:
+        bp1 = ax1.boxplot(data_to_plot_skew, tick_labels=labels_skew, patch_artist=True, vert=False)
+        
+        # Color the boxes
+        colors = plt.cm.Set3(np.linspace(0, 1, len(bp1['boxes'])))
+        for patch, color in zip(bp1['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        # Add data point markers with jitter
+        for i, data in enumerate(data_to_plot_skew):
+            y_pos = i + 1
+            y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
+            ax1.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+        
+        # Add threshold lines
+        ax1.axvline(x=skewness_threshold, color='r', linestyle='--', linewidth=2, 
+                   label=f'Threshold: {skewness_threshold}', zorder=4)
+        ax1.axvline(x=-skewness_threshold, color='r', linestyle='--', linewidth=2, zorder=4)
+    
+    ax1.set_xlabel('Skewness', fontsize=10)
+    ax1.set_ylabel('Aperture Size', fontsize=10)
+    ax1.set_title('Skewness Distribution by Aperture Size (Light)', fontsize=12, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='x')
+    ax1.legend(loc='best', fontsize=9)
+    
+    # Right subplot: Kurtosis
+    ax2 = fig.add_subplot(1, 2, 2)
+    data_to_plot_kurt = []
+    labels_kurt = []
+    
+    for aperture in apertures:
+        aperture_data = df_plot[df_plot['aperture_size'] == aperture]['kurtosis'].values
+        if len(aperture_data) > 0:
+            data_to_plot_kurt.append(aperture_data)
+            labels_kurt.append(f'{aperture}')
+    
+    if len(data_to_plot_kurt) > 0:
+        bp2 = ax2.boxplot(data_to_plot_kurt, tick_labels=labels_kurt, patch_artist=True, vert=False)
+        
+        # Color the boxes
+        colors = plt.cm.Set3(np.linspace(0, 1, len(bp2['boxes'])))
+        for patch, color in zip(bp2['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        # Add data point markers with jitter
+        for i, data in enumerate(data_to_plot_kurt):
+            y_pos = i + 1
+            y_jittered = y_pos + np.random.normal(0, 0.05, size=len(data))
+            ax2.scatter(data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+        
+        # Add threshold lines for excess kurtosis (kurtosis - 3)
+        # We need to show where abs(kurtosis - 3) > kurtosis_threshold
+        # So kurtosis > 3 + kurtosis_threshold or kurtosis < 3 - kurtosis_threshold
+        ax2.axvline(x=3 + kurtosis_threshold, color='r', linestyle='--', linewidth=2, 
+                   label=f'Threshold: ±{kurtosis_threshold} from 3', zorder=4)
+        ax2.axvline(x=3 - kurtosis_threshold, color='r', linestyle='--', linewidth=2, zorder=4)
+    
+    ax2.set_xlabel('Kurtosis', fontsize=10)
+    ax2.set_ylabel('Aperture Size', fontsize=10)
+    ax2.set_title('Kurtosis Distribution by Aperture Size (Light)', fontsize=12, fontweight='bold')
+    ax2.grid(True, alpha=0.3, axis='x')
+    ax2.legend(loc='best', fontsize=9)
+
+
+def plot_skewness_kurtosis_combined(df_light, fig):
+    """
+    Create boxplots of skewness and kurtosis for all apertures combined.
+    Shows threshold lines on each plot.
+    
+    Args:
+        df_light (pd.DataFrame): Light histogram data with skewness and kurtosis columns
+        fig: Matplotlib figure object
+    """
+    # Filter out rows where skewness or kurtosis is NaN
+    df_plot = df_light.dropna(subset=['skewness', 'kurtosis']).copy()
+    
+    if len(df_plot) == 0:
+        ax = fig.add_subplot(1, 1, 1)
+        ax.axis('off')
+        ax.text(0.5, 0.5, 'No skewness/kurtosis data available for plotting.', 
+               fontsize=14, ha='center', va='center',
+               transform=ax.transAxes)
+        return
+    
+    # Left subplot: Skewness
+    ax1 = fig.add_subplot(1, 2, 1)
+    skewness_data = df_plot['skewness'].values
+    
+    if len(skewness_data) > 0:
+        bp1 = ax1.boxplot([skewness_data], tick_labels=['All Apertures'], patch_artist=True, vert=False)
+        
+        # Color the box
+        bp1['boxes'][0].set_facecolor('#4A90E2')
+        bp1['boxes'][0].set_alpha(0.7)
+        
+        # Add data point markers with jitter
+        y_pos = 1
+        y_jittered = y_pos + np.random.normal(0, 0.05, size=len(skewness_data))
+        ax1.scatter(skewness_data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+        
+        # Add threshold lines
+        ax1.axvline(x=skewness_threshold, color='r', linestyle='--', linewidth=2, 
+                   label=f'Threshold: {skewness_threshold}', zorder=4)
+        ax1.axvline(x=-skewness_threshold, color='r', linestyle='--', linewidth=2, zorder=4)
+    
+    ax1.set_xlabel('Skewness', fontsize=10)
+    ax1.set_ylabel('Aperture Size', fontsize=10)
+    ax1.set_title('Skewness Distribution - All Apertures Combined (Light)', fontsize=12, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='x')
+    ax1.legend(loc='best', fontsize=9)
+    
+    # Right subplot: Kurtosis
+    ax2 = fig.add_subplot(1, 2, 2)
+    kurtosis_data = df_plot['kurtosis'].values
+    
+    if len(kurtosis_data) > 0:
+        bp2 = ax2.boxplot([kurtosis_data], tick_labels=['All Apertures'], patch_artist=True, vert=False)
+        
+        # Color the box
+        bp2['boxes'][0].set_facecolor('#4A90E2')
+        bp2['boxes'][0].set_alpha(0.7)
+        
+        # Add data point markers with jitter
+        y_pos = 1
+        y_jittered = y_pos + np.random.normal(0, 0.05, size=len(kurtosis_data))
+        ax2.scatter(kurtosis_data, y_jittered, c='black', alpha=0.5, s=20, zorder=3)
+        
+        # Add threshold lines for excess kurtosis (kurtosis - 3)
+        ax2.axvline(x=3 + kurtosis_threshold, color='r', linestyle='--', linewidth=2, 
+                   label=f'Threshold: ±{kurtosis_threshold} from 3', zorder=4)
+        ax2.axvline(x=3 - kurtosis_threshold, color='r', linestyle='--', linewidth=2, zorder=4)
+    
+    ax2.set_xlabel('Kurtosis', fontsize=10)
+    ax2.set_ylabel('Aperture Size', fontsize=10)
+    ax2.set_title('Kurtosis Distribution - All Apertures Combined (Light)', fontsize=12, fontweight='bold')
+    ax2.grid(True, alpha=0.3, axis='x')
+    ax2.legend(loc='best', fontsize=9)
+
+
+def add_skewness_kurtosis_to_dataframe(df, csv_base_path):
+    """
+    Calculate skewness and kurtosis for all histograms and add them to the DataFrame.
+    This is used to add the columns for plotting.
+    
+    Args:
+        df (pd.DataFrame): Full DataFrame from summary.csv
+        csv_base_path (Path): Base path to the CSV file (for resolving relative paths)
+        
+    Returns:
+        pd.DataFrame: DataFrame with skewness and kurtosis columns added
+    """
+    print("Calculating skewness and kurtosis for all histograms...")
+    
+    # Initialize columns with NaN values
+    if 'skewness' not in df.columns:
+        df['skewness'] = np.nan
+    if 'kurtosis' not in df.columns:
+        df['kurtosis'] = np.nan
+    
+    # Calculate for each row
+    for idx, row in df.iterrows():
+        # Skip if already calculated
+        if pd.notna(df.at[idx, 'skewness']) and pd.notna(df.at[idx, 'kurtosis']):
+            continue
+            
+        # Resolve file path
+        relative_path = row['relative_path']
+        relative_path_str = str(relative_path).replace('\\', '/')
+        file_path = csv_base_path.parent.parent / relative_path_str
+        
+        # Load histogram
+        hist_values, _, _ = load_histogram_from_csv(file_path)
+        
+        if hist_values is not None:
+            # Calculate skewness and kurtosis
+            skewness = calculate_skewness(hist_values)
+            kurtosis = calculate_kurtosis(hist_values)
+            
+            # Update DataFrame
+            df.at[idx, 'skewness'] = skewness
+            df.at[idx, 'kurtosis'] = kurtosis
+        
+        # Print progress for every 50 rows
+        if (idx + 1) % 50 == 0:
+            print(f"  Processed {idx + 1}/{len(df)} rows...")
+    
+    return df
+
+
+def add_skewness_kurtosis_to_csv(df, csv_path):
+    """
+    Save the DataFrame with skewness and kurtosis columns back to the CSV file.
+    
+    Args:
+        df (pd.DataFrame): Full DataFrame with skewness and kurtosis columns
+        csv_path (str): Path to the summary.csv file to save
+    """
+    print(f"Saving updated summary.csv with skewness and kurtosis columns...")
+    df.to_csv(csv_path, index=False)
+    print(f"Updated summary.csv saved to: {csv_path}")
+
+
 def generate_pdf_report(csv_path, output_path=None):
     """
     Generate PDF analytics report from summary CSV.
@@ -1111,6 +1351,13 @@ def generate_pdf_report(csv_path, output_path=None):
     print(f"Found {len(df_light)} light histograms and {len(df_dark)} dark histograms")
     print(f"Aperture sizes: {sorted(df_light['aperture_size'].unique())}")
     print(f"Positions: {sorted(df_light['position'].unique())}")
+    
+    # Calculate skewness and kurtosis for all histograms (needed for plots and CSV)
+    df = add_skewness_kurtosis_to_dataframe(df, csv_file)
+    
+    # Update df_light and df_dark with calculated values
+    df_light = df[df['histogram_type'] == 'light'].copy()
+    df_dark = df[df['histogram_type'] == 'dark'].copy()
     
     # Create PDF
     pdf = matplotlib.backends.backend_pdf.PdfPages(output_path)
@@ -1181,7 +1428,7 @@ def generate_pdf_report(csv_path, output_path=None):
                 labels.append(f'Pos {pos + 1}')  # 1-indexed
         
         # Create horizontal boxplot
-        bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=False)
+        bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True, vert=False)
         
         # Color the boxes
         colors = plt.cm.Blues(np.linspace(0.4, 0.8, len(bp['boxes'])))
@@ -1211,8 +1458,27 @@ def generate_pdf_report(csv_path, output_path=None):
     # Bimodal distribution analysis pages at the end
     create_bimodal_summary_and_plots(df_light, csv_file, pdf)
     
+    # Page: Skewness and Kurtosis by Aperture Size
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.suptitle('Skewness and Kurtosis Analysis by Aperture Size', fontsize=16, fontweight='bold', y=0.98)
+    plot_skewness_kurtosis_by_aperture(df_light, fig)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    
+    # Page: Skewness and Kurtosis - All Apertures Combined
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.suptitle('Skewness and Kurtosis Analysis - All Apertures Combined', fontsize=16, fontweight='bold', y=0.98)
+    plot_skewness_kurtosis_combined(df_light, fig)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    
     pdf.close()
     print(f"\nPDF report saved to: {output_path}")
+    
+    # Save updated summary.csv with skewness and kurtosis columns
+    add_skewness_kurtosis_to_csv(df, csv_path)
 
 
 def main():
