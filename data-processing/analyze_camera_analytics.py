@@ -676,13 +676,13 @@ def check_non_normal(histogram_values):
     
     # 2. Check for skewness (normal distribution should have skewness ≈ 0)
     skewness = calculate_skewness(histogram_values)
-    if abs(skewness) > 0.5:  # Significant skewness
+    if abs(skewness) > 0.2:  # Significant skewness
         reasons.append(f"High skewness ({skewness:.2f})")
     
     # 3. Check for kurtosis (normal distribution should have kurtosis ≈ 3)
     kurtosis = calculate_kurtosis(histogram_values)
     excess_kurtosis = kurtosis - 3.0
-    if abs(excess_kurtosis) > 1.0:  # Significant deviation from normal
+    if abs(excess_kurtosis) > .4:  # Significant deviation from normal
         reasons.append(f"Abnormal kurtosis ({kurtosis:.2f})")
     
     # 4. Check for secondary humps/shoulders
