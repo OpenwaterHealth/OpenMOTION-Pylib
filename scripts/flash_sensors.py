@@ -51,6 +51,11 @@ def parse_args():
         default="left",
         help="Specify which side to run the flash on (default: both)"
     )
+    parser.add_argument(
+        "--program-nvcm",
+        action="store_true",
+        help="Enable programming of FPGA NVCM (non-volatile configuration memory)"
+    )
     return parser.parse_args()
 
 
@@ -202,6 +207,16 @@ def main():
             exit(1)
 
     configure_camera_sensors(interface, args.camera_mask, not args.manual_upload, args.target, args.bit_file)
+
+    if args.program_nvcm:
+        print("\nProgramming FPGA NVCM for all cameras in mask...")
+        results = interface.run_on_sensors("program_fpga_nvcm", args.camera_mask, target=args.target)
+        for side, success in results.items():
+            if success:
+                print(f"✅ NVCM programming complete for {side} sensor.")
+            else:
+                print(f"❌ Failed to program NVCM on {side} sensor.")
+                exit(1)
 
     print("\nSensor Module Test Completed.")
     
