@@ -56,7 +56,7 @@ class UartPacket:
     def from_buffer(self, buffer: bytes):
         if buffer[0] != OW_START_BYTE or buffer[-1] != OW_END_BYTE:
             logger.error(f"Missing Start or End Byte Packet LEN {str(len(buffer))}")
-            print(buffer)
+            logger.debug(buffer)
             raise ValueError("Invalid buffer format")
 
         self.id = int.from_bytes(buffer[1:3], 'big')
@@ -73,16 +73,16 @@ class UartPacket:
             raise ValueError("CRC mismatch")
 
     def print_packet(self,full=False):
-        print("UartPacket:")
-        print("  Packet ID:", self.id)
-        print("  Packet Type:", hex(self.packet_type))
-        print("  Command:", hex(self.command))
-        print("  Data Length:", self.data_len)
+        logger.debug("UartPacket:")
+        logger.debug("  Packet ID:", self.id)
+        logger.debug("  Packet Type:", hex(self.packet_type))
+        logger.debug("  Command:", hex(self.command))
+        logger.debug("  Data Length:", self.data_len)
         if(full):
-            print("  Address:", hex(self.addr))
-            print("  Reserved:", hex(self.reserved))
-            print("  Data:", self.data.hex())
-            print("  CRC:", hex(self.crc))
+            logger.debug("  Address:", hex(self.addr))
+            logger.debug("  Reserved:", hex(self.reserved))
+            logger.debug("  Data:", self.data.hex())
+            logger.debug("  CRC:", hex(self.crc))
         
     def __str__(self):
         return (
