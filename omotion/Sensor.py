@@ -252,7 +252,7 @@ class MOTIONSensor:
             else:
                 # The fan status is returned in the reserved field
                 fan_status = r.reserved == 1
-                logger.info(f"Fan control status: {'ON' if fan_status else 'OFF'}")
+                logger.debug(f"Fan control status: {'ON' if fan_status else 'OFF'}")
                 return fan_status
 
         except ValueError as v:
