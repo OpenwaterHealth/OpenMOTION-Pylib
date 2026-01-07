@@ -21,8 +21,8 @@ import re
 from pathlib import Path
 
     
-kurtosis_threshold = 0.4
-skewness_threshold = 0.1
+kurtosis_threshold = 1
+skewness_threshold = 0.2
 
 def extract_aperture_size(relative_path):
     """

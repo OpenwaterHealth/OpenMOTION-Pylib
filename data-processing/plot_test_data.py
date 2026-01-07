@@ -135,7 +135,7 @@ def find_histogram_files(folder_path):
         folder_path (Path): Path to folder to search
         
     Returns:
-        dict: Dictionary mapping base names to (light_file, dark_file) tuples
+        dict: Dictionary mapping (base_name, suffix, parent_dir) tuples to (light_file, dark_file) tuples
     """
     folder = Path(folder_path)
     if not folder.exists():
@@ -164,7 +164,8 @@ def find_histogram_files(folder_path):
             print(f"Warning: No matching dark file found for {light_file.name} (looked in {parent_dir})")
             continue
         
-        file_pairs[(base_name, suffix)] = (light_file, dark_file)
+        # Include parent_dir in key to avoid overwriting files with same base_name in different folders
+        file_pairs[(base_name, suffix, parent_dir)] = (light_file, dark_file)
     
     return file_pairs
 
@@ -315,7 +316,7 @@ def process_folder(folder_path):
     results = []
     
     # Process each pair
-    for (base_name, suffix), (light_file, dark_file) in file_pairs.items():
+    for (base_name, suffix, parent_dir), (light_file, dark_file) in file_pairs.items():
         serial_number = base_name
         
         # Add suffix to serial number for display if present
