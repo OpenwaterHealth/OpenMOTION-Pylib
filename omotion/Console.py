@@ -7,10 +7,10 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
-from omotion import MOTIONUart
+from omotion import MOTIONUart, _log_root
 from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 
-logger = logging.getLogger("Console")
+logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
 @dataclass
 class PDUMon:
@@ -394,7 +394,9 @@ class MOTIONConsole:
                 return None, None
             
         except Exception as e:
-            print(f"I2C Read failed: {str(e)}")
+            # The underlying error is already logged by MotionUart.send_packet()
+            # Only log here if we want additional context about the I2C operation
+            logger.debug(f"I2C read operation failed (underlying error logged by UART layer): {str(e)}")
             return None, None
 
     def write_i2c_packet(self, mux_index: int, channel: int, device_addr: int, reg_addr: int, data: bytes) -> bool:

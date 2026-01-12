@@ -1,7 +1,8 @@
 import logging
+from omotion import _log_root
 
 # Set up logging
-logger = logging.getLogger("Signal")
+logger = logging.getLogger(f"{_log_root}.Signal" if _log_root else "Signal")
 logger.setLevel(logging.INFO)  # or INFO depending on what you want to see
 
 class MOTIONSignal:

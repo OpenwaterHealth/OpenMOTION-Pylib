@@ -2,9 +2,10 @@ import logging
 
 from omotion.config import OW_END_BYTE, OW_START_BYTE
 from omotion.utils import util_crc16
+from omotion import _log_root
 
 # Set up logging
-logger = logging.getLogger("UARTPACKET")
+logger = logging.getLogger(f"{_log_root}.UARTPACKET" if _log_root else "UARTPACKET")
 logger.setLevel(logging.INFO)  # or INFO depending on what you want to see
 
 

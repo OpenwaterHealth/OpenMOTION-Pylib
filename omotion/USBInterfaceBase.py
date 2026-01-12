@@ -1,8 +1,9 @@
 import logging
 import usb.core
 import usb.util
+from omotion import _log_root
 
-logger = logging.getLogger("USBInterfaceBase")
+logger = logging.getLogger(f"{_log_root}.USBInterfaceBase" if _log_root else "USBInterfaceBase")
 logger.setLevel(logging.INFO)
 
 # =========================================

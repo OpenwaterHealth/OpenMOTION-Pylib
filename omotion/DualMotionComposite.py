@@ -7,8 +7,9 @@ import time
 from omotion.usb_backend import get_libusb1_backend
 from omotion.MotionComposite import MotionComposite
 from omotion.signal_wrapper import SignalWrapper
+from omotion import _log_root
 
-logger = logging.getLogger("DualMotionComposite")
+logger = logging.getLogger(f"{_log_root}.DualMotionComposite" if _log_root else "DualMotionComposite")
 logger.setLevel(logging.INFO)
 
 backend = get_libusb1_backend()
@@ -96,15 +97,15 @@ class DualMotionComposite(SignalWrapper):
                 # Left sensor (port ends with 2)
                 if port_numbers[-1] == 2:
                     if not self.left:
-                        print("Connecting to left sensor")
+                        logger.info("Connecting to left sensor")
                         self.connect(target = "left")                
-                    # print("left is connected")                          
+                    # logger.info("left is connected")                          
                 # Right sensor (port ends with 3)
                 if port_numbers[-1] == 3:
                     if not self.right:
-                        print("Connecting to right sensor")
+                        logger.info("Connecting to right sensor")
                         self.connect(target = "right")
-                    # print("right is connected")
+                    # logger.info("right is connected")
             except Exception as e:
                 logger.error(f"Error connecting to sensor device: {e}")        
 
@@ -112,11 +113,11 @@ class DualMotionComposite(SignalWrapper):
         try:
             #if there is not a device with port_numbers[-1] == 2, disconnect the left sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 2 for dev in devices) and self.left:
-                print("Disconnecting left sensor")
+                logger.info("Disconnecting left sensor")
                 self.disconnect(target = "left")
             #if there is not a device with port_numbers[-1] == 3, disconnect the right sensor
             if not any(getattr(dev, "port_numbers", [])[-1] == 3 for dev in devices) and self.right:
-                print("Disconnecting right sensor")
+                logger.info("Disconnecting right sensor")
                 self.disconnect(target = "right")
         except Exception as e:
                 logger.error(f"Error disconnecting from sensor device")
