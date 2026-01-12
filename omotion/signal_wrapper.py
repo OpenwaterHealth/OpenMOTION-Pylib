@@ -1,7 +1,11 @@
 import logging
+from omotion import _log_root
 
 # Configure default logger (you can customize or configure externally)
-logger = logging.getLogger(__name__)
+logger_name = __name__
+if _log_root:
+    logger_name = f"{_log_root}.{logger_name}"
+logger = logging.getLogger(logger_name)
 logger.setLevel(logging.INFO)
 
 # Add a basic console handler if not already configured

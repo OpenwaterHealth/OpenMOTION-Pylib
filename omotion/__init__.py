@@ -1,12 +1,27 @@
 from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+# Global log root variable - can be set via set_log_root()
+_log_root = ""
+
+def set_log_root(root: str):
+    """
+    Set a global log root prefix that will be prepended to all logger names.
+    
+    Args:
+        root: The prefix to prepend to all logger names (e.g., "MyApp" will make
+              loggers like "MyApp.Console", "MyApp.Sensor", etc.)
+    """
+    global _log_root
+    _log_root = root
+
 from .config import *
 from .MotionUart import MOTIONUart
 from .MotionSignal import MOTIONSignal
 from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "set_log_root"]
 
 try:
     # works when installed (wheel/sdist) — uses dist-info METADATA

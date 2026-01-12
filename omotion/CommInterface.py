@@ -9,10 +9,11 @@ import threading
 import queue
 from omotion.usb_backend import get_libusb1_backend
 from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion import _log_root
 
 
 
-logger = logging.getLogger("CommInterface")
+logger = logging.getLogger(f"{_log_root}.CommInterface" if _log_root else "CommInterface")
 logger.setLevel(logging.INFO)
 
 # =========================================

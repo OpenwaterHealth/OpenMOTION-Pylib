@@ -9,8 +9,9 @@ from omotion.CommInterface import CommInterface
 from omotion.StreamInterface import StreamInterface
 from omotion.signal_wrapper import SignalWrapper
 from omotion.config import OW_START_BYTE, OW_END_BYTE, OW_ERROR, OW_RESP, OW_CMD_NOP, OW_ACK
+from omotion import _log_root
 
-logger = logging.getLogger("MotionComposite")
+logger = logging.getLogger(f"{_log_root}.MotionComposite" if _log_root else "MotionComposite")
 logger.setLevel(logging.INFO)
 
 # ===============================

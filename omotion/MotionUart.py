@@ -12,9 +12,10 @@ from omotion.UartPacket import UartPacket
 from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
 from omotion.config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
 from omotion.utils import util_crc16
+from omotion import _log_root
 
 # Set up logging
-logger = logging.getLogger("UART")
+logger = logging.getLogger(f"{_log_root}.UART" if _log_root else "UART")
 logger.setLevel(logging.INFO)  # or INFO depending on what you want to see
 
 class MOTIONUart(SignalWrapper):

@@ -9,9 +9,9 @@ from omotion.MotionComposite import MotionComposite
 
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
 from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
-from omotion import __version__ as _SDK_VERSION
+from omotion import __version__ as _SDK_VERSION, _log_root
 
-logger = logging.getLogger("Interface")
+logger = logging.getLogger(f"{_log_root}.Interface" if _log_root else "Interface")
 logger.setLevel(logging.INFO)
 
 
