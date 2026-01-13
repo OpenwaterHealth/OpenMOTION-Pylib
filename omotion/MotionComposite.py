@@ -18,16 +18,17 @@ logger.setLevel(logging.INFO)
 # One Physical Composite Device
 # ===============================
 class MotionComposite(SignalWrapper):
-    def __init__(self, dev, desc="COMPOSITE", async_mode=False):
+    def __init__(self, dev, desc="COMPOSITE", async_mode=True):
         super().__init__()
         self.dev = dev
         self.desc = desc
+        async_mode = True
         self.async_mode = async_mode
         self.running = False
         self.demo_mode = False
 
         # Interfaces
-        self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM")
+        self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM", async_mode=async_mode)
         self.histo = StreamInterface(dev, 1, desc=f"{desc}-HISTO")
         self.imu = StreamInterface(dev, 2, desc=f"{desc}-IMU")
 
@@ -44,6 +45,7 @@ class MotionComposite(SignalWrapper):
         self.histo.claim()
         self.imu.claim()
 
+        # Always start read thread if in async mode (or if we want to process packets)
         if self.async_mode:
             self.comm.start_read_thread()
 
