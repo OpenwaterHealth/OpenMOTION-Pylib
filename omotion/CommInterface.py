@@ -113,8 +113,9 @@ class CommInterface(USBInterfaceBase):
                 # Wait for a response that matches the packet ID
                 response = response_queue.get(timeout=timeout)
                 logger.debug(f"{self.desc}: Received response for packet ID {id}, type=0x{response.packet_type:02X}, cmd=0x{response.command:02X}")
-                # Optionally, check that the response has the expected type and command
-                if response.packet_type == OW_RESP and response.command == command:
+                # check that the response has the same ID as the sent packet
+                if response.id == id:
+                    logger.warning(f"{self.desc}: Received response with correct ID: {response.id} (expected {id})")
                     return response
                 else:
                     logger.warning("Received response with unexpected type/command: type=0x%02X, cmd=0x%02X (expected type=0x%02X, cmd=0x%02X)", 
