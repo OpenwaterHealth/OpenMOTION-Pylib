@@ -6,7 +6,6 @@ logger_name = __name__
 if _log_root:
     logger_name = f"{_log_root}.{logger_name}"
 logger = logging.getLogger(logger_name)
-logger.setLevel(logging.INFO)
 
 # Add a basic console handler if not already configured
 if not logger.hasHandlers():

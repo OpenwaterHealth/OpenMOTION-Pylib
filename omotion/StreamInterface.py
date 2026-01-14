@@ -7,7 +7,6 @@ from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
 logger = logging.getLogger(f"{_log_root}.StreamInterface" if _log_root else "StreamInterface")
-logger.setLevel(logging.INFO)
 
 # =========================================
 # Stream Interface (IN only + thread + queue)

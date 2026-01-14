@@ -1001,7 +1001,7 @@ class MOTIONConsole:
                 raise ValueError(f"Unexpected temperature payload length: {r.data_len} (expected 12)")
 
             mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
-            logger.info("MCU: %.2f °C, Safety: %.2f °C, TA: %.2f °C", mcu_temp, safety_temp, ta_temp)
+            # logger.info("MCU: %.2f °C, Safety: %.2f °C, TA: %.2f °C", mcu_temp, safety_temp, ta_temp)
             return (mcu_temp, safety_temp, ta_temp)
 
         except Exception:
@@ -1243,8 +1243,8 @@ class MOTIONConsole:
 
             # r.data should be a bytes-like object
             pdu = _parse_pdu_mon(bytes(r.data[:96]))
-            logger.info("PDU MON: raws=%s", pdu.raws)
-            logger.info("PDU MON: volts=%s", ["%.3f" % v for v in pdu.volts])
+            # logger.info("PDU MON: raws=%s", pdu.raws)
+            # logger.info("PDU MON: volts=%s", ["%.3f" % v for v in pdu.volts])
             return pdu
 
         except ValueError as v:

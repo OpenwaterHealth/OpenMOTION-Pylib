@@ -10,7 +10,6 @@ from omotion.signal_wrapper import SignalWrapper
 from omotion import _log_root
 
 logger = logging.getLogger(f"{_log_root}.DualMotionComposite" if _log_root else "DualMotionComposite")
-logger.setLevel(logging.INFO)
 
 backend = get_libusb1_backend()
 

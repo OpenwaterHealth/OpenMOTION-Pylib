@@ -1,6 +1,6 @@
 import logging
 from omotion.UartPacket import UartPacket
-from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_RESP
+from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_RESP, OW_DATA, OW_CMD_ECHO
 from omotion.utils import util_crc16
 import usb.core
 import usb.util
@@ -115,7 +115,6 @@ class CommInterface(USBInterfaceBase):
                 logger.debug(f"{self.desc}: Received response for packet ID {id}, type=0x{response.packet_type:02X}, cmd=0x{response.command:02X}")
                 # check that the response has the same ID as the sent packet
                 if response.id == id:
-                    logger.warning(f"{self.desc}: Received response with correct ID: {response.id} (expected {id})")
                     return response
                 else:
                     logger.warning("Received response with unexpected type/command: type=0x%02X, cmd=0x%02X (expected type=0x%02X, cmd=0x%02X)", 

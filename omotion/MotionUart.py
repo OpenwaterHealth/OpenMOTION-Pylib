@@ -16,7 +16,6 @@ from omotion import _log_root
 
 # Set up logging
 logger = logging.getLogger(f"{_log_root}.UART" if _log_root else "UART")
-logger.setLevel(logging.INFO)  # or INFO depending on what you want to see
 
 class MOTIONUart(SignalWrapper):
     def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
