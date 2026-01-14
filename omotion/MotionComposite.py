@@ -12,7 +12,6 @@ from omotion.config import OW_START_BYTE, OW_END_BYTE, OW_ERROR, OW_RESP, OW_CMD
 from omotion import _log_root
 
 logger = logging.getLogger(f"{_log_root}.MotionComposite" if _log_root else "MotionComposite")
-logger.setLevel(logging.INFO)
 
 # ===============================
 # One Physical Composite Device
