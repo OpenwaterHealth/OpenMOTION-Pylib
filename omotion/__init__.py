@@ -2,7 +2,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 # Global log root variable - can be set via set_log_root()
-_log_root = ""
+_log_root = "openmotion.sdk"
 
 def set_log_root(root: str):
     """
