@@ -216,6 +216,23 @@ class CommInterface(USBInterfaceBase):
             try:
                 packet = UartPacket(buffer=packet_data)
                 
+                # Check if this is a printf/log message from the MCU
+                # MCU sends printf messages as: packet_type=OW_DATA, command=OW_CMD_ECHO, id=0
+                if packet.packet_type == OW_DATA and packet.command == OW_CMD_ECHO and packet.id == 0:
+                    # Extract the printf message text from packet data
+                    if packet.data and len(packet.data) > 0:
+                        try:
+                            # Decode bytes to string, handling any encoding issues
+                            mcu_message = packet.data.decode('utf-8', errors='replace').rstrip('\r\n').rstrip('\n')
+                            if mcu_message:  # Only log non-empty messages
+                                logger.warning(f"[MCU printf] {mcu_message}")
+                        except Exception as e:
+                            # Fallback: log as hex if decode fails
+                            hex_data = ' '.join(f'{b:02X}' for b in packet.data[:64])  # Limit to 64 bytes for readability
+                            logger.warning(f"[MCU printf] (raw hex): {hex_data}")
+                    # Don't route printf packets to response queues, they're unsolicited log messages
+                    continue
+                
                 if self.async_mode:
                     # In async mode, route packet to appropriate response queue
                     with self.response_lock:
