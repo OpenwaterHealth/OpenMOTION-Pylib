@@ -48,6 +48,6 @@ class StreamInterface(USBInterfaceBase):
                 if data and self.data_queue:
                     self.data_queue.put(bytes(data))
             except usb.core.USBError as e:
-                if e.errno != 110:
+                if e.errno != 110 and e.errno != 10060:
                     logger.error(f"{self.desc} stream error: {e}")
 

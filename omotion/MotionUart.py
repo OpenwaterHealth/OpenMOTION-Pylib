@@ -320,7 +320,20 @@ class MOTIONUart(SignalWrapper):
                         logger.error("Received unexpected response: %s", response)
                         return response
                 except queue.Empty:
-                    logger.error("Timeout waiting for response to packet ID %d", id)
+                    # Build detailed error message with packet information
+                    data_preview = ""
+                    if payload and len(payload) > 0:
+                        data_hex = payload.hex()[:32]  # First 16 bytes as hex
+                        if len(payload) > 16:
+                            data_preview = f", data={data_hex}...({len(payload)} bytes)"
+                        else:
+                            data_preview = f", data={data_hex}"
+                    
+                    error_msg = (f"Timeout waiting for response to packet ID {id}: "
+                               f"type=0x{packetType:02X}, cmd=0x{command:02X}, "
+                               f"addr=0x{addr:02X}, reserved=0x{reserved:02X}, "
+                               f"data_len={payload_length}{data_preview}, timeout={timeout:.1f}s")
+                    logger.error(error_msg)
                     return None
                 finally:
                     with self.response_lock:

@@ -84,7 +84,20 @@ class CommInterface(USBInterfaceBase):
                     continue
 
             if not data:
-                raise TimeoutError("No response")
+                # Build detailed error message with packet information
+                data_preview = ""
+                if payload and len(payload) > 0:
+                    data_hex = payload.hex()[:32]  # First 16 bytes as hex
+                    if len(payload) > 16:
+                        data_preview = f", data={data_hex}...({len(payload)} bytes)"
+                    else:
+                        data_preview = f", data={data_hex}"
+                
+                error_msg = (f"No response to packet ID {id}: "
+                           f"type=0x{packetType:02X}, cmd=0x{command:02X}, "
+                           f"addr=0x{addr:02X}, reserved=0x{reserved:02X}, "
+                           f"data_len={payload_length}{data_preview}, timeout={timeout:.3f}s")
+                raise TimeoutError(error_msg)
 
             return UartPacket(buffer=data)
         else:
@@ -104,7 +117,7 @@ class CommInterface(USBInterfaceBase):
             
             # Now send the packet
             tx_bytes = uart_packet.to_bytes()
-            logger.debug(f"{self.desc}: Sending packet ID={id}, type=0x{packetType:02X}, cmd=0x{command:02X}")
+            logger.info(f"{self.desc}: Sending packet ID={id}, type=0x{packetType:02X}, cmd=0x{command:02X}")
             self.write(tx_bytes)
             time.sleep(0.0005)
             logger.debug(f"{self.desc}: Packet sent, waiting for response...")
@@ -121,11 +134,25 @@ class CommInterface(USBInterfaceBase):
                                  response.packet_type, response.command, OW_RESP, command)
                     return response
             except queue.Empty:
-                logger.error("Timeout waiting for response to packet ID %d (timeout=%.3f s)", id, timeout)
+                # Build detailed error message with packet information
+                data_preview = ""
+                if uart_packet.data and len(uart_packet.data) > 0:
+                    data_hex = uart_packet.data.hex()[:32]  # First 16 bytes as hex
+                    if len(uart_packet.data) > 16:
+                        data_preview = f", data={data_hex}...({len(uart_packet.data)} bytes)"
+                    else:
+                        data_preview = f", data={data_hex}"
+                
+                error_msg = (f"No response to packet ID {id}: "
+                           f"type=0x{packetType:02X}, cmd=0x{command:02X}, "
+                           f"addr=0x{addr:02X}, reserved=0x{reserved:02X}, "
+                           f"data_len={payload_length}{data_preview}, timeout={timeout:.3f}s")
+                
+                logger.error("Timeout waiting for response: %s", error_msg)
                 # Log current state for debugging
                 with self.response_lock:
                     logger.debug(f"{self.desc}: Active response queues: {list(self.response_queues.keys())}")
-                raise TimeoutError(f"No response to packet ID {id}")
+                raise TimeoutError(error_msg)
             finally:
                 with self.response_lock:
                     # Clean up the queue entry regardless of outcome
@@ -141,7 +168,9 @@ class CommInterface(USBInterfaceBase):
         self.read_buffer.clear()
 
     def write(self, data, timeout=100):
-        return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+        res = self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+        logger.info(f"{self.desc}: Wrote {res} bytes.")
+        return res
 
     def receive(self, length=512, timeout=100):
         data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
@@ -172,7 +201,9 @@ class CommInterface(USBInterfaceBase):
                     # Try to parse complete packets from buffer
                     self._parse_packets_from_buffer()
             except usb.core.USBError as e:
-                if e.errno != 110:
+                # Suppress timeout errors (errno 110 on Linux, 10060 on Windows)
+                # These are expected when no data is available and don't need to be logged
+                if e.errno not in (110, 10060):
                     logger.error(f"{self.desc} read error: {e}")
     
     def _parse_packets_from_buffer(self):
