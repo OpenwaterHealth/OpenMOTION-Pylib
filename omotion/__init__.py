@@ -27,11 +27,16 @@ try:
     # works when installed (wheel/sdist) — uses dist-info METADATA
     __version__ = _pkg_version("openmotion-pylib")
 except PackageNotFoundError:
-    # running from source (no dist-info)? fall back to pyproject.toml
+    # running from source (no dist-info)? try pyproject.toml first
     try:
         import tomllib  # Python 3.11+
         from pathlib import Path
         pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes()
         __version__ = tomllib.loads(pyproject)["project"]["version"]
     except Exception:
-        __version__ = "0+unknown"
+        # fall back to setuptools_scm if tomllib or key lookup fails
+        try:
+            from setuptools_scm import get_version
+            __version__ = get_version(root="..", relative_to=__file__)
+        except Exception:
+            __version__ = "0+unknown"
