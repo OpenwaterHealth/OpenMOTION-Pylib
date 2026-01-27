@@ -3,11 +3,12 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS, OW_CAMERA_READ_SECURITY_UID
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import calculate_file_crc
+from omotion import _log_root
 
-logger = logging.getLogger("Sensor")
+logger = logging.getLogger(f"{_log_root}.Sensor" if _log_root else "Sensor")
 
 class MOTIONSensor:
     def __init__(self, uart: MotionComposite):
@@ -1507,6 +1508,43 @@ class MOTIONSensor:
                 return power_status
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
+            raise
+
+    def read_camera_security_uid(self, camera_id: int) -> bytes:
+        """
+        Read the security UID for a specific camera.
+
+        Args:
+            camera_id (int): Camera ID (0-7).
+
+        Returns:
+            bytes: 6-byte security UID, or 6 bytes of zeros if camera is not present.
+
+        Raises:
+            ValueError: If the UART is not connected or camera_id is invalid.
+        """
+        try:
+            if not (0 <= camera_id <= 7):
+                raise ValueError(f"camera_id must be between 0 and 7, got {camera_id}")
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Module not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_READ_SECURITY_UID, addr=camera_id)
+            self.uart.comm.clear_buffer()
+            
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error(f"Error reading security UID for camera {camera_id}")
+                return bytes(6)  # Return 6 bytes of zeros on error
+            
+            if r.data and len(r.data) >= 6:
+                return bytes(r.data[:6])
+            else:
+                logger.warning(f"Invalid UID data length for camera {camera_id}: {len(r.data) if r.data else 0}")
+                return bytes(6)  # Return 6 bytes of zeros if data is invalid
+                
+        except Exception as e:
+            logger.error("Unexpected error reading camera security UID: %s", e)
             raise
 
 

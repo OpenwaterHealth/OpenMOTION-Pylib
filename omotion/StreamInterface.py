@@ -4,9 +4,9 @@ import usb.util
 import threading
 import queue
 from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion import _log_root
 
-logger = logging.getLogger("StreamInterface")
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(f"{_log_root}.StreamInterface" if _log_root else "StreamInterface")
 
 # =========================================
 # Stream Interface (IN only + thread + queue)
