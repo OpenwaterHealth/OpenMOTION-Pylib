@@ -26,7 +26,7 @@ class MotionComposite(SignalWrapper):
         self.demo_mode = False
 
         # Interfaces
-        self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM")
+        self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM", async_mode=True) # TODO: fix async mode in higher levels
         self.histo = StreamInterface(dev, 1, desc=f"{desc}-HISTO")
         self.imu = StreamInterface(dev, 2, desc=f"{desc}-IMU")
 
@@ -43,7 +43,7 @@ class MotionComposite(SignalWrapper):
         self.histo.claim()
         self.imu.claim()
 
-        if self.async_mode:
+        if self.comm.async_mode:
             self.comm.start_read_thread()
 
         self.running = True
