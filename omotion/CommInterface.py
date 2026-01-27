@@ -1,6 +1,6 @@
 import logging
 from omotion.UartPacket import UartPacket
-from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE
+from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_DATA, OW_CMD_ECHO
 from omotion.utils import util_crc16
 import usb.core
 import usb.util
@@ -11,21 +11,23 @@ from omotion.usb_backend import get_libusb1_backend
 from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
-
-
 logger = logging.getLogger(f"{_log_root}.CommInterface" if _log_root else "CommInterface")
-logger.setLevel(logging.INFO)
 
 # =========================================
 # Comm Interface (IN + OUT + threads)
 # =========================================
 class CommInterface(USBInterfaceBase):
-    def __init__(self, dev, interface_index, desc="Comm"):
+    def __init__(self, dev, interface_index, desc="Comm", async_mode=False):
         super().__init__(dev, interface_index, desc)
         self.read_thread = None
         self.stop_event = threading.Event()
         self.read_queue = queue.Queue()
         self.packet_count = 0
+        self.async_mode = async_mode
+        if self.async_mode:
+            self.response_queue = queue.Queue()
+            self.response_thread = threading.Thread(target=self._process_responses, daemon=True)
+            self.response_thread.start()
 
     def claim(self):
         super().claim()
@@ -63,25 +65,36 @@ class CommInterface(USBInterfaceBase):
         self.write(tx_bytes)
         time.sleep(0.0005)
 
-        # Wait for response
-        start = time.monotonic()
-        data = bytearray()
+        if not self.async_mode:
+            # Wait for response
+            start = time.monotonic()
+            data = bytearray()
 
-        while time.monotonic() - start < timeout:
-            try:
-                resp = self.receive()
-                time.sleep(0.0005)
-                if resp:
-                    data.extend(resp)
-                    if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
-                        break
-            except usb.core.USBError:
-                continue
+            while time.monotonic() - start < timeout:
+                try:
+                    resp = self.receive()
+                    time.sleep(0.0005)
+                    if resp:
+                        data.extend(resp)
+                        if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
+                            break
+                except usb.core.USBError:
+                    continue
 
-        if not data:
-            raise TimeoutError("No response")
+            if not data:
+                raise TimeoutError("No response")
 
-        return UartPacket(buffer=data)
+            return UartPacket(buffer=data)
+
+        else:
+           start_time = time.monotonic()
+           while time.monotonic() - start_time < timeout:
+               if self.response_queue.empty():
+                   time.sleep(0.0005)
+               else:
+                   return self.response_queue.get()
+
+
             
     def clear_buffer(self):
         while not self.read_queue.empty():
@@ -119,6 +132,21 @@ class CommInterface(USBInterfaceBase):
                 data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100)
                 if data:
                     self.read_queue.put(bytes(data))
+                    logger.debug(f"Read {len(data)} bytes.")
             except usb.core.USBError as e:
                 if e.errno != 110:
                     logger.error(f"{self.desc} read error: {e}")
+    def _process_responses(self):
+        while not self.stop_event.is_set():
+            try:
+                packet = self.read_queue.get()
+                for i in range(0, len(packet), 512):
+                    uart_packet = UartPacket(buffer=packet[i:i+512])
+                    #if the uart packet is a print packet, print the data
+                    if uart_packet.id == 0 and uart_packet.packet_type == OW_DATA and uart_packet.command == OW_CMD_ECHO:
+                        logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
+                    else:
+                        self.response_queue.put(uart_packet)
+
+            except queue.Empty:
+                time.sleep(0.0005)
