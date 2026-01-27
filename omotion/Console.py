@@ -8,7 +8,48 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import (
+    OW_CMD,
+    OW_CMD_DFU,
+    OW_CMD_ECHO,
+    OW_CMD_HWID,
+    OW_CMD_PING,
+    OW_CMD_RESET,
+    OW_CMD_TOGGLE_LED,
+    OW_CMD_VERSION,
+    OW_CONTROLLER,
+    OW_CTRL_BOARDID,
+    OW_CTRL_GET_FAN,
+    OW_CTRL_GET_FSYNC,
+    OW_CTRL_GET_IND,
+    OW_CTRL_GET_LSYNC,
+    OW_CTRL_GET_TEMPS,
+    OW_CTRL_GET_TRIG,
+    OW_CTRL_I2C_RD,
+    OW_CTRL_I2C_SCAN,
+    OW_CTRL_I2C_WR,
+    OW_CTRL_PDUMON,
+    OW_CTRL_READ_ADC,
+    OW_CTRL_READ_GPIO,
+    OW_CTRL_SET_FAN,
+    OW_CTRL_SET_IND,
+    OW_CTRL_SET_TRIG,
+    OW_CTRL_START_TRIG,
+    OW_CTRL_STOP_TRIG,
+    OW_CTRL_TEC_DAC,
+    OW_CTRL_TEC_STATUS,
+    OW_CTRL_TECADC,
+    OW_ERROR,
+    OW_CTRL_MCP42_SET_WIPER,
+    OW_CTRL_MCP42_SET_BOTH,
+    OW_CTRL_MCP42_SET_WIPERS,
+    OW_CTRL_MCP42_GET_WIPER,
+    OW_CTRL_MCP42_SHUTDOWN,
+    OW_CTRL_MCP42_WAKEUP,
+    OW_CTRL_MCP42_SET_RES,
+    OW_CTRL_MCP42_INC,
+    OW_CTRL_MCP42_DEC,
+)
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
@@ -885,6 +926,179 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error during process: %s", e)
 
+    def mcp42_set_wiper(self, ch: int, pos: int) -> bool:
+        """
+        Set a single MCP42 wiper position.
+
+        Returns:
+            bool: True if the wiper was set successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel is invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+
+        if ch not in (0, 1):
+            raise ValueError("Invalid channel for MCP42; must be 0 or 1")
+
+        data = bytes([ch]) + struct.pack('<H', int(pos) & 0xFFFF)
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SET_WIPER, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_set_both(self, pos: int) -> bool:
+        """
+        Set both MCP42 wipers to the same position.
+
+        Returns:
+            bool: True if both wipers were set successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = struct.pack('<H', int(pos) & 0xFFFF)
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SET_BOTH, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_set_wipers(self, pos0: int, pos1: int) -> bool:
+        """
+        Set two MCP42 wipers with individual positions.
+
+        Returns:
+            bool: True if both wipers were set successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = struct.pack('<HH', int(pos0) & 0xFFFF, int(pos1) & 0xFFFF)
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SET_WIPERS, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_get_wiper(self, ch: int) -> Optional[int]:
+        """
+        Get MCP42 wiper position for the specified channel.
+
+        Returns:
+            Optional[int]: The 16-bit wiper position if successful, or None on error.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel is invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        if ch not in (0, 1):
+            raise ValueError("Invalid channel for MCP42; must be 0 or 1")
+        data = bytes([ch])
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_GET_WIPER, data=data)
+        self.uart.clear_buffer()
+        if r.packet_type == OW_ERROR or r.data_len != 2:
+            return None
+        pos = struct.unpack('<H', r.data)[0]
+        return int(pos)
+
+    def mcp42_shutdown(self, ch: int) -> bool:
+        """
+        Shutdown an MCP42 channel or both channels.
+
+        Args:
+            ch (int): Channel to shutdown (0 or 1) or 3 for both.
+
+        Returns:
+            bool: True if the shutdown command succeeded, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = bytes([ch & 0xFF])
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SHUTDOWN, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_wakeup(self, ch: int, pos: int) -> bool:
+        """
+        Wake up an MCP42 channel and optionally set its position.
+
+        Returns:
+            bool: True if the wakeup (and optional position set) succeeded, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel is invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = bytes([ch & 0xFF]) + struct.pack('<H', int(pos) & 0xFFFF)
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_WAKEUP, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_set_resistance(self, ch: int, resistance: float) -> bool:
+        """
+        Set the target resistance for an MCP42 channel (float value).
+
+        Returns:
+            bool: True if the resistance was set successfully, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel is invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = bytes([ch & 0xFF]) + struct.pack('<f', float(resistance))
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SET_RES, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_increment(self, ch: int, steps: int) -> bool:
+        """
+        Increment the MCP42 wiper by the specified number of steps.
+
+        Returns:
+            bool: True if the increment command succeeded, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel/steps are invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = bytes([ch & 0xFF, steps & 0xFF])
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_INC, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
+
+    def mcp42_decrement(self, ch: int, steps: int) -> bool:
+        """
+        Decrement the MCP42 wiper by the specified number of steps.
+
+        Returns:
+            bool: True if the decrement command succeeded, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel/steps are invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        data = bytes([ch & 0xFF, steps & 0xFF])
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_DEC, data=data)
+        self.uart.clear_buffer()
+        return r.packet_type != OW_ERROR
 
     def read_gpio_value(self) -> float:
         """
