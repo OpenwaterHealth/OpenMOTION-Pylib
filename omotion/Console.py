@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import os
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
@@ -948,9 +949,9 @@ class MOTIONConsole:
         self.uart.clear_buffer()
         return r.packet_type != OW_ERROR
 
-    def mcp42_set_both(self, pos: int) -> bool:
+    def set_ta_gain_resistor(self, res: int) -> bool:
         """
-        Set both MCP42 wipers to the same position.
+        Set both MCP42 wipers to achive desired resistance.
 
         Returns:
             bool: True if both wipers were set successfully, False otherwise.
@@ -961,10 +962,41 @@ class MOTIONConsole:
         """
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
+        
+        if res < 0 or res > 2500:
+            raise ValueError("Invalid resistance value must be 0-2500 ohms")
+        
+        pos = math.floor(res / (5000 / 1023)) * 2
+
         data = struct.pack('<H', int(pos) & 0xFFFF)
         r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_SET_BOTH, data=data)
         self.uart.clear_buffer()
         return r.packet_type != OW_ERROR
+    
+    def get_ta_gain_resistor(self) -> int:
+        """
+        Get MCP42 wiper position for the specified channel.
+
+        Returns:
+            int: Resistance value.
+
+        Raises:
+            ValueError: If the UART is not connected or the channel is invalid.
+            Exception: If an unexpected error occurs during communication.
+        """
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+        ch = 0
+        data = bytes([ch])
+        r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_MCP42_GET_WIPER, data=data)
+        self.uart.clear_buffer()
+        if r.packet_type == OW_ERROR or r.data_len != 2:
+            return 0
+        pos = struct.unpack('<H', r.data)[0]
+        
+        res = pos * (5000 / 1023) / 2
+
+        return int(res)
 
     def mcp42_set_wipers(self, pos0: int, pos1: int) -> bool:
         """
