@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_NOP, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.GitHubReleases import GitHubReleases
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
@@ -1255,6 +1256,57 @@ class MOTIONConsole:
             logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+    @staticmethod
+    def get_latest_version_info():
+        """
+        Query GitHub for the console firmware releases and return a JSON-serializable
+        structure containing the latest official release and a map of all releases.
+
+        Returned structure:
+        {
+            "latest": {"tag_name": str|None, "published_at": str|None},
+            "releases": {
+                "tag": {"published_at": str|None, "prerelease": bool},
+                ...
+            }
+        }
+
+        Uses the OpenwaterHealth/motion-console-fw repository.
+        """
+        gh = GitHubReleases("OpenwaterHealth", "motion-console-fw")
+
+        # Get latest official release (get_latest_release excludes prereleases by default)
+        try:
+            latest = gh.get_latest_release()
+        except Exception:
+            latest = None
+
+        # Get all releases including prereleases so we can label them
+        try:
+            all_releases = gh.get_all_releases(include_prerelease=True)
+        except Exception:
+            all_releases = []
+
+        releases_map = {}
+        for r in all_releases:
+            tag = r.get("tag_name")
+            if not tag:
+                continue
+            published = r.get("published_at")
+            # consider prerelease flag or tag names that start with 'pre-'
+            prerelease_flag = bool(r.get("prerelease")) or str(tag).lower().startswith("pre-")
+            releases_map[tag] = {"published_at": published, "prerelease": prerelease_flag}
+
+        result = {
+            "latest": {
+                "tag_name": latest.get("tag_name") if latest else None,
+                "published_at": latest.get("published_at") if latest else None,
+            },
+            "releases": releases_map,
+        }
+
+        return result
+    
     def disconnect(self):
         """
         Disconnect the UART and clean up.
