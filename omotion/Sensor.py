@@ -5,6 +5,7 @@ import queue
 from omotion.MotionComposite import MotionComposite
 from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS, OW_CAMERA_READ_SECURITY_UID
 from omotion.i2c_packet import I2C_Packet
+from omotion.GitHubReleases import GitHubReleases
 from omotion.utils import calculate_file_crc
 from omotion import _log_root
 
@@ -45,7 +46,7 @@ class MOTIONSensor:
                 return True
 
             if not self.uart.is_connected():
-                raise ValueError("Console Device not connected")
+                raise ValueError("Sensor Device not connected")
 
             logger.info("Send Ping to Device.")
             r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_PING)
@@ -1547,7 +1548,57 @@ class MOTIONSensor:
             logger.error("Unexpected error reading camera security UID: %s", e)
             raise
 
+    @staticmethod
+    def get_latest_version_info():
+        """
+        Query GitHub for the sensor firmware releases and return a JSON-serializable
+        structure containing the latest official release and a map of all releases.
 
+        Returned structure:
+        {
+            "latest": {"tag_name": str|None, "published_at": str|None},
+            "releases": {
+                "tag": {"published_at": str|None, "prerelease": bool},
+                ...
+            }
+        }
+
+        Uses the OpenwaterHealth/motion-sensor-fw repository.
+        """
+        gh = GitHubReleases("OpenwaterHealth", "motion-sensor-fw")
+
+        # Get latest official release (get_latest_release excludes prereleases by default)
+        try:
+            latest = gh.get_latest_release()
+        except Exception:
+            latest = None
+
+        # Get all releases including prereleases so we can label them
+        try:
+            all_releases = gh.get_all_releases(include_prerelease=True)
+        except Exception:
+            all_releases = []
+
+        releases_map = {}
+        for r in all_releases:
+            tag = r.get("tag_name")
+            if not tag:
+                continue
+            published = r.get("published_at")
+            # consider prerelease flag or tag names that start with 'pre-'
+            prerelease_flag = bool(r.get("prerelease")) or str(tag).lower().startswith("pre-")
+            releases_map[tag] = {"published_at": published, "prerelease": prerelease_flag}
+
+        result = {
+            "latest": {
+                "tag_name": latest.get("tag_name") if latest else None,
+                "published_at": latest.get("published_at") if latest else None,
+            },
+            "releases": releases_map,
+        }
+
+        return result
+    
     def disconnect(self):
         """
         Disconnect the UART and clean up.
