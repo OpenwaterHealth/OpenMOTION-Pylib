@@ -185,7 +185,7 @@ class MOTIONConsole:
                 logger.error("Console Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
+            self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
             self.uart.clear_buffer()
             # r.print_packet()
             return True
@@ -557,35 +557,35 @@ class MOTIONConsole:
 
     def set_rgb_led(self, rgb_state: int) -> int:
         """
-        Set the BGR LED state.
+        Set the RGB LED state.
 
         Args:
-            rgb_state (int): The desired BGR state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+            rgb_state (int): The desired RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
 
         Returns:
-            int: The current BGR state after setting.
+            int: The current RGB state after setting.
 
         Raises:
-            ValueError: If the controller is not connected or the BGR state is invalid.
+            ValueError: If the controller is not connected or the RGB state is invalid.
         """
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
 
         if rgb_state not in [0, 1, 2, 3]:
             raise ValueError(
-                "Invalid BGR state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
+                "Invalid RGB state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
             )
 
         try:
             if self.uart.demo_mode:
                 return rgb_state
 
-            logger.info("Setting BGR LED state.")
+            logger.info("Setting RGB LED state.")
 
-            # Send the BGR state as the reserved byte in the packet
+            # Send the RGB state as the reserved byte in the packet
             r = self.uart.send_packet(
                 id=None,
-                reserved=rgb_state & 0xFF,  # Send the BGR state as a single byte
+                reserved=rgb_state & 0xFF,  # Send the RGB state as a single byte
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_SET_IND,
             )
@@ -593,10 +593,10 @@ class MOTIONConsole:
             self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error setting BGR LED state")
+                logger.error("Error setting RGB LED state")
                 return -1
 
-            logger.info(f"Set BGR LED state to {rgb_state}")
+            logger.info(f"Set RGB LED state to {rgb_state}")
             return rgb_state
 
         except ValueError as v:
@@ -609,10 +609,10 @@ class MOTIONConsole:
 
     def get_rgb_led(self) -> int:
         """
-        Get the current BGR LED state.
+        Get the current RGB LED state.
 
         Returns:
-            int: The current BGR state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+            int: The current RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
 
         Raises:
             ValueError: If the controller is not connected.
@@ -624,7 +624,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return 1  # Default to RED in demo mode
 
-            logger.info("Getting current BGR LED state.")
+            logger.info("Getting current RGB LED state.")
 
             r = self.uart.send_packet(
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_IND
@@ -633,11 +633,11 @@ class MOTIONConsole:
             self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error getting BGR LED state")
+                logger.error("Error getting RGB LED state")
                 return -1
 
             rgb_state = r.reserved
-            logger.info(f"Current BGR LED state is {rgb_state}")
+            logger.info(f"Current RGB LED state is {rgb_state}")
             return rgb_state
 
         except ValueError as v:
