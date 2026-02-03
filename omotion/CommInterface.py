@@ -76,6 +76,9 @@ class CommInterface(USBInterfaceBase):
                     time.sleep(0.0005)
                     if resp:
                         data.extend(resp)
+                        # if data length is 512, trim the trailing zeros
+                        if len(data) == 512:
+                            data = data.rstrip(b'\x00')    
                         if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
                             break
                 except usb.core.USBError:
@@ -131,6 +134,11 @@ class CommInterface(USBInterfaceBase):
             try:
                 data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100)
                 if data:
+                    # if data length is 512, trim the trailing zeros
+                    # TODO: clean this up to pad until a proper end of packet
+                    if len(data) == 512:
+                        data = data.rstrip(b'\x00')
+                    
                     self.read_queue.put(bytes(data))
                     logger.debug(f"Read {len(data)} bytes.")
             except usb.core.USBError as e:
