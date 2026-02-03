@@ -69,10 +69,14 @@ class CommInterface(USBInterfaceBase):
 
         while time.monotonic() - start < timeout:
             try:
+                # assume that the whole data packet fits into 1 packet
                 resp = self.receive()
                 time.sleep(0.0005)
                 if resp:
                     data.extend(resp)
+                    # if data length is 512, trim the trailing zeros
+                    if len(data) == 512:
+                        data = data.rstrip(b'\x00')
                     if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
                         break
             except usb.core.USBError:
