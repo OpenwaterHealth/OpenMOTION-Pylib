@@ -29,6 +29,7 @@ class DFUResult:
 
 
 ProgressCallback = Callable[[DFUProgress], None]
+LineCallback = Callable[[str], None]
 
 
 class DFUProgrammer:
@@ -177,6 +178,7 @@ class DFUProgrammer:
         verbose: int = 0,
         normalize_dfu_suffix: bool = True,
         progress: ProgressCallback | None = None,
+        line_callback: LineCallback | None = None,
         echo_output: bool = False,
         echo_progress_lines: bool = False,
     ) -> DFUResult:
@@ -206,6 +208,7 @@ class DFUProgrammer:
         stdout = self._run_streaming(
             cmd,
             progress=progress,
+            line_callback=line_callback,
             echo_output=echo_output,
             echo_progress_lines=echo_progress_lines,
         )
@@ -230,6 +233,7 @@ class DFUProgrammer:
         cmd: list[str],
         *,
         progress: ProgressCallback | None,
+        line_callback: LineCallback | None,
         echo_output: bool,
         echo_progress_lines: bool,
     ) -> str:
@@ -264,7 +268,10 @@ class DFUProgrammer:
                 )
 
             is_progress_line = (phase in {"erase", "download"}) and (percent is not None)
-            if echo_output and (echo_progress_lines or not is_progress_line):
+            should_echo = (echo_progress_lines or not is_progress_line)
+            if should_echo and line_callback is not None:
+                line_callback(line.rstrip("\n"))
+            if echo_output and should_echo:
                 print(line.rstrip("\n"))
 
         proc.wait()
@@ -280,6 +287,7 @@ class DFUProgrammer:
         force: bool = True,
         verbose: int = 0,
         progress: ProgressCallback | None = None,
+        line_callback: LineCallback | None = None,
         echo_output: bool = False,
         echo_progress_lines: bool = False,
     ) -> DFUResult:
@@ -299,6 +307,7 @@ class DFUProgrammer:
         stdout = self._run_streaming(
             cmd,
             progress=progress,
+            line_callback=line_callback,
             echo_output=echo_output,
             echo_progress_lines=echo_progress_lines,
         )
