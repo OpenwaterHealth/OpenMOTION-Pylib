@@ -523,7 +523,7 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position, timeout=0.5)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling fpga")
