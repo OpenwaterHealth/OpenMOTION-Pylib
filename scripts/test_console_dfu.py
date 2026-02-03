@@ -35,7 +35,8 @@ def main():
         if interface.console_module.enter_dfu():
             print("Successful.")
     elif user_input == 'n':
-        pass
+        if interface.console_module.soft_reset():
+            print("Successful.")
     else:
         print("Invalid input. Please enter 'y' or 'n'.")
 
