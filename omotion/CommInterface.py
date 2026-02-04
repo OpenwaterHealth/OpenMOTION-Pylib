@@ -44,20 +44,18 @@ class CommInterface(USBInterfaceBase):
         if not self.ep_out:
             raise RuntimeError(f"{self.desc}: No OUT endpoint found")
 
-    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.030) -> UartPacket:        
+    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.030, max_retries=2) -> UartPacket:
         if id is None:
             self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
             id = self.packet_count
-            
+
         if data:
             if not isinstance(data, (bytes, bytearray)):
                 raise ValueError("Data must be bytes or bytearray")
             payload = data
-            payload_length = len(payload)
         else:
-            payload_length = 0
             payload = b''
-        
+
         uart_packet = UartPacket(
             id=id,
             packet_type=packetType,
@@ -66,43 +64,42 @@ class CommInterface(USBInterfaceBase):
             reserved=reserved,
             data=payload
         )
-        
+
         tx_bytes = uart_packet.to_bytes()
-        self.write(tx_bytes)
-        time.sleep(0.0005)
+        last_error = None
 
-        if not self.async_mode:
-            # Wait for response
-            start = time.monotonic()
-            data = bytearray()
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                logger.debug(f"{self.desc}: retry {attempt}/{max_retries}, resending packet id 0x{id:04X}")
+            self.write(tx_bytes)
+            time.sleep(0.0005)
 
-            while time.monotonic() - start < timeout:
-                try:
-                    resp = self.receive()
-                    time.sleep(0.0005)
-                    if resp:
-                        data.extend(resp)
-                        # if data length is 512, trim the trailing zeros
-                        if len(data) == 512:
-                            data = data.rstrip(b'\x00')    
-                        if data and data[-1] == OW_END_BYTE:  # OW_END_BYTE
-                            break
-                except usb.core.USBError:
-                    continue
+            if not self.async_mode:
+                start = time.monotonic()
+                data = bytearray()
+                while time.monotonic() - start < timeout:
+                    try:
+                        resp = self.receive()
+                        time.sleep(0.0005)
+                        if resp:
+                            data.extend(resp)
+                            if len(data) == 512:
+                                data = data.rstrip(b'\x00')
+                            if data and data[-1] == OW_END_BYTE:
+                                return UartPacket(buffer=data)
+                    except usb.core.USBError:
+                        continue
+                last_error = TimeoutError("No response")
+            else:
+                start_time = time.monotonic()
+                while time.monotonic() - start_time < timeout:
+                    if self.response_queue.empty():
+                        time.sleep(0.0005)
+                    else:
+                        return self.response_queue.get()
+                last_error = TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
 
-            if not data:
-                raise TimeoutError("No response")
-
-            return UartPacket(buffer=data)
-
-        else:
-           start_time = time.monotonic()
-           while time.monotonic() - start_time < timeout:
-               if self.response_queue.empty():
-                   time.sleep(0.0005)
-               else:
-                   return self.response_queue.get()
-        raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
+        raise last_error
 
 
             
