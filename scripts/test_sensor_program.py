@@ -124,6 +124,12 @@ def parse_cli() -> argparse.Namespace:
         action="store_true",
         help="Disable live status line.",
     )
+    parser.add_argument(
+        "--sensor",
+        choices=("left", "right"),
+        default=None,
+        help="Select which sensor to target (left or right). If omitted, the first present sensor is used.",
+    )
     return parser.parse_args()
 
 
@@ -138,19 +144,33 @@ def main() -> None:
         MOTIONInterface.acquire_motion_interface()
     )
 
-    if not left_sensor or not right_sensor:
-        print("❌  Sensor module not connected – cannot continue.")
+    # Ensure at least one sensor module is present.
+    if not (left_sensor or right_sensor):
+        print("❌  No sensor modules connected – cannot continue.")
         sys.exit(1)
 
-    print("✅  Senosr module is connected.\n")
     selected_sensor = None
-    if left_sensor:
-        print("Running Firmware update on LEFT sensor")
+    # If the user requested a specific side, honor it (fail if not present).
+    if args.sensor == "left":
+        if not left_sensor:
+            print("❌  LEFT sensor not connected – cannot continue.")
+            sys.exit(1)
+        print("Running firmware update on LEFT sensor")
         selected_sensor = interface.sensors["left"]
-    
-    if right_sensor:
+    elif args.sensor == "right":
+        if not right_sensor:
+            print("❌  RIGHT sensor not connected – cannot continue.")
+            sys.exit(1)
         print("Running firmware update on RIGHT sensor")
         selected_sensor = interface.sensors["right"]
+    else:
+        # Auto-select: prefer left if present, otherwise right.
+        if left_sensor:
+            print("Running firmware update on LEFT sensor (auto-selected)")
+            selected_sensor = interface.sensors["left"]
+        elif right_sensor:
+            print("Running firmware update on RIGHT sensor (auto-selected)")
+            selected_sensor = interface.sensors["right"]
 
     if selected_sensor is None:
         print("❌  Sensor module not connected – cannot continue.")
