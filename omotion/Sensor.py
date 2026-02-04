@@ -1341,7 +1341,7 @@ class MOTIONSensor:
                 # calculate expected size by camera count
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enable_camera: %s", e)
             raise
 
     def disable_camera(self, camera_position) -> bool:

@@ -1,6 +1,9 @@
 import logging
 from omotion.UartPacket import UartPacket
 from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_DATA, OW_CMD_ECHO
+
+# Max data_len we accept (sanity check to avoid runaway buffer)
+OW_MAX_PACKET_DATA_LEN = 4096
 from omotion.utils import util_crc16
 import usb.core
 import usb.util
@@ -21,7 +24,10 @@ class CommInterface(USBInterfaceBase):
         super().__init__(dev, interface_index, desc)
         self.read_thread = None
         self.stop_event = threading.Event()
-        self.read_queue = queue.Queue()
+        # Contiguous byte buffer: USB reader extends the end, packet parser chops from the front
+        self._read_buffer = bytearray()
+        self._buffer_lock = threading.Lock()
+        self._buffer_condition = threading.Condition(self._buffer_lock)
         self.packet_count = 0
         self.async_mode = async_mode
         if self.async_mode:
@@ -38,7 +44,7 @@ class CommInterface(USBInterfaceBase):
         if not self.ep_out:
             raise RuntimeError(f"{self.desc}: No OUT endpoint found")
 
-    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.010) -> UartPacket:        
+    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=0.030) -> UartPacket:        
         if id is None:
             self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
             id = self.packet_count
@@ -96,15 +102,13 @@ class CommInterface(USBInterfaceBase):
                    time.sleep(0.0005)
                else:
                    return self.response_queue.get()
+        raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
 
 
             
     def clear_buffer(self):
-        while not self.read_queue.empty():
-            try:
-                self.read_queue.get_nowait()
-            except queue.Empty:
-                break
+        with self._buffer_lock:
+            self._read_buffer.clear()
 
     def write(self, data, timeout=100):
         return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
@@ -134,27 +138,53 @@ class CommInterface(USBInterfaceBase):
             try:
                 data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100)
                 if data:
-                    # if data length is 512, trim the trailing zeros
-                    # TODO: clean this up to pad until a proper end of packet
-                    if len(data) == 512:
-                        data = data.rstrip(b'\x00')
-                    
-                    self.read_queue.put(bytes(data))
+                    data_bytes = bytes(data)
+                    if len(data_bytes) == 512:
+                        data_bytes = data_bytes.rstrip(b'\x00')
+                    with self._buffer_condition:
+                        self._read_buffer.extend(data_bytes)
+                        self._buffer_condition.notify()
                     logger.debug(f"Read {len(data)} bytes.")
             except usb.core.USBError as e:
                 if e.errno != 110:
                     logger.error(f"{self.desc} read error: {e}")
     def _process_responses(self):
         while not self.stop_event.is_set():
+            with self._buffer_condition:
+                if not self._read_buffer:
+                    self._buffer_condition.wait(timeout=0.1)
+                    continue
+                buf = self._read_buffer
+                # Align to start of packet: discard leading bytes until OW_START_BYTE
+                if buf[0] != OW_START_BYTE:
+                    try:
+                        start_idx = buf.index(OW_START_BYTE)
+                    except ValueError:
+                        start_idx = len(buf)
+                    del self._read_buffer[:start_idx]
+                    if start_idx == len(buf):
+                        continue
+                    buf = self._read_buffer
+                # Need at least 9 bytes to read data_len (bytes 7:9)
+                if len(buf) < 9:
+                    continue
+                data_len = int.from_bytes(buf[7:9], "big")
+                if data_len > OW_MAX_PACKET_DATA_LEN:
+                    del self._read_buffer[:1]
+                    continue
+                packet_len = 12 + data_len  # header(11) + data + crc(2) + end(1)
+                if len(buf) < packet_len:
+                    continue
+                if buf[packet_len - 1] != OW_END_BYTE:
+                    del self._read_buffer[:1]
+                    continue
+                packet_bytes = bytes(buf[:packet_len])
+                del self._read_buffer[:packet_len]
             try:
-                packet = self.read_queue.get()
-                for i in range(0, len(packet), 512):
-                    uart_packet = UartPacket(buffer=packet[i:i+512])
-                    #if the uart packet is a print packet, print the data
-                    if uart_packet.id == 0 and uart_packet.packet_type == OW_DATA and uart_packet.command == OW_CMD_ECHO:
-                        logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
-                    else:
-                        self.response_queue.put(uart_packet)
-
-            except queue.Empty:
-                time.sleep(0.0005)
+                uart_packet = UartPacket(buffer=packet_bytes)
+            except ValueError:
+                continue
+            if uart_packet.id == 0 and uart_packet.packet_type == OW_DATA and uart_packet.command == OW_CMD_ECHO:
+                logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
+            else:
+                self.response_queue.put(uart_packet)
