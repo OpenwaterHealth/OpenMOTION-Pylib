@@ -1027,7 +1027,7 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Motion Console not connected")
         
-            if voltage is not None and voltage >= 0 and voltage <= 5.0:
+            if voltage is not None and voltage >= -5.0 and voltage <= 5.0:
                 # Set TEC Voltage
                 logger.info("Setting TEC Voltage to %.2f V", voltage)
                 data = struct.pack('<f', float(voltage)) # Convert to 2-byte unsigned int
@@ -1037,7 +1037,7 @@ class MOTIONConsole:
                 logger.info("Getting TEC Voltage")
                 r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=0, data=None)
             else:   
-                raise ValueError("Invalid voltage value. Must be between 0 and 5.0 V")
+                raise ValueError("Invalid voltage value. Must be between -5.0 and 5.0 V")
             
             self.uart.clear_buffer()
             # r.print_packet()
