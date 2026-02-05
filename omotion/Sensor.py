@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS, OW_CAMERA_READ_SECURITY_UID
+from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CMD_SET_FAN_CTL, OW_CMD_GET_FAN_CTL, OW_CMD_DEBUG_FLAGS, DEBUG_FLAG_USB_PRINTF, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_TOGGLE_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS, OW_CAMERA_READ_SECURITY_UID
 from omotion.i2c_packet import I2C_Packet
 from omotion.GitHubReleases import GitHubReleases
 from omotion.utils import calculate_file_crc
@@ -265,6 +265,85 @@ class MOTIONSensor:
             logger.error("Unexpected error during fan status query: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
+    def set_debug_flags(self, flags: int) -> bool:
+        """
+        Set debug flags on the Sensor Module.
+
+        Args:
+            flags (int): 32-bit bitmask of debug flags.
+                Use DEBUG_FLAG_USB_PRINTF to enable firmware USB printf logging.
+
+        Returns:
+            bool: True if command succeeded, False otherwise.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: Debug flags set")
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return False
+
+            flags_bytes = struct.pack('<I', flags)
+            r = self.uart.comm.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_DEBUG_FLAGS,
+                reserved=1,
+                data=flags_bytes
+            )
+            self.uart.comm.clear_buffer()
+
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error setting debug flags")
+                return False
+
+            if r.data_len == 4:
+                set_flags = struct.unpack('<I', r.data)[0]
+                logger.info("Debug flags set to: 0x%08X", set_flags)
+            return True
+        except Exception as e:
+            logger.error("Unexpected error setting debug flags: %s", e)
+            return False
+
+    def get_debug_flags(self) -> int:
+        """
+        Get current debug flags from the Sensor Module.
+
+        Returns:
+            int: Current debug flags value, or 0 on error.
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: Debug flags query")
+                return 0
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                return 0
+
+            r = self.uart.comm.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_DEBUG_FLAGS,
+                reserved=0
+            )
+            self.uart.comm.clear_buffer()
+
+            if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
+                logger.error("Error getting debug flags")
+                return 0
+
+            if r.data_len == 4:
+                flags = struct.unpack('<I', r.data)[0]
+                logger.info("Debug flags: 0x%08X", flags)
+                return flags
+            return 0
+        except Exception as e:
+            logger.error("Unexpected error getting debug flags: %s", e)
+            return 0
+
     def get_hardware_id(self) -> str:
         """
         Retrieve the hardware ID of the Sensor Module.
@@ -523,7 +602,7 @@ class MOTIONSensor:
                 logger.error("Sensor Module not connected")
                 return False
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position, timeout=0.5)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling fpga")
@@ -1255,7 +1334,7 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
         
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, reserved=1, command=OW_TOGGLE_CAMERA_STREAM, addr=camera_position, timeout=0.3)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera")
@@ -1264,7 +1343,7 @@ class MOTIONSensor:
                 # calculate expected size by camera count
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enable_camera: %s", e)
             raise
 
     def disable_camera(self, camera_position) -> bool:
