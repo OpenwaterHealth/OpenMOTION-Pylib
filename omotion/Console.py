@@ -8,7 +8,44 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import (
+    # general packet commands
+    OW_CMD,
+    OW_CMD_DFU,
+    OW_CMD_ECHO,
+    OW_CMD_HWID,
+    OW_CMD_PING,
+    OW_CMD_RESET,
+    OW_CMD_TOGGLE_LED,
+    OW_CMD_VERSION,
+
+    # controller packet and commands
+    OW_CONTROLLER,
+    OW_CTRL_BOARDID,
+    OW_CTRL_GET_FAN,
+    OW_CTRL_GET_FSYNC,
+    OW_CTRL_GET_IND,
+    OW_CTRL_GET_LSYNC,
+    OW_CTRL_GET_TEMPS,
+    OW_CTRL_GET_TRIG,
+    OW_CTRL_I2C_RD,
+    OW_CTRL_I2C_SCAN,
+    OW_CTRL_I2C_WR,
+    OW_CTRL_PDUMON,
+    OW_CTRL_READ_ADC,
+    OW_CTRL_READ_GPIO,
+    OW_CTRL_SET_FAN,
+    OW_CTRL_SET_IND,
+    OW_CTRL_SET_TRIG,
+    OW_CTRL_START_TRIG,
+    OW_CTRL_STOP_TRIG,
+    OW_CTRL_TEC_DAC,
+    OW_CTRL_TEC_STATUS,
+    OW_CTRL_TECADC,
+
+    # errors
+    OW_ERROR,
+)
 from omotion.GitHubReleases import GitHubReleases
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
