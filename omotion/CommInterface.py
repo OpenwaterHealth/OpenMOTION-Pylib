@@ -3,7 +3,7 @@ from omotion.UartPacket import UartPacket
 from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_DATA, OW_CMD_ECHO
 
 # Max data_len we accept (sanity check to avoid runaway buffer)
-OW_MAX_PACKET_DATA_LEN = 4096
+OW_MAX_PACKET_DATA_LEN = 4096*2
 from omotion.utils import util_crc16
 import usb.core
 import usb.util
@@ -66,6 +66,10 @@ class CommInterface(USBInterfaceBase):
         )
 
         tx_bytes = uart_packet.to_bytes()
+        logger.info(
+            f"{self.desc}: TX id=0x{id:04X} type=0x{packetType:02X} cmd=0x{command:02X} "
+            f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
+        )
         last_error = None
 
         for attempt in range(max_retries + 1):
@@ -83,8 +87,6 @@ class CommInterface(USBInterfaceBase):
                         time.sleep(0.0005)
                         if resp:
                             data.extend(resp)
-                            if len(data) == 512:
-                                data = data.rstrip(b'\x00')
                             if data and data[-1] == OW_END_BYTE:
                                 return UartPacket(buffer=data)
                     except usb.core.USBError:
@@ -136,8 +138,6 @@ class CommInterface(USBInterfaceBase):
                 data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100)
                 if data:
                     data_bytes = bytes(data)
-                    if len(data_bytes) == 512:
-                        data_bytes = data_bytes.rstrip(b'\x00')
                     with self._buffer_condition:
                         self._read_buffer.extend(data_bytes)
                         self._buffer_condition.notify()
