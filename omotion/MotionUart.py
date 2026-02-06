@@ -229,9 +229,16 @@ class MOTIONUart(SignalWrapper):
                 while len(data) % self.align != 0:
                     data += bytes([OW_END_BYTE])
             self.serial.write(data)
+        except serial.SerialException as se:
+            logger.error("Serial error during transmission: %s", se)
+            self._set_state(ConnectionState.ERROR, reason=str(se))
+            self.disconnect()
+            raise
         except Exception as e:
             logger.error("Error during transmission: %s", e)
-            raise e
+            self._set_state(ConnectionState.ERROR, reason=str(e))
+            self.disconnect()
+            raise
 
     def read_packet(self, timeout=20) -> UartPacket:
         """
@@ -345,8 +352,15 @@ class MOTIONUart(SignalWrapper):
         except ValueError as ve:
             logger.error("Validation error in send_packet: %s", ve)
             raise
+        except serial.SerialException as se:
+            logger.error("Serial error in send_packet: %s", se)
+            self._set_state(ConnectionState.ERROR, reason=str(se))
+            self.disconnect()
+            raise
         except Exception as e:
             logger.error("Unexpected error in send_packet: %s", e)
+            self._set_state(ConnectionState.ERROR, reason=str(e))
+            self.disconnect()
             raise
 
     def clear_buffer(self):
