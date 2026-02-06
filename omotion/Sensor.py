@@ -1383,7 +1383,7 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=1)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_FSIN_EXTERNAL, reserved=1, timeout=0.6)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera FSIN")
