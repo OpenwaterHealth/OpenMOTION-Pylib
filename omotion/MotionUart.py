@@ -8,6 +8,8 @@ import asyncio
 import serial
 import serial.tools.list_ports
 
+from omotion.connection_state import ConnectionState
+
 from omotion.UartPacket import UartPacket
 from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
 from omotion.config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
@@ -36,6 +38,7 @@ class MOTIONUart(SignalWrapper):
         self.last_rx = time.monotonic()
         self.read_buffer = []
         self.serial = None
+        self.state = ConnectionState.DISCONNECTED
 
         if async_mode:
             self.loop = asyncio.get_event_loop()
@@ -46,8 +49,10 @@ class MOTIONUart(SignalWrapper):
         """Open the serial port."""
         if self.demo_mode:
             logger.info("Demo mode: Simulating UART connection.")
+            self._set_state(ConnectionState.CONNECTED, reason="demo_mode")
             self.signal_connect.emit(self.descriptor, "demo_mode")
             return
+        self._set_state(ConnectionState.CONNECTING)
         try:
             self.serial = serial.Serial(
                 port=self.port,
@@ -56,6 +61,7 @@ class MOTIONUart(SignalWrapper):
             )
 
             logger.info("Connected to UART on port %s.", self.port)
+            self._set_state(ConnectionState.CONNECTED)
             self.signal_connect.emit(self.descriptor, self.port)
 
             if self.asyncMode:
@@ -69,7 +75,9 @@ class MOTIONUart(SignalWrapper):
             self.serial = None
             self.running = False
             self.port = None
+            self._set_state(ConnectionState.ERROR, reason=str(se))
         except Exception as e:
+            self._set_state(ConnectionState.ERROR, reason=str(e))
             raise e
 
     def disconnect(self):
@@ -77,6 +85,7 @@ class MOTIONUart(SignalWrapper):
         self.running = False
         if self.demo_mode:
             logger.info("Demo mode: Simulating UART disconnection.")
+            self._set_state(ConnectionState.DISCONNECTED, reason="demo_mode")
             self.signal_disconnect.emit(self.descriptor, "demo_mode")
             return
 
@@ -86,6 +95,7 @@ class MOTIONUart(SignalWrapper):
             self.serial.close()
             self.serial = None
         logger.info("Disconnected from UART.")
+        self._set_state(ConnectionState.DISCONNECTED)
         self.signal_disconnect.emit(self.descriptor, self.port)
         self.port = None
 
@@ -98,17 +108,19 @@ class MOTIONUart(SignalWrapper):
         """
         if self.demo_mode:
             return True
-        return self.port is not None and self.serial is not None and self.serial.is_open
+        return self.state == ConnectionState.CONNECTED
 
     def check_usb_status(self):
         """Check if the USB device is connected or disconnected."""
         device = self.list_vcp_with_vid_pid()
         if device and not self.port:
             logger.debug("Device found; trying to connect.")
+            self._set_state(ConnectionState.DISCOVERED)
             self.port = device
             self.connect()
         elif not device and self.port:
             logger.debug("Device removed; disconnecting.")
+            self._set_state(ConnectionState.DISCONNECTED, reason="device_removed")
             self.running = False
             time.sleep(0.5)  # Short delay to avoid replug thrash
             self.disconnect()
@@ -162,7 +174,8 @@ class MOTIONUart(SignalWrapper):
             try:
                 if not self.serial or not self.serial.is_open:
                     logger.warning("Serial port closed during read loop.")
-                    self.running = False
+                    self._set_state(ConnectionState.ERROR, reason="serial_closed")
+                    self.disconnect()
                     break
                 if self.serial.in_waiting > 0:
                     time.sleep(0.002)  # Brief sleep to avoid a busy loop
@@ -196,10 +209,12 @@ class MOTIONUart(SignalWrapper):
                 else:
                     time.sleep(0.01)  # Brief sleep to avoid a busy loop
             except serial.SerialException as se:
-                self.running = False
+                self._set_state(ConnectionState.ERROR, reason=str(se))
+                self.disconnect()
             except Exception as e:
                 logger.error("Unexpected serial error on %s: %s", self.descriptor, e)
-                self.running = False
+                self._set_state(ConnectionState.ERROR, reason=str(e))
+                self.disconnect()
 
     def _tx(self, data: bytes):
         """Send data over UART."""
@@ -337,6 +352,16 @@ class MOTIONUart(SignalWrapper):
     def clear_buffer(self):
         """Clear the read buffer."""
         self.read_buffer = []
+
+    def _set_state(self, new_state: ConnectionState, reason: str | None = None):
+        if self.state == new_state:
+            return
+        prior = self.state
+        self.state = new_state
+        if reason:
+            logger.info("UART %s state %s -> %s (%s)", self.descriptor, prior.name, new_state.name, reason)
+        else:
+            logger.info("UART %s state %s -> %s", self.descriptor, prior.name, new_state.name)
 
     def run_coroutine(self, coro):
         """Run a coroutine using the internal event loop."""
