@@ -76,12 +76,25 @@ class DFUProgrammer:
     @classmethod
     def _locate_dfu_util(cls, repo_root: Path) -> Path:
         subdir = cls._platform_subdir()
-        dfu_dir = repo_root / "dfu-util" / subdir
         exe = "dfu-util.exe" if platform.system().lower().startswith("windows") else "dfu-util"
-        dfu_path = dfu_dir / exe
-        if not dfu_path.is_file():
-            raise FileNotFoundError(f"dfu-util binary not found: {dfu_path}")
-        return dfu_path
+        
+        # Try package-installed location first (for when installed via wheel)
+        package_dir = Path(__file__).resolve().parent
+        package_dfu_dir = package_dir / "dfu-util" / subdir
+        package_dfu_path = package_dfu_dir / exe
+        if package_dfu_path.is_file():
+            return package_dfu_path
+        
+        # Fall back to repo root location (for development)
+        repo_dfu_dir = repo_root / "dfu-util" / subdir
+        repo_dfu_path = repo_dfu_dir / exe
+        if repo_dfu_path.is_file():
+            return repo_dfu_path
+        
+        raise FileNotFoundError(
+            f"dfu-util binary not found in package ({package_dfu_path}) "
+            f"or repo ({repo_dfu_path})"
+        )
 
     def _dfu_util_base_args(self) -> list[str]:
         args = [str(self.dfu_util_path)]
