@@ -31,6 +31,7 @@ class MotionComposite(SignalWrapper):
         self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM", async_mode=True) # TODO: fix async mode in higher levels
         self.histo = StreamInterface(dev, 1, desc=f"{desc}-HISTO")
         self.imu = StreamInterface(dev, 2, desc=f"{desc}-IMU")
+        self.comm.on_disconnect = self._handle_interface_disconnect
 
         self.packet_count = 0
         self.read_buffer = bytearray()
@@ -83,6 +84,13 @@ class MotionComposite(SignalWrapper):
         Check if the device is connected.
         """
         return self.state == ConnectionState.CONNECTED
+
+    def _handle_interface_disconnect(self, source, error):
+        if not self.running:
+            return
+        logger.warning(f"{self.desc}: Interface {source} disconnected: {error}")
+        self._set_state(ConnectionState.ERROR, reason="usb_error")
+        self.disconnect()
 
     def _set_state(self, new_state: ConnectionState, reason: str | None = None):
         if self.state == new_state:
