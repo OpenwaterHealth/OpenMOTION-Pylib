@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_USR_CFG, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 from omotion.GitHubReleases import GitHubReleases
+from omotion.MotionConfig import MotionConfig
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
@@ -1306,6 +1307,145 @@ class MOTIONConsole:
         }
 
         return result
+
+    def read_config(self) -> Optional[MotionConfig]:
+        """
+        Read the user configuration from device flash.
+        
+        The configuration is stored as JSON with metadata (magic, version, sequence, CRC).
+        
+        Returns:
+            MotionConfig: Parsed configuration object, or None on error
+            
+        Raises:
+            ValueError: If the UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: returning empty config")
+                return MotionConfig()
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send read command (reserved=0 for READ)
+            logger.info("Reading user config from device...")
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_USR_CFG,
+                reserved=0  # 0 = READ
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error reading config from device")
+                return None
+
+            # Parse wire format response
+            try:
+                config = MotionConfig.from_wire_bytes(r.data)
+                logger.info(f"Read config: seq={config.header.seq}, json_len={config.header.json_len}")
+                return config
+            except Exception as e:
+                logger.error(f"Failed to parse config response: {e}")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error reading config: %s", e)
+            raise
+
+    def write_config(self, config: MotionConfig) -> Optional[MotionConfig]:
+        """
+        Write user configuration to device flash.
+        
+        Can pass either:
+        - Full wire format (header + JSON)
+        - Raw JSON bytes (device will parse as JSON)
+        
+        Args:
+            config: MotionConfig object to write
+            
+        Returns:
+            MotionConfig: Updated configuration from device (with new seq/crc), or None on error
+            
+        Raises:
+            ValueError: If the UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: simulating config write")
+                return config
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Convert config to wire format bytes
+            wire_data = config.to_wire_bytes()
+            
+            logger.info(f"Writing config to device: {len(wire_data)} bytes")
+            
+            # Send write command (reserved=1 for WRITE)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_USR_CFG,
+                reserved=1,  # 1 = WRITE
+                data=wire_data
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error writing config to device")
+                return None
+
+            # Response contains updated header (with new seq/crc)
+            try:
+                updated_config = MotionConfig.from_wire_bytes(r.data)
+                logger.info(f"Config written successfully: new seq={updated_config.header.seq}")
+                return updated_config
+            except Exception as e:
+                logger.error(f"Failed to parse write response: {e}")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error writing config: %s", e)
+            raise
+
+    def write_config_json(self, json_str: str) -> Optional[MotionConfig]:
+        """
+        Write user configuration from a JSON string.
+        
+        This is a convenience method that creates a MotionConfig from JSON
+        and writes it to the device.
+        
+        Args:
+            json_str: JSON string to write
+            
+        Returns:
+            MotionConfig: Updated configuration from device, or None on error
+            
+        Raises:
+            ValueError: If JSON is invalid or UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            config = MotionConfig()
+            config.set_json_str(json_str)
+            return self.write_config(config)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+            raise ValueError(f"Invalid JSON: {e}")
     
     def disconnect(self):
         """

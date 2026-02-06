@@ -20,6 +20,7 @@ from .MotionUart import MOTIONUart
 from .MotionSignal import MOTIONSignal
 from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
+from .MotionConfig import MotionConfig
 
 __all__ = ["__version__", "set_log_root"]
 
