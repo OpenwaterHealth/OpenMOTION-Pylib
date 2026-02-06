@@ -32,6 +32,7 @@ class CommInterface(USBInterfaceBase):
         self.async_mode = async_mode
         self.on_disconnect = None
         self._disconnect_notified = False
+        self._io_lock = threading.RLock()
         if self.async_mode:
             self.response_queue = queue.Queue()
             self.response_thread = threading.Thread(target=self._process_responses, daemon=True)
@@ -77,22 +78,24 @@ class CommInterface(USBInterfaceBase):
         for attempt in range(max_retries + 1):
             if attempt > 0:
                 logger.debug(f"{self.desc}: retry {attempt}/{max_retries}, resending packet id 0x{id:04X}")
-            self.write(tx_bytes)
-            time.sleep(0.0005)
+            with self._io_lock:
+                self.write(tx_bytes)
+                time.sleep(0.0005)
 
             if not self.async_mode:
                 start = time.monotonic()
                 data = bytearray()
-                while time.monotonic() - start < timeout:
-                    try:
-                        resp = self.receive()
-                        time.sleep(0.0005)
-                        if resp:
-                            data.extend(resp)
-                            if data and data[-1] == OW_END_BYTE:
-                                return UartPacket(buffer=data)
-                    except usb.core.USBError:
-                        continue
+                with self._io_lock:
+                    while time.monotonic() - start < timeout:
+                        try:
+                            resp = self.receive()
+                            time.sleep(0.0005)
+                            if resp:
+                                data.extend(resp)
+                                if data and data[-1] == OW_END_BYTE:
+                                    return UartPacket(buffer=data)
+                        except usb.core.USBError:
+                            continue
                 last_error = TimeoutError("No response")
             else:
                 start_time = time.monotonic()
@@ -112,12 +115,14 @@ class CommInterface(USBInterfaceBase):
             self._read_buffer.clear()
 
     def write(self, data, timeout=100):
-        return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+        with self._io_lock:
+            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
 
     def receive(self, length=512, timeout=100):
-        data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
-        logger.debug(f"Received {len(data)} bytes.")
-        return data
+        with self._io_lock:
+            data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
+            logger.debug(f"Received {len(data)} bytes.")
+            return data
     
     def start_read_thread(self):
         if self.read_thread and self.read_thread.is_alive():
