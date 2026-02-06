@@ -38,6 +38,7 @@ class MOTIONUart(SignalWrapper):
         self.last_rx = time.monotonic()
         self.read_buffer = []
         self.serial = None
+        self._io_lock = threading.RLock()
         self.state = ConnectionState.DISCONNECTED
 
         if async_mode:
@@ -225,10 +226,11 @@ class MOTIONUart(SignalWrapper):
             logger.info("Demo mode: Simulating data transmission: %s", data)
             return
         try:
-            if self.align > 0:
-                while len(data) % self.align != 0:
-                    data += bytes([OW_END_BYTE])
-            self.serial.write(data)
+            with self._io_lock:
+                if self.align > 0:
+                    while len(data) % self.align != 0:
+                        data += bytes([OW_END_BYTE])
+                self.serial.write(data)
         except serial.SerialException as se:
             logger.error("Serial error during transmission: %s", se)
             self._set_state(ConnectionState.ERROR, reason=str(se))
@@ -247,17 +249,18 @@ class MOTIONUart(SignalWrapper):
         Returns:
             UartPacket: Parsed packet or an error packet if parsing fails.
         """
-        start_time = time.monotonic()
-        raw_data = b""
-        count = 0
+        with self._io_lock:
+            start_time = time.monotonic()
+            raw_data = b""
+            count = 0
 
-        while timeout == -1 or time.monotonic() - start_time < timeout:
-            time.sleep(0.05)
-            raw_data += self.serial.read_all()
-            if raw_data:
-                count += 1
-                if count > 1:
-                    break
+            while timeout == -1 or time.monotonic() - start_time < timeout:
+                time.sleep(0.05)
+                raw_data += self.serial.read_all()
+                if raw_data:
+                    count += 1
+                    if count > 1:
+                        break
 
         try:
             if not raw_data:
@@ -320,34 +323,35 @@ class MOTIONUart(SignalWrapper):
             packet.append(OW_END_BYTE)
 
             # print("Sending packet: ", packet.hex())
-            self._tx(packet)
-            time.sleep(0.0005)
-            
-            if not self.asyncMode:
-                ret_packet = self.read_packet(timeout=timeout)
-                time.sleep(0.0005)            
-                return ret_packet
-            else:
-                response_queue = queue.Queue()
-                with self.response_lock:
-                    self.response_queues[id] = response_queue
-
-                try:
-                    # Wait for a response that matches the packet ID.
-                    response = response_queue.get(timeout=timeout)
-                    # Optionally, check that the response has the expected type and command.
-                    if response.packet_type == OW_RESP and response.command == command:
-                        return response
-                    else:
-                        logger.error("Received unexpected response: %s", response)
-                        return response
-                except queue.Empty:
-                    logger.error("Timeout waiting for response to packet ID %d", id)
-                    return None
-                finally:
+            with self._io_lock:
+                self._tx(packet)
+                time.sleep(0.0005)
+                
+                if not self.asyncMode:
+                    ret_packet = self.read_packet(timeout=timeout)
+                    time.sleep(0.0005)            
+                    return ret_packet
+                else:
+                    response_queue = queue.Queue()
                     with self.response_lock:
-                        # Clean up the queue entry regardless of outcome.
-                        self.response_queues.pop(id, None)
+                        self.response_queues[id] = response_queue
+
+                    try:
+                        # Wait for a response that matches the packet ID.
+                        response = response_queue.get(timeout=timeout)
+                        # Optionally, check that the response has the expected type and command.
+                        if response.packet_type == OW_RESP and response.command == command:
+                            return response
+                        else:
+                            logger.error("Received unexpected response: %s", response)
+                            return response
+                    except queue.Empty:
+                        logger.error("Timeout waiting for response to packet ID %d", id)
+                        return None
+                    finally:
+                        with self.response_lock:
+                            # Clean up the queue entry regardless of outcome.
+                            self.response_queues.pop(id, None)
 
         except ValueError as ve:
             logger.error("Validation error in send_packet: %s", ve)
