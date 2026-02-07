@@ -30,6 +30,9 @@ class CommInterface(USBInterfaceBase):
         self._buffer_condition = threading.Condition(self._buffer_lock)
         self.packet_count = 0
         self.async_mode = async_mode
+        self.on_disconnect = None
+        self._disconnect_notified = False
+        self._io_lock = threading.RLock()
         if self.async_mode:
             self.response_queue = queue.Queue()
             self.response_thread = threading.Thread(target=self._process_responses, daemon=True)
@@ -75,22 +78,24 @@ class CommInterface(USBInterfaceBase):
         for attempt in range(max_retries + 1):
             if attempt > 0:
                 logger.debug(f"{self.desc}: retry {attempt}/{max_retries}, resending packet id 0x{id:04X}")
-            self.write(tx_bytes)
-            time.sleep(0.0005)
+            with self._io_lock:
+                self.write(tx_bytes)
+                time.sleep(0.0005)
 
             if not self.async_mode:
                 start = time.monotonic()
                 data = bytearray()
-                while time.monotonic() - start < timeout:
-                    try:
-                        resp = self.receive()
-                        time.sleep(0.0005)
-                        if resp:
-                            data.extend(resp)
-                            if data and data[-1] == OW_END_BYTE:
-                                return UartPacket(buffer=data)
-                    except usb.core.USBError:
-                        continue
+                with self._io_lock:
+                    while time.monotonic() - start < timeout:
+                        try:
+                            resp = self.receive()
+                            time.sleep(0.0005)
+                            if resp:
+                                data.extend(resp)
+                                if data and data[-1] == OW_END_BYTE:
+                                    return UartPacket(buffer=data)
+                        except usb.core.USBError:
+                            continue
                 last_error = TimeoutError("No response")
             else:
                 start_time = time.monotonic()
@@ -110,12 +115,14 @@ class CommInterface(USBInterfaceBase):
             self._read_buffer.clear()
 
     def write(self, data, timeout=100):
-        return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+        with self._io_lock:
+            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
 
     def receive(self, length=512, timeout=100):
-        data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
-        logger.debug(f"Received {len(data)} bytes.")
-        return data
+        with self._io_lock:
+            data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
+            logger.debug(f"Received {len(data)} bytes.")
+            return data
     
     def start_read_thread(self):
         if self.read_thread and self.read_thread.is_alive():
@@ -131,6 +138,18 @@ class CommInterface(USBInterfaceBase):
         if self.read_thread:
             self.read_thread.join()
         logger.info(f"{self.desc}: Read thread stopped")
+
+    def _trigger_disconnect(self, error):
+        if self._disconnect_notified:
+            return
+        self._disconnect_notified = True
+        logger.error(f"{self.desc}: triggering disconnect due to USB error: {error}")
+        self.stop_event.set()
+        if callable(self.on_disconnect):
+            try:
+                self.on_disconnect(self.desc, error)
+            except Exception as cb_error:
+                logger.error(f"{self.desc}: disconnect callback failed: {cb_error}")
         
     def _read_loop(self):
         while not self.stop_event.is_set():
@@ -143,8 +162,23 @@ class CommInterface(USBInterfaceBase):
                         self._buffer_condition.notify()
                     logger.debug(f"Read {len(data)} bytes.")
             except usb.core.USBError as e:
-                if e.errno != 110:
-                    logger.error(f"{self.desc} read error: {e}")
+                if e.errno == 110:
+                    pass
+                elif e.errno == 10060:
+                    pass
+                elif e.errno == 32:
+                    logger.error(f"{self.desc} read error: DISCONNECT{e}")
+                    self._trigger_disconnect(e)
+                    break
+     
+                elif e.errno == 19 or e.errno == 5:
+                    logger.error(f"{self.desc} read error: IO Error{e}")
+                    self._trigger_disconnect(e)
+                    break
+                else:
+                    logger.error(f"{self.desc} read error: Unknown Error{e}")
+                    self._trigger_disconnect(e)
+                    break
     def _process_responses(self):
         while not self.stop_event.is_set():
             with self._buffer_condition:

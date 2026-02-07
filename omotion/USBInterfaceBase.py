@@ -27,6 +27,7 @@ class USBInterfaceBase:
 
     def release(self):
         try:
+            print(f"{self.desc}: Releasing interface {self.interface_index}")
             usb.util.release_interface(self.dev, self.interface_index)
             self.ep_in = None
             
