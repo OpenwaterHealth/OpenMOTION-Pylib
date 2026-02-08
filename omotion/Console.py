@@ -82,7 +82,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during ping: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_version(self) -> str:
@@ -118,7 +118,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_version: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def echo(self, echo_data = None) -> tuple[bytes, int]:
@@ -195,7 +195,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during toggle_led: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_hardware_id(self) -> str:
@@ -229,7 +229,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_hardware_id: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
 
@@ -264,7 +264,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enter_dfu: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def soft_reset(self) -> bool:
@@ -298,7 +298,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during soft_reset: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def scan_i2c_mux_channel(self, mux_index: int, channel: int) -> list[int]:
@@ -506,7 +506,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during set_fan_speed: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_fan_speed(self) -> int:
@@ -552,7 +552,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_fan_speed: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def set_rgb_led(self, rgb_state: int) -> int:
@@ -604,7 +604,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during set_rgb_led: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_rgb_led(self) -> int:
@@ -645,7 +645,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_rgb_led: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
 
@@ -701,7 +701,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during set_trigger_json: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_trigger_json(self) -> dict:
@@ -735,7 +735,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_trigger_json: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def start_trigger(self) -> bool:
@@ -769,7 +769,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during start_trigger: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def stop_trigger(self) -> bool:
@@ -803,7 +803,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during stop_trigger: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_fsync_pulsecount(self) -> int:
@@ -844,7 +844,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_fsync_pulsecount: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_lsync_pulsecount(self) -> int:
@@ -884,7 +884,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_lsync_pulsecount: %s", e)
 
 
     def read_gpio_value(self) -> float:
@@ -924,7 +924,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during read_gpio_value: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
             raise  # Re-raise the exception for the caller to handle
@@ -966,7 +966,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during read_adc_value: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_temperatures(self) -> tuple[float, float, float]:
@@ -1054,7 +1054,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during tec_voltage: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def tec_adc(self, channel: int) -> float:
@@ -1105,7 +1105,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during tec_adc: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def tec_status(self) -> Tuple[float, float, float, float, bool]:
@@ -1165,7 +1165,7 @@ class MOTIONConsole:
             )
             return (f"{vout:.6f}", f"{temp_set:.6f}", f"{tec_curr:.6f}", f"{tec_volt:.6f}", tec_good)
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during tec_status: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def read_board_id(self) -> int:
@@ -1205,7 +1205,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during read_board_id: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def read_pdu_mon(self) -> Optional[PDUMon]:
@@ -1253,7 +1253,7 @@ class MOTIONConsole:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during read_pdu_mon: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     @staticmethod

@@ -65,7 +65,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during ping: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_version(self) -> str:
@@ -101,7 +101,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_version: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def echo(self, echo_data = None) -> tuple[bytes, int]:
@@ -178,7 +178,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during toggle_led: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def set_fan_control(self, fan_on: bool) -> bool:
@@ -375,7 +375,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_hardware_id: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def imu_get_temperature(self) -> float:
@@ -418,7 +418,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during imu_get_temperature: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def imu_get_accelerometer(self) -> list[int]:
@@ -1282,7 +1282,7 @@ class MOTIONSensor:
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during soft_reset: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def enable_aggregator_fsin(self) -> bool:
@@ -1302,7 +1302,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enable_aggregator_fsin: %s", e)
             raise
     def disable_aggregator_fsin(self) -> bool:
         try:
@@ -1321,7 +1321,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during disable_aggregator_fsin: %s", e)
             raise
 
     def enable_camera(self, camera_position) -> bool:
@@ -1363,7 +1363,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during disable_camera: %s", e)
             raise
 
     def enable_camera_fsin_ext(self) -> bool:
@@ -1391,7 +1391,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enable_camera_fsin_ext: %s", e)
             raise
     
     def disable_camera_fsin_ext(self) -> bool:
@@ -1419,7 +1419,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during disable_camera_fsin_ext: %s", e)
             raise
 
     def camera_i2c_write(self, packet, packet_id=None):
@@ -1453,7 +1453,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during camera_i2c_write: %s", e)
             raise
 
     def camera_set_gain(self,gain,packet_id=None):
@@ -1523,7 +1523,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during enable_camera_power: %s", e)
             raise
 
     def disable_camera_power(self,camera_mask: int) -> bool:
@@ -1554,7 +1554,7 @@ class MOTIONSensor:
             else:
                 return True
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during disable_camera_power: %s", e)
             raise
 
     def get_camera_power_status(self) -> list:
@@ -1587,7 +1587,7 @@ class MOTIONSensor:
                         power_status[i] = bool(power_mask & (1 << i))
                 return power_status
         except Exception as e:
-            logger.error("Unexpected error during process: %s", e)
+            logger.error("Unexpected error during get_camera_power_status: %s", e)
             raise
 
     def read_camera_security_uid(self, camera_id: int) -> bytes:
