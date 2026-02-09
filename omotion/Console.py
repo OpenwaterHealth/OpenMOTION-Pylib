@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_USR_CFG, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
 from omotion.GitHubReleases import GitHubReleases
+from omotion.MotionConfig import MotionConfig
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
@@ -185,7 +186,7 @@ class MOTIONConsole:
                 logger.error("Console Module not connected")
                 return False
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
+            self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_TOGGLE_LED)
             self.uart.clear_buffer()
             # r.print_packet()
             return True
@@ -557,35 +558,35 @@ class MOTIONConsole:
 
     def set_rgb_led(self, rgb_state: int) -> int:
         """
-        Set the BGR LED state.
+        Set the RGB LED state.
 
         Args:
-            rgb_state (int): The desired BGR state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+            rgb_state (int): The desired RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
 
         Returns:
-            int: The current BGR state after setting.
+            int: The current RGB state after setting.
 
         Raises:
-            ValueError: If the controller is not connected or the BGR state is invalid.
+            ValueError: If the controller is not connected or the RGB state is invalid.
         """
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
 
         if rgb_state not in [0, 1, 2, 3]:
             raise ValueError(
-                "Invalid BGR state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
+                "Invalid RGB state. Must be 0 (OFF), 1 (IND1), 2 (IND2), or 3 (IND3)"
             )
 
         try:
             if self.uart.demo_mode:
                 return rgb_state
 
-            logger.info("Setting BGR LED state.")
+            logger.info("Setting RGB LED state.")
 
-            # Send the BGR state as the reserved byte in the packet
+            # Send the RGB state as the reserved byte in the packet
             r = self.uart.send_packet(
                 id=None,
-                reserved=rgb_state & 0xFF,  # Send the BGR state as a single byte
+                reserved=rgb_state & 0xFF,  # Send the RGB state as a single byte
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_SET_IND,
             )
@@ -593,10 +594,10 @@ class MOTIONConsole:
             self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error setting BGR LED state")
+                logger.error("Error setting RGB LED state")
                 return -1
 
-            logger.info(f"Set BGR LED state to {rgb_state}")
+            logger.info(f"Set RGB LED state to {rgb_state}")
             return rgb_state
 
         except ValueError as v:
@@ -609,10 +610,10 @@ class MOTIONConsole:
 
     def get_rgb_led(self) -> int:
         """
-        Get the current BGR LED state.
+        Get the current RGB LED state.
 
         Returns:
-            int: The current BGR state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
+            int: The current RGB state (0 = OFF, 1 = IND1, 2 = IND2, 3 = IND3).
 
         Raises:
             ValueError: If the controller is not connected.
@@ -624,7 +625,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return 1  # Default to RED in demo mode
 
-            logger.info("Getting current BGR LED state.")
+            logger.info("Getting current RGB LED state.")
 
             r = self.uart.send_packet(
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_IND
@@ -633,11 +634,11 @@ class MOTIONConsole:
             self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error getting BGR LED state")
+                logger.error("Error getting RGB LED state")
                 return -1
 
             rgb_state = r.reserved
-            logger.info(f"Current BGR LED state is {rgb_state}")
+            logger.info(f"Current RGB LED state is {rgb_state}")
             return rgb_state
 
         except ValueError as v:
@@ -1027,7 +1028,7 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Motion Console not connected")
         
-            if voltage is not None and voltage >= 0 and voltage <= 5.0:
+            if voltage is not None and voltage >= -5.0 and voltage <= 5.0:
                 # Set TEC Voltage
                 logger.info("Setting TEC Voltage to %.2f V", voltage)
                 data = struct.pack('<f', float(voltage)) # Convert to 2-byte unsigned int
@@ -1037,7 +1038,7 @@ class MOTIONConsole:
                 logger.info("Getting TEC Voltage")
                 r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=0, data=None)
             else:   
-                raise ValueError("Invalid voltage value. Must be between 0 and 5.0 V")
+                raise ValueError("Invalid voltage value. Must be between -5.0 and 5.0 V")
             
             self.uart.clear_buffer()
             # r.print_packet()
@@ -1306,6 +1307,145 @@ class MOTIONConsole:
         }
 
         return result
+
+    def read_config(self) -> Optional[MotionConfig]:
+        """
+        Read the user configuration from device flash.
+        
+        The configuration is stored as JSON with metadata (magic, version, sequence, CRC).
+        
+        Returns:
+            MotionConfig: Parsed configuration object, or None on error
+            
+        Raises:
+            ValueError: If the UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: returning empty config")
+                return MotionConfig()
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send read command (reserved=0 for READ)
+            logger.info("Reading user config from device...")
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_USR_CFG,
+                reserved=0  # 0 = READ
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error reading config from device")
+                return None
+
+            # Parse wire format response
+            try:
+                config = MotionConfig.from_wire_bytes(r.data)
+                logger.info(f"Read config: seq={config.header.seq}, json_len={config.header.json_len}")
+                return config
+            except Exception as e:
+                logger.error(f"Failed to parse config response: {e}")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error reading config: %s", e)
+            raise
+
+    def write_config(self, config: MotionConfig) -> Optional[MotionConfig]:
+        """
+        Write user configuration to device flash.
+        
+        Can pass either:
+        - Full wire format (header + JSON)
+        - Raw JSON bytes (device will parse as JSON)
+        
+        Args:
+            config: MotionConfig object to write
+            
+        Returns:
+            MotionConfig: Updated configuration from device (with new seq/crc), or None on error
+            
+        Raises:
+            ValueError: If the UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            if self.uart.demo_mode:
+                logger.info("Demo mode: simulating config write")
+                return config
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Convert config to wire format bytes
+            wire_data = config.to_wire_bytes()
+            
+            logger.info(f"Writing config to device: {len(wire_data)} bytes")
+            
+            # Send write command (reserved=1 for WRITE)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CMD,
+                command=OW_CMD_USR_CFG,
+                reserved=1,  # 1 = WRITE
+                data=wire_data
+            )
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error writing config to device")
+                return None
+
+            # Response contains updated header (with new seq/crc)
+            try:
+                updated_config = MotionConfig.from_wire_bytes(r.data)
+                logger.info(f"Config written successfully: new seq={updated_config.header.seq}")
+                return updated_config
+            except Exception as e:
+                logger.error(f"Failed to parse write response: {e}")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error writing config: %s", e)
+            raise
+
+    def write_config_json(self, json_str: str) -> Optional[MotionConfig]:
+        """
+        Write user configuration from a JSON string.
+        
+        This is a convenience method that creates a MotionConfig from JSON
+        and writes it to the device.
+        
+        Args:
+            json_str: JSON string to write
+            
+        Returns:
+            MotionConfig: Updated configuration from device, or None on error
+            
+        Raises:
+            ValueError: If JSON is invalid or UART is not connected
+            Exception: If an error occurs during communication
+        """
+        try:
+            config = MotionConfig()
+            config.set_json_str(json_str)
+            return self.write_config(config)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+            raise ValueError(f"Invalid JSON: {e}")
     
     def disconnect(self):
         """

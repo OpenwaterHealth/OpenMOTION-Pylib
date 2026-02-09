@@ -3,7 +3,7 @@ import struct
 import time
 import queue
 from omotion.MotionComposite import MotionComposite
-from omotion.config import OW_BAD_CRC, OW_BAD_PARSE, OW_CAMERA, OW_CAMERA_GET_HISTOGRAM, OW_CAMERA_SET_TESTPATTERN, OW_CAMERA_SINGLE_HISTOGRAM, OW_CAMERA_SET_CONFIG, OW_CMD, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_VERSION, OW_CTRL_FAN_CTL, OW_CMD_DEBUG_FLAGS, OW_CONTROLLER, DEBUG_FLAG_USB_PRINTF, OW_ERROR, OW_FPGA, OW_FPGA_ACTIVATE, OW_FPGA_BITSTREAM, OW_FPGA_ENTER_SRAM_PROG, OW_FPGA_ERASE_SRAM, OW_FPGA_EXIT_SRAM_PROG, OW_FPGA_ID, OW_FPGA_OFF, OW_FPGA_ON, OW_FPGA_PROG_SRAM, OW_FPGA_RESET, OW_FPGA_STATUS, OW_FPGA_USERCODE, OW_IMU, OW_IMU_GET_ACCEL, OW_IMU_GET_GYRO, OW_IMU_GET_TEMP, OW_CAMERA_FSIN, OW_CAMERA_STREAM, OW_CAMERA_STATUS, OW_CAMERA_FSIN_EXTERNAL, OW_UNKNOWN, OW_CAMERA_SWITCH, OW_I2C_PASSTHRU, OW_CAMERA_POWER_OFF, OW_CAMERA_POWER_ON, OW_CAMERA_POWER_STATUS, OW_CAMERA_READ_SECURITY_UID
+
 from omotion.i2c_packet import I2C_Packet
 from omotion.GitHubReleases import GitHubReleases
 from omotion.utils import calculate_file_crc
@@ -1283,6 +1283,40 @@ class MOTIONSensor:
 
         except Exception as e:
             logger.error("Unexpected error during soft_reset: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def enter_dfu(self) -> bool:
+        """
+        Perform a soft reset to enter DFU mode on Sensor device.
+
+        Returns:
+            bool: True if the reset was successful, False otherwise.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while resetting the device.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                raise ValueError("Sensor Device not connected")
+
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_DFU)
+            self.uart.comm.clear_buffer()
+            # r.print_packet()
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting DFU mode for device")
+                return False
+            else:
+                return True
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during process: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def enable_aggregator_fsin(self) -> bool:

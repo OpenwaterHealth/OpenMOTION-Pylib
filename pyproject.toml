@@ -47,6 +47,16 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 "*" = ["**/*.bin", "**/*.json", "**/*.cfg", "**/*.txt", "**/*.dll"]
+"omotion" = [
+    "dfu-util/**/*",
+    "dfu-util/**/dfu-util",
+    "dfu-util/**/dfu-util.exe",
+    "dfu-util/**/*.exe",
+    "dfu-util/**/*.dll",
+    "dfu-util/**/*.dylib",
+    "dfu-util/**/*.a",
+    "dfu-util/**/*.la",
+]
 
 [tool.setuptools_scm]
 # Uses tags like v1.2.3 or 1.2.3  ->  1.2.3
