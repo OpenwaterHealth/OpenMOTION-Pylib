@@ -1,4 +1,5 @@
 import logging
+import omotion.config as config
 from omotion.UartPacket import UartPacket
 from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_DATA, OW_CMD_ECHO
 
@@ -15,6 +16,25 @@ from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
 logger = logging.getLogger(f"{_log_root}.CommInterface" if _log_root else "CommInterface")
+
+_PACKET_TYPE_NAMES = {
+    value: name
+    for name, value in vars(config).items()
+    if name.startswith("OW_") and name.isupper() and isinstance(value, int)
+}
+_CMD_NAMES = {
+    "OW_CMD": {value: name for name, value in vars(config).items() if name.startswith("OW_CMD_")},
+    "OW_CONTROLLER": {value: name for name, value in vars(config).items() if name.startswith("OW_CTRL_")},
+    "OW_FPGA": {value: name for name, value in vars(config).items() if name.startswith("OW_FPGA_")},
+    "OW_CAMERA": {value: name for name, value in vars(config).items() if name.startswith("OW_CAMERA_")},
+    "OW_IMU": {value: name for name, value in vars(config).items() if name.startswith("OW_IMU_")},
+}
+
+def _format_named(value: int, name_map: dict[int, str], width: int = 2) -> str:
+    name = name_map.get(value)
+    if name:
+        return f"{name}(0x{value:0{width}X})"
+    return f"0x{value:0{width}X}"
 
 # =========================================
 # Comm Interface (IN + OUT + threads)
@@ -69,8 +89,12 @@ class CommInterface(USBInterfaceBase):
         )
 
         tx_bytes = uart_packet.to_bytes()
+        packet_type_name = _PACKET_TYPE_NAMES.get(packetType)
+        cmd_names = _CMD_NAMES.get(packet_type_name, {})
         logger.info(
-            f"{self.desc}: TX id=0x{id:04X} type=0x{packetType:02X} cmd=0x{command:02X} "
+            f"{self.desc}: TX id=0x{id:04X} "
+            f"type={_format_named(packetType, _PACKET_TYPE_NAMES)} "
+            f"cmd={_format_named(command, cmd_names)} "
             f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
         )
         last_error = None
