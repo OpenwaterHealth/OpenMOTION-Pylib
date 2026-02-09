@@ -4,7 +4,7 @@ from omotion.Interface import MOTIONInterface
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
-# python scripts\test_console_if.py
+# python scripts\test_get_console_fw.py
 
 def main():
 
