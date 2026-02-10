@@ -108,8 +108,17 @@ class MOTIONConsole:
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
             self.uart.clear_buffer()
             # r.print_packet()
+            # Older firmwares returned 3 bytes: major, minor, patch.
+            # Newer firmware returns a C string in the payload (FW_VERSION_STRING).
             if r.data_len == 3:
                 ver = f'v{r.data[0]}.{r.data[1]}.{r.data[2]}'
+            elif r.data_len and r.data:
+                try:
+                    # Decode only the valid length, strip trailing NULs and whitespace
+                    ver_str = r.data[:r.data_len].decode('utf-8', errors='ignore').rstrip('\x00').strip()
+                    ver = ver_str if ver_str else 'v0.0.0'
+                except Exception:
+                    ver = 'v0.0.0'
             else:
                 ver = 'v0.0.0'
             logger.info(ver)
