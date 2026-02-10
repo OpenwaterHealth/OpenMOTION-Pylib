@@ -3,10 +3,8 @@ name: Build package (release + manual)
 on:
   push:
     tags:
-      - "*.*.*"
-      - "pre-*"
-  release:
-    types: [published]
+      - "[0-9]*.[0-9]*.[0-9]*"
+      - "pre-[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
     inputs:
       pretend_version:
@@ -34,6 +32,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Set version for tag builds
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          BASE_VERSION="$TAG_NAME"
+
+          if [[ "$BASE_VERSION" == pre-* ]]; then
+            BASE_VERSION="${BASE_VERSION#pre-}"
+            BASE_VERSION="${BASE_VERSION#v}"
+            echo "SETUPTOOLS_SCM_PRETEND_VERSION=${BASE_VERSION}rc0" >> $GITHUB_ENV
+          else
+            BASE_VERSION="${BASE_VERSION#v}"
+            echo "SETUPTOOLS_SCM_PRETEND_VERSION=${BASE_VERSION}" >> $GITHUB_ENV
+          fi
 
       # ----- Manual test helpers (only on workflow_dispatch) -----
       - name: Set pretend version via env
@@ -113,15 +126,6 @@ jobs:
           body_path: notes.md
           files: dist/*
           prerelease: ${{ steps.reltype.outputs.prerelease }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Upload to the Release (ONLY when actually triggered by a release)
-      - name: Upload artifacts to the release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

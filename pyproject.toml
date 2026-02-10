@@ -60,6 +60,6 @@ include-package-data = true
 
 [tool.setuptools_scm]
 # Uses tags like v1.2.3 or 1.2.3  ->  1.2.3
-tag_regex = "^v?(?P<version>\\d+\\.\\d+\\.\\d+)$"
+tag_regex = "^(?:pre-)?v?(?P<version>\\d+\\.\\d+\\.\\d+)$"
 version_scheme = "no-guess-dev"
 local_scheme = "no-local-version"
