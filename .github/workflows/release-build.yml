@@ -1,6 +1,10 @@
 name: Build package (release + manual)
 
 on:
+  push:
+    tags:
+      - "*.*.*"
+      - "pre-*"
   release:
     types: [published]
   workflow_dispatch:
@@ -15,6 +19,9 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write 
+  
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -52,6 +59,62 @@ jobs:
 
       - name: Build sdist & wheel
         run: python -m build
+
+      # ---------------------------
+      # Create GitHub Release (tags only)
+      # ---------------------------
+      - name: Detect release type
+        if: startsWith(github.ref, 'refs/tags/')
+        id: reltype
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
+          if [[ "$TAG_NAME" == pre-* ]] || [[ "$TAG_NAME" == *"-rc"* ]] || [[ "$TAG_NAME" == *"-beta"* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Capture build metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        id: buildmeta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "datetime=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          : > notes.md
+
+          if [[ "${{ steps.reltype.outputs.prerelease }}" == "true" ]]; then
+            echo "⚠️ **PRE-RELEASE – NOT FOR PRODUCTION**" >> notes.md
+            echo "" >> notes.md
+          fi
+
+          PREV_TAG=$(git tag --sort=-creatordate | sed -n '2p')
+
+          if [ -z "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s" >> notes.md
+          else
+            git log ${PREV_TAG}..HEAD --pretty=format:"- %s" >> notes.md
+          fi
+
+          echo "" >> notes.md
+          echo "Sha: ${{ steps.buildmeta.outputs.sha }}" >> notes.md
+          echo "Built: ${{ steps.buildmeta.outputs.datetime }}" >> notes.md
+
+      - name: Create GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: notes.md
+          files: dist/*
+          prerelease: ${{ steps.reltype.outputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Upload to the Release (ONLY when actually triggered by a release)
       - name: Upload artifacts to the release
