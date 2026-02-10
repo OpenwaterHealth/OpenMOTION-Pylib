@@ -124,7 +124,8 @@ jobs:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: notes.md
-          files: dist/*
+          artifacts: dist/*
+          artifactErrorsFailBuild: true
           prerelease: ${{ steps.reltype.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
