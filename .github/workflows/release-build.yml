@@ -100,17 +100,26 @@ jobs:
         run: |
           : > notes.md
 
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
           if [[ "${{ steps.reltype.outputs.prerelease }}" == "true" ]]; then
             echo "⚠️ **PRE-RELEASE – NOT FOR PRODUCTION**" >> notes.md
             echo "" >> notes.md
           fi
 
-          PREV_TAG=$(git tag --sort=-creatordate | sed -n '2p')
+          PREV_TAG=$(git tag --merged HEAD --sort=-creatordate \
+            | grep -E '^(pre-)?[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -v "^${TAG_NAME}$" \
+            | head -n 1)
 
-          if [ -z "$PREV_TAG" ]; then
-            git log --pretty=format:"- %s" >> notes.md
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changes since ${PREV_TAG}:" >> notes.md
+            echo "" >> notes.md
+            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" >> notes.md
           else
-            git log ${PREV_TAG}..HEAD --pretty=format:"- %s" >> notes.md
+            echo "Changes:" >> notes.md
+            echo "" >> notes.md
+            git log --pretty=format:"- %s" >> notes.md
           fi
 
           echo "" >> notes.md
@@ -123,10 +132,11 @@ jobs:
         with:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body_path: notes.md
+          bodyFile: notes.md
           artifacts: dist/*
           artifactErrorsFailBuild: true
           prerelease: ${{ steps.reltype.outputs.prerelease }}
+          allowUpdates: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
