@@ -1,22 +1,62 @@
 name: Publish to PyPI
 
 on:
-  push:
-    tags:
-      - "[0-9]*.[0-9]*.[0-9]*"
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read   # needed to download release assets
+  id-token: write  # needed if using Trusted Publishing
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write   # required for trusted publishing
 
     steps:
+      # 1️⃣ Check out the repository (needed for some tools)
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
+      # 2️⃣ Determine if this release is a pre-release
+      - name: Check if pre-release
+        id: prerelease
+        run: |
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            echo "pre=true" >> $GITHUB_OUTPUT
+          else
+            echo "pre=false" >> $GITHUB_OUTPUT
+          fi
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # 3️⃣ Skip publishing if it's a pre-release
+      - name: Abort on pre-release
+        if: steps.prerelease.outputs.pre == 'true'
+        run: |
+          echo "Pre-release detected; skipping PyPI publish."
+          exit 0
+
+      # 4️⃣ Download artifacts from the GitHub release
+      - name: Download release assets
+        uses: actions/download-release-asset@v1
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ github.event.release.tag_name }}
+          asset_name: dist.zip    # or dist.tar.gz depending on your release
+          download_path: ./dist
+
+      # 5️⃣ Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 6️⃣ Install twine
+      - run: pip install --upgrade twine
+
+      # 7️⃣ Publish to PyPI
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__                  # literal username for PyPI token
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # directory containing built artifacts
+          packages_dir: ./dist
