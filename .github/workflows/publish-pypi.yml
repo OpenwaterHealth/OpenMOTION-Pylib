@@ -2,9 +2,12 @@ name: Publish to PyPI
 
 on:
   release:
-    types:
-      - published
-
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish'
+        required: true
 permissions:
   contents: read   # needed to download release assets
   id-token: write  # needed if using Trusted Publishing
