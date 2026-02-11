@@ -37,14 +37,13 @@ jobs:
           echo "Pre-release detected; skipping PyPI publish."
           exit 0
 
-      # 4️⃣ Download artifacts from the GitHub release
-      - name: Download release assets
-        uses: actions/download-release-asset@v1
+      # 4️⃣ Download artifacts from the GitHub release      
+      - name: Download all release assets
+        uses: softprops/action-gh-release@v1
         with:
-          repository: ${{ github.repository }}
-          tag: ${{ github.event.release.tag_name }}
-          asset_name: dist.zip    # or dist.tar.gz depending on your release
-          download_path: ./dist
+          tag_name: ${{ github.event.release.tag_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 5️⃣ Set up Python
       - name: Set up Python
