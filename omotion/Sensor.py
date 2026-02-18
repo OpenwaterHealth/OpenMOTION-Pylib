@@ -16,8 +16,10 @@ class MOTIONSensor:
         """
         Initialize the MOTIONSensor Module.            
         """
-
         self.uart = uart
+        # Cached IDs (populated by refresh_id_cache(), cleared on disconnect or explicitly)
+        self._cached_camera_uids = None  # dict[int, str] camera_id (0-7) -> "0x..." hex string
+        self._cached_hwid = None        # str, hex hardware ID
 
         if self.uart and not self.uart.async_mode:
             self.uart.check_usb_status()
@@ -1670,6 +1672,66 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error reading camera security UID: %s", e)
             raise
+
+    def refresh_id_cache(self) -> None:
+        """
+        Read and cache all camera security UIDs (0-7) and the sensor hardware ID.
+        Call after connection so get_cached_camera_security_uid and get_cached_hardware_id
+        can return values without repeated device reads. Cache is not returned when
+        the sensor is disconnected.
+        """
+        self._cached_camera_uids = None
+        self._cached_hwid = None
+        try:
+            if not self.is_connected():
+                return
+            uids = {}
+            for camera_id in range(8):
+                try:
+                    uid_bytes = self.read_camera_security_uid(camera_id)
+                    uid_hex = "".join(f"{b:02X}" for b in uid_bytes)
+                    uids[camera_id] = f"0x{uid_hex}" if uid_hex else ""
+                except Exception as e:
+                    logger.debug("Could not read camera %s UID: %s", camera_id, e)
+                    uids[camera_id] = ""
+            self._cached_camera_uids = uids
+            try:
+                hw_id = self.get_hardware_id()
+                self._cached_hwid = (hw_id.hex() if isinstance(hw_id, bytes) else (hw_id or "")) or ""
+            except Exception as e:
+                logger.debug("Could not read HWID: %s", e)
+                self._cached_hwid = ""
+        except Exception as e:
+            logger.warning("Failed to refresh sensor ID cache: %s", e)
+            self._cached_camera_uids = None
+            self._cached_hwid = None
+
+    def clear_id_cache(self) -> None:
+        """Clear cached camera UIDs and hardware ID (e.g. on disconnect)."""
+        self._cached_camera_uids = None
+        self._cached_hwid = None
+
+    def get_cached_camera_security_uid(self, camera_id: int) -> str:
+        """
+        Return the cached security UID for the given camera (0-7, or 1-8).
+        Returns "" if not connected, cache was never populated, or camera_id is invalid.
+        """
+        if not self.is_connected() or self._cached_camera_uids is None:
+            return ""
+        cid = int(camera_id)
+        out = self._cached_camera_uids.get(cid, "")
+        if not out and 1 <= cid <= 8:
+            out = self._cached_camera_uids.get(cid - 1, "")
+        return out or ""
+
+    def get_cached_hardware_id(self) -> str:
+        """
+        Return the cached sensor hardware ID (hex string).
+        Returns "" if not connected or cache was never populated.
+        """
+        if not self.is_connected() or self._cached_hwid is None:
+            return ""
+        return self._cached_hwid or ""
 
     @staticmethod
     def get_latest_version_info():
