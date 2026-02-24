@@ -9,6 +9,21 @@ from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
 from omotion.config import (
+    FPGA_PROG_CFG_READ_PAGE,
+    FPGA_PROG_CFG_RESET,
+    FPGA_PROG_CFG_WRITE_PAGE,
+    FPGA_PROG_CFG_WRITE_PAGES,
+    FPGA_PROG_CLOSE,
+    FPGA_PROG_ERASE,
+    FPGA_PROG_FEATROW_READ,
+    FPGA_PROG_FEATROW_WRITE,
+    FPGA_PROG_READ_STATUS,
+    FPGA_PROG_REFRESH,
+    FPGA_PROG_SET_DONE,
+    FPGA_PROG_UFM_READ_PAGE,
+    FPGA_PROG_UFM_RESET,
+    FPGA_PROG_UFM_WRITE_PAGE,
+    FPGA_PROG_UFM_WRITE_PAGES,
     OW_CMD,
     OW_CMD_DFU,
     OW_FPGA_PROG,
@@ -43,6 +58,7 @@ from omotion.config import (
     OW_CTRL_TECADC,
     FPGA_PROG_OPEN,
     OW_ERROR,
+    XO2_FLASH_PAGE_SIZE,
     MuxChannel,
 )
 from omotion.GitHubReleases import GitHubReleases
@@ -1512,7 +1528,7 @@ class MOTIONConsole:
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
 
-            # Send write command (reserved = channel index)
+            # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_FPGA_PROG,
@@ -1538,7 +1554,676 @@ class MOTIONConsole:
             raise
 
 
+    def fpga_prog_erase(self, fpga_chan: MuxChannel, mode: int) -> None:
+        """
+        Erase FPGA flash sectors.
+
+        Parameters
+        ----------
+        mode:
+            Erase mode bitmap (matches ``XO2ECAcmd_EraseFlash`` argument):
+
+            * bit 3 = UFM sector
+            * bit 2 = CFG sector
+            * bit 1 = Feature Row
+            * bit 0 = SRAM
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA erase")
+                return None
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_ERASE,
+                reserved=int(fpga_chan),
+                data=bytes([mode & 0xFF]),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            logger.info("FPGA_PROG_ERASE OK (mode=0x%02X)", mode)
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA erase: %s", e)
+            raise
+
+    def fpga_prog_cfg_reset(self, fpga_chan: MuxChannel) -> None:
+        """Reset the CFG sector address pointer to page 0."""
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA reset page 0")
+                return None
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_CFG_RESET,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA reset page: %s", e)
+            raise
     
+    def fpga_prog_cfg_write_page(self, fpga_chan: MuxChannel, page: bytes) -> None:
+        """
+        Write one 16-byte CFG flash page at the current address pointer.
+
+        Parameters
+        ----------
+        page:
+            Exactly :data:`~protocol.constants.XO2_FLASH_PAGE_SIZE` (16) bytes.
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA write page")
+                return None
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            if len(page) != XO2_FLASH_PAGE_SIZE:
+                raise ValueError(
+                    f"CFG page must be {XO2_FLASH_PAGE_SIZE} bytes, got {len(page)}"
+                )
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_CFG_WRITE_PAGE,
+                reserved=int(fpga_chan),
+                data=bytes(page),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA page write: %s", e)
+            raise
+
+    def fpga_prog_cfg_write_pages(self, fpga_chan: MuxChannel, pages: bytes) -> None:
+        """
+        Write multiple consecutive CFG flash pages in a single command.
+
+        Parameters
+        ----------
+        pages:
+            A byte string whose length is a non-zero multiple of
+            :data:`~protocol.constants.XO2_FLASH_PAGE_SIZE` (16).  Each
+            16-byte chunk is written as one page in sequence starting from
+            the current address pointer.
+        """
+        
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA write pages")
+                return None
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            if len(pages) == 0 or len(pages) % XO2_FLASH_PAGE_SIZE != 0:
+                raise ValueError(
+                    f"pages length must be a non-zero multiple of "
+                    f"{XO2_FLASH_PAGE_SIZE}, got {len(pages)}"
+                )
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_CFG_WRITE_PAGES,
+                reserved=int(fpga_chan),
+                data=bytes(pages),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA pages write: %s", e)
+            raise
+    
+    def fpga_prog_cfg_read_page(self, fpga_chan: MuxChannel) -> bytes:
+        """
+        Read back one 16-byte CFG flash page from the current address pointer.
+
+        Returns
+        -------
+        bytes
+            16 bytes read from flash.
+        """        
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA read page")
+                # Return a randomized 16-byte page for demo/testing purposes
+                return os.urandom(16)
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_CFG_READ_PAGE,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+
+            return r.data
+        
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA page read: %s", e)
+            raise
+    
+
+    def fpga_prog_ufm_reset(self, fpga_chan: MuxChannel) -> None:
+        """Reset the UFM sector address pointer to page 0."""
+
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating ufm reset page 0")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_UFM_RESET,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA ufm reset page 0: %s", e)
+            raise
+    
+
+    def fpga_prog_ufm_write_page(self, fpga_chan: MuxChannel, page: bytes) -> None:
+        """
+        Write one 16-byte UFM flash page at the current address pointer.
+
+        Parameters
+        ----------
+        page:
+            Exactly :data:`~protocol.constants.XO2_FLASH_PAGE_SIZE` (16) bytes.
+        """
+
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating ufm write page")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            if len(page) != XO2_FLASH_PAGE_SIZE:
+                raise ValueError(
+                    f"UFM page must be {XO2_FLASH_PAGE_SIZE} bytes, got {len(page)}"
+                )
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_UFM_WRITE_PAGE,
+                reserved=int(fpga_chan),
+                data=bytes(page),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA ufm write page : %s", e)
+            raise
+
+    def fpga_prog_ufm_write_pages(self, fpga_chan: MuxChannel, pages: bytes) -> None:
+        """
+        Write multiple consecutive UFM flash pages in a single command.
+
+        Parameters
+        ----------
+        pages:
+            A byte string whose length is a non-zero multiple of
+            :data:`~protocol.constants.XO2_FLASH_PAGE_SIZE` (16).  Each
+            16-byte chunk is written as one page in sequence starting from
+            the current address pointer.
+        """
+
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating ufm write pages")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            if len(pages) == 0 or len(pages) % XO2_FLASH_PAGE_SIZE != 0:
+                raise ValueError(
+                    f"pages length must be a non-zero multiple of "
+                    f"{XO2_FLASH_PAGE_SIZE}, got {len(pages)}"
+                )
+
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_UFM_WRITE_PAGES,
+                reserved=int(fpga_chan),
+                data=bytes(pages),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA ufm write pages : %s", e)
+            raise
+
+    def fpga_prog_ufm_read_page(self, fpga_chan: MuxChannel) -> bytes:
+        """
+        Read back one 16-byte UFM flash page from the current address pointer.
+
+        Returns
+        -------
+        bytes
+            16 bytes read from flash.
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating ufm write pages")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_UFM_READ_PAGE,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            if len(r.data) != XO2_FLASH_PAGE_SIZE:
+                raise ValueError(
+                    f"UFM read page returned {len(r.data)} bytes, expected {XO2_FLASH_PAGE_SIZE}",
+                    response=r,
+                )
+            
+            return r.data
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA ufm write pages : %s", e)
+            raise
+
+    def fpga_prog_read_status(self, fpga_chan: MuxChannel) -> int:
+        """
+        Read the FPGA 32-bit Status Register.
+
+        Does not require the configuration interface to be open — can be
+        called at any time after the device handle is registered.
+
+        Returns
+        -------
+        int
+            Raw 32-bit status value.  Useful bit fields:
+
+            * Bit 12 ``(sr >> 12) & 1`` – BUSY flag
+            * Bit 13 ``(sr >> 13) & 1`` – FAIL flag
+            * Bit 14 ``(sr >> 14) & 1`` – ISC_ENABLED flag
+            * Bits 6:4 ``(sr >> 4) & 7`` – programming DONE / DEVICE_SECURITY
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga read status")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_READ_STATUS,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            if len(r.data) != 4:
+                raise ValueError(
+                    f"READ_STATUS returned {len(r.data)} bytes, expected 4",
+                    response=r,
+                )
+            sr = (r.data[0] << 24) | (r.data[1] << 16) | (r.data[2] << 8) | r.data[3]
+            logger.debug("FPGA Status Register: 0x%08X  BUSY=%d FAIL=%d ISC_EN=%d",
+                        sr, (sr >> 12) & 1, (sr >> 13) & 1, (sr >> 14) & 1)
+            return sr
+        
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA read status : %s", e)
+            raise
+
+
+    def fpga_prog_featrow_write(self, fpga_chan: MuxChannel, feature: bytes, feabits: bytes) -> None:
+        """
+        Write the Feature Row to the FPGA.
+
+        Parameters
+        ----------
+        feature:
+            8-byte feature row data.
+        feabits:
+            2-byte FEABITS data.
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga read status")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            if len(feature) != 8:
+                raise ValueError(f"feature must be 8 bytes, got {len(feature)}")
+            if len(feabits) != 2:
+                raise ValueError(f"feabits must be 2 bytes, got {len(feabits)}")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_FEATROW_WRITE,
+                reserved=int(fpga_chan),
+                data=bytes(feature) + bytes(feabits),
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            logger.info("FPGA_PROG_FEATROW_WRITE OK")
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA read status : %s", e)
+            raise
+
+    def fpga_prog_featrow_read(self, fpga_chan: MuxChannel) -> tuple[bytes, bytes]:
+        """
+        Read back the Feature Row from the FPGA.
+
+        Returns
+        -------
+        tuple[bytes, bytes]
+            ``(feature_8_bytes, feabits_2_bytes)``
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga featrow read")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_FEATROW_READ,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            if len(r.data) < 10:
+                raise ValueError(
+                    f"Feature row read returned {len(r.data)} bytes, expected 10",
+                    response=r,
+                )
+            
+            return r.data[:8], r.data[8:10]
+        
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA featrow read: %s", e)
+            raise
+
+    def fpga_prog_set_done(self, fpga_chan: MuxChannel) -> None:
+        """Set the DONE bit in the FPGA configuration flash."""
+        
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga done")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_SET_DONE,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            logger.info("FPGA_PROG_SET_DONE OK")
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA done: %s", e)
+            raise
+
+    def fpga_prog_refresh(self, fpga_chan: MuxChannel) -> None:
+        """
+        Refresh the FPGA: loads configuration from flash and boots to user mode.
+
+        Raises
+        ------
+        CommandError
+            If the firmware fails to complete the refresh within its retry limit.
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga refresh")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_REFRESH,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            logger.info("FPGA_PROG_REFRESH OK")
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA refresh: %s", e)
+            raise
+
+    def fpga_prog_close(self, fpga_chan: MuxChannel) -> None:
+        """
+        Close the FPGA configuration interface (abort path).
+
+        Safe to call even if :meth:`fpga_prog_open` was never called.
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating fpga close")
+                return None
+            
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+            
+            # Send command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_CLOSE,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error FPGA erase")
+                return None
+            
+            logger.info("FPGA_PROG_CLOSE OK")
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error FPGA close: %s", e)
+            raise
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
