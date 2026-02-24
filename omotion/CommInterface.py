@@ -113,7 +113,7 @@ class CommInterface(USBInterfaceBase):
                     while time.monotonic() - start < timeout:
                         try:
                             resp = self.receive()
-                            time.sleep(0.0005)
+                            time.sleep(0.001)
                             if resp:
                                 data.extend(resp)
                                 if data and data[-1] == OW_END_BYTE:
