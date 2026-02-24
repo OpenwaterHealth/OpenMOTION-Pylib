@@ -1,3 +1,5 @@
+from enum import IntEnum
+
 SERIAL_PORT = 'COM24'  # Change this to your serial port
 BAUD_RATE = 921600
 
@@ -27,6 +29,7 @@ OW_CAMERA = 0xE7
 OW_IMU = 0xE8
 OW_I2C_PASSTHRU = 0xE9
 OW_CONTROLLER = 0xEA
+OW_FPGA_PROG = 0xEB
 OW_BAD_PARSE = 0xEC
 OW_BAD_CRC = 0xED
 OW_UNKNOWN = 0xEE
@@ -129,8 +132,70 @@ OW_CTRL_BOARDID = 0x23
 OW_CTRL_PDUMON = 0x24
 OW_CTRL_FAN_CTL = 0x0A
 
+# Page-by-page direct FPGA programming commands (0x30–0x3C)
+FPGA_PROG_OPEN           = 0x30
+FPGA_PROG_ERASE          = 0x31
+FPGA_PROG_CFG_RESET      = 0x32
+FPGA_PROG_CFG_WRITE_PAGE = 0x33
+FPGA_PROG_CFG_READ_PAGE  = 0x34
+FPGA_PROG_UFM_RESET      = 0x35
+FPGA_PROG_UFM_WRITE_PAGE = 0x36
+FPGA_PROG_UFM_READ_PAGE  = 0x37
+FPGA_PROG_FEATROW_WRITE  = 0x38
+FPGA_PROG_FEATROW_READ   = 0x39
+FPGA_PROG_SET_DONE       = 0x3A
+FPGA_PROG_REFRESH        = 0x3B
+FPGA_PROG_CLOSE          = 0x3C
+FPGA_PROG_CFG_WRITE_PAGES = 0x3D  # Write N 16-byte CFG pages (N*16 bytes payload)
+FPGA_PROG_UFM_WRITE_PAGES = 0x3E  # Write N 16-byte UFM pages (N*16 bytes payload)
+FPGA_PROG_READ_STATUS     = 0x3F  # Read 32-bit Status Register (no cfgEn required)
+
+
 TEST_PATTERN_BARS = 0x00
 TEST_PATTERN_SOLID = 0x01
 TEST_PATTERN_CHECKERBOARD = 0x02
 TEST_PATTERN_GRADIENT = 0x03
 TEST_PATTERN_DISABLED = 0x04
+
+# --------------------------------------------------------------------------- #
+# MachXO2 device types (XO2Devices_t in XO2_dev.h)
+# --------------------------------------------------------------------------- #
+class XO2Devices(IntEnum):
+    MachXO2_256   = 0
+    MachXO2_640   = 1
+    MachXO2_640U  = 2
+    MachXO2_1200  = 3
+    MachXO2_1200U = 4
+    MachXO2_2000  = 5
+    MachXO2_2000U = 6
+    MachXO2_4000  = 7
+    MachXO2_7000  = 8
+
+
+# --------------------------------------------------------------------------- #
+# Transport constants
+# --------------------------------------------------------------------------- #
+COMMAND_MAX_SIZE: int = 4096
+"""Maximum total frame size (matches firmware COMMAND_MAX_SIZE)."""
+
+MAX_DATA_PER_FRAME: int = COMMAND_MAX_SIZE - 12
+"""Max payload bytes per frame (total - framing overhead)."""
+
+XO2_FLASH_PAGE_SIZE: int = 16
+"""Bytes per page in the MachXO2 Configuration and UFM flash sectors."""
+
+FPGA_PROG_BATCH_PAGES: int = 32
+"""Number of 16-byte pages bundled into a single FPGA_PROG_CFG/UFM_WRITE_PAGES command."""
+
+# Erase mode bitmap (matches XO2ECA_CMD_ERASE_* macros in XO2_cmds.h)
+ERASE_SRAM:   int = 0x01
+ERASE_FTROW:  int = 0x02
+ERASE_CFG:    int = 0x04
+ERASE_UFM:    int = 0x08
+ERASE_ALL:    int = ERASE_UFM | ERASE_CFG | ERASE_FTROW  # 0x0E
+
+class MuxChannel(IntEnum):
+    FPGA_SEED = 0
+    FPGA_TA = 1
+    FPGA_SAFE_EE = 2
+    FPGA_SAFE_OPT = 3

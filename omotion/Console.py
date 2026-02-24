@@ -8,7 +8,43 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
-from omotion.config import OW_CMD, OW_CMD_DFU, OW_CMD_ECHO, OW_CMD_HWID, OW_CMD_PING, OW_CMD_RESET, OW_CMD_TOGGLE_LED, OW_CMD_USR_CFG, OW_CMD_VERSION, OW_CONTROLLER, OW_CTRL_BOARDID, OW_CTRL_GET_FAN, OW_CTRL_GET_FSYNC, OW_CTRL_GET_IND, OW_CTRL_GET_LSYNC, OW_CTRL_GET_TEMPS, OW_CTRL_GET_TRIG, OW_CTRL_I2C_RD, OW_CTRL_I2C_SCAN, OW_CTRL_I2C_WR, OW_CTRL_PDUMON, OW_CTRL_READ_ADC, OW_CTRL_READ_GPIO, OW_CTRL_SET_FAN, OW_CTRL_SET_IND, OW_CTRL_SET_TRIG, OW_CTRL_START_TRIG, OW_CTRL_STOP_TRIG, OW_CTRL_TEC_DAC, OW_CTRL_TEC_STATUS, OW_CTRL_TECADC, OW_ERROR
+from omotion.config import (
+    OW_CMD,
+    OW_CMD_DFU,
+    OW_FPGA_PROG,
+    OW_CMD_ECHO,
+    OW_CMD_HWID,
+    OW_CMD_PING,
+    OW_CMD_RESET,
+    OW_CMD_TOGGLE_LED,
+    OW_CMD_USR_CFG,
+    OW_CMD_VERSION,
+    OW_CONTROLLER,
+    OW_CTRL_BOARDID,
+    OW_CTRL_GET_FAN,
+    OW_CTRL_GET_FSYNC,
+    OW_CTRL_GET_IND,
+    OW_CTRL_GET_LSYNC,
+    OW_CTRL_GET_TEMPS,
+    OW_CTRL_GET_TRIG,
+    OW_CTRL_I2C_RD,
+    OW_CTRL_I2C_SCAN,
+    OW_CTRL_I2C_WR,
+    OW_CTRL_PDUMON,
+    OW_CTRL_READ_ADC,
+    OW_CTRL_READ_GPIO,
+    OW_CTRL_SET_FAN,
+    OW_CTRL_SET_IND,
+    OW_CTRL_SET_TRIG,
+    OW_CTRL_START_TRIG,
+    OW_CTRL_STOP_TRIG,
+    OW_CTRL_TEC_DAC,
+    OW_CTRL_TEC_STATUS,
+    OW_CTRL_TECADC,
+    FPGA_PROG_OPEN,
+    OW_ERROR,
+    MuxChannel,
+)
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionConfig import MotionConfig
 
@@ -1455,6 +1491,53 @@ class MOTIONConsole:
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON: {e}")
             raise ValueError(f"Invalid JSON: {e}")
+
+    # ------------------------------------------------------------------ #
+    # Page-by-page direct FPGA programming commands (0x30–0x3C)
+    # These map 1-to-1 onto the XO2ECAcmd_* functions on the firmware so
+    # that the host fully controls the programming sequence and can stream
+    # one 16-byte page at a time.
+    # ------------------------------------------------------------------ #
+
+    def fpga_prog_open(self, fpga_chan: MuxChannel) -> None:
+        """Open the FPGA configuration interface in Offline mode.
+
+        `fpga_chan` must be a `MuxChannel` (from `omotion.config`).
+        """
+        try:
+            if getattr(self.uart, "demo_mode", False):
+                logger.info("Demo mode: simulating FPGA open")
+                return None
+
+            if not self.uart or not self.uart.is_connected():
+                raise ValueError("Console Device not connected")
+
+            # Send write command (reserved = channel index)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_FPGA_PROG,
+                command=FPGA_PROG_OPEN,
+                reserved=int(fpga_chan),
+                data=None,
+            )
+
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error opening FPGA device")
+                return None
+
+            logger.info("FPGA_PROG_OPEN OK")
+
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise
+
+        except Exception as e:
+            logger.error("Unexpected error opening FPGA prog interface: %s", e)
+            raise
+
+
     
     def disconnect(self):
         """
