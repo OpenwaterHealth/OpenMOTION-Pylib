@@ -23,21 +23,23 @@ import logging
 import sys
 import os
 from pathlib import Path
+import time
 from typing import Callable, Optional
+from omotion import CommandError
+from omotion.Console import MOTIONConsole
+from omotion.config import XO2_FLASH_PAGE_SIZE, ERASE_ALL, FPGA_PROG_BATCH_PAGES, MuxChannel
 
-from omotion.config import XO2_FLASH_PAGE_SIZE, ERASE_ALL, FPGA_PROG_BATCH_PAGES
-from api.commands import HardwareAPI, CommandError
 
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Make the project-root jedec_parser importable from the py-demo subtree
 # --------------------------------------------------------------------------- #
-_REPO_ROOT = Path(__file__).resolve().parents[2]  # …/nucleoh743-lattice/
+_REPO_ROOT = Path(__file__).resolve().parents[2] 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from omotion.jedecParser import parse_jedec_file, JedecImage  # noqa: E402
+from omotion.jedecParser import parse_jedec_file # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -163,7 +165,7 @@ class FpgaPageProgrammer:
 
     def __init__(
         self,
-        api: HardwareAPI,
+        api: MOTIONConsole,
         verify: bool = True,
         erase_mode: int = ERASE_ALL,
         erase_timeout: float = 35.0,
@@ -179,6 +181,7 @@ class FpgaPageProgrammer:
 
     def program_from_jedec(
         self,
+        target_fpga: MuxChannel,
         jedec_path: str | os.PathLike,
         on_progress: Optional[ProgressCallback] = None,
     ) -> None:
@@ -212,12 +215,13 @@ class FpgaPageProgrammer:
         cfg_data = image.data   # all fuse data → CFG sector
         ufm_data = b""          # UFM not separately included in parsed JEDEC
 
-        self.program_raw(cfg_data, ufm_data, feature_row, feabits, on_progress)
+        self.program_raw(target_fpga, cfg_data, ufm_data, feature_row, feabits, on_progress)
 
     # ------------------------------------------------------------------ #
 
     def program_raw(
         self,
+        target_fpga: MuxChannel,
         cfg_data: bytes,
         ufm_data: bytes,
         feature_row: bytes,
@@ -269,13 +273,26 @@ class FpgaPageProgrammer:
         logger.info("Step 1: Opening config interface (offline mode) …")
         print("  [1/10] Opening config interface …", flush=True)
         try:
-            api.fpga_prog_open()
+            # Some devices may be slow to respond right after connection —
+            # perform a small retry loop to improve robustness.
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    api.fpga_prog_open(fpga_chan=target_fpga)
+                    last_exc = None
+                    break
+                except CommandError as exc:
+                    last_exc = exc
+                    time.sleep(0.5)
+            if last_exc:
+                raise FpgaUpdateError(f"FPGA_PROG_OPEN failed after retries: {last_exc}") from last_exc
         except CommandError as exc:
+            # Fallback: ensure any CommandError is wrapped as FpgaUpdateError
             raise FpgaUpdateError(f"FPGA_PROG_OPEN failed: {exc}") from exc
 
         # Read status register immediately after OPEN for diagnostic baseline.
         try:
-            sr = api.fpga_prog_read_status()
+            sr = api.fpga_prog_read_status(fpga_chan=target_fpga)
             isc_en = (sr >> 14) & 1
             fail   = (sr >> 13) & 1
             busy   = (sr >> 12) & 1
@@ -294,15 +311,13 @@ class FpgaPageProgrammer:
             logger.info("Step 2: Erasing flash (mode=0x%02X) …", self._erase_mode)
             print(f"  [2/10] Erasing flash (timeout={self._erase_timeout:.0f} s) …",
                   flush=True)
-            transport = api._t
-            saved_timeout = transport.timeout
-            transport.timeout = self._erase_timeout
+            
             try:
-                api.fpga_prog_erase(self._erase_mode)
+                api.fpga_prog_erase(fpga_chan=target_fpga, mode=self._erase_mode)
             except CommandError as exc:
                 # Read status register so we can report FAIL/BUSY bits.
                 try:
-                    sr = api.fpga_prog_read_status()
+                    sr = api.fpga_prog_read_status(fpga_chan=target_fpga)
                     isc_en = (sr >> 14) & 1
                     fail   = (sr >> 13) & 1
                     busy   = (sr >> 12) & 1
@@ -313,8 +328,8 @@ class FpgaPageProgrammer:
                 raise FpgaUpdateError(
                     f"FPGA_PROG_ERASE failed: {exc}  [{detail}]"
                 ) from exc
-            finally:
-                transport.timeout = saved_timeout
+            
+
             print("         Erase done.", flush=True)
 
             # ------------------------------------------------------------ #
@@ -323,7 +338,7 @@ class FpgaPageProgrammer:
             logger.info("Step 3: Programming CFG sector (%d pages) …", cfg_pages)
             print(f"  [3/10] Write CFG: {cfg_pages} pages (batch={FPGA_PROG_BATCH_PAGES}) …", flush=True)
             try:
-                api.fpga_prog_cfg_reset()
+                api.fpga_prog_cfg_reset(fpga_chan=target_fpga)
             except CommandError as exc:
                 raise FpgaUpdateError(f"CFG reset address failed: {exc}") from exc
 
@@ -332,7 +347,7 @@ class FpgaPageProgrammer:
                 batch = min(FPGA_PROG_BATCH_PAGES, cfg_pages - i)
                 chunk = cfg_data[i * XO2_FLASH_PAGE_SIZE : (i + batch) * XO2_FLASH_PAGE_SIZE]
                 try:
-                    api.fpga_prog_cfg_write_pages(chunk)
+                    api.fpga_prog_cfg_write_pages(fpga_chan=target_fpga, pages=chunk)
                 except CommandError as exc:
                     raise FpgaUpdateError(
                         f"CFG write failed at page {i}: {exc}"
@@ -349,7 +364,7 @@ class FpgaPageProgrammer:
                 logger.info("Step 4: Verifying CFG sector …")
                 print(f"  [4/10] Verify CFG: {cfg_pages} pages …", flush=True)
                 try:
-                    api.fpga_prog_cfg_reset()
+                    api.fpga_prog_cfg_reset(fpga_chan=target_fpga)
                 except CommandError as exc:
                     raise FpgaUpdateError(
                         f"CFG reset address (verify) failed: {exc}"
@@ -360,7 +375,7 @@ class FpgaPageProgrammer:
                         i * XO2_FLASH_PAGE_SIZE : (i + 1) * XO2_FLASH_PAGE_SIZE
                     ]
                     try:
-                        read_back = api.fpga_prog_cfg_read_page()
+                        read_back = api.fpga_prog_cfg_read_page(fpga_chan=target_fpga)
                     except CommandError as exc:
                         raise FpgaUpdateError(
                             f"CFG read-back failed at page {i}: {exc}"
@@ -389,7 +404,7 @@ class FpgaPageProgrammer:
                 logger.info("Step 5: Programming UFM sector (%d pages) …", ufm_pages)
                 print(f"  [5/10] Write UFM: {ufm_pages} pages …", flush=True)
                 try:
-                    api.fpga_prog_ufm_reset()
+                    api.fpga_prog_ufm_reset(fpga_chan=target_fpga)
                 except CommandError as exc:
                     raise FpgaUpdateError(f"UFM reset address failed: {exc}") from exc
 
@@ -400,7 +415,7 @@ class FpgaPageProgrammer:
                         i * XO2_FLASH_PAGE_SIZE : (i + batch) * XO2_FLASH_PAGE_SIZE
                     ]
                     try:
-                        api.fpga_prog_ufm_write_pages(chunk)
+                        api.fpga_prog_ufm_write_pages(fpga_chan=target_fpga, pages=chunk)
                     except CommandError as exc:
                         raise FpgaUpdateError(
                             f"UFM write failed at page {i}: {exc}"
@@ -417,7 +432,7 @@ class FpgaPageProgrammer:
                     logger.info("Step 6: Verifying UFM sector …")
                     print(f"  [6/10] Verify UFM: {ufm_pages} pages …", flush=True)
                     try:
-                        api.fpga_prog_ufm_reset()
+                        api.fpga_prog_ufm_reset(fpga_chan=target_fpga)
                     except CommandError as exc:
                         raise FpgaUpdateError(
                             f"UFM reset address (verify) failed: {exc}"
@@ -428,7 +443,7 @@ class FpgaPageProgrammer:
                             i * XO2_FLASH_PAGE_SIZE : (i + 1) * XO2_FLASH_PAGE_SIZE
                         ]
                         try:
-                            read_back = api.fpga_prog_ufm_read_page()
+                            read_back = api.fpga_prog_ufm_read_page(fpga_chan=target_fpga)
                         except CommandError as exc:
                             raise FpgaUpdateError(
                                 f"UFM read-back failed at page {i}: {exc}"
@@ -446,7 +461,7 @@ class FpgaPageProgrammer:
             logger.info("Step 7: Writing Feature Row …")
             print("  [7/10] Writing Feature Row …", flush=True)
             try:
-                api.fpga_prog_featrow_write(feature_row, feabits)
+                api.fpga_prog_featrow_write(fpga_chan=target_fpga, feature=feature_row, feabits=feabits)
             except CommandError as exc:
                 raise FpgaUpdateError(
                     f"Feature Row write failed: {exc}"
@@ -459,7 +474,7 @@ class FpgaPageProgrammer:
                 logger.info("Step 8: Verifying Feature Row …")
                 print("  [8/10] Verifying Feature Row …", flush=True)
                 try:
-                    fr_read, fb_read = api.fpga_prog_featrow_read()
+                    fr_read, fb_read = api.fpga_prog_featrow_read(fpga_chan=target_fpga)
                 except CommandError as exc:
                     raise FpgaUpdateError(
                         f"Feature Row read-back failed: {exc}"
@@ -483,7 +498,7 @@ class FpgaPageProgrammer:
             logger.info("Step 9: Setting DONE bit …")
             print("  [9/10] Setting DONE bit …", flush=True)
             try:
-                api.fpga_prog_set_done()
+                api.fpga_prog_set_done(fpga_chan=target_fpga)
             except CommandError as exc:
                 raise FpgaUpdateError(f"Set DONE failed: {exc}") from exc
 
@@ -493,16 +508,12 @@ class FpgaPageProgrammer:
             logger.info("Step 10: Refreshing FPGA (loading config from flash) …")
             print(f"  [10/10] Refresh FPGA (timeout={self._refresh_timeout:.0f} s) …",
                   flush=True)
-            transport = api._t
-            saved_timeout = transport.timeout
-            transport.timeout = self._refresh_timeout
+            
             try:
-                api.fpga_prog_refresh()
+                api.fpga_prog_refresh(fpga_chan=target_fpga)
             except CommandError as exc:
                 raise FpgaUpdateError(f"Refresh failed: {exc}") from exc
-            finally:
-                transport.timeout = saved_timeout
-
+            
             logger.info(
                 "Page-by-page programming complete. "
                 "CFG=%d pages, UFM=%d pages.", cfg_pages, ufm_pages,

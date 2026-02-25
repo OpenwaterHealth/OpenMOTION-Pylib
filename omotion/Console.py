@@ -61,10 +61,15 @@ from omotion.config import (
     XO2_FLASH_PAGE_SIZE,
     MuxChannel,
 )
+
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionConfig import MotionConfig
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
+
+# --------------------------------------------------------------------------- #
+# Dataclasses
+# --------------------------------------------------------------------------- #
 
 @dataclass
 class PDUMon:
