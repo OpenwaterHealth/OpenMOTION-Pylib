@@ -105,8 +105,9 @@ OW_CMD_RESET = 0x0F
 OW_CMD_I2C_BROADCAST = 0x06
 OW_CMD_DEBUG_FLAGS = 0x0C
 
-# Debug flag bits
+# Debug flag bits (must match firmware common.h)
 DEBUG_FLAG_USB_PRINTF = 0x01
+DEBUG_FLAG_FAKE_DATA = 0x02
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
