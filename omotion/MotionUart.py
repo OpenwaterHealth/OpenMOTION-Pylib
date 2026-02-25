@@ -15,6 +15,7 @@ from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
 from omotion.config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
 from omotion.utils import util_crc16
 from omotion import _log_root
+from omotion.CommandError import CommandError
 
 # Set up logging
 logger = logging.getLogger(f"{_log_root}.UART" if _log_root else "UART")
@@ -355,7 +356,9 @@ class MOTIONUart(SignalWrapper):
 
         except ValueError as ve:
             logger.error("Validation error in send_packet: %s", ve)
-            raise
+            # Wrap validation errors in CommandError so callers expecting
+            # protocol/transport errors can catch a consistent exception type.
+            raise CommandError(str(ve)) from ve
         except serial.SerialException as se:
             logger.error("Serial error in send_packet: %s", se)
             self._set_state(ConnectionState.ERROR, reason=str(se))

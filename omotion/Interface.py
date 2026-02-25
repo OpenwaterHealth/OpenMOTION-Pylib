@@ -13,6 +13,7 @@ from omotion import __version__ as _SDK_VERSION, _log_root
 
 logger = logging.getLogger(f"{_log_root}.Interface" if _log_root else "Interface")
 
+
 class MOTIONInterface(SignalWrapper):
     
     sensors: dict[str, MOTIONSensor | None] = None
