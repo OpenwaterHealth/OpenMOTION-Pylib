@@ -105,9 +105,15 @@ OW_CMD_RESET = 0x0F
 OW_CMD_I2C_BROADCAST = 0x06
 OW_CMD_DEBUG_FLAGS = 0x0C
 
-# Debug flag bits (must match firmware common.h)
+# Debug flag bits.
+# NOTE: These must stay numerically consistent with the firmware definitions in common.h
+# for overlapping flags:
+#   - DEBUG_FLAG_USB_PRINTF     == (1u << 0) == 0x01
+#   - DEBUG_FLAG_HISTO_THROTTLE == (1u << 1) == 0x02
+# Additional bits (like DEBUG_FLAG_FAKE_DATA) are host-side only and are ignored by firmware.
 DEBUG_FLAG_USB_PRINTF = 0x01
-DEBUG_FLAG_FAKE_DATA = 0x02
+DEBUG_FLAG_HISTO_THROTTLE = 0x02  # Only send histogram packet every 5s; others pretend success
+DEBUG_FLAG_FAKE_DATA = 0x04       # Host-only flag; not interpreted by firmware
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
