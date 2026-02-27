@@ -58,7 +58,11 @@ class MotionComposite(SignalWrapper):
     def disconnect(self):
         if self.state == ConnectionState.DISCONNECTED:
             return
-        if self.async_mode:
+        # CommInterface read thread is started based on `self.comm.async_mode`.
+        # Historically `self.async_mode` could be False while CommInterface is still async,
+        # leading to a teardown race where interfaces are released while the read thread
+        # is still reading (spurious USBError: "No such device").
+        if self.comm and getattr(self.comm, "async_mode", False):
             self.comm.stop_read_thread()
         self.histo.stop_streaming()
         self.imu.stop_streaming()
