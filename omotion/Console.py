@@ -1040,12 +1040,26 @@ class MOTIONConsole:
         """
         Get the current temperatures from the Console device.
 
+        The firmware response contains N packed TelemetrySample records:
+            struct TelemetrySample (28 bytes, little-endian, packed):
+                uint32  timestamp_ms
+                uint32  acq_time_us
+                float   t1   (MAX31875 sensor 1, °C)
+                float   t2   (MAX31875 sensor 2, °C)
+                float   t3   (MAX31875 sensor 3, °C)
+                uint16  tec_adc[4]  (ADS7924 channels 0-3, raw 12-bit)
+
+        All samples are printed; the last sample's (t1, t2, t3) is returned.
+
         Returns:
-            tuple[float, float, float]: (mcu_temp, safety_temp, ta_temp) in °C.
+            tuple[float, float, float]: (t1, t2, t3) in °C from the most recent sample.
 
         Raises:
-            ValueError: If the UART is not connected or the payload size is unexpected.
+            ValueError: If the UART is not connected or the payload is malformed.
         """
+        SAMPLE_FMT  = '<IIfff4H'   # matches TelemetrySample layout
+        SAMPLE_SIZE = struct.calcsize(SAMPLE_FMT)  # 28 bytes
+
         try:
             if self.uart.demo_mode:
                 # Demo values: stable 3-tuple
@@ -1054,26 +1068,43 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            # (Optional) self.uart.clear_buffer()  # If you intend to clear BEFORE request
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_GET_TEMPS
             )
-            self.uart.clear_buffer()  # OK if your send_packet fully returns the response
+            self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
                 raise ValueError("Device returned OW_ERROR for temperatures")
 
-            if r.data_len != 12:
-                raise ValueError(f"Unexpected temperature payload length: {r.data_len} (expected 12)")
+            if r.data_len == 0 or r.data_len % SAMPLE_SIZE != 0:
+                raise ValueError(
+                    f"Unexpected telemetry payload length: {r.data_len} "
+                    f"(must be a non-zero multiple of {SAMPLE_SIZE})"
+                )
 
-            mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
-            # logger.info("MCU: %.2f °C, Safety: %.2f °C, TA: %.2f °C", mcu_temp, safety_temp, ta_temp)
-            return (mcu_temp, safety_temp, ta_temp)
+            n_samples = r.data_len // SAMPLE_SIZE
+            samples = [
+                struct.unpack_from(SAMPLE_FMT, r.data, offset=i * SAMPLE_SIZE)
+                for i in range(n_samples)
+            ]
+
+            # Print every sample in the batch
+            print(f"[get_temperatures] received {n_samples} telemetry sample(s):")
+            for idx, s in enumerate(samples):
+                ts_ms, acq_us, t1, t2, t3, adc0, adc1, adc2, adc3 = s
+                print(
+                    f"  [{idx:3d}] ts={ts_ms} ms  acq={acq_us} µs  "
+                    f"t1={t1:.2f}°C  t2={t2:.2f}°C  t3={t3:.2f}°C  "
+                    f"tec_adc=[{adc0}, {adc1}, {adc2}, {adc3}]"
+                )
+
+            # Return temperatures from the most recent (last) sample
+            _, _, t1, t2, t3, *_ = samples[-1]
+            return (t1, t2, t3)
 
         except Exception:
-            # Let caller handle; preserve your existing behavior
             logger.exception("Failed to get temperatures")
             raise
 
