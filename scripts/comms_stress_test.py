@@ -18,6 +18,7 @@ Notes:
 - Default pattern avoids stateful actions (no LED/fan) to keep the test non-invasive.
 - `--timeout` is injected into the underlying `uart.send_packet()` used by `console.ping()` and
     `console.echo()` so API calls still respect the CLI timeout.
+- The test also reads temperatures via `console.get_temperatures()` every 10 packets.
 - If you set a very small timeout, remember `MotionUart.read_packet()` sleeps in 50 ms
   increments; effective timeout resolution is ~50 ms.
 """
@@ -37,6 +38,9 @@ from omotion.Interface import MOTIONInterface
 
 
 logger = logging.getLogger("comms_stress_test")
+
+
+TEMP_EVERY_PACKETS = 10
 
 
 def _percentile(sorted_values: list[float], p: float) -> float | None:
@@ -268,6 +272,7 @@ def run() -> int:
     print("Starting comms stress test")
     print(f"Pattern: {args.pattern}")
     print(f"Timeout: {args.timeout:0.3f}s | Sleep: {args.sleep_ms:0.1f}ms | Echo bytes: {args.echo_bytes}")
+    print(f"Temperatures: every {TEMP_EVERY_PACKETS} packets")
     if args.iterations is None:
         print(f"Stop condition: duration {args.duration:0.1f}s")
     else:
@@ -279,6 +284,9 @@ def run() -> int:
     start_time = time.perf_counter()
     consecutive_failures = 0
     cycle = 0
+    packet_counter = 0
+
+    temp_stats = OpStats(name="temperatures")
 
     def should_stop() -> bool:
         if args.iterations is not None:
@@ -352,6 +360,44 @@ def run() -> int:
                         print(f"Aborting: hit {consecutive_failures} consecutive failures")
                         raise KeyboardInterrupt
 
+                packet_counter += 1
+
+                # Periodic temperature read
+                if TEMP_EVERY_PACKETS > 0 and (packet_counter % TEMP_EVERY_PACKETS == 0):
+                    t_ts_unix = time.time()
+                    t_err_label: str | None = None
+                    t_latency_ms: float | None = None
+                    t_ok = False
+                    t0 = time.perf_counter()
+                    try:
+                        temps = console.get_temperatures()
+                        t1 = time.perf_counter()
+                        t_latency_ms = (t1 - t0) * 1000.0
+                        if temps and isinstance(temps, tuple) and len(temps) == 3:
+                            t_ok = True
+                            temp_stats.record_ok(t_latency_ms)
+                        else:
+                            t_err_label = "temps_invalid"
+                            temp_stats.record_error_packet()
+                    except Exception as e:  # noqa: BLE001
+                        t_err_label = f"exception:{type(e).__name__}"
+                        temp_stats.record_exception()
+                        logger.debug("Temperature read failed", exc_info=e)
+
+                    if csv_writer is not None:
+                        csv_writer.writerow(
+                            [
+                                f"{t_ts_unix:0.3f}",
+                                str(cycle),
+                                "temperatures",
+                                "1" if t_ok else "0",
+                                f"{t_latency_ms:0.3f}" if t_latency_ms is not None else "",
+                                t_err_label or "",
+                                "0",
+                                "",
+                            ]
+                        )
+
                 if csv_writer is not None:
                     csv_writer.writerow(
                         [
@@ -376,6 +422,8 @@ def run() -> int:
                 print(f"--- {cycle} cycles in {elapsed:0.1f}s ({cycles_per_s:0.2f} cycles/s) ---")
                 for op_name in ops:
                     print(stats[op_name].summary_line())
+                if temp_stats.count:
+                    print(temp_stats.summary_line())
 
     except KeyboardInterrupt:
         pass
@@ -386,9 +434,9 @@ def run() -> int:
 
     end_time = time.perf_counter()
     elapsed = end_time - start_time
-    total_cmds = sum(s.count for s in stats.values())
-    total_ok = sum(s.ok for s in stats.values())
-    total_fail = sum(s.failed for s in stats.values())
+    total_cmds = sum(s.count for s in stats.values()) + temp_stats.count
+    total_ok = sum(s.ok for s in stats.values()) + temp_stats.ok
+    total_fail = sum(s.failed for s in stats.values()) + temp_stats.failed
     cmds_per_s = total_cmds / elapsed if elapsed > 0 else 0.0
 
     print("\n=== Summary ===")
@@ -397,6 +445,8 @@ def run() -> int:
         print(f"OK: {total_ok} | Fail: {total_fail} | Fail rate: {(total_fail/total_cmds)*100.0:0.2f}%")
     for op_name in ops:
         print(stats[op_name].summary_line())
+    if temp_stats.count:
+        print(temp_stats.summary_line())
 
     return 0 if total_fail == 0 else 1
 
