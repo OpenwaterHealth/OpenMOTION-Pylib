@@ -1561,7 +1561,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_ON, addr=camera_mask)
+            # Firmware may delay 200ms + I2C scan per camera; use 4x default COMM timeout
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_ON, addr=camera_mask, timeout=8)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error enabling camera power")
@@ -1592,7 +1593,7 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_OFF, addr=camera_mask)
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_OFF, addr=camera_mask, timeout=8)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error disabling camera power")
@@ -1618,8 +1619,8 @@ class MOTIONSensor:
             if not self.uart.is_connected():
                 raise ValueError("Sensor Module not connected")
 
-            # Query all cameras (0xFF mask)
-            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_STATUS, addr=0xFF)
+            # Query all cameras (0xFF mask); use 4x default COMM timeout
+            r = self.uart.comm.send_packet(id=None, packetType=OW_CAMERA, command=OW_CAMERA_POWER_STATUS, addr=0xFF, timeout=0.12)
             self.uart.comm.clear_buffer()
             if r.packet_type in [OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN]:
                 logger.error("Error getting camera power status")
