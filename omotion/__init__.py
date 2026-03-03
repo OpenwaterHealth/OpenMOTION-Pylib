@@ -16,13 +16,14 @@ def set_log_root(root: str):
     _log_root = root
 
 from .config import *
+from .beagle_usb_logger import try_start_beagle_usb_logging
 from .MotionUart import MOTIONUart
 from .MotionSignal import MOTIONSignal
 from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
 
-__all__ = ["__version__", "set_log_root"]
+__all__ = ["__version__", "set_log_root", "try_start_beagle_usb_logging"]
 
 try:
     # works when installed (wheel/sdist) — uses dist-info METADATA
