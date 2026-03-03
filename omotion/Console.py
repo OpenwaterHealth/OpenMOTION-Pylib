@@ -72,6 +72,27 @@ logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 # --------------------------------------------------------------------------- #
 
 @dataclass
+class TelemetrySample:
+    timestamp_ms: int
+    acq_time_us: int
+    t1: float
+    t2: float
+    t3: float
+    tec_adc: tuple[int, int, int, int]
+    tec_good: bool
+
+    def __str__(self):
+        return (
+            f"TelemetrySample(ts={self.timestamp_ms} ms, "
+            f"acq={self.acq_time_us} µs, "
+            f"t1={self.t1:.2f}°C, "
+            f"t2={self.t2:.2f}°C, "
+            f"t3={self.t3:.2f}°C, "
+            f"tec_adc={self.tec_adc}, "
+            f"tec_good={self.tec_good})"
+        )
+
+@dataclass
 class PDUMon:
     raws: List[int]     # 16 uint16
     volts: List[float]  # 16 float32
@@ -84,7 +105,6 @@ def _parse_pdu_mon(payload: bytes) -> PDUMon:
     raws  = list(raws_and_volts[0:16])
     volts = list(raws_and_volts[16:32])
     return PDUMon(raws=raws, volts=volts)
-
 
 class MOTIONConsole:
     def __init__(self, uart: MOTIONUart):
@@ -1036,44 +1056,106 @@ class MOTIONConsole:
             logger.error("Unexpected error during read_adc_value: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-    def get_temperatures(self) -> tuple[float, float, float]:
+    def get_temperatures(self, return_all: bool = False) -> tuple[float, float, float]:
         """
         Get the current temperatures from the Console device.
 
+        The firmware response contains N packed TelemetrySample records:
+            struct TelemetrySample (28 bytes, little-endian, packed):
+                uint32  timestamp_ms
+                uint32  acq_time_us
+                float   t1   (MAX31875 sensor 1, °C)
+                float   t2   (MAX31875 sensor 2, °C)
+                float   t3   (MAX31875 sensor 3, °C)
+                uint16  tec_adc[4]  (ADS7924 channels 0-3, raw 12-bit)
+                bool    tec_status
+
+        All samples are printed; the last sample's (t1, t2, t3) is returned.
+
         Returns:
-            tuple[float, float, float]: (mcu_temp, safety_temp, ta_temp) in °C.
+            tuple[float, float, float]: (t1, t2, t3) in °C from the most recent sample.
 
         Raises:
-            ValueError: If the UART is not connected or the payload size is unexpected.
+            ValueError: If the UART is not connected or the payload is malformed.
         """
+        SAMPLE_FMT  = '<IIfff4H?'  # matches TelemetrySample layout
+        SAMPLE_SIZE = struct.calcsize(SAMPLE_FMT)  # 28 bytes
+
         try:
             if self.uart.demo_mode:
                 # Demo values: stable 3-tuple
+                if return_all:
+                    return [TelemetrySample(0, 0, 35.0, 45.0, 25.0, (0, 0, 0, 0), True)]
                 return (35.0, 45.0, 25.0)
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            # (Optional) self.uart.clear_buffer()  # If you intend to clear BEFORE request
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_GET_TEMPS
             )
-            self.uart.clear_buffer()  # OK if your send_packet fully returns the response
+            self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
                 raise ValueError("Device returned OW_ERROR for temperatures")
 
-            if r.data_len != 12:
-                raise ValueError(f"Unexpected temperature payload length: {r.data_len} (expected 12)")
+            # --- Old firmware compatibility (3 floats only) ---
+            if r.data_len == 12:
+                mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
+                return (mcu_temp, safety_temp, ta_temp)
 
-            mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
-            # logger.info("MCU: %.2f °C, Safety: %.2f °C, TA: %.2f °C", mcu_temp, safety_temp, ta_temp)
-            return (mcu_temp, safety_temp, ta_temp)
+            # --- New telemetry format ---
+            if r.data_len == 0 or r.data_len % SAMPLE_SIZE != 0:
+                raise ValueError(
+                    f"Unexpected telemetry payload length: {r.data_len} "
+                    f"(must be non-zero multiple of {SAMPLE_SIZE})"
+                )
+
+            n_samples = r.data_len // SAMPLE_SIZE
+            samples: list[TelemetrySample] = []
+
+            for i in range(n_samples):
+                unpacked = struct.unpack_from(
+                    SAMPLE_FMT,
+                    r.data,
+                    offset=i * SAMPLE_SIZE
+                )
+
+                (
+                    ts_ms,
+                    acq_us,
+                    t1,
+                    t2,
+                    t3,
+                    adc0,
+                    adc1,
+                    adc2,
+                    adc3,
+                    tec_good
+                ) = unpacked
+
+                samples.append(
+                    TelemetrySample(
+                        timestamp_ms=ts_ms,
+                        acq_time_us=acq_us,
+                        t1=t1,
+                        t2=t2,
+                        t3=t3,
+                        tec_adc=(adc0, adc1, adc2, adc3),
+                        tec_good=tec_good
+                    )
+                )
+
+            if return_all:
+                return samples
+
+            # default (backwards compatible)
+            last = samples[-1]
+            return (last.t1, last.t2, last.t3)
 
         except Exception:
-            # Let caller handle; preserve your existing behavior
             logger.exception("Failed to get temperatures")
             raise
 

@@ -155,11 +155,17 @@ class CommInterface(USBInterfaceBase):
 
     def stop_read_thread(self):
         self.stop_event.set()
+        # We're intentionally shutting down; prevent the read loop from
+        # triggering disconnect callbacks/logging if the device disappears.
+        self._disconnect_notified = True
         if self.read_thread:
             self.read_thread.join()
         logger.info(f"{self.desc}: Read thread stopped")
 
     def _trigger_disconnect(self, error):
+        # During an intentional shutdown, ignore disconnect triggers.
+        if self.stop_event.is_set():
+            return
         if self._disconnect_notified:
             return
         self._disconnect_notified = True
@@ -183,6 +189,9 @@ class CommInterface(USBInterfaceBase):
                     logger.debug(f"Read {len(data)} bytes.")
                 time.sleep(0.001)
             except usb.core.USBError as e:
+                # If we're shutting down, USB errors here are expected and should not be noisy.
+                if self.stop_event.is_set():
+                    break
                 if e.errno == 110:
                     pass
                 elif e.errno == 10060:
