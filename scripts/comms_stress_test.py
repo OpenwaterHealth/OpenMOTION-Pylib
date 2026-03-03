@@ -370,15 +370,19 @@ def run() -> int:
                     t_ok = False
                     t0 = time.perf_counter()
                     try:
-                        temps = console.get_temperatures()
+                        temps = console.get_temperatures(return_all=True)
                         t1 = time.perf_counter()
                         t_latency_ms = (t1 - t0) * 1000.0
-                        if temps and isinstance(temps, tuple) and len(temps) == 3:
+
+                        if temps:
                             t_ok = True
                             temp_stats.record_ok(t_latency_ms)
+                            last = temps[-1]
+                            print(last)
                         else:
-                            t_err_label = "temps_invalid"
+                            print("No telemetry samples received.")
                             temp_stats.record_error_packet()
+
                     except Exception as e:  # noqa: BLE001
                         t_err_label = f"exception:{type(e).__name__}"
                         temp_stats.record_exception()
