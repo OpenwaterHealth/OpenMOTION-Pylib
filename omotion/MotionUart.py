@@ -185,7 +185,7 @@ class MOTIONUart(SignalWrapper):
                     data = self.serial.read(self.serial.in_waiting)
                     self.read_buffer.extend(data)
                     
-                    logger.info("Data received on %s: %s", self.descriptor, data)
+                    logger.debug("Data received on %s: %s", self.descriptor, data)
                     # Attempt to parse a complete packet from read_buffer.
                     try:
                         # Note: Depending on your protocol, you might need to check for start/end bytes
@@ -328,7 +328,7 @@ class MOTIONUart(SignalWrapper):
                 self._tx(packet)
                 time.sleep(0.0005)
                 
-                if not self.asyncMode:
+                if not self.asyncMode:                    
                     ret_packet = self.read_packet(timeout=timeout)
                     time.sleep(0.0005)            
                     return ret_packet

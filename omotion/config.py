@@ -98,6 +98,7 @@ OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 OW_CMD_TOGGLE_LED = 0x04
 OW_CMD_HWID = 0x05
+OW_CMD_MESSAGES = 0x09
 OW_CMD_USR_CFG = 0x0A
 OW_CMD_DFU = 0x0D
 OW_CMD_NOP = 0x0E
@@ -105,8 +106,10 @@ OW_CMD_RESET = 0x0F
 OW_CMD_I2C_BROADCAST = 0x06
 OW_CMD_DEBUG_FLAGS = 0x0C
 
-# Debug flag bits
-DEBUG_FLAG_USB_PRINTF = 0x01
+# Debug flag bits.
+DEBUG_FLAG_USB_PRINTF = 0x01    # Turn on or off USB printf logging
+DEBUG_FLAG_HISTO_THROTTLE = 0x02  # Only send histogram packet every 5s; others pretend success
+DEBUG_FLAG_FAKE_DATA = 0x04       # Turn on or off fake data mode, turns off cameras and sends fake data
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
