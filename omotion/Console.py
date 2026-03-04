@@ -34,6 +34,7 @@ from omotion.config import (
     OW_CMD_TOGGLE_LED,
     OW_CMD_USR_CFG,
     OW_CMD_VERSION,
+    OW_CMD_MESSAGES,
     OW_CONTROLLER,
     OW_CTRL_BOARDID,
     OW_CTRL_GET_FAN,
@@ -386,6 +387,53 @@ class MOTIONConsole:
 
         except Exception as e:
             logger.error("Unexpected error during soft_reset: %s", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_messages(self) -> str:
+        """
+        Retrieve messages from the Console device.
+
+        Returns:
+            str: Messages from the device as a decoded string, or empty string if no messages.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while retrieving messages.
+        """
+        try:
+            if self.uart.demo_mode:
+                return "Demo mode: messages not available"
+
+            if not self.uart.is_connected():
+                raise ValueError("Console Module not connected")
+
+            logger.info("Sending OW_CMD_MESSAGES command to Console.")
+            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_MESSAGES)
+            self.uart.clear_buffer()
+            
+            if r.packet_type == OW_ERROR:
+                logger.error("Error retrieving messages from device")
+                return ""
+            
+            # Decode the response as a UTF-8 string, stripping trailing nulls and whitespace
+            if r.data_len > 0 and r.data:
+                try:
+                    msg_str = r.data[:r.data_len].decode('utf-8', errors='ignore').rstrip('\x00').strip()
+                    logger.info(f"Received messages: {msg_str}")
+                    return msg_str
+                except Exception as e:
+                    logger.error(f"Error decoding messages: {e}")
+                    return ""
+            else:
+                logger.info("No messages received from device")
+                return ""
+                
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            logger.error("Unexpected error during get_messages: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
     def scan_i2c_mux_channel(self, mux_index: int, channel: int) -> list[int]:
