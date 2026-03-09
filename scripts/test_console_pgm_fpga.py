@@ -110,7 +110,7 @@ def parse_cli() -> argparse.Namespace:
         "--fpga",
         type=int,
         default=0,
-        choices=[0, 1],
+        choices=[0, 1, 2, 3],
         help="Target FPGA mux channel index (0 or 1).",
     )
     parser.add_argument(

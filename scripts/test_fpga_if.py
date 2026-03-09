@@ -1,6 +1,8 @@
 import asyncio
 import time
+from omotion.GitHubReleases import GitHubReleases
 from omotion.Interface import MOTIONInterface
+import json
 
 # Run this script with:
 # set PYTHONPATH=%cd%;%PYTHONPATH%
@@ -36,101 +38,78 @@ def main():
         print(f"Error reading version: {e}")
 
 
-    # TA - mux_idx: 1; channel: 4; i2c_addr: 0x41 }
-    # Seed - mux_idx: 1; channel: 5; i2c_addr: 0x41 }
-    # Safety EE - mux_idx: 1; channel: 6; i2c_addr: 0x41 }
-    # Safety OPT - mux_idx: 1; channel: 7; i2c_addr: 0x41 }
+    # TA - mux_idx: 1; channel: 4; i2c_addr: 0x41 start=0x14}
+    # Seed - mux_idx: 1; channel: 5; i2c_addr: 0x41 start=0x13}
+    # Safety EE - mux_idx: 1; channel: 6; i2c_addr: 0x41 start=0x25}
+    # Safety OPT - mux_idx: 1; channel: 7; i2c_addr: 0x41 start=0x25}
         
     # Read FPGA Test
     print("\n[3] Read data from FPGA register...")
     try:
-        fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=4, device_addr=0x41, reg_addr=0x00, read_len=2)
+        fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=4, device_addr=0x41, reg_addr=0x14, read_len=4)
         if fpga_data is None:
             print(f"Read FPGA Failed")
         else:
             print(f"Read FPGA Success")
             print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
 
+        print("Retrieve latest firmware versions")
+
+        def _default_payload() -> dict:
+            return {"name": "N/A", "browser_download_url": "", "created_at": ""}
+
+        def _pick_latest_jed_asset(gh: GitHubReleases) -> dict:
+            release = gh.get_latest_release()
+            if not isinstance(release, dict):
+                return _default_payload()
+
+            assets = release.get("assets")
+            if not isinstance(assets, list):
+                try:
+                    assets = gh.get_asset_list(release=release)
+                except Exception:
+                    assets = []
+
+            if not isinstance(assets, list):
+                assets = []
+
+            jed_assets = []
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                name = str(a.get("name") or "")
+                if name.lower().endswith(".jed"):
+                    jed_assets.append(a)
+
+            if not jed_assets:
+                return _default_payload()
+
+            # Prefer the newest .jed by created_at when available.
+            jed_assets.sort(key=lambda a: str(a.get("created_at") or ""), reverse=True)
+            best = jed_assets[0]
+            return {
+                "name": str(best.get("name") or "N/A"),
+                "browser_download_url": str(best.get("browser_download_url") or ""),
+                "created_at": str(best.get("created_at") or ""),
+            }
+
+        gh_ta = GitHubReleases("OpenwaterHealth", "openmotion-ta-fpga")
+        gh_seed = GitHubReleases("OpenwaterHealth", "openmotion-seed-fpga")
+        gh_safety = GitHubReleases("OpenwaterHealth", "openmotion-safety-fpga")
+
+        payload = {
+            "TA": _pick_latest_jed_asset(gh_ta),
+            "SEED": _pick_latest_jed_asset(gh_seed),
+            "SAFETY": _pick_latest_jed_asset(gh_safety),
+        }
+
+        print(f"Latest TA FPGA .jed asset: {payload['TA']}")
+        print(f"Latest SEED FPGA .jed asset: {payload['SEED']}")
+        print(f"Latest SAFETY FPGA .jed asset: {payload['SAFETY']}")
+
+
     except Exception as e:
         print(f"Error writing FPGA register: {e}")
-
-    print("\n[3] Read data from FPGA register...")
-    try:
-        fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=5, device_addr=0x41, reg_addr=0x00, read_len=2)
-        if fpga_data is None:
-            print(f"Read FPGA Failed")
-        else:
-            print(f"Read FPGA Success")
-            print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
-
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-    print("\n[3] Read data from FPGA register...")
-    try:
-        fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=6, device_addr=0x41, reg_addr=0x00, read_len=2)
-        if fpga_data is None:
-            print(f"Read FPGA Failed")
-        else:
-            print(f"Read FPGA Success")
-            print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
-
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-    print("\n[3] Read data from FPGA register...")
-    try:
-        fpga_data, fpga_data_len = interface.console_module.read_i2c_packet(mux_index=1, channel=7, device_addr=0x41, reg_addr=0x00, read_len=2)
-        if fpga_data is None:
-            print(f"Read FPGA Failed")
-        else:
-            print(f"Read FPGA Success")
-            print(f"Raw bytes: {fpga_data.hex(' ')}")  # Print as hex bytes separated by spaces
-
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-    # Write FPGA Test
-    print("\n[4] Write data to FPGA register...")
-    try:
-        if interface.console_module.write_i2c_packet(mux_index=1, channel=4, device_addr=0x41, reg_addr=0x00, data=b'\x01\x04'):
-            print(f"Write FPGA Success")
-        else:
-            print(f"Write FPGA Failed")
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-
-    # Write FPGA Test
-    print("\n[4] Write data to FPGA register...")
-    try:
-        if interface.console_module.write_i2c_packet(mux_index=1, channel=5, device_addr=0x41, reg_addr=0x00, data=b'\x01\x05'):
-            print(f"Write FPGA Success")
-        else:
-            print(f"Write FPGA Failed")
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-    # Write FPGA Test
-    print("\n[4] Write data to FPGA register...")
-    try:
-        if interface.console_module.write_i2c_packet(mux_index=1, channel=6, device_addr=0x41, reg_addr=0x00, data=b'\x01\x06'):
-            print(f"Write FPGA Success")
-        else:
-            print(f"Write FPGA Failed")
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
-    # Write FPGA Test
-    print("\n[4] Write data to FPGA register...")
-    try:
-        if interface.console_module.write_i2c_packet(mux_index=1, channel=7, device_addr=0x41, reg_addr=0x00, data=b'\x01\x07'):
-            print(f"Write FPGA Success")
-        else:
-            print(f"Write FPGA Failed")
-    except Exception as e:
-        print(f"Error writing FPGA register: {e}")
-
     
 if __name__ == "__main__":
     main()
