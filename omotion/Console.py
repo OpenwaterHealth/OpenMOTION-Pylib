@@ -65,6 +65,7 @@ from omotion.config import (
 
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionConfig import MotionConfig
+from omotion.CommandError import CommandError
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 
@@ -1675,8 +1676,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error opening FPGA device")
-                return None
+                logger.error("FPGA_PROG_OPEN returned ERROR")
+                raise CommandError("FPGA_PROG_OPEN failed", response=r)
 
             logger.info("FPGA_PROG_OPEN OK")
 
@@ -1723,8 +1724,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_ERASE returned ERROR")
+                raise CommandError("FPGA_PROG_ERASE failed", response=r)
             
             logger.info("FPGA_PROG_ERASE OK (mode=0x%02X)", mode)
 
@@ -1758,8 +1759,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_CFG_RESET returned ERROR")
+                raise CommandError("FPGA_PROG_CFG_RESET failed", response=r)
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -1803,8 +1804,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_CFG_WRITE_PAGE returned ERROR")
+                raise CommandError("FPGA_PROG_CFG_WRITE_PAGE failed", response=r)
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -1853,8 +1854,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_CFG_WRITE_PAGES returned ERROR")
+                raise CommandError("FPGA_PROG_CFG_WRITE_PAGES failed", response=r)
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -1894,8 +1895,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_CFG_READ_PAGE returned ERROR")
+                raise CommandError("FPGA_PROG_CFG_READ_PAGE failed", response=r)
 
             return r.data
         
@@ -1931,8 +1932,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_UFM_RESET returned ERROR")
+                raise CommandError("FPGA_PROG_UFM_RESET failed", response=r)
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -1978,8 +1979,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_UFM_WRITE_PAGE returned ERROR")
+                raise CommandError("FPGA_PROG_UFM_WRITE_PAGE failed", response=r)
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -2028,8 +2029,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_UFM_WRITE_PAGES returned ERROR")
+                raise CommandError("FPGA_PROG_UFM_WRITE_PAGES failed", response=r)
             
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -2068,8 +2069,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_UFM_READ_PAGE returned ERROR")
+                raise CommandError("FPGA_PROG_UFM_READ_PAGE failed", response=r)
             
             if len(r.data) != XO2_FLASH_PAGE_SIZE:
                 raise ValueError(
@@ -2124,8 +2125,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_READ_STATUS returned ERROR")
+                raise CommandError("FPGA_PROG_READ_STATUS failed", response=r)
             
             if len(r.data) != 4:
                 raise ValueError(
@@ -2182,8 +2183,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_FEATROW_WRITE returned ERROR")
+                raise CommandError("FPGA_PROG_FEATROW_WRITE failed", response=r)
             
             logger.info("FPGA_PROG_FEATROW_WRITE OK")
         except ValueError as v:
@@ -2223,8 +2224,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_FEATROW_READ returned ERROR")
+                raise CommandError("FPGA_PROG_FEATROW_READ failed", response=r)
             
             if len(r.data) < 10:
                 raise ValueError(
@@ -2265,8 +2266,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_SET_DONE returned ERROR")
+                raise CommandError("FPGA_PROG_SET_DONE failed", response=r)
             
             logger.info("FPGA_PROG_SET_DONE OK")
 
@@ -2307,8 +2308,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_REFRESH returned ERROR")
+                raise CommandError("FPGA_PROG_REFRESH failed", response=r)
             
             logger.info("FPGA_PROG_REFRESH OK")
 
@@ -2346,8 +2347,8 @@ class MOTIONConsole:
             self.uart.clear_buffer()
             
             if r.packet_type == OW_ERROR:
-                logger.error("Error FPGA erase")
-                return None
+                logger.error("FPGA_PROG_CLOSE returned ERROR")
+                raise CommandError("FPGA_PROG_CLOSE failed", response=r)
             
             logger.info("FPGA_PROG_CLOSE OK")
 

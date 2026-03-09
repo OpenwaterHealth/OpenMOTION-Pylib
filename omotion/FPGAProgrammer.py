@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 import time
 from typing import Callable, Optional
-from omotion import CommandError
+from omotion.CommandError import CommandError
 from omotion.Console import MOTIONConsole
 from omotion.config import XO2_FLASH_PAGE_SIZE, ERASE_ALL, FPGA_PROG_BATCH_PAGES, MuxChannel
 
