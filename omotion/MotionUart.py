@@ -3,16 +3,21 @@ import asyncio
 import time
 import queue
 import threading
-import logging
-import asyncio
 import serial
 import serial.tools.list_ports
 
 from omotion.connection_state import ConnectionState
 
 from omotion.UartPacket import UartPacket
-from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
-from omotion.config import OW_CMD_NOP, OW_START_BYTE, OW_END_BYTE, OW_ACK, OW_RESP, OW_ERROR
+from omotion.signal_wrapper import SignalWrapper
+from omotion.config import (
+    OW_CMD_NOP,
+    OW_START_BYTE,
+    OW_END_BYTE,
+    OW_ACK,
+    OW_RESP,
+    OW_ERROR,
+)
 from omotion.utils import util_crc16
 from omotion import _log_root
 from omotion.CommandError import CommandError
@@ -20,9 +25,20 @@ from omotion.CommandError import CommandError
 # Set up logging
 logger = logging.getLogger(f"{_log_root}.UART" if _log_root else "UART")
 
+
 class MOTIONUart(SignalWrapper):
-    def __init__(self, vid, pid, baudrate=921600, timeout=10, align=0, async_mode=False, demo_mode=False, desc="VCP"):
-        super().__init__() 
+    def __init__(
+        self,
+        vid,
+        pid,
+        baudrate=921600,
+        timeout=10,
+        align=0,
+        async_mode=False,
+        demo_mode=False,
+        desc="VCP",
+    ):
+        super().__init__()
         self.vid = vid
         self.pid = pid
         self.port = None
@@ -44,8 +60,10 @@ class MOTIONUart(SignalWrapper):
 
         if async_mode:
             self.loop = asyncio.get_event_loop()
-            self.response_queues = {} 
-            self.response_lock = threading.Lock()  # Lock for thread-safe access to response_queues
+            self.response_queues = {}
+            self.response_lock = (
+                threading.Lock()
+            )  # Lock for thread-safe access to response_queues
 
     def connect(self):
         """Open the serial port."""
@@ -57,9 +75,7 @@ class MOTIONUart(SignalWrapper):
         self._set_state(ConnectionState.CONNECTING)
         try:
             self.serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout
+                port=self.port, baudrate=self.baudrate, timeout=self.timeout
             )
 
             logger.info("Connected to UART on port %s.", self.port)
@@ -144,7 +160,9 @@ class MOTIONUart(SignalWrapper):
             logger.debug("Monitoring in demo mode.")
             return
         if not self.monitoring_task and self.asyncMode:
-            self.monitoring_task = asyncio.create_task(self.monitor_usb_status(interval))
+            self.monitoring_task = asyncio.create_task(
+                self.monitor_usb_status(interval)
+            )
 
     def stop_monitoring(self):
         """Stop the periodic USB device connection check."""
@@ -159,7 +177,12 @@ class MOTIONUart(SignalWrapper):
         """Find the USB device by VID and PID."""
         ports = serial.tools.list_ports.comports()
         for port in ports:
-            if hasattr(port, 'vid') and hasattr(port, 'pid') and port.vid == self.vid and port.pid == self.pid:
+            if (
+                hasattr(port, "vid")
+                and hasattr(port, "pid")
+                and port.vid == self.vid
+                and port.pid == self.pid
+            ):
                 return port.device
         return None
 
@@ -184,7 +207,7 @@ class MOTIONUart(SignalWrapper):
                     bytes_waiting = self.serial.in_waiting
                     data = self.serial.read(self.serial.in_waiting)
                     self.read_buffer.extend(data)
-                    
+
                     logger.debug("Data received on %s: %s", self.descriptor, data)
                     # Attempt to parse a complete packet from read_buffer.
                     try:
@@ -200,8 +223,15 @@ class MOTIONUart(SignalWrapper):
                                 if packet.id in self.response_queues:
                                     self.response_queues[packet.id].put(packet)
                                 else:
-                                    logger.warning("Received an unsolicited packet with ID %d", packet.id)
-                                    logger.warning("Packet type: 0x%02X, Command: 0x%02X", packet.packet_type, packet.command)  
+                                    logger.warning(
+                                        "Received an unsolicited packet with ID %d",
+                                        packet.id,
+                                    )
+                                    logger.warning(
+                                        "Packet type: 0x%02X, Command: 0x%02X",
+                                        packet.packet_type,
+                                        packet.command,
+                                    )
                         else:
                             self.signal_data_received.emit(self.descriptor, packet)
 
@@ -270,18 +300,22 @@ class MOTIONUart(SignalWrapper):
         except Exception as e:
             logger.error("Error parsing packet: %s", e)
             packet = UartPacket(
-                id=0,
-                packet_type=OW_ERROR,
-                command=0,
-                addr=0,
-                reserved=0,
-                data=[]
+                id=0, packet_type=OW_ERROR, command=0, addr=0, reserved=0, data=[]
             )
             raise e
 
         return packet
 
-    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=20):
+    def send_packet(
+        self,
+        id=None,
+        packetType=OW_ACK,
+        command=OW_CMD_NOP,
+        addr=0,
+        reserved=0,
+        data=None,
+        timeout=20,
+    ):
         """
         Send a packet over UART and, if not running, return a response packet.
         """
@@ -296,7 +330,7 @@ class MOTIONUart(SignalWrapper):
 
                 if self.packet_count >= 0xFFFF:
                     self.packet_count = 1
-                    
+
                 id = self.packet_count
 
             if data:
@@ -306,31 +340,31 @@ class MOTIONUart(SignalWrapper):
                 payload_length = len(payload)
             else:
                 payload_length = 0
-                payload = b''
+                payload = b""
 
             packet = bytearray()
             packet.append(OW_START_BYTE)
-            packet.extend(id.to_bytes(2, 'big'))
+            packet.extend(id.to_bytes(2, "big"))
             packet.append(packetType)
             packet.append(command)
             packet.append(addr)
             packet.append(reserved)
-            packet.extend(payload_length.to_bytes(2, 'big'))
+            packet.extend(payload_length.to_bytes(2, "big"))
             if payload_length > 0:
                 packet.extend(payload)
 
             crc_value = util_crc16(packet[1:])  # Exclude start byte
-            packet.extend(crc_value.to_bytes(2, 'big'))
+            packet.extend(crc_value.to_bytes(2, "big"))
             packet.append(OW_END_BYTE)
 
             # print("Sending packet: ", packet.hex())
             with self._io_lock:
                 self._tx(packet)
                 time.sleep(0.0005)
-                
-                if not self.asyncMode:                    
+
+                if not self.asyncMode:
                     ret_packet = self.read_packet(timeout=timeout)
-                    time.sleep(0.0005)            
+                    time.sleep(0.0005)
                     return ret_packet
                 else:
                     response_queue = queue.Queue()
@@ -341,7 +375,10 @@ class MOTIONUart(SignalWrapper):
                         # Wait for a response that matches the packet ID.
                         response = response_queue.get(timeout=timeout)
                         # Optionally, check that the response has the expected type and command.
-                        if response.packet_type == OW_RESP and response.command == command:
+                        if (
+                            response.packet_type == OW_RESP
+                            and response.command == command
+                        ):
                             return response
                         else:
                             logger.error("Received unexpected response: %s", response)
@@ -380,9 +417,17 @@ class MOTIONUart(SignalWrapper):
         prior = self.state
         self.state = new_state
         if reason:
-            logger.info("UART %s state %s -> %s (%s)", self.descriptor, prior.name, new_state.name, reason)
+            logger.info(
+                "UART %s state %s -> %s (%s)",
+                self.descriptor,
+                prior.name,
+                new_state.name,
+                reason,
+            )
         else:
-            logger.info("UART %s state %s -> %s", self.descriptor, prior.name, new_state.name)
+            logger.info(
+                "UART %s state %s -> %s", self.descriptor, prior.name, new_state.name
+            )
 
     def run_coroutine(self, coro):
         """Run a coroutine using the internal event loop."""
@@ -390,7 +435,7 @@ class MOTIONUart(SignalWrapper):
             return self.loop.run_until_complete(coro)
         else:
             return asyncio.create_task(coro)
-               
+
     def print(self):
         """Print the current UART configuration."""
         logger.info("    Serial Port: %s", self.port)

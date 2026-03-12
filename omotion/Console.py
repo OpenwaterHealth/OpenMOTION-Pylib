@@ -1,8 +1,6 @@
 import logging
 import struct
 import json
-import sys
-import time
 import os
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
@@ -73,6 +71,7 @@ logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
 # Dataclasses
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class TelemetrySample:
     timestamp_ms: int
@@ -94,24 +93,27 @@ class TelemetrySample:
             f"tec_good={self.tec_good})"
         )
 
+
 @dataclass
 class PDUMon:
-    raws: List[int]     # 16 uint16
+    raws: List[int]  # 16 uint16
     volts: List[float]  # 16 float32
+
 
 def _parse_pdu_mon(payload: bytes) -> PDUMon:
     if len(payload) != 96:
         raise ValueError(f"Expected 96 bytes, got {len(payload)}")
     # <  = little-endian; 16H = 16 uint16; 16f = 16 float32
     raws_and_volts = struct.unpack("<16H16f", payload)
-    raws  = list(raws_and_volts[0:16])
+    raws = list(raws_and_volts[0:16])
     volts = list(raws_and_volts[16:32])
     return PDUMon(raws=raws, volts=volts)
+
 
 class MOTIONConsole:
     def __init__(self, uart: MOTIONUart):
         """
-        Initialize the MOTIONConsole Module.            
+        Initialize the MOTIONConsole Module.
         """
 
         self.uart = uart
@@ -121,23 +123,23 @@ class MOTIONConsole:
             if self.uart.is_connected():
                 logger.info("MOTION MOTIONConsole connected.")
             else:
-                logger.info("MOTION MOTIONConsole NOT Connected.")    
+                logger.info("MOTION MOTIONConsole NOT Connected.")
 
-    def is_connected(self)-> bool:        
+    def is_connected(self) -> bool:
         """
-        Check if the MOTIONConsole is connected.   
+        Check if the MOTIONConsole is connected.
         Returns True if connected, False otherwise.
         """
         if self.uart and self.uart.is_connected():
             return True
         else:
             return False
-        
-    def ping(self) -> bool:        
-        """    
+
+    def ping(self) -> bool:
+        """
         Send a ping command to the MOTIONConsole and receive a response.
         Returns the response from the MOTIONConsole.
-        """ 
+        """
         try:
             if self.uart.demo_mode:
                 return True
@@ -178,28 +180,35 @@ class MOTIONConsole:
         """
         try:
             if self.uart.demo_mode:
-                return 'v0.1.1'
+                return "v0.1.1"
 
             if not self.uart.is_connected():
                 logger.error("Console Module not connected")
-                return 'v0.0.0'
+                return "v0.0.0"
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_VERSION)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CMD, command=OW_CMD_VERSION
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             # Older firmwares returned 3 bytes: major, minor, patch.
             # Newer firmware returns a C string in the payload (FW_VERSION_STRING).
             if r.data_len == 3:
-                ver = f'v{r.data[0]}.{r.data[1]}.{r.data[2]}'
+                ver = f"v{r.data[0]}.{r.data[1]}.{r.data[2]}"
             elif r.data_len and r.data:
                 try:
                     # Decode only the valid length, strip trailing NULs and whitespace
-                    ver_str = r.data[:r.data_len].decode('utf-8', errors='ignore').rstrip('\x00').strip()
-                    ver = ver_str if ver_str else 'v0.0.0'
+                    ver_str = (
+                        r.data[: r.data_len]
+                        .decode("utf-8", errors="ignore")
+                        .rstrip("\x00")
+                        .strip()
+                    )
+                    ver = ver_str if ver_str else "v0.0.0"
                 except Exception:
-                    ver = 'v0.0.0'
+                    ver = "v0.0.0"
             else:
-                ver = 'v0.0.0'
+                ver = "v0.0.0"
             logger.info(ver)
             return ver
         except ValueError as v:
@@ -210,7 +219,7 @@ class MOTIONConsole:
             logger.error("Unexpected error during get_version: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-    def echo(self, echo_data = None) -> tuple[bytes, int]:
+    def echo(self, echo_data=None) -> tuple[bytes, int]:
         """
         Send an echo command to the device with data and receive the same data in response.
 
@@ -238,7 +247,9 @@ class MOTIONConsole:
             if echo_data is not None and not isinstance(echo_data, (bytes, bytearray)):
                 raise TypeError("echo_data must be a byte array")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CMD, command=OW_CMD_ECHO, data=echo_data
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.data_len > 0:
@@ -320,7 +331,6 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error during get_hardware_id: %s", e)
             raise  # Re-raise the exception for the caller to handle
-
 
     def enter_dfu(self) -> bool:
         """
@@ -409,17 +419,24 @@ class MOTIONConsole:
                 raise ValueError("Console Module not connected")
 
             logger.info("Sending OW_CMD_MESSAGES command to Console.")
-            r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_MESSAGES)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CMD, command=OW_CMD_MESSAGES
+            )
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("Error retrieving messages from device")
                 return ""
-            
+
             # Decode the response as a UTF-8 string, stripping trailing nulls and whitespace
             if r.data_len > 0 and r.data:
                 try:
-                    msg_str = r.data[:r.data_len].decode('utf-8', errors='ignore').rstrip('\x00').strip()
+                    msg_str = (
+                        r.data[: r.data_len]
+                        .decode("utf-8", errors="ignore")
+                        .rstrip("\x00")
+                        .strip()
+                    )
                     logger.info(f"Received messages: {msg_str}")
                     return msg_str
                 except Exception as e:
@@ -428,7 +445,7 @@ class MOTIONConsole:
             else:
                 logger.info("No messages received from device")
                 return ""
-                
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -464,7 +481,7 @@ class MOTIONConsole:
                 id=None,
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_I2C_SCAN,
-                data=bytes([mux_index, channel])
+                data=bytes([mux_index, channel]),
             )
             self.uart.clear_buffer()
 
@@ -476,21 +493,32 @@ class MOTIONConsole:
             return list(r.data) if r.data else []
 
         except Exception as e:
-            logger.error("Exception while scanning I2C mux %d channel %d: %s", mux_index, channel, e)
+            logger.error(
+                "Exception while scanning I2C mux %d channel %d: %s",
+                mux_index,
+                channel,
+                e,
+            )
             raise
 
-
-    def read_i2c_packet(self, mux_index: int, channel: int, device_addr: int, reg_addr: int, read_len: int) -> tuple[bytes, int]:
+    def read_i2c_packet(
+        self,
+        mux_index: int,
+        channel: int,
+        device_addr: int,
+        reg_addr: int,
+        read_len: int,
+    ) -> tuple[bytes, int]:
         """
         Read data from I2C device through MUX
-        
+
         Args:
             mux_index: Which MUX to use (0 or 1)
             channel: Which MUX channel to select (0-7)
             device_addr: I2C device address (7-bit)
             reg_addr: Register address to read from
             read_len: Number of bytes to read
-            
+
         Returns:
             tuple[bytes, int]: The received data and its length, None if failed
         """
@@ -503,14 +531,9 @@ class MOTIONConsole:
         try:
             # Build packet: [CMD, MUX_IDX, CHANNEL, DEV_ADDR, REG_ADDR, READ_LEN]
             packet = struct.pack(
-                'BBBBB',
-                mux_index,
-                channel,
-                device_addr,
-                reg_addr,
-                read_len
+                "BBBBB", mux_index, channel, device_addr, reg_addr, read_len
             )
-            
+
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CONTROLLER,
@@ -529,24 +552,28 @@ class MOTIONConsole:
                 return r.data, r.data_len
             else:
                 return None, None
-            
+
         except Exception as e:
             # The underlying error is already logged by MotionUart.send_packet()
             # Only log here if we want additional context about the I2C operation
-            logger.debug(f"I2C read operation failed (underlying error logged by UART layer): {str(e)}")
+            logger.debug(
+                f"I2C read operation failed (underlying error logged by UART layer): {str(e)}"
+            )
             return None, None
 
-    def write_i2c_packet(self, mux_index: int, channel: int, device_addr: int, reg_addr: int, data: bytes) -> bool:
+    def write_i2c_packet(
+        self, mux_index: int, channel: int, device_addr: int, reg_addr: int, data: bytes
+    ) -> bool:
         """
         Write data to I2C device through MUX
-        
+
         Args:
             mux_index: Which MUX to use (0 or 1)
             channel: Which MUX channel to select (0-7)
             device_addr: I2C device address (7-bit)
             reg_addr: Register address to write to
             data: Bytes to write
-            
+
         Returns:
             bool: True if write succeeded, False otherwise
         """
@@ -556,18 +583,13 @@ class MOTIONConsole:
         if channel < 0 or channel > 7:
             raise ValueError(f"Invalid channel {channel}. Must be 0-7")
 
-        try:            
+        try:
             # Build packet: [CMD, MUX_IDX, CHANNEL, DEV_ADDR, REG_ADDR] + data
             header = struct.pack(
-                'BBBBB',
-                mux_index,
-                channel,
-                device_addr,
-                reg_addr,
-                len(data)
+                "BBBBB", mux_index, channel, device_addr, reg_addr, len(data)
             )
             packet = header + data
-            
+
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CONTROLLER,
@@ -583,7 +605,7 @@ class MOTIONConsole:
                 return False
             else:
                 return True
-            
+
         except Exception as e:
             print(f"I2C Write failed: {str(e)}")
             return False
@@ -603,7 +625,6 @@ class MOTIONConsole:
         """
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
-
 
         if fan_speed not in range(101):
             raise ValueError("Invalid fan speed. Must be 0 to 100")
@@ -784,7 +805,6 @@ class MOTIONConsole:
             logger.error("Unexpected error during get_rgb_led: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-
     def set_trigger_json(self, data=None) -> dict:
         """
         Set the trigger configuration for console device.
@@ -817,15 +837,20 @@ class MOTIONConsole:
                 logger.error(f"Data must be valid JSON: {e}")
                 return None
 
-            payload = json_string.encode('utf-8')
+            payload = json_string.encode("utf-8")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_SET_TRIG, data=payload)
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_TRIG,
+                data=payload,
+            )
             self.uart.clear_buffer()
 
             if r.packet_type != OW_ERROR and r.data_len > 0:
                 # Parse response as JSON, if possible
                 try:
-                    response_json = json.loads(r.data.decode('utf-8'))
+                    response_json = json.loads(r.data.decode("utf-8"))
                     return response_json
                 except json.JSONDecodeError as e:
                     logger.error(f"Error decoding JSON: {e}")
@@ -858,11 +883,13 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_TRIG, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_TRIG, data=None
+            )
             self.uart.clear_buffer()
             data_object = None
             try:
-                data_object = json.loads(r.data.decode('utf-8'))
+                data_object = json.loads(r.data.decode("utf-8"))
             except json.JSONDecodeError as e:
                 logger.error(f"Error decoding JSON: {e}")
             return data_object
@@ -892,7 +919,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_START_TRIG, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_START_TRIG, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -926,7 +955,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_STOP_TRIG, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_STOP_TRIG, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -960,21 +991,23 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FSYNC, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FSYNC, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
                 logger.error("Error retrieving FSYNC pulse count")
                 return 0
-            
+
             if r.data_len == 4:
                 # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack('<I', r.data)[0]
+                pulse_count = struct.unpack("<I", r.data)[0]
                 return pulse_count
             else:
                 logger.error("Unexpected data length for FSYNC pulse count")
                 return 0
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1001,7 +1034,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_LSYNC, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_LSYNC, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -1009,19 +1044,18 @@ class MOTIONConsole:
                 return 0
             if r.data_len == 4:
                 # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack('<I', r.data)[0]
+                pulse_count = struct.unpack("<I", r.data)[0]
                 return pulse_count
             else:
                 logger.error("Unexpected data length for LSYNC pulse count")
                 return 0
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
             logger.error("Unexpected error during get_lsync_pulsecount: %s", e)
-
 
     def read_gpio_value(self) -> float:
         """
@@ -1041,7 +1075,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_GPIO, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_GPIO, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -1049,12 +1085,12 @@ class MOTIONConsole:
                 return 0
             if r.data_len == 4:
                 # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack('<I', r.data)[0]
+                pulse_count = struct.unpack("<I", r.data)[0]
                 return pulse_count
             else:
                 logger.error("Unexpected data length for LSYNC pulse count")
                 return 0
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1083,7 +1119,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_ADC, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_ADC, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -1091,12 +1129,12 @@ class MOTIONConsole:
                 return 0
             if r.data_len == 4:
                 # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack('<I', r.data)[0]
+                pulse_count = struct.unpack("<I", r.data)[0]
                 return pulse_count
             else:
                 logger.error("Unexpected data length for LSYNC pulse count")
                 return 0
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1127,7 +1165,7 @@ class MOTIONConsole:
         Raises:
             ValueError: If the UART is not connected or the payload is malformed.
         """
-        SAMPLE_FMT  = '<IIfff4H?'  # matches TelemetrySample layout
+        SAMPLE_FMT = "<IIfff4H?"  # matches TelemetrySample layout
         SAMPLE_SIZE = struct.calcsize(SAMPLE_FMT)  # 28 bytes
 
         try:
@@ -1141,9 +1179,7 @@ class MOTIONConsole:
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
-                id=None,
-                packetType=OW_CONTROLLER,
-                command=OW_CTRL_GET_TEMPS
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_TEMPS
             )
             self.uart.clear_buffer()
 
@@ -1152,7 +1188,7 @@ class MOTIONConsole:
 
             # --- Old firmware compatibility (3 floats only) ---
             if r.data_len == 12:
-                mcu_temp, safety_temp, ta_temp = struct.unpack('<fff', r.data)
+                mcu_temp, safety_temp, ta_temp = struct.unpack("<fff", r.data)
                 return (mcu_temp, safety_temp, ta_temp)
 
             # --- New telemetry format ---
@@ -1167,23 +1203,10 @@ class MOTIONConsole:
 
             for i in range(n_samples):
                 unpacked = struct.unpack_from(
-                    SAMPLE_FMT,
-                    r.data,
-                    offset=i * SAMPLE_SIZE
+                    SAMPLE_FMT, r.data, offset=i * SAMPLE_SIZE
                 )
 
-                (
-                    ts_ms,
-                    acq_us,
-                    t1,
-                    t2,
-                    t3,
-                    adc0,
-                    adc1,
-                    adc2,
-                    adc3,
-                    tec_good
-                ) = unpacked
+                (ts_ms, acq_us, t1, t2, t3, adc0, adc1, adc2, adc3, tec_good) = unpacked
 
                 samples.append(
                     TelemetrySample(
@@ -1193,7 +1216,7 @@ class MOTIONConsole:
                         t2=t2,
                         t3=t3,
                         tec_adc=(adc0, adc1, adc2, adc3),
-                        tec_good=tec_good
+                        tec_good=tec_good,
                     )
                 )
 
@@ -1224,29 +1247,45 @@ class MOTIONConsole:
 
             if not self.uart.is_connected():
                 raise ValueError("Motion Console not connected")
-        
+
             if voltage is not None and voltage >= -5.0 and voltage <= 5.0:
                 # Set TEC Voltage
                 logger.info("Setting TEC Voltage to %.2f V", voltage)
-                data = struct.pack('<f', float(voltage)) # Convert to 2-byte unsigned int
-                r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=1, data=data)
+                data = struct.pack(
+                    "<f", float(voltage)
+                )  # Convert to 2-byte unsigned int
+                r = self.uart.send_packet(
+                    id=None,
+                    packetType=OW_CONTROLLER,
+                    command=OW_CTRL_TEC_DAC,
+                    reserved=1,
+                    data=data,
+                )
             elif voltage is None:
                 # Get TEC Voltage
                 logger.info("Getting TEC Voltage")
-                r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_DAC, reserved=0, data=None)
-            else:   
-                raise ValueError("Invalid voltage value. Must be between -5.0 and 5.0 V")
-            
+                r = self.uart.send_packet(
+                    id=None,
+                    packetType=OW_CONTROLLER,
+                    command=OW_CTRL_TEC_DAC,
+                    reserved=0,
+                    data=None,
+                )
+            else:
+                raise ValueError(
+                    "Invalid voltage value. Must be between -5.0 and 5.0 V"
+                )
+
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
                 logger.error("Error executing tec_voltage command")
                 return 0
             elif r.data_len == 4:
-                tec_voltage = struct.unpack('<f', r.data)[0]
+                tec_voltage = struct.unpack("<f", r.data)[0]
                 logger.info(f"TEC Voltage is {tec_voltage} V")
                 return tec_voltage
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1272,32 +1311,38 @@ class MOTIONConsole:
 
             if not self.uart.is_connected():
                 raise ValueError("Motion Console not connected")
-            
+
             if channel not in [0, 1, 2, 3, 4]:
                 raise ValueError("Invalid channel. Must be 0, 1, 2, 3 or 4")
-        
+
             # Get TEC Voltage
-            logger.info(f'Getting TEC ADC CH{channel} Voltage')
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TECADC, reserved=channel, data=None)
-        
+            logger.info(f"Getting TEC ADC CH{channel} Voltage")
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_TECADC,
+                reserved=channel,
+                data=None,
+            )
+
             self.uart.clear_buffer()
-            # r.print_packet()    
+            # r.print_packet()
             if r.packet_type == OW_ERROR:
                 logger.error("Error executing tec_adc command")
                 return 0
-            elif r.data_len == 4:            
-                tec_voltage = struct.unpack('<f', r.data)[0]
+            elif r.data_len == 4:
+                tec_voltage = struct.unpack("<f", r.data)[0]
                 logger.info(f"CHANNEL {channel}: {tec_voltage} V")
                 return tec_voltage
-            elif r.data_len == 16:            
-                ch0, ch1, ch2, ch3 = struct.unpack('<4f', r.data)
+            elif r.data_len == 16:
+                ch0, ch1, ch2, ch3 = struct.unpack("<4f", r.data)
                 vals = [ch0, ch1, ch2, ch3]
                 logger.info(f"CHANNELS 0-3: {vals} V")
-                return vals 
+                return vals
             else:
                 logger.error("Unexpected data length for TEC ADC voltage")
                 raise ValueError("Unexpected data length for TEC ADC voltage")
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1329,16 +1374,15 @@ class MOTIONConsole:
 
             # 1) Enabled flag
             r = self.uart.send_packet(
-                id=None,
-                packetType=OW_CONTROLLER,
-                command=OW_CTRL_TEC_STATUS,
-                data=None
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_STATUS, data=None
             )
             if r.packet_type == OW_ERROR:
                 logger.error("Device returned OW_ERROR for OW_CTRL_TEC_STATUS")
                 raise Exception("Error executing tec_status command")
             if r.data_len != 1:
-                raise ValueError(f"Unexpected data length for TEC status flag: {r.data_len}, expected 1")
+                raise ValueError(
+                    f"Unexpected data length for TEC status flag: {r.data_len}, expected 1"
+                )
             tec_good = bool(r.data[0])
 
             # 2) Read all four ADC channels (reserved=4 => all)
@@ -1347,21 +1391,33 @@ class MOTIONConsole:
                 packetType=OW_CONTROLLER,
                 command=OW_CTRL_TECADC,
                 reserved=4,
-                data=None
+                data=None,
             )
             if s.packet_type == OW_ERROR:
                 logger.error("Device returned OW_ERROR for OW_CTRL_TECADC(all)")
                 raise Exception("Error executing tec_adc(all) command")
             if s.data_len != 16:
-                raise ValueError(f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16")
+                raise ValueError(
+                    f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16"
+                )
 
-            vout, temp_set, tec_curr, tec_volt = struct.unpack('<4f', s.data)
+            vout, temp_set, tec_curr, tec_volt = struct.unpack("<4f", s.data)
 
             logger.debug(
                 "TEC Status - V: %.6f V, SET: %.6f V, TEC_C: %.6f V, TEC_V: %.6f V, GOOD: %s",
-                vout, temp_set, tec_curr, tec_volt, tec_good
+                vout,
+                temp_set,
+                tec_curr,
+                tec_volt,
+                tec_good,
             )
-            return (f"{vout:.6f}", f"{temp_set:.6f}", f"{tec_curr:.6f}", f"{tec_volt:.6f}", tec_good)
+            return (
+                f"{vout:.6f}",
+                f"{temp_set:.6f}",
+                f"{tec_curr:.6f}",
+                f"{tec_volt:.6f}",
+                tec_good,
+            )
         except Exception as e:
             logger.error("Unexpected error during tec_status: %s", e)
             raise  # Re-raise the exception for the caller to handle
@@ -1384,7 +1440,9 @@ class MOTIONConsole:
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_BOARDID, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_BOARDID, data=None
+            )
             self.uart.clear_buffer()
             # r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -1397,7 +1455,7 @@ class MOTIONConsole:
             else:
                 logger.error("Unexpected data length for Board ID")
                 return 0
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise  # Re-raise the exception for the caller to handle
@@ -1421,15 +1479,14 @@ class MOTIONConsole:
         try:
             if self.uart.demo_mode:
                 # Return a fake structure in demo mode
-                return PDUMon(
-                    raws=[0]*16,
-                    volts=[0.0]*16
-                )
+                return PDUMon(raws=[0] * 16, volts=[0.0] * 16)
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
 
-            r = self.uart.send_packet(id=None, packetType=OW_CONTROLLER, command=OW_CTRL_PDUMON, data=None)
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_PDUMON, data=None
+            )
             self.uart.clear_buffer()
             r.print_packet()
             if r.packet_type == OW_ERROR:
@@ -1492,8 +1549,13 @@ class MOTIONConsole:
                 continue
             published = r.get("published_at")
             # consider prerelease flag or tag names that start with 'pre-'
-            prerelease_flag = bool(r.get("prerelease")) or str(tag).lower().startswith("pre-")
-            releases_map[tag] = {"published_at": published, "prerelease": prerelease_flag}
+            prerelease_flag = bool(r.get("prerelease")) or str(tag).lower().startswith(
+                "pre-"
+            )
+            releases_map[tag] = {
+                "published_at": published,
+                "prerelease": prerelease_flag,
+            }
 
         result = {
             "latest": {
@@ -1508,12 +1570,12 @@ class MOTIONConsole:
     def read_config(self) -> Optional[MotionConfig]:
         """
         Read the user configuration from device flash.
-        
+
         The configuration is stored as JSON with metadata (magic, version, sequence, CRC).
-        
+
         Returns:
             MotionConfig: Parsed configuration object, or None on error
-            
+
         Raises:
             ValueError: If the UART is not connected
             Exception: If an error occurs during communication
@@ -1532,7 +1594,7 @@ class MOTIONConsole:
                 id=None,
                 packetType=OW_CMD,
                 command=OW_CMD_USR_CFG,
-                reserved=0  # 0 = READ
+                reserved=0,  # 0 = READ
             )
             self.uart.clear_buffer()
 
@@ -1543,7 +1605,9 @@ class MOTIONConsole:
             # Parse wire format response
             try:
                 config = MotionConfig.from_wire_bytes(r.data)
-                logger.info(f"Read config: seq={config.header.seq}, json_len={config.header.json_len}")
+                logger.info(
+                    f"Read config: seq={config.header.seq}, json_len={config.header.json_len}"
+                )
                 return config
             except Exception as e:
                 logger.error(f"Failed to parse config response: {e}")
@@ -1560,17 +1624,17 @@ class MOTIONConsole:
     def write_config(self, config: MotionConfig) -> Optional[MotionConfig]:
         """
         Write user configuration to device flash.
-        
+
         Can pass either:
         - Full wire format (header + JSON)
         - Raw JSON bytes (device will parse as JSON)
-        
+
         Args:
             config: MotionConfig object to write
-            
+
         Returns:
             MotionConfig: Updated configuration from device (with new seq/crc), or None on error
-            
+
         Raises:
             ValueError: If the UART is not connected
             Exception: If an error occurs during communication
@@ -1585,16 +1649,16 @@ class MOTIONConsole:
 
             # Convert config to wire format bytes
             wire_data = config.to_wire_bytes()
-            
+
             logger.info(f"Writing config to device: {len(wire_data)} bytes")
-            
+
             # Send write command (reserved=1 for WRITE)
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CMD,
                 command=OW_CMD_USR_CFG,
                 reserved=1,  # 1 = WRITE
-                data=wire_data
+                data=wire_data,
             )
             self.uart.clear_buffer()
 
@@ -1605,7 +1669,9 @@ class MOTIONConsole:
             # Response contains updated header (with new seq/crc)
             try:
                 updated_config = MotionConfig.from_wire_bytes(r.data)
-                logger.info(f"Config written successfully: new seq={updated_config.header.seq}")
+                logger.info(
+                    f"Config written successfully: new seq={updated_config.header.seq}"
+                )
                 return updated_config
             except Exception as e:
                 logger.error(f"Failed to parse write response: {e}")
@@ -1622,16 +1688,16 @@ class MOTIONConsole:
     def write_config_json(self, json_str: str) -> Optional[MotionConfig]:
         """
         Write user configuration from a JSON string.
-        
+
         This is a convenience method that creates a MotionConfig from JSON
         and writes it to the device.
-        
+
         Args:
             json_str: JSON string to write
-            
+
         Returns:
             MotionConfig: Updated configuration from device, or None on error
-            
+
         Raises:
             ValueError: If JSON is invalid or UART is not connected
             Exception: If an error occurs during communication
@@ -1674,7 +1740,7 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_OPEN returned ERROR")
                 raise CommandError("FPGA_PROG_OPEN failed", response=r)
@@ -1688,7 +1754,6 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error opening FPGA prog interface: %s", e)
             raise
-
 
     def fpga_prog_erase(self, fpga_chan: MuxChannel, mode: int) -> None:
         """
@@ -1722,11 +1787,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_ERASE returned ERROR")
                 raise CommandError("FPGA_PROG_ERASE failed", response=r)
-            
+
             logger.info("FPGA_PROG_ERASE OK (mode=0x%02X)", mode)
 
         except ValueError as v:
@@ -1757,11 +1822,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_CFG_RESET returned ERROR")
                 raise CommandError("FPGA_PROG_CFG_RESET failed", response=r)
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -1769,7 +1834,7 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error FPGA reset page: %s", e)
             raise
-    
+
     def fpga_prog_cfg_write_page(self, fpga_chan: MuxChannel, page: bytes) -> None:
         """
         Write one 16-byte CFG flash page at the current address pointer.
@@ -1791,7 +1856,7 @@ class MOTIONConsole:
                 raise ValueError(
                     f"CFG page must be {XO2_FLASH_PAGE_SIZE} bytes, got {len(page)}"
                 )
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -1802,7 +1867,7 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_CFG_WRITE_PAGE returned ERROR")
                 raise CommandError("FPGA_PROG_CFG_WRITE_PAGE failed", response=r)
@@ -1827,7 +1892,7 @@ class MOTIONConsole:
             16-byte chunk is written as one page in sequence starting from
             the current address pointer.
         """
-        
+
         try:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating FPGA write pages")
@@ -1841,7 +1906,7 @@ class MOTIONConsole:
                     f"pages length must be a non-zero multiple of "
                     f"{XO2_FLASH_PAGE_SIZE}, got {len(pages)}"
                 )
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -1852,7 +1917,7 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_CFG_WRITE_PAGES returned ERROR")
                 raise CommandError("FPGA_PROG_CFG_WRITE_PAGES failed", response=r)
@@ -1864,7 +1929,7 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error FPGA pages write: %s", e)
             raise
-    
+
     def fpga_prog_cfg_read_page(self, fpga_chan: MuxChannel) -> bytes:
         """
         Read back one 16-byte CFG flash page from the current address pointer.
@@ -1873,7 +1938,7 @@ class MOTIONConsole:
         -------
         bytes
             16 bytes read from flash.
-        """        
+        """
         try:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating FPGA read page")
@@ -1893,13 +1958,13 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_CFG_READ_PAGE returned ERROR")
                 raise CommandError("FPGA_PROG_CFG_READ_PAGE failed", response=r)
 
             return r.data
-        
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -1907,7 +1972,6 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error FPGA page read: %s", e)
             raise
-    
 
     def fpga_prog_ufm_reset(self, fpga_chan: MuxChannel) -> None:
         """Reset the UFM sector address pointer to page 0."""
@@ -1916,7 +1980,7 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating ufm reset page 0")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
 
@@ -1930,11 +1994,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_UFM_RESET returned ERROR")
                 raise CommandError("FPGA_PROG_UFM_RESET failed", response=r)
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -1942,7 +2006,6 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error FPGA ufm reset page 0: %s", e)
             raise
-    
 
     def fpga_prog_ufm_write_page(self, fpga_chan: MuxChannel, page: bytes) -> None:
         """
@@ -1958,7 +2021,7 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating ufm write page")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
 
@@ -1977,11 +2040,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_UFM_WRITE_PAGE returned ERROR")
                 raise CommandError("FPGA_PROG_UFM_WRITE_PAGE failed", response=r)
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -2007,10 +2070,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating ufm write pages")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             if len(pages) == 0 or len(pages) % XO2_FLASH_PAGE_SIZE != 0:
                 raise ValueError(
                     f"pages length must be a non-zero multiple of "
@@ -2027,11 +2090,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_UFM_WRITE_PAGES returned ERROR")
                 raise CommandError("FPGA_PROG_UFM_WRITE_PAGES failed", response=r)
-            
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -2053,10 +2116,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating ufm write pages")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2067,17 +2130,17 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_UFM_READ_PAGE returned ERROR")
                 raise CommandError("FPGA_PROG_UFM_READ_PAGE failed", response=r)
-            
+
             if len(r.data) != XO2_FLASH_PAGE_SIZE:
                 raise ValueError(
                     f"UFM read page returned {len(r.data)} bytes, expected {XO2_FLASH_PAGE_SIZE}",
                     response=r,
                 )
-            
+
             return r.data
 
         except ValueError as v:
@@ -2109,10 +2172,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga read status")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2123,21 +2186,26 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_READ_STATUS returned ERROR")
                 raise CommandError("FPGA_PROG_READ_STATUS failed", response=r)
-            
+
             if len(r.data) != 4:
                 raise ValueError(
                     f"READ_STATUS returned {len(r.data)} bytes, expected 4",
                     response=r,
                 )
             sr = (r.data[0] << 24) | (r.data[1] << 16) | (r.data[2] << 8) | r.data[3]
-            logger.debug("FPGA Status Register: 0x%08X  BUSY=%d FAIL=%d ISC_EN=%d",
-                        sr, (sr >> 12) & 1, (sr >> 13) & 1, (sr >> 14) & 1)
+            logger.debug(
+                "FPGA Status Register: 0x%08X  BUSY=%d FAIL=%d ISC_EN=%d",
+                sr,
+                (sr >> 12) & 1,
+                (sr >> 13) & 1,
+                (sr >> 14) & 1,
+            )
             return sr
-        
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -2146,8 +2214,9 @@ class MOTIONConsole:
             logger.error("Unexpected error FPGA read status : %s", e)
             raise
 
-
-    def fpga_prog_featrow_write(self, fpga_chan: MuxChannel, feature: bytes, feabits: bytes) -> None:
+    def fpga_prog_featrow_write(
+        self, fpga_chan: MuxChannel, feature: bytes, feabits: bytes
+    ) -> None:
         """
         Write the Feature Row to the FPGA.
 
@@ -2162,7 +2231,7 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga read status")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
 
@@ -2170,7 +2239,7 @@ class MOTIONConsole:
                 raise ValueError(f"feature must be 8 bytes, got {len(feature)}")
             if len(feabits) != 2:
                 raise ValueError(f"feabits must be 2 bytes, got {len(feabits)}")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2181,11 +2250,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_FEATROW_WRITE returned ERROR")
                 raise CommandError("FPGA_PROG_FEATROW_WRITE failed", response=r)
-            
+
             logger.info("FPGA_PROG_FEATROW_WRITE OK")
         except ValueError as v:
             logger.error("ValueError: %s", v)
@@ -2208,10 +2277,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga featrow read")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2222,19 +2291,19 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_FEATROW_READ returned ERROR")
                 raise CommandError("FPGA_PROG_FEATROW_READ failed", response=r)
-            
+
             if len(r.data) < 10:
                 raise ValueError(
                     f"Feature row read returned {len(r.data)} bytes, expected 10",
                     response=r,
                 )
-            
+
             return r.data[:8], r.data[8:10]
-        
+
         except ValueError as v:
             logger.error("ValueError: %s", v)
             raise
@@ -2245,15 +2314,15 @@ class MOTIONConsole:
 
     def fpga_prog_set_done(self, fpga_chan: MuxChannel) -> None:
         """Set the DONE bit in the FPGA configuration flash."""
-        
+
         try:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga done")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2264,11 +2333,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_SET_DONE returned ERROR")
                 raise CommandError("FPGA_PROG_SET_DONE failed", response=r)
-            
+
             logger.info("FPGA_PROG_SET_DONE OK")
 
         except ValueError as v:
@@ -2292,10 +2361,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga refresh")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2306,11 +2375,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_REFRESH returned ERROR")
                 raise CommandError("FPGA_PROG_REFRESH failed", response=r)
-            
+
             logger.info("FPGA_PROG_REFRESH OK")
 
         except ValueError as v:
@@ -2331,10 +2400,10 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 logger.info("Demo mode: simulating fpga close")
                 return None
-            
+
             if not self.uart or not self.uart.is_connected():
                 raise ValueError("Console Device not connected")
-            
+
             # Send command (reserved = channel index)
             r = self.uart.send_packet(
                 id=None,
@@ -2345,11 +2414,11 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            
+
             if r.packet_type == OW_ERROR:
                 logger.error("FPGA_PROG_CLOSE returned ERROR")
                 raise CommandError("FPGA_PROG_CLOSE failed", response=r)
-            
+
             logger.info("FPGA_PROG_CLOSE OK")
 
         except ValueError as v:
@@ -2366,7 +2435,7 @@ class MOTIONConsole:
         """
         if self.uart:
             logger.info("Disconnecting MOTIONConsole UART...")
-            self.uart.disconnect()  
+            self.uart.disconnect()
             self.uart = None
 
     def __del__(self):
@@ -2377,4 +2446,3 @@ class MOTIONConsole:
             self.disconnect()
         except Exception as e:
             logger.warning("Error in MOTIONConsole destructor: %s", e)
-        

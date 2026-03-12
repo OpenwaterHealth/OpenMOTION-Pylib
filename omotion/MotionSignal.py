@@ -4,6 +4,7 @@ from omotion import _log_root
 # Set up logging
 logger = logging.getLogger(f"{_log_root}.Signal" if _log_root else "Signal")
 
+
 class MOTIONSignal:
     def __init__(self):
         # Initialize a list to store connected slots (callback functions)
@@ -42,4 +43,3 @@ class MOTIONSignal:
                 slot(*args, **kwargs)
             except Exception as e:
                 logger.error("Signal emit error in slot %s: %s", slot, e)
-

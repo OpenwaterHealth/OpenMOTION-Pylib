@@ -70,7 +70,13 @@ class GitHubReleases:
         release = self.get_release_by_tag(tag)
         return release.get("body")
 
-    def get_asset_list(self, *, release: Optional[Dict] = None, tag: Optional[str] = None, extension: Optional[str] = None) -> List[Dict]:
+    def get_asset_list(
+        self,
+        *,
+        release: Optional[Dict] = None,
+        tag: Optional[str] = None,
+        extension: Optional[str] = None,
+    ) -> List[Dict]:
         """
         Return a list of asset dicts for a release.
 
@@ -90,8 +96,8 @@ class GitHubReleases:
 
         # Normalize extension (allow 'bin' or '.bin')
         ext = extension.lower()
-        if not ext.startswith('.'):
-            ext = '.' + ext
+        if not ext.startswith("."):
+            ext = "." + ext
 
         def has_ext(a: Dict) -> bool:
             name = a.get("name", "")

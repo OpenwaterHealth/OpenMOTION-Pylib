@@ -1,5 +1,6 @@
 from typing import Optional
 
+
 class CommandError(RuntimeError):
     """
     Raised when the hardware returns a non-OK response (NAK, BAD_CRC, etc.)
