@@ -53,6 +53,7 @@ from omotion.config import (
 )
 from omotion.i2c_packet import I2C_Packet
 from omotion.GitHubReleases import GitHubReleases
+from omotion.MotionProcessing import bytes_to_integers
 from omotion.utils import calculate_file_crc
 from omotion import _log_root
 
@@ -1408,6 +1409,101 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Exception during camera_get_histogram: %s", e)
             raise
+
+    def get_camera_histogram(
+        self,
+        camera_id: int,
+        test_pattern_id: int = 4,
+        auto_upload: bool = True,
+    ) -> tuple[list[int], list[int]] | None:
+        """
+        High-level method to get a histogram from one camera on this sensor.
+        """
+        if not (0 <= camera_id <= 7):
+            logger.error("Camera ID must be 0-7.")
+            return None
+
+        camera_mask = 1 << camera_id
+
+        # Step 1: Get status
+        status_map = self.get_camera_status(camera_mask)
+        if not status_map or camera_id not in status_map:
+            logger.error("Failed to get camera status.")
+            return None
+
+        status = status_map[camera_id]
+        logger.debug(
+            "Camera %d status: 0x%02X -> %s",
+            camera_id,
+            status,
+            self.decode_camera_status(status),
+        )
+
+        if not status & (1 << 0):  # Not READY
+            logger.debug("Camera peripheral not READY.")
+            return None
+
+        # Step 2: Program FPGA if needed
+        if not (status & (1 << 1) and status & (1 << 2)):
+            logger.debug("FPGA Configuration Started")
+            start_time = time.time()
+            if auto_upload:
+                if not self.program_fpga(
+                    camera_position=camera_mask, manual_process=False
+                ):
+                    logger.error("Failed to program FPGA.")
+                    return None
+            logger.debug(
+                "FPGAs programmed | Time: %.2f ms",
+                (time.time() - start_time) * 1000,
+            )
+
+        # Step 3: Configure registers if needed
+        if not (status & (1 << 1) and status & (1 << 2)):
+            logger.debug("Programming camera sensor registers.")
+            if not self.camera_configure_registers(camera_mask):
+                logger.error("Failed to configure registers.")
+                return None
+
+        # Step 4: Set test pattern
+        logger.debug("Setting test pattern...")
+        if not self.camera_configure_test_pattern(camera_mask, test_pattern_id):
+            logger.error("Failed to set test pattern.")
+            return None
+
+        # Step 5: Verify ready for histogram
+        status_map = self.get_camera_status(camera_mask)
+        if not status_map or camera_id not in status_map:
+            logger.error("Failed to get camera status.")
+            return None
+
+        status = status_map[camera_id]
+        logger.debug(
+            "Camera %d status: 0x%02X -> %s",
+            camera_id,
+            status,
+            self.decode_camera_status(status),
+        )
+        if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):
+            logger.error("Not configured for histogram.")
+            return None
+
+        # Step 6: Capture histogram
+        logger.debug("Capturing histogram...")
+        if not self.camera_capture_histogram(camera_mask):
+            logger.error("Capture failed.")
+            return None
+
+        # Step 7: Retrieve histogram
+        logger.debug("Retrieving histogram...")
+        histogram = self.camera_get_histogram(camera_mask)
+        if histogram is None:
+            logger.error("Histogram retrieval failed.")
+            return None
+
+        logger.debug("Histogram frame received successfully.")
+        histogram = histogram[:4096]
+        return bytes_to_integers(histogram)
 
     def get_camera_status(self, camera_position: int) -> dict[int, int] | None:
         """
