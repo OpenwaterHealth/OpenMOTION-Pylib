@@ -1,7 +1,12 @@
+import csv
+import logging
 import struct
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+import queue
+import threading
+from omotion import _log_root
 
 try:
     # Accelerated CRC implementation if available.
@@ -23,6 +28,11 @@ TIMESTAMP_SIZE = 4
 MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
+HISTO_BINS = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
+
+logger = logging.getLogger(
+    f"{_log_root}.MotionProcessing" if _log_root else "MotionProcessing"
+)
 
 # Struct formats
 _U16 = struct.Struct("<H")
@@ -131,3 +141,137 @@ def parse_histogram_packet(
         raise ValueError("CRC mismatch")
 
     return hists, ids, temps, timestamp_sec, pkt_len
+
+
+def process_bin_file(
+    src_bin: str, dst_csv: str, start_offset: int = 0, batch_rows: int = 4096
+) -> None:
+    """
+    Convert raw histogram binary stream to CSV rows.
+    """
+    with open(src_bin, "rb") as f:
+        data = memoryview(f.read())
+
+    off = start_offset
+    packet_ok = packet_fail = crc_failure = other_fail = bad_header_fail = 0
+    out_buf: List[List] = []
+
+    with open(dst_csv, "w", newline="") as fcsv:
+        wr = csv.writer(fcsv)
+        wr.writerow(
+            [
+                "cam_id",
+                "frame_id",
+                "timestamp_s",
+                *range(HISTO_SIZE_WORDS),
+                "temperature",
+                "sum",
+            ]
+        )
+
+        while off + MIN_PACKET_SIZE <= len(data):
+            try:
+                hists, ids, temps, timestamp_sec, consumed = parse_histogram_packet(
+                    data[off:]
+                )
+                off += consumed
+                packet_ok += 1
+
+                ts_val = timestamp_sec if timestamp_sec is not None else 0.0
+                for cam_id, hist in hists.items():
+                    row_sum = int(hist.sum(dtype=np.uint64))
+                    out_buf.append(
+                        [cam_id, ids[cam_id], ts_val, *hist.tolist(), temps[cam_id], row_sum]
+                    )
+
+                if len(out_buf) >= batch_rows:
+                    wr.writerows(out_buf)
+                    out_buf.clear()
+            except Exception as exc:
+                if exc.args and exc.args[0] == "CRC mismatch":
+                    crc_failure += 1
+                elif exc.args and exc.args[0] == "Missing SOH":
+                    packet_fail += 1
+                elif exc.args and exc.args[0] == "Bad header":
+                    bad_header_fail += 1
+                else:
+                    other_fail += 1
+
+                # Resync to the next likely packet boundary marker.
+                pat = b"\xaa\x00\x41"
+                off = off + 1
+                nxt = data.obj.find(pat, off)
+                if nxt != -1:
+                    off = nxt
+                    continue
+                break
+
+        if out_buf:
+            wr.writerows(out_buf)
+
+    total_packets = packet_ok + packet_fail + crc_failure + other_fail + bad_header_fail
+    logger.info("Parsed %d packets, %d OK", total_packets, packet_ok)
+
+
+def parse_stream_to_csv(
+    q: queue.Queue,
+    stop_evt: threading.Event,
+    csv_writer,
+    buffer_accumulator: bytearray,
+    extra_cols_fn: Callable[[], list] | None = None,
+    on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
+) -> int:
+    """
+    Parse streaming histogram binary data and write CSV rows.
+    Returns number of rows written.
+    """
+    rows_written = 0
+
+    while not stop_evt.is_set() or not q.empty():
+        try:
+            data = q.get(timeout=0.100)
+            if data:
+                buffer_accumulator.extend(data)
+            q.task_done()
+        except queue.Empty:
+            continue
+
+        offset = 0
+        while offset + MIN_PACKET_SIZE <= len(buffer_accumulator):
+            try:
+                pkt_view = memoryview(buffer_accumulator[offset:])
+                hists, ids, temps, timestamp_sec, consumed = parse_histogram_packet(pkt_view)
+                offset += consumed
+
+                ts_val = timestamp_sec if timestamp_sec is not None else 0.0
+                for cam_id, hist in hists.items():
+                    row_sum = int(hist.sum(dtype=np.uint64))
+                    extra_cols = extra_cols_fn() if extra_cols_fn else []
+                    row = [
+                        cam_id,
+                        ids[cam_id],
+                        ts_val,
+                        *hist.tolist(),
+                        temps[cam_id],
+                        row_sum,
+                        *extra_cols,
+                    ]
+                    csv_writer.writerow(row)
+                    rows_written += 1
+                    if on_row_fn:
+                        on_row_fn(cam_id, ids[cam_id], ts_val, hist, row_sum, temps[cam_id])
+
+            except ValueError as e:
+                pat = b"\xaa\x00\x41"
+                offset += 1
+                nxt = buffer_accumulator.find(pat, offset)
+                if nxt != -1:
+                    offset = nxt
+                    logger.warning("Parser error, resyncing: %s", e)
+                    continue
+                break
+
+        if offset > 0:
+            del buffer_accumulator[:offset]
+
+    return rows_written
