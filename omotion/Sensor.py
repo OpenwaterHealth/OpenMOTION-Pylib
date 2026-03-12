@@ -1749,9 +1749,9 @@ class MOTIONSensor:
             }
         }
 
-        Uses the OpenwaterHealth/motion-sensor-fw repository.
+        Uses the OpenwaterHealth/openmotion-sensor-fw repository.
         """
-        gh = GitHubReleases("OpenwaterHealth", "motion-sensor-fw")
+        gh = GitHubReleases("OpenwaterHealth", "openmotion-sensor-fw")
 
         # Get latest official release (get_latest_release excludes prereleases by default)
         try:

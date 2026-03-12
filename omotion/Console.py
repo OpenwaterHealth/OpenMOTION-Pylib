@@ -1469,9 +1469,9 @@ class MOTIONConsole:
             }
         }
 
-        Uses the OpenwaterHealth/motion-console-fw repository.
+        Uses the OpenwaterHealth/openmotion-console-fw repository.
         """
-        gh = GitHubReleases("OpenwaterHealth", "motion-console-fw")
+        gh = GitHubReleases("OpenwaterHealth", "openmotion-console-fw")
 
         # Get latest official release (get_latest_release excludes prereleases by default)
         try:
