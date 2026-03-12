@@ -1,6 +1,6 @@
 from enum import IntEnum
 
-SERIAL_PORT = 'COM24'  # Change this to your serial port
+SERIAL_PORT = "COM24"  # Change this to your serial port
 BAUD_RATE = 921600
 
 CONSOLE_MODULE_PID = 0xA53E
@@ -14,7 +14,6 @@ ID_COUNTER = 0  # Initializing the ID counter
 # Histo Packet structure constants
 HISTO_SIZE_WORDS = 1024
 HISTO_BLOCK_SIZE = 1 + (HISTO_SIZE_WORDS * 4) + 1  # HID + HISTO + EOH
-
 
 
 # Packet Types
@@ -61,7 +60,7 @@ OW_CAMERA_SWITCH = 0x28
 OW_CAMERA_SET_CONFIG = 0x29
 OW_CAMERA_FSIN_EXTERNAL = 0x2A
 OW_CAMERA_GET_HISTOGRAM = 0x2B
-OW_CAMERA_SINGLE_HISTOGRAM = 0x2C            
+OW_CAMERA_SINGLE_HISTOGRAM = 0x2C
 OW_CAMERA_SET_TESTPATTERN = 0x2D
 OW_CAMERA_STATUS = 0x2E
 OW_CAMERA_RESET = 0x2F
@@ -92,8 +91,8 @@ OW_HISTO_PACKET = 0x01
 OW_SCAN_PACKET = 0x02
 OW_IMAGE_PACKET = 0x03
 
-# Global Commands 
-OW_CMD_PING = 0x00  
+# Global Commands
+OW_CMD_PING = 0x00
 OW_CMD_VERSION = 0x02
 OW_CMD_ECHO = 0x03
 OW_CMD_TOGGLE_LED = 0x04
@@ -107,9 +106,13 @@ OW_CMD_I2C_BROADCAST = 0x06
 OW_CMD_DEBUG_FLAGS = 0x0C
 
 # Debug flag bits.
-DEBUG_FLAG_USB_PRINTF = 0x01    # Turn on or off USB printf logging
-DEBUG_FLAG_HISTO_THROTTLE = 0x02  # Only send histogram packet every 5s; others pretend success
-DEBUG_FLAG_FAKE_DATA = 0x04       # Turn on or off fake data mode, turns off cameras and sends fake data
+DEBUG_FLAG_USB_PRINTF = 0x01  # Turn on or off USB printf logging
+DEBUG_FLAG_HISTO_THROTTLE = (
+    0x02  # Only send histogram packet every 5s; others pretend success
+)
+DEBUG_FLAG_FAKE_DATA = (
+    0x04  # Turn on or off fake data mode, turns off cameras and sends fake data
+)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
@@ -136,22 +139,22 @@ OW_CTRL_PDUMON = 0x24
 OW_CTRL_FAN_CTL = 0x0A
 
 # Page-by-page direct FPGA programming commands (0x30–0x3C)
-FPGA_PROG_OPEN           = 0x30
-FPGA_PROG_ERASE          = 0x31
-FPGA_PROG_CFG_RESET      = 0x32
+FPGA_PROG_OPEN = 0x30
+FPGA_PROG_ERASE = 0x31
+FPGA_PROG_CFG_RESET = 0x32
 FPGA_PROG_CFG_WRITE_PAGE = 0x33
-FPGA_PROG_CFG_READ_PAGE  = 0x34
-FPGA_PROG_UFM_RESET      = 0x35
+FPGA_PROG_CFG_READ_PAGE = 0x34
+FPGA_PROG_UFM_RESET = 0x35
 FPGA_PROG_UFM_WRITE_PAGE = 0x36
-FPGA_PROG_UFM_READ_PAGE  = 0x37
-FPGA_PROG_FEATROW_WRITE  = 0x38
-FPGA_PROG_FEATROW_READ   = 0x39
-FPGA_PROG_SET_DONE       = 0x3A
-FPGA_PROG_REFRESH        = 0x3B
-FPGA_PROG_CLOSE          = 0x3C
+FPGA_PROG_UFM_READ_PAGE = 0x37
+FPGA_PROG_FEATROW_WRITE = 0x38
+FPGA_PROG_FEATROW_READ = 0x39
+FPGA_PROG_SET_DONE = 0x3A
+FPGA_PROG_REFRESH = 0x3B
+FPGA_PROG_CLOSE = 0x3C
 FPGA_PROG_CFG_WRITE_PAGES = 0x3D  # Write N 16-byte CFG pages (N*16 bytes payload)
 FPGA_PROG_UFM_WRITE_PAGES = 0x3E  # Write N 16-byte UFM pages (N*16 bytes payload)
-FPGA_PROG_READ_STATUS     = 0x3F  # Read 32-bit Status Register (no cfgEn required)
+FPGA_PROG_READ_STATUS = 0x3F  # Read 32-bit Status Register (no cfgEn required)
 
 
 TEST_PATTERN_BARS = 0x00
@@ -160,19 +163,20 @@ TEST_PATTERN_CHECKERBOARD = 0x02
 TEST_PATTERN_GRADIENT = 0x03
 TEST_PATTERN_DISABLED = 0x04
 
+
 # --------------------------------------------------------------------------- #
 # MachXO2 device types (XO2Devices_t in XO2_dev.h)
 # --------------------------------------------------------------------------- #
 class XO2Devices(IntEnum):
-    MachXO2_256   = 0
-    MachXO2_640   = 1
-    MachXO2_640U  = 2
-    MachXO2_1200  = 3
+    MachXO2_256 = 0
+    MachXO2_640 = 1
+    MachXO2_640U = 2
+    MachXO2_1200 = 3
     MachXO2_1200U = 4
-    MachXO2_2000  = 5
+    MachXO2_2000 = 5
     MachXO2_2000U = 6
-    MachXO2_4000  = 7
-    MachXO2_7000  = 8
+    MachXO2_4000 = 7
+    MachXO2_7000 = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -191,11 +195,12 @@ FPGA_PROG_BATCH_PAGES: int = 32
 """Number of 16-byte pages bundled into a single FPGA_PROG_CFG/UFM_WRITE_PAGES command."""
 
 # Erase mode bitmap (matches XO2ECA_CMD_ERASE_* macros in XO2_cmds.h)
-ERASE_SRAM:   int = 0x01
-ERASE_FTROW:  int = 0x02
-ERASE_CFG:    int = 0x04
-ERASE_UFM:    int = 0x08
-ERASE_ALL:    int = ERASE_UFM | ERASE_CFG | ERASE_FTROW  # 0x0E
+ERASE_SRAM: int = 0x01
+ERASE_FTROW: int = 0x02
+ERASE_CFG: int = 0x04
+ERASE_UFM: int = 0x08
+ERASE_ALL: int = ERASE_UFM | ERASE_CFG | ERASE_FTROW  # 0x0E
+
 
 class MuxChannel(IntEnum):
     FPGA_SEED = 0

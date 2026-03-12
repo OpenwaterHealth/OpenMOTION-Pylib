@@ -27,7 +27,12 @@ import time
 from typing import Callable, Optional
 from omotion.CommandError import CommandError
 from omotion.Console import MOTIONConsole
-from omotion.config import XO2_FLASH_PAGE_SIZE, ERASE_ALL, FPGA_PROG_BATCH_PAGES, MuxChannel
+from omotion.config import (
+    XO2_FLASH_PAGE_SIZE,
+    ERASE_ALL,
+    FPGA_PROG_BATCH_PAGES,
+    MuxChannel,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -35,16 +40,17 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Make the project-root jedec_parser importable from the py-demo subtree
 # --------------------------------------------------------------------------- #
-_REPO_ROOT = Path(__file__).resolve().parents[2] 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from omotion.jedecParser import parse_jedec_file # noqa: E402
+from omotion.jedecParser import parse_jedec_file  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
 # Exceptions
 # --------------------------------------------------------------------------- #
+
 
 class FpgaUpdateError(RuntimeError):
     """Raised when the FPGA update sequence fails at any step."""
@@ -64,6 +70,7 @@ Called after each batch of pages written so callers can render a progress bar.
 # --------------------------------------------------------------------------- #
 # Helpers: feature-row / feabits conversion
 # --------------------------------------------------------------------------- #
+
 
 def _bitstring_to_bytes(bitstr: str) -> bytes:
     """
@@ -106,13 +113,13 @@ def _parse_extra(extra: dict) -> tuple[bytes, bytes]:
         in the binary format expected by the FPGA programming commands.
     """
     default_feature_row = bytes(8)
-    default_feabits     = bytes(2)
+    default_feabits = bytes(2)
 
     raw_fr = extra.get("feature_row", None)
-    raw_fb = extra.get("feabits",     None)
+    raw_fb = extra.get("feabits", None)
 
     feature_row = _bitstring_to_bytes(raw_fr) if raw_fr else default_feature_row
-    feabits     = _bitstring_to_bytes(raw_fb.zfill(16)) if raw_fb else default_feabits
+    feabits = _bitstring_to_bytes(raw_fb.zfill(16)) if raw_fb else default_feabits
 
     return feature_row, feabits
 
@@ -120,6 +127,7 @@ def _parse_extra(extra: dict) -> tuple[bytes, bytes]:
 # --------------------------------------------------------------------------- #
 # FpgaPageProgrammer
 # --------------------------------------------------------------------------- #
+
 
 class FpgaPageProgrammer:
     """
@@ -171,10 +179,10 @@ class FpgaPageProgrammer:
         erase_timeout: float = 35.0,
         refresh_timeout: float = 10.0,
     ) -> None:
-        self._api             = api
-        self._verify          = verify
-        self._erase_mode      = erase_mode
-        self._erase_timeout   = erase_timeout
+        self._api = api
+        self._verify = verify
+        self._erase_mode = erase_mode
+        self._erase_timeout = erase_timeout
         self._refresh_timeout = refresh_timeout
 
     # ------------------------------------------------------------------ #
@@ -212,10 +220,12 @@ class FpgaPageProgrammer:
             raise FpgaUpdateError(f"Failed to parse JEDEC file: {exc}") from exc
 
         feature_row, feabits = _parse_extra(extra)
-        cfg_data = image.data   # all fuse data → CFG sector
-        ufm_data = b""          # UFM not separately included in parsed JEDEC
+        cfg_data = image.data  # all fuse data → CFG sector
+        ufm_data = b""  # UFM not separately included in parsed JEDEC
 
-        self.program_raw(target_fpga, cfg_data, ufm_data, feature_row, feabits, on_progress)
+        self.program_raw(
+            target_fpga, cfg_data, ufm_data, feature_row, feabits, on_progress
+        )
 
     # ------------------------------------------------------------------ #
 
@@ -262,7 +272,9 @@ class FpgaPageProgrammer:
 
         logger.info(
             "Page programmer: cfg=%d pages, ufm=%d pages, verify=%s",
-            cfg_pages, ufm_pages, self._verify,
+            cfg_pages,
+            ufm_pages,
+            self._verify,
         )
 
         api = self._api
@@ -285,7 +297,9 @@ class FpgaPageProgrammer:
                     last_exc = exc
                     time.sleep(0.5)
             if last_exc:
-                raise FpgaUpdateError(f"FPGA_PROG_OPEN failed after retries: {last_exc}") from last_exc
+                raise FpgaUpdateError(
+                    f"FPGA_PROG_OPEN failed after retries: {last_exc}"
+                ) from last_exc
         except CommandError as exc:
             # Fallback: ensure any CommandError is wrapped as FpgaUpdateError
             raise FpgaUpdateError(f"FPGA_PROG_OPEN failed: {exc}") from exc
@@ -294,13 +308,19 @@ class FpgaPageProgrammer:
         try:
             sr = api.fpga_prog_read_status(fpga_chan=target_fpga)
             isc_en = (sr >> 14) & 1
-            fail   = (sr >> 13) & 1
-            busy   = (sr >> 12) & 1
-            print(f"         Status after OPEN: 0x{sr:08X}  "
-                  f"ISC_EN={isc_en} FAIL={fail} BUSY={busy}", flush=True)
+            fail = (sr >> 13) & 1
+            busy = (sr >> 12) & 1
+            print(
+                f"         Status after OPEN: 0x{sr:08X}  "
+                f"ISC_EN={isc_en} FAIL={fail} BUSY={busy}",
+                flush=True,
+            )
             if fail:
-                print("  [!] WARNING: FAIL bit already set after OPEN — "
-                      "FPGA may be in a bad state. Proceeding anyway.", flush=True)
+                print(
+                    "  [!] WARNING: FAIL bit already set after OPEN — "
+                    "FPGA may be in a bad state. Proceeding anyway.",
+                    flush=True,
+                )
         except CommandError:
             pass  # diagnostic only; don't abort
 
@@ -309,9 +329,11 @@ class FpgaPageProgrammer:
             # Step 2 – Erase flash
             # ------------------------------------------------------------ #
             logger.info("Step 2: Erasing flash (mode=0x%02X) …", self._erase_mode)
-            print(f"  [2/10] Erasing flash (timeout={self._erase_timeout:.0f} s) …",
-                  flush=True)
-            
+            print(
+                f"  [2/10] Erasing flash (timeout={self._erase_timeout:.0f} s) …",
+                flush=True,
+            )
+
             try:
                 api.fpga_prog_erase(fpga_chan=target_fpga, mode=self._erase_mode)
             except CommandError as exc:
@@ -319,16 +341,17 @@ class FpgaPageProgrammer:
                 try:
                     sr = api.fpga_prog_read_status(fpga_chan=target_fpga)
                     isc_en = (sr >> 14) & 1
-                    fail   = (sr >> 13) & 1
-                    busy   = (sr >> 12) & 1
-                    detail = (f"Status Register: 0x{sr:08X}  "
-                              f"ISC_EN={isc_en} FAIL={fail} BUSY={busy}")
+                    fail = (sr >> 13) & 1
+                    busy = (sr >> 12) & 1
+                    detail = (
+                        f"Status Register: 0x{sr:08X}  "
+                        f"ISC_EN={isc_en} FAIL={fail} BUSY={busy}"
+                    )
                 except CommandError:
                     detail = "(status register unreadable)"
                 raise FpgaUpdateError(
                     f"FPGA_PROG_ERASE failed: {exc}  [{detail}]"
                 ) from exc
-            
 
             print("         Erase done.", flush=True)
 
@@ -336,7 +359,10 @@ class FpgaPageProgrammer:
             # Step 3 – Program CFG sector
             # ------------------------------------------------------------ #
             logger.info("Step 3: Programming CFG sector (%d pages) …", cfg_pages)
-            print(f"  [3/10] Write CFG: {cfg_pages} pages (batch={FPGA_PROG_BATCH_PAGES}) …", flush=True)
+            print(
+                f"  [3/10] Write CFG: {cfg_pages} pages (batch={FPGA_PROG_BATCH_PAGES}) …",
+                flush=True,
+            )
             try:
                 api.fpga_prog_cfg_reset(fpga_chan=target_fpga)
             except CommandError as exc:
@@ -345,7 +371,9 @@ class FpgaPageProgrammer:
             i = 0
             while i < cfg_pages:
                 batch = min(FPGA_PROG_BATCH_PAGES, cfg_pages - i)
-                chunk = cfg_data[i * XO2_FLASH_PAGE_SIZE : (i + batch) * XO2_FLASH_PAGE_SIZE]
+                chunk = cfg_data[
+                    i * XO2_FLASH_PAGE_SIZE : (i + batch) * XO2_FLASH_PAGE_SIZE
+                ]
                 try:
                     api.fpga_prog_cfg_write_pages(fpga_chan=target_fpga, pages=chunk)
                 except CommandError as exc:
@@ -388,7 +416,7 @@ class FpgaPageProgrammer:
                     if i % 500 == 0 or i == cfg_pages - 1:
                         pct = 100.0 * (i + 1) / cfg_pages
                         print(
-                            f"\r         Verify CFG: {i+1:>5}/{cfg_pages} "
+                            f"\r         Verify CFG: {i + 1:>5}/{cfg_pages} "
                             f"({pct:5.1f}%)",
                             end="",
                             flush=True,
@@ -415,7 +443,9 @@ class FpgaPageProgrammer:
                         i * XO2_FLASH_PAGE_SIZE : (i + batch) * XO2_FLASH_PAGE_SIZE
                     ]
                     try:
-                        api.fpga_prog_ufm_write_pages(fpga_chan=target_fpga, pages=chunk)
+                        api.fpga_prog_ufm_write_pages(
+                            fpga_chan=target_fpga, pages=chunk
+                        )
                     except CommandError as exc:
                         raise FpgaUpdateError(
                             f"UFM write failed at page {i}: {exc}"
@@ -443,7 +473,9 @@ class FpgaPageProgrammer:
                             i * XO2_FLASH_PAGE_SIZE : (i + 1) * XO2_FLASH_PAGE_SIZE
                         ]
                         try:
-                            read_back = api.fpga_prog_ufm_read_page(fpga_chan=target_fpga)
+                            read_back = api.fpga_prog_ufm_read_page(
+                                fpga_chan=target_fpga
+                            )
                         except CommandError as exc:
                             raise FpgaUpdateError(
                                 f"UFM read-back failed at page {i}: {exc}"
@@ -461,11 +493,11 @@ class FpgaPageProgrammer:
             logger.info("Step 7: Writing Feature Row …")
             print("  [7/10] Writing Feature Row …", flush=True)
             try:
-                api.fpga_prog_featrow_write(fpga_chan=target_fpga, feature=feature_row, feabits=feabits)
+                api.fpga_prog_featrow_write(
+                    fpga_chan=target_fpga, feature=feature_row, feabits=feabits
+                )
             except CommandError as exc:
-                raise FpgaUpdateError(
-                    f"Feature Row write failed: {exc}"
-                ) from exc
+                raise FpgaUpdateError(f"Feature Row write failed: {exc}") from exc
 
             # ------------------------------------------------------------ #
             # Step 8 – Verify Feature Row
@@ -506,17 +538,20 @@ class FpgaPageProgrammer:
             # Step 10 – Refresh (boot from flash)
             # ------------------------------------------------------------ #
             logger.info("Step 10: Refreshing FPGA (loading config from flash) …")
-            print(f"  [10/10] Refresh FPGA (timeout={self._refresh_timeout:.0f} s) …",
-                  flush=True)
-            
+            print(
+                f"  [10/10] Refresh FPGA (timeout={self._refresh_timeout:.0f} s) …",
+                flush=True,
+            )
+
             try:
                 api.fpga_prog_refresh(fpga_chan=target_fpga)
             except CommandError as exc:
                 raise FpgaUpdateError(f"Refresh failed: {exc}") from exc
-            
+
             logger.info(
-                "Page-by-page programming complete. "
-                "CFG=%d pages, UFM=%d pages.", cfg_pages, ufm_pages,
+                "Page-by-page programming complete. CFG=%d pages, UFM=%d pages.",
+                cfg_pages,
+                ufm_pages,
             )
             print("  Programming complete.", flush=True)
 

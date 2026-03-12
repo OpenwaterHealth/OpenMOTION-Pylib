@@ -1,18 +1,18 @@
 # MotionComposite.py
-import asyncio
 import logging
 import usb.core
 import usb.util
 import threading
-from omotion.utils import util_crc16
 from omotion.CommInterface import CommInterface
 from omotion.StreamInterface import StreamInterface
 from omotion.signal_wrapper import SignalWrapper
-from omotion.config import OW_START_BYTE, OW_END_BYTE, OW_ERROR, OW_RESP, OW_CMD_NOP, OW_ACK
 from omotion import _log_root
 from omotion.connection_state import ConnectionState
 
-logger = logging.getLogger(f"{_log_root}.MotionComposite" if _log_root else "MotionComposite")
+logger = logging.getLogger(
+    f"{_log_root}.MotionComposite" if _log_root else "MotionComposite"
+)
+
 
 # ===============================
 # One Physical Composite Device
@@ -28,7 +28,9 @@ class MotionComposite(SignalWrapper):
         self.state = ConnectionState.DISCONNECTED
 
         # Interfaces
-        self.comm = CommInterface(dev, 0, desc=f"{desc}-COMM", async_mode=True) # TODO: fix async mode in higher levels
+        self.comm = CommInterface(
+            dev, 0, desc=f"{desc}-COMM", async_mode=True
+        )  # TODO: fix async mode in higher levels
         self.histo = StreamInterface(dev, 1, desc=f"{desc}-HISTO")
         self.imu = StreamInterface(dev, 2, desc=f"{desc}-IMU")
         self.comm.on_disconnect = self._handle_interface_disconnect
@@ -38,7 +40,6 @@ class MotionComposite(SignalWrapper):
 
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
-
 
     def connect(self):
         self._set_state(ConnectionState.CONNECTING)
@@ -66,7 +67,7 @@ class MotionComposite(SignalWrapper):
             self.comm.stop_read_thread()
         self.histo.stop_streaming()
         self.imu.stop_streaming()
-        
+
         self.comm.release()
         self.histo.release()
         self.imu.release()
@@ -76,13 +77,13 @@ class MotionComposite(SignalWrapper):
         usb.util.dispose_resources(self.dev)
         self.signal_disconnect.emit(self.desc, "composite_usb")
         logger.info(f"{self.desc}: Disconnected")
-    
+
     def is_connected(self) -> bool:
         """
         Check if the device is connected.
         """
         return self.state == ConnectionState.CONNECTED
-    
+
     def check_usb_status(self):
         """
         Check if the device is connected.
@@ -102,6 +103,8 @@ class MotionComposite(SignalWrapper):
         prior = self.state
         self.state = new_state
         if reason:
-            logger.info("%s state %s -> %s (%s)", self.desc, prior.name, new_state.name, reason)
+            logger.info(
+                "%s state %s -> %s (%s)", self.desc, prior.name, new_state.name, reason
+            )
         else:
             logger.info("%s state %s -> %s", self.desc, prior.name, new_state.name)

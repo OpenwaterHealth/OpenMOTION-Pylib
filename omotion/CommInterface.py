@@ -1,21 +1,28 @@
 import logging
 import omotion.config as config
 from omotion.UartPacket import UartPacket
-from omotion.config import OW_ACK, OW_CMD_NOP, OW_END_BYTE, OW_START_BYTE, OW_DATA, OW_CMD_ECHO
+from omotion.config import (
+    OW_ACK,
+    OW_CMD_NOP,
+    OW_END_BYTE,
+    OW_START_BYTE,
+    OW_DATA,
+    OW_CMD_ECHO,
+)
 
 # Max data_len we accept (sanity check to avoid runaway buffer)
-OW_MAX_PACKET_DATA_LEN = 4096*2
-from omotion.utils import util_crc16
+OW_MAX_PACKET_DATA_LEN = 4096 * 2
 import usb.core
 import usb.util
 import time
 import threading
 import queue
-from omotion.usb_backend import get_libusb1_backend
 from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
-logger = logging.getLogger(f"{_log_root}.CommInterface" if _log_root else "CommInterface")
+logger = logging.getLogger(
+    f"{_log_root}.CommInterface" if _log_root else "CommInterface"
+)
 
 _PACKET_TYPE_NAMES = {
     value: name
@@ -23,18 +30,40 @@ _PACKET_TYPE_NAMES = {
     if name.startswith("OW_") and name.isupper() and isinstance(value, int)
 }
 _CMD_NAMES = {
-    "OW_CMD": {value: name for name, value in vars(config).items() if name.startswith("OW_CMD_")},
-    "OW_CONTROLLER": {value: name for name, value in vars(config).items() if name.startswith("OW_CTRL_")},
-    "OW_FPGA": {value: name for name, value in vars(config).items() if name.startswith("OW_FPGA_")},
-    "OW_CAMERA": {value: name for name, value in vars(config).items() if name.startswith("OW_CAMERA_")},
-    "OW_IMU": {value: name for name, value in vars(config).items() if name.startswith("OW_IMU_")},
+    "OW_CMD": {
+        value: name
+        for name, value in vars(config).items()
+        if name.startswith("OW_CMD_")
+    },
+    "OW_CONTROLLER": {
+        value: name
+        for name, value in vars(config).items()
+        if name.startswith("OW_CTRL_")
+    },
+    "OW_FPGA": {
+        value: name
+        for name, value in vars(config).items()
+        if name.startswith("OW_FPGA_")
+    },
+    "OW_CAMERA": {
+        value: name
+        for name, value in vars(config).items()
+        if name.startswith("OW_CAMERA_")
+    },
+    "OW_IMU": {
+        value: name
+        for name, value in vars(config).items()
+        if name.startswith("OW_IMU_")
+    },
 }
+
 
 def _format_named(value: int, name_map: dict[int, str], width: int = 2) -> str:
     name = name_map.get(value)
     if name:
         return f"{name}(0x{value:0{width}X})"
     return f"0x{value:0{width}X}"
+
 
 # =========================================
 # Comm Interface (IN + OUT + threads)
@@ -55,19 +84,34 @@ class CommInterface(USBInterfaceBase):
         self._io_lock = threading.RLock()
         if self.async_mode:
             self.response_queue = queue.Queue()
-            self.response_thread = threading.Thread(target=self._process_responses, daemon=True)
+            self.response_thread = threading.Thread(
+                target=self._process_responses, daemon=True
+            )
             self.response_thread.start()
 
     def claim(self):
         super().claim()
         intf = self.dev.get_active_configuration()[(self.interface_index, 0)]
         self.ep_out = usb.util.find_descriptor(
-            intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+            intf,
+            custom_match=lambda e: (
+                usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+            ),
         )
         if not self.ep_out:
             raise RuntimeError(f"{self.desc}: No OUT endpoint found")
 
-    def send_packet(self, id=None, packetType=OW_ACK, command=OW_CMD_NOP, addr=0, reserved=0, data=None, timeout=10.0, max_retries=0) -> UartPacket:
+    def send_packet(
+        self,
+        id=None,
+        packetType=OW_ACK,
+        command=OW_CMD_NOP,
+        addr=0,
+        reserved=0,
+        data=None,
+        timeout=10.0,
+        max_retries=0,
+    ) -> UartPacket:
         if id is None:
             self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
             id = self.packet_count
@@ -77,7 +121,7 @@ class CommInterface(USBInterfaceBase):
                 raise ValueError("Data must be bytes or bytearray")
             payload = data
         else:
-            payload = b''
+            payload = b""
 
         uart_packet = UartPacket(
             id=id,
@@ -85,7 +129,7 @@ class CommInterface(USBInterfaceBase):
             command=command,
             addr=addr,
             reserved=reserved,
-            data=payload
+            data=payload,
         )
 
         tx_bytes = uart_packet.to_bytes()
@@ -123,13 +167,13 @@ class CommInterface(USBInterfaceBase):
                 if self.response_queue.empty():
                     time.sleep(0.0005)
                 else:
-                    time.sleep(0.001)  # wait for a moment to let the MCU finish processing that it has finished sending the packet
-                                       # this delay could be placed anywhere at the end of the send_packet function just to give the MCU time to finish processing
+                    time.sleep(
+                        0.001
+                    )  # wait for a moment to let the MCU finish processing that it has finished sending the packet
+                    # this delay could be placed anywhere at the end of the send_packet function just to give the MCU time to finish processing
                     return self.response_queue.get()
             raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
 
-
-            
     def clear_buffer(self):
         with self._buffer_lock:
             self._read_buffer.clear()
@@ -143,7 +187,7 @@ class CommInterface(USBInterfaceBase):
             data = self.dev.read(self.ep_in.bEndpointAddress, length, timeout=timeout)
             logger.debug(f"Received {len(data)} bytes.")
             return data
-    
+
     def start_read_thread(self):
         if self.read_thread and self.read_thread.is_alive():
             logger.info(f"{self.desc}: Read thread already running")
@@ -176,11 +220,13 @@ class CommInterface(USBInterfaceBase):
                 self.on_disconnect(self.desc, error)
             except Exception as cb_error:
                 logger.error(f"{self.desc}: disconnect callback failed: {cb_error}")
-        
+
     def _read_loop(self):
         while not self.stop_event.is_set():
             try:
-                data = self.dev.read(self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100)
+                data = self.dev.read(
+                    self.ep_in.bEndpointAddress, self.ep_in.wMaxPacketSize, timeout=100
+                )
                 if data:
                     data_bytes = bytes(data)
                     with self._buffer_condition:
@@ -200,7 +246,7 @@ class CommInterface(USBInterfaceBase):
                     logger.error(f"{self.desc} read error: DISCONNECT{e}")
                     self._trigger_disconnect(e)
                     break
-     
+
                 elif e.errno == 19 or e.errno == 5:
                     logger.error(f"{self.desc} read error: IO Error{e}")
                     self._trigger_disconnect(e)
@@ -209,6 +255,7 @@ class CommInterface(USBInterfaceBase):
                     logger.error(f"{self.desc} read error: Unknown Error{e}")
                     self._trigger_disconnect(e)
                     break
+
     def _process_responses(self):
         while not self.stop_event.is_set():
             with self._buffer_condition:
@@ -245,7 +292,11 @@ class CommInterface(USBInterfaceBase):
                 uart_packet = UartPacket(buffer=packet_bytes)
             except ValueError:
                 continue
-            if uart_packet.id == 0 and uart_packet.packet_type == OW_DATA and uart_packet.command == OW_CMD_ECHO:
+            if (
+                uart_packet.id == 0
+                and uart_packet.packet_type == OW_DATA
+                and uart_packet.command == OW_CMD_ECHO
+            ):
                 logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
             else:
                 self.response_queue.put(uart_packet)
