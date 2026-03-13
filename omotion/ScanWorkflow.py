@@ -1,4 +1,5 @@
 import datetime
+import csv
 import logging
 import os
 import queue
@@ -35,6 +36,7 @@ class ScanResult:
     right_path: str
     canceled: bool
     scan_timestamp: str
+    corrected_path: str = ""
 
 
 @dataclass
@@ -140,11 +142,17 @@ class ScanWorkflow:
             err = ""
             left_path = ""
             right_path = ""
+            corrected_path = ""
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             active_sides = []
             writer_threads: dict[str, threading.Thread] = {}
             writer_stops: dict[str, threading.Event] = {}
             processing_pipelines = {}
+            corrected_lock = threading.Lock()
+            corrected_by_frame: dict[int, dict] = {}
+            corrected_path = os.path.join(
+                request.data_dir, f"scan_{request.subject_id}_{ts}_corrected.csv"
+            )
 
             try:
                 os.makedirs(request.data_dir, exist_ok=True)
@@ -188,6 +196,37 @@ class ScanWorkflow:
                     filename = f"scan_{request.subject_id}_{ts}_{side}_mask{mask:02X}.csv"
                     filepath = os.path.join(request.data_dir, filename)
 
+                    def _make_corrected_callback(current_side: str):
+                        def _on_corrected(sample):
+                            try:
+                                frame_key = int(sample.frame_id)
+                                col_suffix = f"{current_side[0]}{int(sample.cam_id) + 1}"
+                                with corrected_lock:
+                                    frame_entry = corrected_by_frame.get(frame_key)
+                                    if frame_entry is None:
+                                        frame_entry = {
+                                            "timestamp_s": float(sample.timestamp_s),
+                                            "values": {},
+                                        }
+                                        corrected_by_frame[frame_key] = frame_entry
+                                    else:
+                                        frame_entry["timestamp_s"] = min(
+                                            float(frame_entry["timestamp_s"]),
+                                            float(sample.timestamp_s),
+                                        )
+                                    frame_entry["values"][f"bfi_{col_suffix}"] = float(
+                                        sample.bfi_corrected
+                                    )
+                                    frame_entry["values"][f"bvi_{col_suffix}"] = float(
+                                        sample.bvi_corrected
+                                    )
+                            except Exception as agg_err:
+                                _emit_log(f"Corrected aggregation error: {agg_err}")
+                            if on_corrected_fn:
+                                on_corrected_fn(sample)
+
+                        return _on_corrected
+
                     pipeline = None
                     if (
                         self._bfi_c_min is not None
@@ -202,7 +241,7 @@ class ScanWorkflow:
                             bfi_i_min=self._bfi_i_min,
                             bfi_i_max=self._bfi_i_max,
                             on_sample_fn=on_sample_fn,
-                            on_corrected_fn=on_corrected_fn,
+                            on_corrected_fn=_make_corrected_callback(side),
                         )
                         processing_pipelines[side] = pipeline
 
@@ -296,11 +335,51 @@ class ScanWorkflow:
                 for pipeline in processing_pipelines.values():
                     pipeline.stop()
 
+                # Build one merged corrected CSV, aligned by frame_id, with normalized timestamp.
+                corrected_columns = (
+                    [f"bfi_l{i}" for i in range(1, 9)]
+                    + [f"bfi_r{i}" for i in range(1, 9)]
+                    + [f"bvi_l{i}" for i in range(1, 9)]
+                    + [f"bvi_r{i}" for i in range(1, 9)]
+                )
+                try:
+                    with corrected_lock:
+                        frame_ids = sorted(corrected_by_frame.keys())
+                        if frame_ids:
+                            base_ts = min(
+                                float(corrected_by_frame[fid]["timestamp_s"])
+                                for fid in frame_ids
+                            )
+                        else:
+                            base_ts = 0.0
+
+                        with open(
+                            corrected_path, "w", newline="", encoding="utf-8"
+                        ) as cfh:
+                            cw = csv.writer(cfh)
+                            cw.writerow(["frame_id", "timestamp_s", *corrected_columns])
+                            for fid in frame_ids:
+                                frame_entry = corrected_by_frame[fid]
+                                rel_ts = float(frame_entry["timestamp_s"]) - base_ts
+                                values = frame_entry["values"]
+                                row = [fid, rel_ts]
+                                row.extend(
+                                    values.get(col, "") for col in corrected_columns
+                                )
+                                cw.writerow(row)
+                    _emit_log(
+                        f"Merged corrected CSV created: {os.path.basename(corrected_path)}"
+                    )
+                except Exception as corrected_err:
+                    _emit_log(f"Failed to create merged corrected CSV: {corrected_err}")
+                    corrected_path = ""
+
                 result = ScanResult(
                     ok=ok,
                     error=err,
                     left_path=left_path,
                     right_path=right_path,
+                    corrected_path=corrected_path,
                     canceled=self._stop_evt.is_set(),
                     scan_timestamp=ts,
                 )

@@ -395,6 +395,7 @@ class RealtimeSample:
 class CorrectedSample:
     side: str
     cam_id: int
+    frame_id: int
     timestamp_s: float
     bfi_corrected: float
     bvi_corrected: float
@@ -614,6 +615,7 @@ class RealtimeProcessingPipeline:
             corrected = CorrectedSample(
                 side=sample.side,
                 cam_id=sample.cam_id,
+                frame_id=sample.frame_id,
                 timestamp_s=sample.timestamp_s,
                 bfi_corrected=bfi_corr,
                 bvi_corrected=bvi_corr,
