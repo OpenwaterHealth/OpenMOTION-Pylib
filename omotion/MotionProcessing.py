@@ -31,6 +31,7 @@ MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
 HISTO_BINS = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
+HISTO_BINS_SQ = HISTO_BINS * HISTO_BINS
 
 logger = logging.getLogger(
     f"{_log_root}.MotionProcessing" if _log_root else "MotionProcessing"
@@ -359,6 +360,97 @@ class CorrectedSample:
     bvi_corrected: float
 
 
+def compute_realtime_metrics(
+    *,
+    side: str,
+    cam_id: int,
+    frame_id: int,
+    timestamp_s: float,
+    hist: np.ndarray,
+    row_sum: int,
+    temperature_c: float,
+    bfi_c_min,
+    bfi_c_max,
+    bfi_i_min,
+    bfi_i_max,
+) -> RealtimeSample:
+    """
+    Pure metric computation for one histogram row.
+    """
+    if row_sum > 0:
+        mean_val = float(np.dot(hist, HISTO_BINS) / row_sum)
+    else:
+        mean_val = 0.0
+
+    if row_sum > 0 and mean_val > 0:
+        mean2 = float(np.dot(hist, HISTO_BINS_SQ) / row_sum)
+        var = max(0.0, mean2 - (mean_val * mean_val))
+        std = np.sqrt(var)
+        contrast = float(std / mean_val) if mean_val > 0 else 0.0
+    else:
+        contrast = 0.0
+
+    module_idx = 0 if side == "left" else 1
+    cam_pos = int(cam_id) % 8
+
+    if module_idx >= bfi_c_min.shape[0] or cam_pos >= bfi_c_min.shape[1]:
+        bfi_val = contrast * 10.0
+    else:
+        cmin = float(bfi_c_min[module_idx, cam_pos])
+        cmax = float(bfi_c_max[module_idx, cam_pos])
+        cden = (cmax - cmin) or 1.0
+        bfi_val = (1.0 - ((contrast - cmin) / cden)) * 10.0
+
+    if module_idx >= bfi_i_min.shape[0] or cam_pos >= bfi_i_min.shape[1]:
+        bvi_val = mean_val * 10.0
+    else:
+        imin = float(bfi_i_min[module_idx, cam_pos])
+        imax = float(bfi_i_max[module_idx, cam_pos])
+        iden = (imax - imin) or 1.0
+        bvi_val = (1.0 - ((mean_val - imin) / iden)) * 10.0
+
+    timestamp = float(timestamp_s) if timestamp_s else time.time()
+    return RealtimeSample(
+        side=side,
+        cam_id=int(cam_id),
+        frame_id=int(frame_id),
+        timestamp_s=timestamp,
+        row_sum=int(row_sum),
+        temperature_c=float(temperature_c),
+        mean=float(mean_val),
+        contrast=float(contrast),
+        bfi=float(bfi_val),
+        bvi=float(bvi_val),
+    )
+
+
+def compute_corrected_values( # TODO this is just a placeholder for the future corrected algorithm
+    # TODO note that this function will need to operate on large numbers of histograms and will only
+    # be able to happen once a dark frame has been captured, which may ve every 15 seconds
+    *,
+    mean_val: float,
+    bfi_val: float,
+    bvi_val: float,
+    last_bfi: float | None,
+    last_bvi: float | None,
+    mean_threshold: float,
+) -> tuple[float, float]:
+    """
+    Pure correction computation from current values and prior state.
+    """
+    if mean_val < mean_threshold and last_bfi is not None:
+        bfi_corr = float(last_bfi)
+    else:
+        bfi_corr = float(bfi_val)
+
+    if mean_val < mean_threshold and last_bvi is not None:
+        bvi_corr = float(last_bvi)
+    else:
+        bvi_corr = float(bvi_val)
+
+    return bfi_corr, bvi_corr
+
+
 class RealtimeProcessingPipeline:
     """
     Queue/thread pipeline:
@@ -427,56 +519,18 @@ class RealtimeProcessingPipeline:
             except queue.Empty:
                 continue
 
-            if row_sum > 0:
-                mean_val = float(np.dot(hist, HISTO_BINS) / row_sum)
-            else:
-                mean_val = 0.0
-
-            if row_sum > 0 and mean_val > 0:
-                mean2 = float(np.dot(hist, HISTO_BINS * HISTO_BINS) / row_sum)
-                var = max(0.0, mean2 - (mean_val * mean_val))
-                std = np.sqrt(var)
-                contrast = float(std / mean_val) if mean_val > 0 else 0.0
-            else:
-                contrast = 0.0
-
-            module_idx = 0 if self.side == "left" else 1
-            cam_pos = int(cam_id) % 8
-
-            if (
-                module_idx >= self._bfi_c_min.shape[0]
-                or cam_pos >= self._bfi_c_min.shape[1]
-            ):
-                bfi_val = contrast * 10.0
-            else:
-                cmin = float(self._bfi_c_min[module_idx, cam_pos])
-                cmax = float(self._bfi_c_max[module_idx, cam_pos])
-                cden = (cmax - cmin) or 1.0
-                bfi_val = (1.0 - ((contrast - cmin) / cden)) * 10.0
-
-            if (
-                module_idx >= self._bfi_i_min.shape[0]
-                or cam_pos >= self._bfi_i_min.shape[1]
-            ):
-                bvi_val = mean_val * 10.0
-            else:
-                imin = float(self._bfi_i_min[module_idx, cam_pos])
-                imax = float(self._bfi_i_max[module_idx, cam_pos])
-                iden = (imax - imin) or 1.0
-                bvi_val = (1.0 - ((mean_val - imin) / iden)) * 10.0
-
-            timestamp = float(ts_val) if ts_val else time.time()
-            sample = RealtimeSample(
+            sample = compute_realtime_metrics(
                 side=self.side,
-                cam_id=int(cam_id),
-                frame_id=int(frame_id),
-                timestamp_s=timestamp,
-                row_sum=int(row_sum),
-                temperature_c=float(temp),
-                mean=float(mean_val),
-                contrast=float(contrast),
-                bfi=float(bfi_val),
-                bvi=float(bvi_val),
+                cam_id=cam_id,
+                frame_id=frame_id,
+                timestamp_s=ts_val,
+                hist=hist,
+                row_sum=row_sum,
+                temperature_c=temp,
+                bfi_c_min=self._bfi_c_min,
+                bfi_c_max=self._bfi_c_max,
+                bfi_i_min=self._bfi_i_min,
+                bfi_i_max=self._bfi_i_max,
             )
 
             if self._on_sample_fn:
@@ -505,21 +559,14 @@ class RealtimeProcessingPipeline:
             if int(state["count"]) <= self._correction_warmup_count:
                 continue
 
-            if (
-                sample.mean < self._correction_mean_threshold
-                and state["last_bfi"] is not None
-            ):
-                bfi_corr = float(state["last_bfi"])
-            else:
-                bfi_corr = sample.bfi
-
-            if (
-                sample.mean < self._correction_mean_threshold
-                and state["last_bvi"] is not None
-            ):
-                bvi_corr = float(state["last_bvi"])
-            else:
-                bvi_corr = sample.bvi
+            bfi_corr, bvi_corr = compute_corrected_values(
+                mean_val=sample.mean,
+                bfi_val=sample.bfi,
+                bvi_val=sample.bvi,
+                last_bfi=state["last_bfi"],
+                last_bvi=state["last_bvi"],
+                mean_threshold=self._correction_mean_threshold,
+            )
 
             state["last_bfi"] = bfi_corr
             state["last_bvi"] = bvi_corr
