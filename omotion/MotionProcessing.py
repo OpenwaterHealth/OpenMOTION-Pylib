@@ -275,3 +275,60 @@ def parse_stream_to_csv(
             del buffer_accumulator[:offset]
 
     return rows_written
+
+
+def stream_queue_to_csv_file(
+    q: queue.Queue,
+    stop_evt: threading.Event,
+    filename: str,
+    *,
+    extra_headers: list[str] | None = None,
+    extra_cols_fn: Callable[[], list] | None = None,
+    on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
+    on_complete_fn: Callable[[int], None] | None = None,
+    on_error_fn: Callable[[Exception], None] | None = None,
+) -> int:
+    """
+    High-level helper: parse stream queue data and write a CSV file end-to-end.
+
+    This owns file open/header/write/close so applications only pass:
+    - destination filename
+    - queue + stop event
+    - optional callbacks for extra columns and row handling.
+    """
+    rows_written = 0
+    extra_headers = extra_headers or []
+
+    try:
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            csv_writer = csv.writer(f)
+            csv_writer.writerow(
+                [
+                    "cam_id",
+                    "frame_id",
+                    "timestamp_s",
+                    *range(HISTO_SIZE_WORDS),
+                    "temperature",
+                    "sum",
+                    *extra_headers,
+                ]
+            )
+
+            buffer_accumulator = bytearray()
+            rows_written = parse_stream_to_csv(
+                q=q,
+                stop_evt=stop_evt,
+                csv_writer=csv_writer,
+                buffer_accumulator=buffer_accumulator,
+                extra_cols_fn=extra_cols_fn,
+                on_row_fn=on_row_fn,
+            )
+    except Exception as e:
+        if on_error_fn:
+            on_error_fn(e)
+        logger.error("Writer error (%s): %s", filename, e, exc_info=True)
+        return rows_written
+
+    if on_complete_fn:
+        on_complete_fn(rows_written)
+    return rows_written
