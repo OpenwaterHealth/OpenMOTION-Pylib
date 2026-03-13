@@ -3,6 +3,7 @@ import logging
 from typing import Any, Iterable
 from omotion.Console import MOTIONConsole
 from omotion.DualMotionComposite import DualMotionComposite
+from omotion.ScanWorkflow import ScanWorkflow
 from omotion.Sensor import MOTIONSensor
 from omotion.MotionUart import MOTIONUart
 
@@ -40,6 +41,7 @@ class MOTIONInterface(SignalWrapper):
         self._console_uart = None
         self.console_module = None
         self.sensors = None
+        self.scan_workflow = None
 
         # Create a MOTIONConsole Device instance as part of the interface
         logger.debug(
@@ -77,6 +79,7 @@ class MOTIONInterface(SignalWrapper):
         # Initialize any already connected devices
         self._dual_composite.check_usb_status()
         self._initialize_sensors()
+        self.scan_workflow = ScanWorkflow(self)
 
         # Connect console UART signals to interface (works with PyQt or MOTIONSignal shim)
         if self._console_uart:
@@ -264,6 +267,31 @@ class MOTIONInterface(SignalWrapper):
             right_connected = self._dual_composite.right.is_connected()
 
         return console_connected, left_connected, right_connected
+
+    def start_scan(self, request, **kwargs) -> bool:
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.start_scan(request, **kwargs)
+
+    def cancel_scan(self, **kwargs) -> None:
+        if self.scan_workflow:
+            self.scan_workflow.cancel_scan(**kwargs)
+
+    def get_single_histogram(
+        self,
+        side: str,
+        camera_id: int,
+        test_pattern_id: int = 4,
+        auto_upload: bool = True,
+    ):
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.get_single_histogram(
+            side=side,
+            camera_id=camera_id,
+            test_pattern_id=test_pattern_id,
+            auto_upload=auto_upload,
+        )
 
     def __del__(self):
         try:
