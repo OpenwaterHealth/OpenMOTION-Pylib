@@ -293,6 +293,15 @@ class MOTIONInterface(SignalWrapper):
             auto_upload=auto_upload,
         )
 
+    def start_configure_camera_sensors(self, request, **kwargs) -> bool:
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.start_configure_camera_sensors(request, **kwargs)
+
+    def cancel_configure_camera_sensors(self, **kwargs) -> None:
+        if self.scan_workflow:
+            self.scan_workflow.cancel_configure_camera_sensors(**kwargs)
+
     def __del__(self):
         try:
             self.stop_monitoring()

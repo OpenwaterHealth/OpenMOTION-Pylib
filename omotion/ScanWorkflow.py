@@ -37,6 +37,19 @@ class ScanResult:
     scan_timestamp: str
 
 
+@dataclass
+class ConfigureRequest:
+    left_camera_mask: int
+    right_camera_mask: int
+    power_off_unused_cameras: bool = False
+
+
+@dataclass
+class ConfigureResult:
+    ok: bool
+    error: str
+
+
 class ScanWorkflow:
     def __init__(self, interface: "MOTIONInterface"):
         self._interface = interface
@@ -44,6 +57,9 @@ class ScanWorkflow:
         self._stop_evt = threading.Event()
         self._running = False
         self._lock = threading.Lock()
+        self._config_thread: threading.Thread | None = None
+        self._config_stop_evt = threading.Event()
+        self._config_running = False
 
         self._bfi_c_min = None
         self._bfi_c_max = None
@@ -54,6 +70,11 @@ class ScanWorkflow:
     def running(self) -> bool:
         with self._lock:
             return self._running
+
+    @property
+    def config_running(self) -> bool:
+        with self._lock:
+            return self._config_running
 
     def set_realtime_calibration(
         self,
@@ -302,6 +323,171 @@ class ScanWorkflow:
             pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=join_timeout)
+
+    def start_configure_camera_sensors(
+        self,
+        request: ConfigureRequest,
+        *,
+        on_progress_fn: Callable[[int], None] | None = None,
+        on_log_fn: Callable[[str], None] | None = None,
+        on_complete_fn: Callable[[ConfigureResult], None] | None = None,
+    ) -> bool:
+        with self._lock:
+            if self._config_running or (
+                self._config_thread and self._config_thread.is_alive()
+            ):
+                return False
+            self._config_running = True
+
+        self._config_stop_evt = threading.Event()
+
+        def _emit_progress(pct: int) -> None:
+            if on_progress_fn:
+                on_progress_fn(int(pct))
+
+        def _emit_log(msg: str) -> None:
+            logger.info(msg)
+            if on_log_fn:
+                on_log_fn(msg)
+
+        def _worker():
+            ok = False
+            err = ""
+            try:
+                active = self._resolve_active_sides(
+                    request.left_camera_mask, request.right_camera_mask
+                )
+                if not active:
+                    raise RuntimeError("No active sensors to configure.")
+
+                if request.power_off_unused_cameras:
+                    _emit_log("Powering on cameras before programming FPGAs...")
+                    for side, mask, sensor in active:
+                        try:
+                            power_status = sensor.get_camera_power_status()
+                            if not power_status or len(power_status) != 8:
+                                _emit_log(f"{side}: could not get camera power status")
+                                continue
+                            off_mask = sum(
+                                1 << i
+                                for i in range(8)
+                                if power_status[i] and not (mask & (1 << i))
+                            )
+                            on_mask = mask & 0xFF
+                            if off_mask:
+                                if sensor.disable_camera_power(off_mask):
+                                    _emit_log(
+                                        f"{side}: powered off cameras not in mask (0x{off_mask:02X})"
+                                    )
+                                time.sleep(0.05)
+                            if on_mask:
+                                if sensor.enable_camera_power(on_mask):
+                                    _emit_log(
+                                        f"{side}: powered on cameras (mask 0x{on_mask:02X})"
+                                    )
+                                else:
+                                    raise RuntimeError(
+                                        f"Failed to power on cameras on {side} (mask 0x{on_mask:02X})."
+                                    )
+                                time.sleep(0.5)
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"Error setting camera power for {side}: {e}"
+                            ) from e
+
+                tasks: list[tuple[str, int]] = []
+                for side, mask, _ in active:
+                    positions = [i for i in range(8) if (mask & (1 << i))]
+                    tasks.extend((side, pos) for pos in positions)
+
+                if not tasks:
+                    raise RuntimeError("Empty camera masks (left & right)")
+
+                total = len(tasks) * 2
+                done = 0
+                _emit_progress(1)
+
+                for side, pos in tasks:
+                    if self._config_stop_evt.is_set():
+                        raise RuntimeError("Canceled")
+
+                    sensor = self._interface.sensors.get(side)
+                    if not sensor or not sensor.is_connected():
+                        raise RuntimeError(f"{side} sensor not connected during configure.")
+
+                    cam_mask_single = 1 << pos
+                    pos1 = pos + 1
+
+                    status_map = sensor.get_camera_status(cam_mask_single)
+                    if not status_map or pos not in status_map:
+                        raise RuntimeError(
+                            f"Failed to read camera status for {side} camera {pos1}."
+                        )
+                    status = status_map[pos]
+                    if not status & (1 << 0):
+                        raise RuntimeError(
+                            f"{side} camera {pos1} not READY for FPGA/config."
+                        )
+
+                    msg = (
+                        f"Programming {side} camera FPGA at position {pos1} "
+                        f"(mask 0x{cam_mask_single:02X})..."
+                    )
+                    _emit_log(msg)
+                    results = self._interface.run_on_sensors(
+                        "program_fpga",
+                        camera_position=cam_mask_single,
+                        manual_process=False,
+                        target=side,
+                    )
+                    if not self._ok_from_result(results, side):
+                        raise RuntimeError(
+                            f"Failed to program FPGA on {side} sensor (pos {pos1})."
+                        )
+                    done += 1
+                    _emit_progress(int((done / total) * 100))
+
+                    if self._config_stop_evt.is_set():
+                        raise RuntimeError("Canceled")
+
+                    time.sleep(0.1)
+                    msg = (
+                        f"Configuring {side} camera sensor registers "
+                        f"at position {pos1}..."
+                    )
+                    _emit_log(msg)
+                    cfg_results = self._interface.run_on_sensors(
+                        "camera_configure_registers",
+                        camera_position=cam_mask_single,
+                        target=side,
+                    )
+                    if not self._ok_from_result(cfg_results, side):
+                        raise RuntimeError(
+                            f"camera_configure_registers failed on {side} at position {pos1}: {cfg_results!r}"
+                        )
+                    done += 1
+                    _emit_progress(int((done / total) * 100))
+
+                ok = True
+                _emit_log("FPGAs programmed & registers configured")
+            except Exception as e:
+                err = str(e)
+                logger.error("Camera configure workflow error: %s", err)
+            finally:
+                if on_complete_fn:
+                    on_complete_fn(ConfigureResult(ok=ok, error=err))
+                with self._lock:
+                    self._config_running = False
+                    self._config_thread = None
+
+        self._config_thread = threading.Thread(target=_worker, daemon=True)
+        self._config_thread.start()
+        return True
+
+    def cancel_configure_camera_sensors(self, *, join_timeout: float = 5.0) -> None:
+        self._config_stop_evt.set()
+        if self._config_thread and self._config_thread.is_alive():
+            self._config_thread.join(timeout=join_timeout)
 
     def _resolve_active_sides(self, left_mask: int, right_mask: int):
         sides_info = [
