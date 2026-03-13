@@ -1,6 +1,8 @@
 import csv
 import logging
 import struct
+import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -332,3 +334,235 @@ def stream_queue_to_csv_file(
     if on_complete_fn:
         on_complete_fn(rows_written)
     return rows_written
+
+
+@dataclass
+class RealtimeSample:
+    side: str
+    cam_id: int
+    frame_id: int
+    timestamp_s: float
+    row_sum: int
+    temperature_c: float
+    mean: float
+    contrast: float
+    bfi: float
+    bvi: float
+
+
+@dataclass
+class CorrectedSample:
+    side: str
+    cam_id: int
+    timestamp_s: float
+    bfi_corrected: float
+    bvi_corrected: float
+
+
+class RealtimeProcessingPipeline:
+    """
+    Queue/thread pipeline:
+      parsed rows -> metric computation -> corrected metrics callbacks
+    """
+
+    def __init__(
+        self,
+        side: str,
+        *,
+        bfi_c_min,
+        bfi_c_max,
+        bfi_i_min,
+        bfi_i_max,
+        on_sample_fn: Callable[[RealtimeSample], None] | None = None,
+        on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
+        correction_warmup_count: int = 10,
+        correction_mean_threshold: float = 66.0,
+    ):
+        self.side = side
+        self._bfi_c_min = bfi_c_min
+        self._bfi_c_max = bfi_c_max
+        self._bfi_i_min = bfi_i_min
+        self._bfi_i_max = bfi_i_max
+        self._on_sample_fn = on_sample_fn
+        self._on_corrected_fn = on_corrected_fn
+        self._correction_warmup_count = correction_warmup_count
+        self._correction_mean_threshold = correction_mean_threshold
+
+        self._ingress_queue: queue.Queue = queue.Queue()
+        self._metrics_queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._metric_thread = threading.Thread(target=self._metric_worker, daemon=True)
+        self._correction_thread = threading.Thread(
+            target=self._correction_worker, daemon=True
+        )
+
+    def start(self) -> None:
+        self._metric_thread.start()
+        self._correction_thread.start()
+
+    def enqueue(
+        self,
+        cam_id: int,
+        frame_id: int,
+        timestamp_s: float,
+        hist: np.ndarray,
+        row_sum: int,
+        temperature_c: float,
+    ) -> None:
+        self._ingress_queue.put(
+            (cam_id, frame_id, timestamp_s, hist, row_sum, temperature_c)
+        )
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._stop_event.set()
+        self._metric_thread.join(timeout=timeout)
+        self._correction_thread.join(timeout=timeout)
+
+    def _metric_worker(self) -> None:
+        while not self._stop_event.is_set() or not self._ingress_queue.empty():
+            try:
+                cam_id, frame_id, ts_val, hist, row_sum, temp = self._ingress_queue.get(
+                    timeout=0.25
+                )
+            except queue.Empty:
+                continue
+
+            if row_sum > 0:
+                mean_val = float(np.dot(hist, HISTO_BINS) / row_sum)
+            else:
+                mean_val = 0.0
+
+            if row_sum > 0 and mean_val > 0:
+                mean2 = float(np.dot(hist, HISTO_BINS * HISTO_BINS) / row_sum)
+                var = max(0.0, mean2 - (mean_val * mean_val))
+                std = np.sqrt(var)
+                contrast = float(std / mean_val) if mean_val > 0 else 0.0
+            else:
+                contrast = 0.0
+
+            module_idx = 0 if self.side == "left" else 1
+            cam_pos = int(cam_id) % 8
+
+            if (
+                module_idx >= self._bfi_c_min.shape[0]
+                or cam_pos >= self._bfi_c_min.shape[1]
+            ):
+                bfi_val = contrast * 10.0
+            else:
+                cmin = float(self._bfi_c_min[module_idx, cam_pos])
+                cmax = float(self._bfi_c_max[module_idx, cam_pos])
+                cden = (cmax - cmin) or 1.0
+                bfi_val = (1.0 - ((contrast - cmin) / cden)) * 10.0
+
+            if (
+                module_idx >= self._bfi_i_min.shape[0]
+                or cam_pos >= self._bfi_i_min.shape[1]
+            ):
+                bvi_val = mean_val * 10.0
+            else:
+                imin = float(self._bfi_i_min[module_idx, cam_pos])
+                imax = float(self._bfi_i_max[module_idx, cam_pos])
+                iden = (imax - imin) or 1.0
+                bvi_val = (1.0 - ((mean_val - imin) / iden)) * 10.0
+
+            timestamp = float(ts_val) if ts_val else time.time()
+            sample = RealtimeSample(
+                side=self.side,
+                cam_id=int(cam_id),
+                frame_id=int(frame_id),
+                timestamp_s=timestamp,
+                row_sum=int(row_sum),
+                temperature_c=float(temp),
+                mean=float(mean_val),
+                contrast=float(contrast),
+                bfi=float(bfi_val),
+                bvi=float(bvi_val),
+            )
+
+            if self._on_sample_fn:
+                try:
+                    self._on_sample_fn(sample)
+                except Exception:
+                    pass
+
+            self._metrics_queue.put(sample)
+
+    def _correction_worker(self) -> None:
+        per_camera_state: Dict[tuple[str, int], Dict[str, float | int | None]] = {}
+        while not self._stop_event.is_set() or not self._metrics_queue.empty():
+            try:
+                sample: RealtimeSample = self._metrics_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+
+            key = (sample.side, sample.cam_id)
+            state = per_camera_state.get(key)
+            if state is None:
+                state = {"count": 0, "last_bfi": None, "last_bvi": None}
+                per_camera_state[key] = state
+
+            state["count"] = int(state["count"]) + 1
+            if int(state["count"]) <= self._correction_warmup_count:
+                continue
+
+            if (
+                sample.mean < self._correction_mean_threshold
+                and state["last_bfi"] is not None
+            ):
+                bfi_corr = float(state["last_bfi"])
+            else:
+                bfi_corr = sample.bfi
+
+            if (
+                sample.mean < self._correction_mean_threshold
+                and state["last_bvi"] is not None
+            ):
+                bvi_corr = float(state["last_bvi"])
+            else:
+                bvi_corr = sample.bvi
+
+            state["last_bfi"] = bfi_corr
+            state["last_bvi"] = bvi_corr
+
+            corrected = CorrectedSample(
+                side=sample.side,
+                cam_id=sample.cam_id,
+                timestamp_s=sample.timestamp_s,
+                bfi_corrected=bfi_corr,
+                bvi_corrected=bvi_corr,
+            )
+            if self._on_corrected_fn:
+                try:
+                    self._on_corrected_fn(corrected)
+                except Exception:
+                    pass
+
+
+def create_realtime_processing_pipeline(
+    side: str,
+    *,
+    bfi_c_min,
+    bfi_c_max,
+    bfi_i_min,
+    bfi_i_max,
+    on_sample_fn: Callable[[RealtimeSample], None] | None = None,
+    on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
+    correction_warmup_count: int = 10,
+    correction_mean_threshold: float = 66.0,
+) -> RealtimeProcessingPipeline:
+    """
+    Factory for a ready-to-run realtime processing pipeline.
+    """
+    pipeline = RealtimeProcessingPipeline(
+        side=side,
+        bfi_c_min=bfi_c_min,
+        bfi_c_max=bfi_c_max,
+        bfi_i_min=bfi_i_min,
+        bfi_i_max=bfi_i_max,
+        on_sample_fn=on_sample_fn,
+        on_corrected_fn=on_corrected_fn,
+        correction_warmup_count=correction_warmup_count,
+        correction_mean_threshold=correction_mean_threshold,
+    )
+    pipeline.start()
+    return pipeline
