@@ -1,6 +1,7 @@
 import struct
 import crcmod
 
+
 class I2C_STATUS_Packet:
     def __init__(self):
         self.id = 0
@@ -12,20 +13,32 @@ class I2C_STATUS_Packet:
     @property
     def crc(self):
         return self.calculate_crc()
-    
+
     def calculate_crc(self):
-        crc16 = crcmod.predefined.Crc('crc-ccitt-false')
-        buffer = struct.pack('<HBBBB', self.id, self.cmd, self.status, self.reserved, self.data_len)
+        crc16 = crcmod.predefined.Crc("crc-ccitt-false")
+        buffer = struct.pack(
+            "<HBBBB", self.id, self.cmd, self.status, self.reserved, self.data_len
+        )
         crc16.update(buffer)
         return crc16.crcValue
-    
+
     def to_buffer(self):
-        return struct.pack('<HBBBBH', self.id, self.cmd, self.status, self.reserved, self.data_len, self.crc)
+        return struct.pack(
+            "<HBBBBH",
+            self.id,
+            self.cmd,
+            self.status,
+            self.reserved,
+            self.data_len,
+            self.crc,
+        )
 
     def from_buffer(self, buffer):
         packetCrc = 0
-        self.id, self.cmd, self.status, self.reserved, self.data_len, packetCrc = struct.unpack('<HBBBBH', buffer)
-        if(packetCrc != self.calculate_crc()):
+        self.id, self.cmd, self.status, self.reserved, self.data_len, packetCrc = (
+            struct.unpack("<HBBBBH", buffer)
+        )
+        if packetCrc != self.calculate_crc():
             raise ValueError("CRC validation failed.")
         return self
 
@@ -63,6 +76,7 @@ class I2C_STATUS_Packet:
         # Print parsed packet details
         print("\nParsed Packet:")
         new_packet.print_packet()
+
 
 if __name__ == "__main__":
     I2C_STATUS_Packet.main()

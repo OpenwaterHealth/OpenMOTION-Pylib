@@ -55,7 +55,11 @@ class DFUProgrammer:
         vidpid: str | None = None,
     ):
         self.repo_root = repo_root or Path(__file__).resolve().parents[1]
-        self.dfu_util_path = Path(dfu_util_path) if dfu_util_path else self._locate_dfu_util(self.repo_root)
+        self.dfu_util_path = (
+            Path(dfu_util_path)
+            if dfu_util_path
+            else self._locate_dfu_util(self.repo_root)
+        )
         self.dfu_dir = self.dfu_util_path.parent
         self.vidpid = vidpid
 
@@ -76,21 +80,25 @@ class DFUProgrammer:
     @classmethod
     def _locate_dfu_util(cls, repo_root: Path) -> Path:
         subdir = cls._platform_subdir()
-        exe = "dfu-util.exe" if platform.system().lower().startswith("windows") else "dfu-util"
-        
+        exe = (
+            "dfu-util.exe"
+            if platform.system().lower().startswith("windows")
+            else "dfu-util"
+        )
+
         # Try package-installed location first (for when installed via wheel)
         package_dir = Path(__file__).resolve().parent
         package_dfu_dir = package_dir / "dfu-util" / subdir
         package_dfu_path = package_dfu_dir / exe
         if package_dfu_path.is_file():
             return package_dfu_path
-        
+
         # Fall back to repo root location (for development)
         repo_dfu_dir = repo_root / "dfu-util" / subdir
         repo_dfu_path = repo_dfu_dir / exe
         if repo_dfu_path.is_file():
             return repo_dfu_path
-        
+
         raise FileNotFoundError(
             f"dfu-util binary not found in package ({package_dfu_path}) "
             f"or repo ({repo_dfu_path})"
@@ -104,7 +112,13 @@ class DFUProgrammer:
 
     def list_devices(self) -> str:
         cmd = self._dfu_util_base_args() + ["-l"]
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+        r = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
         return r.stdout or ""
 
     def wait_for_dfu_device(
@@ -174,7 +188,9 @@ class DFUProgrammer:
 
         data = bin_path.read_bytes()
         suffix_free = data[:-16]
-        fd, out_path = tempfile.mkstemp(prefix=bin_path.stem + "-nosuffix-", suffix=".bin")
+        fd, out_path = tempfile.mkstemp(
+            prefix=bin_path.stem + "-nosuffix-", suffix=".bin"
+        )
         os.close(fd)
         Path(out_path).write_bytes(suffix_free)
         return Path(out_path)
@@ -280,8 +296,10 @@ class DFUProgrammer:
                     )
                 )
 
-            is_progress_line = (phase in {"erase", "download"}) and (percent is not None)
-            should_echo = (echo_progress_lines or not is_progress_line)
+            is_progress_line = (phase in {"erase", "download"}) and (
+                percent is not None
+            )
+            should_echo = echo_progress_lines or not is_progress_line
             if should_echo and line_callback is not None:
                 line_callback(line.rstrip("\n"))
             if echo_output and should_echo:

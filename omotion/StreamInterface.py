@@ -2,11 +2,13 @@ import logging
 import usb.core
 import usb.util
 import threading
-import queue
 from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
-logger = logging.getLogger(f"{_log_root}.StreamInterface" if _log_root else "StreamInterface")
+logger = logging.getLogger(
+    f"{_log_root}.StreamInterface" if _log_root else "StreamInterface"
+)
+
 
 # =========================================
 # Stream Interface (IN only + thread + queue)
@@ -44,10 +46,11 @@ class StreamInterface(USBInterfaceBase):
     def _stream_loop(self):
         while not self.stop_event.is_set():
             try:
-                data = self.dev.read(self.ep_in.bEndpointAddress, self.expected_size, timeout=100)
+                data = self.dev.read(
+                    self.ep_in.bEndpointAddress, self.expected_size, timeout=100
+                )
                 if data and self.data_queue:
                     self.data_queue.put(bytes(data))
             except usb.core.USBError as e:
                 if e.errno not in (110, 10060):
                     logger.error(f"{self.desc} stream error: {e}")
-

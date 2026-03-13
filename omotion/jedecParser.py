@@ -111,7 +111,7 @@ def _pack_bits_to_rows(fuse_bits: List[int], total_fuses: int) -> bytes:
                     # MSB-first: bit 7 is first, bit 0 is last
                     val = (val << 1) | (1 if fuse_bits[fuse_idx] else 0)
                 else:
-                    val = (val << 1)
+                    val = val << 1
             out[row * 16 + byte_idx] = val
     return bytes(out)
 
@@ -134,7 +134,7 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
         content = f.read()
 
     # Strip JEDEC STX (0x02) byte that Diamond prepends to some files.
-    content = content.lstrip('\x02')
+    content = content.lstrip("\x02")
 
     # Split the entire file into '*'-terminated fields.  Using split('*')
     # handles any combination of single-field lines, multi-field lines, and
@@ -142,9 +142,9 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
     raw_fields = content.split("*")
 
     total_fuses: Optional[int] = None
-    fuse_bits:   Optional[List[int]] = None
+    fuse_bits: Optional[List[int]] = None
     feature_row: Optional[str] = None
-    feabits:     Optional[str] = None
+    feabits: Optional[str] = None
 
     i = 0
     while i < len(raw_fields):
@@ -179,7 +179,7 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
             # All '0'/'1' characters that follow (across embedded newlines)
             # are fuse data for this block.
             for c in rest[j:]:
-                if c in ('0', '1'):
+                if c in ("0", "1"):
                     if fuse_pos < len(fuse_bits):
                         fuse_bits[fuse_pos] = int(c)
                         fuse_pos += 1
@@ -192,11 +192,11 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
             field_lines = [ln.strip() for ln in field.splitlines() if ln.strip()]
             if field_lines:
                 e_bits = field_lines[0][1:]  # strip leading 'E'
-                if len(e_bits) >= 64 and all(c in '01' for c in e_bits[:64]):
+                if len(e_bits) >= 64 and all(c in "01" for c in e_bits[:64]):
                     feature_row = e_bits[:64]
             if len(field_lines) >= 2:
                 fb = field_lines[1]
-                if all(c in '01' for c in fb):
+                if all(c in "01" for c in fb):
                     feabits = fb[:16]
 
         i += 1
@@ -206,9 +206,11 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
     if fuse_bits is None:
         fuse_bits = [0] * total_fuses
 
-    print(f"[DEBUG] QF={total_fuses}  set_fuses={sum(fuse_bits)}  "
-          f"feature_row={'present' if feature_row else 'absent'}  "
-          f"feabits={'present (' + feabits + ')' if feabits else 'absent'}")
+    print(
+        f"[DEBUG] QF={total_fuses}  set_fuses={sum(fuse_bits)}  "
+        f"feature_row={'present' if feature_row else 'absent'}  "
+        f"feabits={'present (' + feabits + ')' if feabits else 'absent'}"
+    )
 
     # Pack into rows × 16 bytes
     data = _pack_bits_to_rows(fuse_bits, total_fuses)
@@ -216,9 +218,9 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
 
     extra: dict = {}
     if feature_row:
-        extra['feature_row'] = feature_row
+        extra["feature_row"] = feature_row
     if feabits:
-        extra['feabits'] = feabits
+        extra["feabits"] = feabits
 
     return (
         JedecImage(
@@ -227,7 +229,7 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
             row_size_bytes=16,
             data=data,
         ),
-        extra
+        extra,
     )
 
 
@@ -235,7 +237,14 @@ def parse_jedec_file(path: str) -> Tuple[JedecImage, dict]:
 if __name__ == "__main__":
     import sys
     import os
-    def write_c_header(img: JedecImage, out_path: str, array_name: str = "jedec_data", feature_row: str = None, feabits: str = None):
+
+    def write_c_header(
+        img: JedecImage,
+        out_path: str,
+        array_name: str = "jedec_data",
+        feature_row: str = None,
+        feabits: str = None,
+    ):
         with open(out_path, "w") as f:
             f.write("// Auto-generated JEDEC data header\n")
             f.write("#pragma once\n\n")
@@ -254,6 +263,7 @@ if __name__ == "__main__":
             f.write("};\n\n")
             # Feature row output (if present)
             if feature_row and feabits:
+
                 def bitstring_to_bytes(bitstr):
                     # Convert string of bits (MSB first, right-to-left per C code) to bytes
                     out = []
@@ -261,10 +271,11 @@ if __name__ == "__main__":
                     for _ in range(len(bitstr) // 8):
                         val = 0
                         for _ in range(8):
-                            val = (val << 1) | (1 if bitstr[p] == '1' else 0)
+                            val = (val << 1) | (1 if bitstr[p] == "1" else 0)
                             p -= 1
                         out.append(val)
                     return out
+
                 feature_bytes = bitstring_to_bytes(feature_row)
                 feabits_bytes = bitstring_to_bytes(feabits.zfill(16))
                 f.write(f"const unsigned char {array_name}_feature_row[8] = {{ ")
@@ -291,8 +302,10 @@ if __name__ == "__main__":
         header_path = sys.argv[3]
         array_name = os.path.splitext(os.path.basename(header_path))[0]
         # Ensure valid C identifier
-        array_name = array_name.replace('.', '_').replace('-', '_')
-        write_c_header(img, header_path, array_name, extra.get('feature_row'), extra.get('feabits'))
+        array_name = array_name.replace(".", "_").replace("-", "_")
+        write_c_header(
+            img, header_path, array_name, extra.get("feature_row"), extra.get("feabits")
+        )
         print(f"Header file written to {header_path}")
     else:
         print(f"Total fuses: {img.total_fuses}")

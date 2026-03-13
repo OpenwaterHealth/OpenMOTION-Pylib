@@ -5,22 +5,29 @@ from omotion.Console import MOTIONConsole
 from omotion.DualMotionComposite import DualMotionComposite
 from omotion.Sensor import MOTIONSensor
 from omotion.MotionUart import MOTIONUart
-from omotion.MotionComposite import MotionComposite
 
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
-from omotion.signal_wrapper import SignalWrapper, PYQT_AVAILABLE
+from omotion.signal_wrapper import SignalWrapper
 from omotion import __version__ as _SDK_VERSION, _log_root
 
 logger = logging.getLogger(f"{_log_root}.Interface" if _log_root else "Interface")
 
 
 class MOTIONInterface(SignalWrapper):
-    
     sensors: dict[str, MOTIONSensor | None] = None
-    
-    def __init__(self, vid: int = 0x0483, sensor_pid: int = SENSOR_MODULE_PID, console_pid: int = CONSOLE_MODULE_PID, baudrate: int = 921600, timeout: int = 30, run_async: bool = False, demo_mode: bool = False) -> None:
+
+    def __init__(
+        self,
+        vid: int = 0x0483,
+        sensor_pid: int = SENSOR_MODULE_PID,
+        console_pid: int = CONSOLE_MODULE_PID,
+        baudrate: int = 921600,
+        timeout: int = 30,
+        run_async: bool = False,
+        demo_mode: bool = False,
+    ) -> None:
         super().__init__()
-            
+
         # Store parameters in instance variables
         self.vid = vid
         self.sensor_pid = sensor_pid
@@ -35,20 +42,38 @@ class MOTIONInterface(SignalWrapper):
         self.sensors = None
 
         # Create a MOTIONConsole Device instance as part of the interface
-        logger.debug("Initializing Console Module of MOTIONInterface with VID: %s, PID: %s, baudrate: %s, timeout: %s", vid, console_pid, baudrate, timeout)
-        self._console_uart = MOTIONUart(vid=vid, pid=console_pid, baudrate=baudrate, timeout=timeout, desc="console", demo_mode=False, async_mode=run_async)
+        logger.debug(
+            "Initializing Console Module of MOTIONInterface with VID: %s, PID: %s, baudrate: %s, timeout: %s",
+            vid,
+            console_pid,
+            baudrate,
+            timeout,
+        )
+        self._console_uart = MOTIONUart(
+            vid=vid,
+            pid=console_pid,
+            baudrate=baudrate,
+            timeout=timeout,
+            desc="console",
+            demo_mode=False,
+            async_mode=run_async,
+        )
         self.console_module = MOTIONConsole(uart=self._console_uart)
 
         # Create a MOTIONSensor Device instance as part of the interface
-        logger.debug("Initializing Sensor Module of MOTIONInterface with VID: %s, PID: %s, timeout: %s", vid, sensor_pid, timeout)
-        self._dual_composite = DualMotionComposite(vid=vid, pid=sensor_pid, async_mode=run_async)
+        logger.debug(
+            "Initializing Sensor Module of MOTIONInterface with VID: %s, PID: %s, timeout: %s",
+            vid,
+            sensor_pid,
+            timeout,
+        )
+        self._dual_composite = DualMotionComposite(
+            vid=vid, pid=sensor_pid, async_mode=run_async
+        )
 
         # Initialize sensors dict - will be populated dynamically when devices connect
-        self.sensors = {
-            "left": None,
-            "right": None
-        }
-        
+        self.sensors = {"left": None, "right": None}
+
         # Initialize any already connected devices
         self._dual_composite.check_usb_status()
         self._initialize_sensors()
@@ -59,56 +84,56 @@ class MOTIONInterface(SignalWrapper):
             self._console_uart.signal_connect.connect(self.signal_connect)
             self._console_uart.signal_disconnect.connect(self.signal_disconnect)
             self._console_uart.signal_data_received.connect(self.signal_data_received)
-        
+
         # Connect DualMotionComposite signals to interface (works with PyQt or MOTIONSignal shim)
         if self._dual_composite:
             logger.info("Connecting dual composite signals to MOTIONInterface")
             self._dual_composite.signal_connect.connect(self._on_sensor_connect)
             self._dual_composite.signal_disconnect.connect(self._on_sensor_disconnect)
             self._dual_composite.signal_data_received.connect(self.signal_data_received)
-            
+
     def _initialize_sensors(self):
         """Initialize MOTIONSensor instances for any currently connected MotionComposite devices."""
         if self._dual_composite.left:
             logger.info("Initializing left sensor from existing connection")
             self.sensors["left"] = MOTIONSensor(uart=self._dual_composite.left)
-        
+
         if self._dual_composite.right:
             logger.info("Initializing right sensor from existing connection")
             self.sensors["right"] = MOTIONSensor(uart=self._dual_composite.right)
-    
+
     def _on_sensor_connect(self, sensor_id: str, connection_type: str):
         """Handle sensor connection signal from DualMotionComposite."""
         logger.info(f"Sensor connect signal received: {sensor_id}")
-        
+
         if sensor_id == "SENSOR_LEFT" and self._dual_composite.left:
             if self.sensors["left"] is None:
                 logger.info("Initializing new LEFT sensor")
                 self.sensors["left"] = MOTIONSensor(uart=self._dual_composite.left)
-        
+
         elif sensor_id == "SENSOR_RIGHT" and self._dual_composite.right:
             if self.sensors["right"] is None:
                 logger.info("Initializing new RIGHT sensor")
                 self.sensors["right"] = MOTIONSensor(uart=self._dual_composite.right)
-        
+
         # Forward the signal to any external listeners
         self.signal_connect.emit(sensor_id, connection_type)
-    
+
     def _on_sensor_disconnect(self, sensor_id: str, connection_type: str):
         """Handle sensor disconnection signal from DualMotionComposite."""
         logger.info(f"Sensor disconnect signal received: {sensor_id}")
-        
+
         if sensor_id == "SENSOR_LEFT":
             logger.info("Clearing LEFT sensor")
             self.sensors["left"] = None
-        
+
         elif sensor_id == "SENSOR_RIGHT":
             logger.info("Clearing RIGHT sensor")
             self.sensors["right"] = None
-        
+
         # Forward the signal to any external listeners
         self.signal_disconnect.emit(sensor_id, connection_type)
-    
+
     async def start_monitoring(self, interval: int = 1) -> None:
         """Start monitoring for USB device connections."""
         try:
@@ -125,7 +150,7 @@ class MOTIONInterface(SignalWrapper):
 
             if tasks:
                 await asyncio.gather(*tasks)
-                
+
         except Exception as e:
             logger.error("Error starting monitoring: %s", e)
             raise
@@ -142,23 +167,27 @@ class MOTIONInterface(SignalWrapper):
                     self._dual_composite.stop_monitoring()
                 else:
                     # Stop individually if needed
-                    if self._dual_composite.left and hasattr(self._dual_composite.left, "stop_monitoring"):
+                    if self._dual_composite.left and hasattr(
+                        self._dual_composite.left, "stop_monitoring"
+                    ):
                         self._dual_composite.left.stop_monitoring()
-                    if self._dual_composite.right and hasattr(self._dual_composite.right, "stop_monitoring"):
+                    if self._dual_composite.right and hasattr(
+                        self._dual_composite.right, "stop_monitoring"
+                    ):
                         self._dual_composite.right.stop_monitoring()
-                        
+
         except Exception as e:
             logger.error("Error stopping monitoring: %s", e)
             raise
-        
+
     def run_on_sensors(
         self,
         func_name: str,
         *args,
         target: str | Iterable[str] | None = None,
         include_disconnected: bool = True,
-        **kwargs
-        ) -> dict[str, Any]:
+        **kwargs,
+    ) -> dict[str, Any]:
         """
         Run a MOTIONSensor method on selected sensors and return results.
 
@@ -178,7 +207,9 @@ class MOTIONInterface(SignalWrapper):
             dict[str, Any]: {sensor_name: return_value or None}
         """
         # Normalize target(s)
-        if target is None or (isinstance(target, str) and target.lower() in ("all", "*")):
+        if target is None or (
+            isinstance(target, str) and target.lower() in ("all", "*")
+        ):
             selected_names = set(self.sensors.keys())
         elif isinstance(target, str):
             selected_names = {target.lower()}
@@ -215,7 +246,7 @@ class MOTIONInterface(SignalWrapper):
                 # else skip disconnected sensor entirely
 
         return results
-    
+
     def is_device_connected(self) -> tuple[bool, bool, bool]:
         """
         Check if the console, left sensor, and right sensor are connected.
@@ -233,14 +264,14 @@ class MOTIONInterface(SignalWrapper):
             right_connected = self._dual_composite.right.is_connected()
 
         return console_connected, left_connected, right_connected
-    
+
     def get_camera_histogram(
         self,
-        sensor_side: str,         # "left" or "right"
+        sensor_side: str,  # "left" or "right"
         camera_id: int,
         test_pattern_id: int = 4,
-        auto_upload: bool = True
-        ) -> tuple[list[int], list[int]] | None:
+        auto_upload: bool = True,
+    ) -> tuple[list[int], list[int]] | None:
         """
         High-level method to get a histogram from a specific camera
         on a specific sensor module ("left" or "right").
@@ -260,19 +291,21 @@ class MOTIONInterface(SignalWrapper):
         if sensor is None:
             logger.error(f"{sensor_side.capitalize()} sensor not connected.")
             return None
-        
+
         camera_mask = 1 << (camera_id)
         test_pattern = test_pattern_id
 
         # Step 1: Get status
         status_map = sensor.get_camera_status(camera_mask)
         print(f"[{sensor_side.capitalize()}] Camera {camera_id} Status: {status_map}")
-        if not status_map or camera_id  not in status_map:
+        if not status_map or camera_id not in status_map:
             logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
-        status = status_map[camera_id ]
-        logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
+        status = status_map[camera_id]
+        logger.debug(
+            f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}"
+        )
 
         if not status & (1 << 0):  # Not READY
             logger.debug(f"[{sensor_side.capitalize()}] Camera peripheral not READY.")
@@ -283,16 +316,26 @@ class MOTIONInterface(SignalWrapper):
             logger.debug(f"[{sensor_side.capitalize()}] FPGA Configuration Started")
             start_time = time.time()
             if auto_upload:
-                if not sensor.program_fpga(camera_position=camera_mask, manual_process=False):
-                    logger.error(f"[{sensor_side.capitalize()}] Failed to program FPGA.")
+                if not sensor.program_fpga(
+                    camera_position=camera_mask, manual_process=False
+                ):
+                    logger.error(
+                        f"[{sensor_side.capitalize()}] Failed to program FPGA."
+                    )
                     return None
-            logger.debug(f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time)*1000:.2f} ms")
+            logger.debug(
+                f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time) * 1000:.2f} ms"
+            )
 
         # Step 3: Configure registers if needed
         if not (status & (1 << 1) and status & (1 << 2)):
-            logger.debug(f"[{sensor_side.capitalize()}] Programming camera sensor registers.")
+            logger.debug(
+                f"[{sensor_side.capitalize()}] Programming camera sensor registers."
+            )
             if not sensor.camera_configure_registers(camera_mask):
-                logger.error(f"[{sensor_side.capitalize()}] Failed to configure registers.")
+                logger.error(
+                    f"[{sensor_side.capitalize()}] Failed to configure registers."
+                )
                 return None
 
         # Step 4: Set test pattern
@@ -303,12 +346,14 @@ class MOTIONInterface(SignalWrapper):
 
         # Step 5: Verify ready for histogram
         status_map = sensor.get_camera_status(camera_mask)
-        if not status_map or camera_id  not in status_map:
+        if not status_map or camera_id not in status_map:
             logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
             return None
 
-        status = status_map[camera_id ]
-        logger.debug(f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}")
+        status = status_map[camera_id]
+        logger.debug(
+            f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}"
+        )
         if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):
             logger.error(f"[{sensor_side.capitalize()}] Not configured for histogram.")
             return None
@@ -326,7 +371,9 @@ class MOTIONInterface(SignalWrapper):
             logger.error(f"[{sensor_side.capitalize()}] Histogram retrieval failed.")
             return None
 
-        logger.debug(f"[{sensor_side.capitalize()}] Histogram frame received successfully.")
+        logger.debug(
+            f"[{sensor_side.capitalize()}] Histogram frame received successfully."
+        )
         histogram = histogram[:4096]
         return self.bytes_to_integers(histogram)
 
@@ -352,13 +399,13 @@ class MOTIONInterface(SignalWrapper):
         hidden_figures = []
         # Iterate over the byte array in chunks of 4 bytes
         for i in range(0, len(byte_array), 4):
-            bytes = byte_array[i:i+4]
+            bytes = byte_array[i : i + 4]
             # Unpack each 4-byte chunk as a single integer (big-endian)
             # integer = struct.unpack_from('<I', byte_array, i)[0]
             # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
             #     print(str(i) + " " + str(bytes[0:3]))
             hidden_figures.append(bytes[3])
-            integers.append(int.from_bytes(bytes[0:3],byteorder='little'))
+            integers.append(int.from_bytes(bytes[0:3], byteorder="little"))
         return (integers, hidden_figures)
 
     @staticmethod

@@ -1,15 +1,21 @@
 # omotion/usb_backend.py
-import os, sys, platform, ctypes
+import os
+import sys
+import platform
+import ctypes
 from pathlib import Path
+
 
 def _is_win():
     return sys.platform == "win32"
+
 
 def _base_dir() -> Path:
     # In PyInstaller one-file/one-dir builds, sys._MEIPASS points to the temp dir
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return Path(__file__).parent
+
 
 def _dll_dir() -> Path | None:
     if not _is_win():
@@ -22,6 +28,7 @@ def _dll_dir() -> Path | None:
         return p
     # Fallback: next to the EXE in a flat COLLECT layout
     return _base_dir()
+
 
 def get_libusb1_backend():
     import usb.backend.libusb1 as libusb1
