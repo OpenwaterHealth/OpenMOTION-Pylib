@@ -45,6 +45,33 @@ _HDR = struct.Struct("<BBI")
 _BLK_HEAD = struct.Struct("<BB")
 
 
+@dataclass
+class HistogramSample:
+    cam_id: int
+    frame_id: int
+    timestamp_s: float
+    histogram: np.ndarray
+    temperature_c: float
+    row_sum: int
+
+    def to_csv_row(self, extra_cols: list | None = None) -> list:
+        return [
+            self.cam_id,
+            self.frame_id,
+            self.timestamp_s,
+            *self.histogram.tolist(),
+            self.temperature_c,
+            self.row_sum,
+            *(extra_cols or []),
+        ]
+
+
+@dataclass
+class HistogramPacket:
+    samples: list[HistogramSample]
+    bytes_consumed: int
+    timestamp_s: float | None
+
 def bytes_to_integers(byte_array: bytes | bytearray) -> tuple[list[int], list[int]]:
     """
     Convert 4096 histogram bytes into packed integer bins and hidden figures.
@@ -69,14 +96,25 @@ def parse_histogram_packet(
     pkt: memoryview,
 ) -> Tuple[Dict[int, np.ndarray], Dict[int, int], Dict[int, float], Optional[float], int]:
     """
-    Parse a binary histogram packet.
+    Backward-compatible packet parser returning legacy tuple maps.
+    """
+    packet = parse_histogram_packet_structured(pkt)
+    hists: Dict[int, np.ndarray] = {}
+    ids: Dict[int, int] = {}
+    temps: Dict[int, float] = {}
+    for sample in packet.samples:
+        hists[sample.cam_id] = sample.histogram
+        ids[sample.cam_id] = sample.frame_id
+        temps[sample.cam_id] = sample.temperature_c
+    return hists, ids, temps, packet.timestamp_s, packet.bytes_consumed
+
+
+def parse_histogram_packet_structured(pkt: memoryview) -> HistogramPacket:
+    """
+    Parse a binary histogram packet into normalized packet/sample dataclasses.
 
     Returns:
-        hists: {camera_id: np.ndarray[uint32] (1024 bins)}
-        ids: {camera_id: frame_id}
-        temps: {camera_id: temperature_c}
-        timestamp_sec: optional packet timestamp in seconds
-        bytes_consumed: packet length in bytes
+        HistogramPacket with parsed samples and metadata.
     """
     if len(pkt) < MIN_PACKET_SIZE:
         raise ValueError("Packet too small")
@@ -99,9 +137,7 @@ def parse_histogram_packet(
     payload_end = pkt_len - PACKET_FOOTER_SIZE
     off = PACKET_HEADER_SIZE
 
-    hists: Dict[int, np.ndarray] = {}
-    ids: Dict[int, int] = {}
-    temps: Dict[int, float] = {}
+    samples: list[HistogramSample] = []
     timestamp_sec: Optional[float] = None
 
     if has_timestamp:
@@ -131,9 +167,18 @@ def parse_histogram_packet(
         hist = hist.copy()
         hist[-1] = last_word & 0x00_FF_FF_FF
 
-        hists[cam_id] = hist
-        ids[cam_id] = frame_id
-        temps[cam_id] = temp
+        ts_val = timestamp_sec if timestamp_sec is not None else 0.0
+        row_sum = int(hist.sum(dtype=np.uint64))
+        samples.append(
+            HistogramSample(
+                cam_id=int(cam_id),
+                frame_id=int(frame_id),
+                timestamp_s=float(ts_val),
+                histogram=hist,
+                temperature_c=float(temp),
+                row_sum=row_sum,
+            )
+        )
 
     crc_expected = _U16.unpack_from(pkt, off)[0]
     off += 2
@@ -143,7 +188,11 @@ def parse_histogram_packet(
     if _crc16(pkt[: off - 3]) != crc_expected:
         raise ValueError("CRC mismatch")
 
-    return hists, ids, temps, timestamp_sec, pkt_len
+    return HistogramPacket(
+        samples=samples,
+        bytes_consumed=pkt_len,
+        timestamp_s=timestamp_sec,
+    )
 
 
 def process_bin_file(
@@ -174,18 +223,12 @@ def process_bin_file(
 
         while off + MIN_PACKET_SIZE <= len(data):
             try:
-                hists, ids, temps, timestamp_sec, consumed = parse_histogram_packet(
-                    data[off:]
-                )
-                off += consumed
+                packet = parse_histogram_packet_structured(data[off:])
+                off += packet.bytes_consumed
                 packet_ok += 1
 
-                ts_val = timestamp_sec if timestamp_sec is not None else 0.0
-                for cam_id, hist in hists.items():
-                    row_sum = int(hist.sum(dtype=np.uint64))
-                    out_buf.append(
-                        [cam_id, ids[cam_id], ts_val, *hist.tolist(), temps[cam_id], row_sum]
-                    )
+                for sample in packet.samples:
+                    out_buf.append(sample.to_csv_row())
 
                 if len(out_buf) >= batch_rows:
                     wr.writerows(out_buf)
@@ -243,26 +286,23 @@ def parse_stream_to_csv(
         while offset + MIN_PACKET_SIZE <= len(buffer_accumulator):
             try:
                 pkt_view = memoryview(buffer_accumulator[offset:])
-                hists, ids, temps, timestamp_sec, consumed = parse_histogram_packet(pkt_view)
-                offset += consumed
+                packet = parse_histogram_packet_structured(pkt_view)
+                offset += packet.bytes_consumed
 
-                ts_val = timestamp_sec if timestamp_sec is not None else 0.0
-                for cam_id, hist in hists.items():
-                    row_sum = int(hist.sum(dtype=np.uint64))
+                for sample in packet.samples:
                     extra_cols = extra_cols_fn() if extra_cols_fn else []
-                    row = [
-                        cam_id,
-                        ids[cam_id],
-                        ts_val,
-                        *hist.tolist(),
-                        temps[cam_id],
-                        row_sum,
-                        *extra_cols,
-                    ]
+                    row = sample.to_csv_row(extra_cols=extra_cols)
                     csv_writer.writerow(row)
                     rows_written += 1
                     if on_row_fn:
-                        on_row_fn(cam_id, ids[cam_id], ts_val, hist, row_sum, temps[cam_id])
+                        on_row_fn(
+                            sample.cam_id,
+                            sample.frame_id,
+                            sample.timestamp_s,
+                            sample.histogram,
+                            sample.row_sum,
+                            sample.temperature_c,
+                        )
 
             except ValueError as e:
                 pat = b"\xaa\x00\x41"
