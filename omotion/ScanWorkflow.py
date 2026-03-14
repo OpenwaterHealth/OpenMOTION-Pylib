@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 from omotion import _log_root
-from omotion.MotionProcessing import create_realtime_processing_pipeline, stream_queue_to_csv_file
+from omotion.MotionProcessing import create_science_pipeline, stream_queue_to_csv_file
 
 if TYPE_CHECKING:
     from omotion.Interface import MOTIONInterface
@@ -147,8 +147,11 @@ class ScanWorkflow:
             active_sides = []
             writer_threads: dict[str, threading.Thread] = {}
             writer_stops: dict[str, threading.Event] = {}
-            processing_pipelines = {}
+            science_pipeline = None
             corrected_lock = threading.Lock()
+            # Keyed by absolute_frame_id (monotonic, rollover-safe) rather than
+            # the raw u8 frame_id so that frame 0 on pass 2 does not overwrite
+            # frame 0 on pass 1 for scans longer than 256 trigger cycles.
             corrected_by_frame: dict[int, dict] = {}
             corrected_path = os.path.join(
                 request.data_dir, f"scan_{request.subject_id}_{ts}_corrected.csv"
@@ -188,6 +191,88 @@ class ScanWorkflow:
                         )
 
                 _emit_log("Setting up streaming...")
+
+                # Build one unified SciencePipeline that handles both sides
+                # before starting any per-side writer threads.
+                if (
+                    self._bfi_c_min is not None
+                    and self._bfi_c_max is not None
+                    and self._bfi_i_min is not None
+                    and self._bfi_i_max is not None
+                ):
+                    left_mask_active = next(
+                        (m for s, m, _ in active_sides if s == "left"), 0x00
+                    )
+                    right_mask_active = next(
+                        (m for s, m, _ in active_sides if s == "right"), 0x00
+                    )
+
+                    def _on_corrected_sample(sample):
+                        # Per-sample real-time callback (fires immediately for GUI).
+                        try:
+                            # Use absolute_frame_id as the merge key so rollover
+                            # at frame 255→0 never produces a collision.
+                            frame_key = int(sample.absolute_frame_id)
+                            col_suffix = f"{sample.side[0]}{int(sample.cam_id) + 1}"
+                            with corrected_lock:
+                                frame_entry = corrected_by_frame.get(frame_key)
+                                if frame_entry is None:
+                                    frame_entry = {
+                                        "timestamp_s": float(sample.timestamp_s),
+                                        "values": {},
+                                    }
+                                    corrected_by_frame[frame_key] = frame_entry
+                                else:
+                                    frame_entry["timestamp_s"] = min(
+                                        float(frame_entry["timestamp_s"]),
+                                        float(sample.timestamp_s),
+                                    )
+                                frame_entry["values"][f"bfi_{col_suffix}"] = float(
+                                    sample.bfi_corrected
+                                )
+                                frame_entry["values"][f"bvi_{col_suffix}"] = float(
+                                    sample.bvi_corrected
+                                )
+                                frame_entry["values"][f"mean_{col_suffix}"] = float(
+                                    sample.mean
+                                )
+                                frame_entry["values"][f"std_{col_suffix}"] = float(
+                                    sample.std_dev
+                                )
+                                frame_entry["values"][f"contrast_{col_suffix}"] = float(
+                                    sample.contrast
+                                )
+                        except Exception as agg_err:
+                            _emit_log(f"Corrected aggregation error: {agg_err}")
+                        if on_corrected_fn:
+                            on_corrected_fn(sample)
+
+                    science_pipeline = create_science_pipeline(
+                        left_camera_mask=left_mask_active,
+                        right_camera_mask=right_mask_active,
+                        bfi_c_min=self._bfi_c_min,
+                        bfi_c_max=self._bfi_c_max,
+                        bfi_i_min=self._bfi_i_min,
+                        bfi_i_max=self._bfi_i_max,
+                        on_corrected_fn=_on_corrected_sample,
+                        on_science_frame_fn=on_sample_fn,  # repurposed for aligned-frame callback
+                    )
+
+                def _make_row_handler(current_side: str, p):
+                    """Close over side so each writer thread feeds the right key."""
+                    def _on_row(cam_id, frame_id, ts_val, hist, row_sum, temp):
+                        if p is not None:
+                            p.enqueue(
+                                current_side,
+                                cam_id,
+                                frame_id,
+                                ts_val,
+                                hist,
+                                row_sum,
+                                temp,
+                            )
+                    return _on_row
+
                 for side, mask, sensor in active_sides:
                     q = queue.Queue()
                     stop_evt = threading.Event()
@@ -195,62 +280,6 @@ class ScanWorkflow:
 
                     filename = f"scan_{request.subject_id}_{ts}_{side}_mask{mask:02X}.csv"
                     filepath = os.path.join(request.data_dir, filename)
-
-                    def _make_corrected_callback(current_side: str):
-                        def _on_corrected(sample):
-                            try:
-                                frame_key = int(sample.frame_id)
-                                col_suffix = f"{current_side[0]}{int(sample.cam_id) + 1}"
-                                with corrected_lock:
-                                    frame_entry = corrected_by_frame.get(frame_key)
-                                    if frame_entry is None:
-                                        frame_entry = {
-                                            "timestamp_s": float(sample.timestamp_s),
-                                            "values": {},
-                                        }
-                                        corrected_by_frame[frame_key] = frame_entry
-                                    else:
-                                        frame_entry["timestamp_s"] = min(
-                                            float(frame_entry["timestamp_s"]),
-                                            float(sample.timestamp_s),
-                                        )
-                                    frame_entry["values"][f"bfi_{col_suffix}"] = float(
-                                        sample.bfi_corrected
-                                    )
-                                    frame_entry["values"][f"bvi_{col_suffix}"] = float(
-                                        sample.bvi_corrected
-                                    )
-                            except Exception as agg_err:
-                                _emit_log(f"Corrected aggregation error: {agg_err}")
-                            if on_corrected_fn:
-                                on_corrected_fn(sample)
-
-                        return _on_corrected
-
-                    pipeline = None
-                    if (
-                        self._bfi_c_min is not None
-                        and self._bfi_c_max is not None
-                        and self._bfi_i_min is not None
-                        and self._bfi_i_max is not None
-                    ):
-                        pipeline = create_realtime_processing_pipeline(
-                            side=side,
-                            bfi_c_min=self._bfi_c_min,
-                            bfi_c_max=self._bfi_c_max,
-                            bfi_i_min=self._bfi_i_min,
-                            bfi_i_max=self._bfi_i_max,
-                            on_sample_fn=on_sample_fn,
-                            on_corrected_fn=_make_corrected_callback(side),
-                        )
-                        processing_pipelines[side] = pipeline
-
-                    def _make_row_handler(p):
-                        def _on_row(cam_id, frame_id, ts_val, hist, row_sum, temp):
-                            if p is not None:
-                                p.enqueue(cam_id, frame_id, ts_val, hist, row_sum, temp)
-
-                        return _on_row
 
                     t = threading.Thread(
                         target=stream_queue_to_csv_file,
@@ -260,7 +289,7 @@ class ScanWorkflow:
                             "filename": filepath,
                             "extra_headers": ["tcm", "tcl", "pdc"],
                             "extra_cols_fn": extra_cols_fn,
-                            "on_row_fn": _make_row_handler(pipeline),
+                            "on_row_fn": _make_row_handler(side, science_pipeline),
                             "on_error_fn": lambda e, fn=filename: _emit_log(
                                 f"Writer error ({fn}): {e}"
                             ),
@@ -332,8 +361,8 @@ class ScanWorkflow:
                     stop_evt.set()
                 for t in writer_threads.values():
                     t.join(timeout=5.0)
-                for pipeline in processing_pipelines.values():
-                    pipeline.stop()
+                if science_pipeline is not None:
+                    science_pipeline.stop()
 
                 # Build one merged corrected CSV, aligned by frame_id, with normalized timestamp.
                 corrected_columns = (
@@ -341,6 +370,12 @@ class ScanWorkflow:
                     + [f"bfi_r{i}" for i in range(1, 9)]
                     + [f"bvi_l{i}" for i in range(1, 9)]
                     + [f"bvi_r{i}" for i in range(1, 9)]
+                    + [f"mean_l{i}" for i in range(1, 9)]
+                    + [f"mean_r{i}" for i in range(1, 9)]
+                    + [f"std_l{i}" for i in range(1, 9)]
+                    + [f"std_r{i}" for i in range(1, 9)]
+                    + [f"contrast_l{i}" for i in range(1, 9)]
+                    + [f"contrast_r{i}" for i in range(1, 9)]
                 )
                 try:
                     with corrected_lock:

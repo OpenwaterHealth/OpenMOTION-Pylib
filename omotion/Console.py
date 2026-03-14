@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
+from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
 from omotion.config import (
     FPGA_PROG_CFG_READ_PAGE,
     FPGA_PROG_CFG_RESET,
@@ -117,6 +118,9 @@ class MOTIONConsole:
         """
 
         self.uart = uart
+
+        # Telemetry poller – started/stopped by MOTIONInterface on connect/disconnect
+        self.telemetry = ConsoleTelemetryPoller(self)
 
         if self.uart and not self.uart.asyncMode:
             self.uart.check_usb_status()

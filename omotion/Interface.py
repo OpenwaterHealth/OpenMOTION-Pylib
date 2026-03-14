@@ -81,11 +81,16 @@ class MOTIONInterface(SignalWrapper):
         self._initialize_sensors()
         self.scan_workflow = ScanWorkflow(self)
 
+        # If the console was already connected at construction time, start its poller.
+        if self.console_module and self.console_module.is_connected():
+            logger.info("Console already connected at init – starting telemetry poller")
+            self.console_module.telemetry.start()
+
         # Connect console UART signals to interface (works with PyQt or MOTIONSignal shim)
         if self._console_uart:
             logger.info("Connecting console COMM signals to MOTIONInterface")
-            self._console_uart.signal_connect.connect(self.signal_connect)
-            self._console_uart.signal_disconnect.connect(self.signal_disconnect)
+            self._console_uart.signal_connect.connect(self._on_console_connect)
+            self._console_uart.signal_disconnect.connect(self._on_console_disconnect)
             self._console_uart.signal_data_received.connect(self.signal_data_received)
 
         # Connect DualMotionComposite signals to interface (works with PyQt or MOTIONSignal shim)
@@ -94,6 +99,20 @@ class MOTIONInterface(SignalWrapper):
             self._dual_composite.signal_connect.connect(self._on_sensor_connect)
             self._dual_composite.signal_disconnect.connect(self._on_sensor_disconnect)
             self._dual_composite.signal_data_received.connect(self.signal_data_received)
+
+    def _on_console_connect(self, device_id: str, connection_type: str) -> None:
+        """Handle console connection: start the telemetry poller and forward the signal."""
+        logger.info("Console connected (%s) – starting telemetry poller", device_id)
+        if self.console_module:
+            self.console_module.telemetry.start()
+        self.signal_connect.emit(device_id, connection_type)
+
+    def _on_console_disconnect(self, device_id: str, connection_type: str) -> None:
+        """Handle console disconnection: stop the telemetry poller and forward the signal."""
+        logger.info("Console disconnected (%s) – stopping telemetry poller", device_id)
+        if self.console_module:
+            self.console_module.telemetry.stop()
+        self.signal_disconnect.emit(device_id, connection_type)
 
     def _initialize_sensors(self):
         """Initialize MOTIONSensor instances for any currently connected MotionComposite devices."""
