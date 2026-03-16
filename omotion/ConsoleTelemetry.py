@@ -74,7 +74,7 @@ class ConsoleTelemetry:
     # --- Safety interlock ---
     safety_se: int = 0              # raw byte from channel 6
     safety_so: int = 0              # raw byte from channel 7
-    safety_ok: bool = True          # True if both low-nibbles are non-zero (armed)
+    safety_ok: bool = True          # True if both low-nibbles are zero (interlock clear)
 
     # --- Read health ---
     read_ok: bool = True            # False if any sub-read threw an exception
@@ -271,9 +271,7 @@ class ConsoleTelemetryPoller:
             raise RuntimeError("Safety I2C read returned empty bytes")
         snap.safety_se = se_raw[0]
         snap.safety_so = so_raw[0]
-        # Low nibble non-zero on both channels → interlock is armed / OK.
-        # Zero on either → interlock has tripped.
-        snap.safety_ok = (snap.safety_se & 0x0F) != 0 and (snap.safety_so & 0x0F) != 0
+        snap.safety_ok = (snap.safety_se & 0x0F) == 0 and (snap.safety_so & 0x0F) == 0
 
     def _read_analog(self, snap: ConsoleTelemetry) -> None:
         snap.tcm = int(self._console.get_lsync_pulsecount())
