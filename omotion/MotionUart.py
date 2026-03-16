@@ -223,15 +223,28 @@ class MOTIONUart(SignalWrapper):
                                 if packet.id in self.response_queues:
                                     self.response_queues[packet.id].put(packet)
                                 else:
-                                    logger.warning(
-                                        "Received an unsolicited packet with ID %d",
-                                        packet.id,
-                                    )
-                                    logger.warning(
-                                        "Packet type: 0x%02X, Command: 0x%02X",
-                                        packet.packet_type,
-                                        packet.command,
-                                    )
+                                    # Try to decode data as a firmware printf string
+                                    _raw = bytes(packet.data[: packet.data_len]) if packet.data_len > 0 else b""
+                                    try:
+                                        _text = _raw.decode("utf-8", errors="replace").rstrip("\x00").strip()
+                                    except Exception:
+                                        _text = ""
+                                    if _text:
+                                        logger.warning(
+                                            "[%s PRINTF] %s",
+                                            self.descriptor,
+                                            _text,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "[%s] Unsolicited packet: id=%d type=0x%02X cmd=0x%02X len=%d data=%s",
+                                            self.descriptor,
+                                            packet.id,
+                                            packet.packet_type,
+                                            packet.command,
+                                            packet.data_len,
+                                            _raw.hex() if _raw else "",
+                                        )
                         else:
                             self.signal_data_received.emit(self.descriptor, packet)
 

@@ -1884,7 +1884,7 @@ class MOTIONSensor:
     def switch_camera(self, camera_id, packet_id=None):
         bytes_val = camera_id.to_bytes(1, "big")
         response = self.uart.comm.send_packet(
-            packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val
+            id=None, packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val
         )
         self.uart.comm.clear_buffer()
         return response

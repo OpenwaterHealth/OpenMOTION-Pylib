@@ -297,6 +297,14 @@ class CommInterface(USBInterfaceBase):
                 and uart_packet.packet_type == OW_DATA
                 and uart_packet.command == OW_CMD_ECHO
             ):
-                logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
+                _raw = bytes(uart_packet.data[:uart_packet.data_len]) if uart_packet.data_len > 0 else b""
+                try:
+                    _text = _raw.decode("utf-8", errors="replace").rstrip("\x00").strip()
+                except Exception:
+                    _text = ""
+                if _text:
+                    logger.warning("[%s PRINTF] %s", self.desc, _text)
+                else:
+                    logger.warning("[%s] MCU echo: data=%s", self.desc, _raw.hex() if _raw else "")
             else:
                 self.response_queue.put(uart_packet)
