@@ -16,7 +16,7 @@ class UartPacket:
         command=None,
         addr=None,
         reserved=None,
-        data=[],
+        data=None,
         buffer=None,
     ):
         if buffer:
@@ -27,8 +27,8 @@ class UartPacket:
             self.command = command
             self.addr = addr
             self.reserved = reserved
-            self.data = data
-            self.data_len = len(data)
+            self.data = data if data is not None else []
+            self.data_len = len(self.data)
             self.crc = self.calculate_crc()
 
     def calculate_crc(self) -> int:
