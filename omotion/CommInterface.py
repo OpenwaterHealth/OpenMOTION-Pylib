@@ -180,7 +180,21 @@ class CommInterface(USBInterfaceBase):
 
     def write(self, data, timeout=100):
         with self._io_lock:
-            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+            try:
+                return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+            except usb.core.USBError as e:
+                # A stalled endpoint (EPIPE / broken-pipe) can be recovered by
+                # issuing a CLEAR_HALT control transfer.  Try once; if it works
+                # re-send the original data.  Any other USB error is re-raised
+                # so callers and _read_loop disconnect logic see it normally.
+                if e.errno in (32, -9):  # EPIPE on Linux; LIBUSB_ERROR_PIPE cross-platform
+                    logger.warning("%s: OUT endpoint stalled, attempting clear_halt", self.desc)
+                    try:
+                        usb.util.clear_halt(self.dev, self.ep_out)
+                        return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+                    except Exception as recovery_err:
+                        logger.error("%s: clear_halt recovery failed: %s", self.desc, recovery_err)
+                raise
 
     def receive(self, length=512, timeout=100):
         with self._io_lock:
@@ -203,7 +217,13 @@ class CommInterface(USBInterfaceBase):
         # triggering disconnect callbacks/logging if the device disappears.
         self._disconnect_notified = True
         if self.read_thread:
-            self.read_thread.join()
+            # Safety net: _trigger_disconnect now dispatches on_disconnect to a
+            # separate daemon thread, so this guard should never fire in normal
+            # operation.  It stays here to prevent a hang if anyone calls
+            # stop_read_thread() from a context where the read thread is on the
+            # call stack (joining the current thread raises RuntimeError).
+            if threading.current_thread() is not self.read_thread:
+                self.read_thread.join(timeout=2.0)
         logger.info(f"{self.desc}: Read thread stopped")
 
     def _trigger_disconnect(self, error):
@@ -216,10 +236,19 @@ class CommInterface(USBInterfaceBase):
         logger.error(f"{self.desc}: triggering disconnect due to USB error: {error}")
         self.stop_event.set()
         if callable(self.on_disconnect):
-            try:
-                self.on_disconnect(self.desc, error)
-            except Exception as cb_error:
-                logger.error(f"{self.desc}: disconnect callback failed: {cb_error}")
+            # Dispatch the disconnect callback to a new daemon thread rather than
+            # calling it directly from the read thread.  on_disconnect typically
+            # calls MotionComposite.disconnect() → stop_read_thread() → join(),
+            # which would deadlock if run on the read thread itself.  By handing
+            # off to a separate thread the read loop exits naturally (stop_event
+            # is already set) and the join in stop_read_thread() completes quickly.
+            t = threading.Thread(
+                target=self.on_disconnect,
+                args=(self.desc, error),
+                daemon=True,
+                name=f"{self.desc}-disconnect",
+            )
+            t.start()
 
     def _read_loop(self):
         while not self.stop_event.is_set():

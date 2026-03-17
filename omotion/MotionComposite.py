@@ -59,22 +59,35 @@ class MotionComposite(SignalWrapper):
     def disconnect(self):
         if self.state == ConnectionState.DISCONNECTED:
             return
-        # CommInterface read thread is started based on `self.comm.async_mode`.
-        # Historically `self.async_mode` could be False while CommInterface is still async,
-        # leading to a teardown race where interfaces are released while the read thread
-        # is still reading (spurious USBError: "No such device").
-        if self.comm and getattr(self.comm, "async_mode", False):
-            self.comm.stop_read_thread()
-        self.histo.stop_streaming()
-        self.imu.stop_streaming()
 
-        self.comm.release()
-        self.histo.release()
-        self.imu.release()
+        # Build an ordered list of labeled teardown steps.  Every step runs
+        # regardless of whether earlier ones fail — failures are logged with
+        # enough context to diagnose without halting the rest of cleanup.
+        steps = []
+
+        # Stop the comm read thread first so no USB I/O races the releases below.
+        # CommInterface._trigger_disconnect now dispatches on_disconnect to a
+        # separate thread, so this join is safe to call from any context.
+        if getattr(self.comm, "async_mode", False):
+            steps.append(("stop comm read thread", self.comm.stop_read_thread))
+
+        steps += [
+            ("stop histo streaming",  self.histo.stop_streaming),
+            ("stop imu streaming",    self.imu.stop_streaming),
+            ("release comm",          self.comm.release),
+            ("release histo",         self.histo.release),
+            ("release imu",           self.imu.release),
+            ("dispose usb resources", lambda: usb.util.dispose_resources(self.dev)),
+        ]
+
+        for label, step in steps:
+            try:
+                step()
+            except Exception as e:
+                logger.warning("%s: disconnect step '%s' failed: %s", self.desc, label, e)
 
         self.running = False
         self._set_state(ConnectionState.DISCONNECTED)
-        usb.util.dispose_resources(self.dev)
         self.signal_disconnect.emit(self.desc, "composite_usb")
         logger.info(f"{self.desc}: Disconnected")
 

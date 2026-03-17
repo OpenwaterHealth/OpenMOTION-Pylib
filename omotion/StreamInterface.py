@@ -37,7 +37,7 @@ class StreamInterface(USBInterfaceBase):
     def stop_streaming(self):
         self.stop_event.set()
         if self.thread:
-            self.thread.join()
+            self.thread.join(timeout=2.0)
         self.isStreaming = False
         self.data_queue = None
         self.expected_size = None
@@ -52,5 +52,13 @@ class StreamInterface(USBInterfaceBase):
                 if data and self.data_queue:
                     self.data_queue.put(bytes(data))
             except usb.core.USBError as e:
-                if e.errno not in (110, 10060):
+                if e.errno in (110, 10060):
+                    # Timeout — expected when no data is arriving; keep looping.
+                    pass
+                elif e.errno in (19, 5, 32):
+                    # Fatal device errors: ENODEV, EIO, EPIPE — device is gone.
+                    # Exit the loop so stop_streaming()'s join() returns promptly.
+                    logger.error(f"{self.desc} stream error (device lost): {e}")
+                    break
+                else:
                     logger.error(f"{self.desc} stream error: {e}")
