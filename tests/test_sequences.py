@@ -15,7 +15,10 @@ import pytest
 
 import struct
 
-pytestmark = [pytest.mark.sensor, pytest.mark.sequence]
+# All sequence tests involve program_fpga (up to 60 s per sensor side) so the
+# default 30-second timeout is too short.  Override at module level; individual
+# tests that are even heavier carry their own @pytest.mark.timeout decorator.
+pytestmark = [pytest.mark.sensor, pytest.mark.sequence, pytest.mark.timeout(120)]
 
 # Minimal BFI calibration arrays required by SciencePipeline
 _BFI_ZEROS = np.zeros((2, 8), dtype=np.float32)
@@ -323,6 +326,7 @@ def test_dual_sensor_frame_alignment(sensor_left, sensor_right):
 
 @pytest.mark.slow
 @pytest.mark.console
+@pytest.mark.timeout(300)
 def test_scan_workflow_end_to_end(motion, tmp_path):
     """
     Execute a 5-second scan via ScanWorkflow and assert a non-empty

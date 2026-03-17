@@ -53,13 +53,12 @@ def test_sensor_toggle_led(any_sensor):
 # 3.2 IMU
 # ===========================================================================
 
-@pytest.fixture(scope="session", autouse=False)
+@pytest.fixture(scope="function", autouse=False)
 def imu_enabled(any_sensor):
-    """Ensure the IMU is initialised and powered on before motion-data tests.
+    """Power the IMU on for the duration of one test, then turn it off.
 
-    Runs once per sensor side (session scope, same parametrisation as
-    any_sensor).  Calls imu_init + imu_on so that accelerometer and gyroscope
-    registers are populated; tears down with imu_off.
+    Function-scoped so the IMU is explicitly disabled after each test that
+    needs it, preventing the enabled state from leaking into unrelated tests.
     """
     any_sensor.imu_init()
     any_sensor.imu_on()
