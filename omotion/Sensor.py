@@ -35,6 +35,9 @@ from omotion.config import (
     OW_FPGA_STATUS,
     OW_FPGA_USERCODE,
     OW_IMU,
+    OW_IMU_INIT,
+    OW_IMU_ON,
+    OW_IMU_OFF,
     OW_IMU_GET_ACCEL,
     OW_IMU_GET_GYRO,
     OW_IMU_GET_TEMP,
@@ -463,6 +466,84 @@ class MOTIONSensor:
         except Exception as e:
             logger.error("Unexpected error during get_hardware_id: %s", e)
             raise  # Re-raise the exception for the caller to handle
+
+    def imu_init(self) -> bool:
+        """
+        Initialise the IMU hardware.  Must be called once before enabling the
+        IMU for motion data (accelerometer / gyroscope).
+
+        Returns:
+            bool: True on success.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                raise ValueError("UART is not connected")
+
+            r = self.uart.comm.send_packet(
+                id=None, packetType=OW_IMU, command=OW_IMU_INIT
+            )
+            self.uart.comm.clear_buffer()
+            return r is not None
+
+        except Exception as e:
+            logger.error("Unexpected error in imu_init: %s", e)
+            raise
+
+    def imu_on(self) -> bool:
+        """
+        Enable the IMU (power on accelerometer and gyroscope).
+
+        The IMU must be initialised with :meth:`imu_init` before calling this.
+
+        Returns:
+            bool: True on success.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                raise ValueError("UART is not connected")
+
+            r = self.uart.comm.send_packet(
+                id=None, packetType=OW_IMU, command=OW_IMU_ON
+            )
+            self.uart.comm.clear_buffer()
+            return r is not None
+
+        except Exception as e:
+            logger.error("Unexpected error in imu_on: %s", e)
+            raise
+
+    def imu_off(self) -> bool:
+        """
+        Disable the IMU (power down accelerometer and gyroscope).
+
+        Returns:
+            bool: True on success.
+        """
+        try:
+            if self.uart.demo_mode:
+                return True
+
+            if not self.uart.is_connected():
+                logger.error("Sensor Module not connected")
+                raise ValueError("UART is not connected")
+
+            r = self.uart.comm.send_packet(
+                id=None, packetType=OW_IMU, command=OW_IMU_OFF
+            )
+            self.uart.comm.clear_buffer()
+            return r is not None
+
+        except Exception as e:
+            logger.error("Unexpected error in imu_off: %s", e)
+            raise
 
     def imu_get_temperature(self) -> float:
         """
@@ -1881,7 +1962,7 @@ class MOTIONSensor:
         logger.info(f"Exposure set to {exposure_byte} ({exp_us}us)")
         return ret
 
-    def switch_camera(self, camera_id, packet_id=None):
+    def switch_camera(self, camera_id):
         bytes_val = camera_id.to_bytes(1, "big")
         response = self.uart.comm.send_packet(
             id=None, packetType=OW_CAMERA, command=OW_CAMERA_SWITCH, data=bytes_val

@@ -53,13 +53,30 @@ def test_sensor_toggle_led(any_sensor):
 # 3.2 IMU
 # ===========================================================================
 
+@pytest.fixture(scope="session", autouse=False)
+def imu_enabled(any_sensor):
+    """Ensure the IMU is initialised and powered on before motion-data tests.
+
+    Runs once per sensor side (session scope, same parametrisation as
+    any_sensor).  Calls imu_init + imu_on so that accelerometer and gyroscope
+    registers are populated; tears down with imu_off.
+    """
+    any_sensor.imu_init()
+    any_sensor.imu_on()
+    yield
+    try:
+        any_sensor.imu_off()
+    except Exception:
+        pass
+
+
 def test_imu_temperature(any_sensor):
     t = any_sensor.imu_get_temperature()
     assert isinstance(t, float)
     assert -40.0 <= t <= 85.0, f"IMU temperature {t} °C out of physical range"
 
 
-def test_imu_accelerometer(any_sensor):
+def test_imu_accelerometer(any_sensor, imu_enabled):
     accel = any_sensor.imu_get_accelerometer()
     assert isinstance(accel, list) and len(accel) == 3
     for v in accel:
@@ -68,7 +85,7 @@ def test_imu_accelerometer(any_sensor):
     assert magnitude > 0, "Accelerometer magnitude is zero — sensor may be unresponsive"
 
 
-def test_imu_gyroscope(any_sensor):
+def test_imu_gyroscope(any_sensor, imu_enabled):
     gyro = any_sensor.imu_get_gyroscope()
     assert isinstance(gyro, list) and len(gyro) == 3
     for v in gyro:
@@ -101,12 +118,13 @@ def test_sensor_fan_status_roundtrip(any_sensor):
 # ===========================================================================
 
 def test_debug_flags_roundtrip(any_sensor):
+    original = any_sensor.get_debug_flags()
     try:
         any_sensor.set_debug_flags(0x03)
         readback = any_sensor.get_debug_flags()
         assert readback == 0x03, f"Debug flags readback {readback:#04x}, expected 0x03"
     finally:
-        any_sensor.set_debug_flags(0x00)
+        any_sensor.set_debug_flags(original)
 
 
 # ===========================================================================
