@@ -321,15 +321,38 @@ class MOTIONInterface(SignalWrapper):
         if self.scan_workflow:
             self.scan_workflow.cancel_configure_camera_sensors(**kwargs)
 
+    def disconnect(self) -> None:
+        """Disconnect all devices and clean up resources.
+
+        Stops the telemetry poller, disconnects the console UART, and
+        disconnects all sensor composites.  Each step is wrapped individually
+        so a failure at one does not prevent the remaining cleanup.
+        """
+        if self.console_module and hasattr(self.console_module, "telemetry"):
+            try:
+                self.console_module.telemetry.stop()
+            except Exception as e:
+                logger.warning("Error stopping telemetry poller: %s", e)
+
+        if self.console_module:
+            try:
+                self.console_module.disconnect()
+            except Exception as e:
+                logger.warning("Error disconnecting console: %s", e)
+
+        # DualMotionComposite.disconnect() only acts when given a specific target;
+        # calling it with no target does nothing.  Disconnect each side explicitly
+        # so their read threads are stopped before the process exits.
+        if self._dual_composite:
+            for side in ("left", "right"):
+                try:
+                    self._dual_composite.disconnect(target=side)
+                except Exception as e:
+                    logger.warning("Error disconnecting %s sensor: %s", side, e)
+
     def __del__(self):
         try:
-            self.stop_monitoring()
-            if self.console_module:
-                self.console_module.disconnect()
-            if self._dual_composite:
-                self._dual_composite.disconnect()
-        except RuntimeError as e:
-            logger.debug(f"Destructor skipped due to RuntimeError: {e}")
+            self.disconnect()
         except Exception as e:
             logger.debug(f"Destructor skipped due to: {e}")
 

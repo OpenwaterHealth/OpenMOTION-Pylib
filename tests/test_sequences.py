@@ -62,9 +62,6 @@ def _camera_up(sensor, mask=0x01, configure=True):
         pytest.fail(f"enable_camera_power(0x{mask:02X}) returned False")
     time.sleep(0.5)  # match ScanWorkflow settle time
 
-    # Enable firmware USB printf so any debug output shows up in test logs
-    sensor.set_debug_flags(0x01)  # DEBUG_FLAG_USB_PRINTF
-
     ok = sensor.program_fpga(camera_position=mask, manual_process=False)
     if ok is False:
         pytest.fail(f"program_fpga(0x{mask:02X}) returned False")
