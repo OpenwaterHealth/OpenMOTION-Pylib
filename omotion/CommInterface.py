@@ -178,23 +178,38 @@ class CommInterface(USBInterfaceBase):
         with self._buffer_lock:
             self._read_buffer.clear()
 
-    def write(self, data, timeout=100):
+    def write(self, data, timeout=100, _retries=5):
         with self._io_lock:
-            try:
-                return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
-            except usb.core.USBError as e:
-                # A stalled endpoint (EPIPE / broken-pipe) can be recovered by
-                # issuing a CLEAR_HALT control transfer.  Try once; if it works
-                # re-send the original data.  Any other USB error is re-raised
-                # so callers and _read_loop disconnect logic see it normally.
-                if e.errno in (32, -9):  # EPIPE on Linux; LIBUSB_ERROR_PIPE cross-platform
-                    logger.warning("%s: OUT endpoint stalled, attempting clear_halt", self.desc)
-                    try:
-                        usb.util.clear_halt(self.dev, self.ep_out)
-                        return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
-                    except Exception as recovery_err:
-                        logger.error("%s: clear_halt recovery failed: %s", self.desc, recovery_err)
-                raise
+            for attempt in range(1 + _retries):
+                try:
+                    return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+                except usb.core.USBError as e:
+                    # Firmware back-pressure: the device's OUT FIFO is temporarily
+                    # full.  Back off briefly and retry so callers don't have to
+                    # care about transient busy periods (e.g. after program_fpga).
+                    if e.errno in (110, 10060):  # ETIMEDOUT / WSAETIMEDOUT
+                        if attempt < _retries:
+                            delay = 0.05 * (attempt + 1)  # 50 ms, 100 ms, 150 ms …
+                            logger.warning(
+                                "%s: write timeout (attempt %d/%d), retrying in %.0f ms",
+                                self.desc, attempt + 1, 1 + _retries, delay * 1000,
+                            )
+                            time.sleep(delay)
+                            continue
+                        logger.error("%s: write timed out after %d attempts", self.desc, 1 + _retries)
+                        raise
+                    # A stalled endpoint (EPIPE / broken-pipe) can be recovered by
+                    # issuing a CLEAR_HALT control transfer.  Try once; if it works
+                    # re-send the original data.  Any other USB error is re-raised
+                    # so callers and _read_loop disconnect logic see it normally.
+                    if e.errno in (32, -9):  # EPIPE on Linux; LIBUSB_ERROR_PIPE cross-platform
+                        logger.warning("%s: OUT endpoint stalled, attempting clear_halt", self.desc)
+                        try:
+                            usb.util.clear_halt(self.dev, self.ep_out)
+                            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+                        except Exception as recovery_err:
+                            logger.error("%s: clear_halt recovery failed: %s", self.desc, recovery_err)
+                    raise
 
     def receive(self, length=512, timeout=100):
         with self._io_lock:
