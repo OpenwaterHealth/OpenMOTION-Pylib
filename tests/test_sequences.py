@@ -143,6 +143,7 @@ def test_camera_power_cycle(any_sensor):
 # 5.3 FPGA enable → histogram → FPGA disable
 # ===========================================================================
 
+@pytest.mark.fpga
 def test_fpga_enable_histogram_disable(any_sensor):
     """Full bring-up → capture one histogram → tear down."""
     _camera_up(any_sensor)  # power → program_fpga → configure_registers

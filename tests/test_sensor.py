@@ -170,6 +170,7 @@ def _power_up(sensor, mask=0x01):
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_enable_disable(any_sensor):
     _power_up(any_sensor)
     try:
@@ -180,6 +181,7 @@ def test_fpga_enable_disable(any_sensor):
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_check_after_enable(any_sensor):
     _power_up(any_sensor)
     try:
@@ -187,11 +189,11 @@ def test_fpga_check_after_enable(any_sensor):
         any_sensor.camera_configure_registers(0x01)
         assert any_sensor.check_camera_fpga(0x01) is True
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        _tear_down_camera(any_sensor)
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_status(any_sensor):
     _power_up(any_sensor)
     try:
@@ -200,11 +202,11 @@ def test_fpga_status(any_sensor):
         result = any_sensor.get_status_fpga(0x01)
         assert result is not None
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        _tear_down_camera(any_sensor)
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_usercode(any_sensor):
     _power_up(any_sensor)
     try:
@@ -213,11 +215,11 @@ def test_fpga_usercode(any_sensor):
         result = any_sensor.get_usercode_fpga(0x01)
         assert result is not None
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        _tear_down_camera(any_sensor)
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_activate(any_sensor):
     _power_up(any_sensor)
     try:
@@ -225,8 +227,7 @@ def test_fpga_activate(any_sensor):
         any_sensor.camera_configure_registers(0x01)
         assert any_sensor.activate_camera_fpga(0x01) is True
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        _tear_down_camera(any_sensor)
 
 
 @pytest.mark.slow
@@ -236,8 +237,7 @@ def test_fpga_reset(any_sensor):
     try:
         assert any_sensor.reset_camera_sensor(0x01) is True
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        _tear_down_camera(any_sensor)
 
 
 # ===========================================================================

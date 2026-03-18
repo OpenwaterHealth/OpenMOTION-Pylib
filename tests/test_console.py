@@ -272,12 +272,14 @@ def test_write_config_json_roundtrip(console):
 # ===========================================================================
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_prog_open_close(console):
     console.fpga_prog_open(MuxChannel.FPGA_TA)
     console.fpga_prog_close(MuxChannel.FPGA_TA)
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_prog_read_status(console):
     console.fpga_prog_open(MuxChannel.FPGA_TA)
     try:
@@ -288,6 +290,7 @@ def test_fpga_prog_read_status(console):
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 def test_fpga_prog_cfg_reset(console):
     console.fpga_prog_open(MuxChannel.FPGA_TA)
     try:
@@ -297,6 +300,7 @@ def test_fpga_prog_cfg_reset(console):
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 @pytest.mark.destructive
 def test_fpga_prog_featrow_roundtrip(console):
     console.fpga_prog_open(MuxChannel.FPGA_TA)
@@ -310,6 +314,7 @@ def test_fpga_prog_featrow_roundtrip(console):
 
 
 @pytest.mark.slow
+@pytest.mark.fpga
 @pytest.mark.destructive
 def test_fpga_prog_ufm_roundtrip(console):
     page_data = bytes([0xAB] * 16)

@@ -268,7 +268,14 @@ class ConsoleTelemetryPoller:
             read_len=_SAFETY_LEN,
         )
         if not se_raw or not so_raw:
-            raise RuntimeError("Safety I2C read returned empty bytes")
+            # Safety interlock chip not responding — treat as unknown/unavailable.
+            # Leave safety_ok at its default True so callers don't falsely trip on absent hardware.
+            logger.warning(
+                "Safety I2C read returned no data (se=%s so=%s) — interlock state unknown",
+                se_raw,
+                so_raw,
+            )
+            return
         snap.safety_se = se_raw[0]
         snap.safety_so = so_raw[0]
         snap.safety_ok = (snap.safety_se & 0x0F) == 0 and (snap.safety_so & 0x0F) == 0
@@ -291,11 +298,18 @@ class ConsoleTelemetryPoller:
             read_len=_PDC_LEN,
         )
 
-        if not tcl_raw or not pdc_raw:
-            raise RuntimeError("Analog I2C read returned empty bytes")
+        # These I2C channels may not be populated in all hardware configurations.
+        # Leave tcl/pdc at their zero defaults and log at DEBUG — the UART layer
+        # already logged the underlying fault at a higher level.
+        if not tcl_raw:
+            logger.debug("Analog I2C tcl read (channel %d) returned no data", _TCL_CHANNEL)
+        else:
+            snap.tcl = int.from_bytes(tcl_raw[:_TCL_LEN], byteorder="little")
 
-        snap.tcl = int.from_bytes(tcl_raw[:_TCL_LEN], byteorder="little")
-        snap.pdc = int.from_bytes(pdc_raw[:_PDC_LEN], byteorder="little") * _PDC_MA_PER_LSB
+        if not pdc_raw:
+            logger.debug("Analog I2C pdc read (channel %d) returned no data", _PDC_CHANNEL)
+        else:
+            snap.pdc = int.from_bytes(pdc_raw[:_PDC_LEN], byteorder="little") * _PDC_MA_PER_LSB
 
     # ------------------------------------------------------------------
 

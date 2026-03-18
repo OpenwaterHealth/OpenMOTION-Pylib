@@ -337,7 +337,13 @@ class MOTIONSensor:
         r = self._send(
             packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position, timeout=0.5
         )
-        return r.packet_type not in _ERROR_TYPES
+        if r.packet_type in _ERROR_TYPES:
+            logger.error(
+                "enable_camera_fpga(0x%02x) rejected by firmware: packet_type=%s",
+                camera_position, r.packet_type,
+            )
+            return False
+        return True
 
     def disable_camera_fpga(self, camera_position: int) -> bool:
         """Disable (power off) the FPGA for the camera(s) indicated by the bitmask."""
@@ -347,7 +353,13 @@ class MOTIONSensor:
         r = self._send(
             packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position
         )
-        return r.packet_type not in _ERROR_TYPES
+        if r.packet_type in _ERROR_TYPES:
+            logger.error(
+                "disable_camera_fpga(0x%02x) rejected by firmware: packet_type=%s",
+                camera_position, r.packet_type,
+            )
+            return False
+        return True
 
     def check_camera_fpga(self, camera_position: int) -> bool:
         """Return True if the FPGA ID check passes for the given bitmask."""
@@ -695,7 +707,13 @@ class MOTIONSensor:
             addr=camera_mask,
             timeout=8,
         )
-        return r.packet_type not in _ERROR_TYPES
+        if r.packet_type in _ERROR_TYPES:
+            logger.error(
+                "enable_camera_power(0x%02x) rejected by firmware: packet_type=%s",
+                camera_mask, r.packet_type,
+            )
+            return False
+        return True
 
     def disable_camera_power(self, camera_mask: int) -> bool:
         """Power off the camera(s) indicated by the bitmask (0x01–0xFF)."""
@@ -709,7 +727,13 @@ class MOTIONSensor:
             addr=camera_mask,
             timeout=8,
         )
-        return r.packet_type not in _ERROR_TYPES
+        if r.packet_type in _ERROR_TYPES:
+            logger.error(
+                "disable_camera_power(0x%02x) rejected by firmware: packet_type=%s",
+                camera_mask, r.packet_type,
+            )
+            return False
+        return True
 
     def get_camera_power_status(self) -> list:
         """Return a list of 8 booleans indicating per-camera power state (index 0–7)."""

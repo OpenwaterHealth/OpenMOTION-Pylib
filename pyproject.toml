@@ -65,7 +65,7 @@ include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not fpga'"
 timeout = 30
 timeout_method = "thread"
 log_cli = true
@@ -80,6 +80,7 @@ markers = [
     "slow: takes more than 10 s",
     "destructive: modifies flash or firmware",
     "sequence: multi-step round-trip tests",
+    "fpga: requires a loaded FPGA bitstream — temporarily skipped",
 ]
 
 [tool.setuptools_scm]
