@@ -9,12 +9,27 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 from omotion import _log_root
-from omotion.MotionProcessing import create_science_pipeline, stream_queue_to_csv_file
+from omotion.MotionProcessing import (
+    create_science_pipeline,
+    parse_stream_to_csv,
+    stream_queue_to_csv_file,
+)
 
 if TYPE_CHECKING:
     from omotion.Interface import MOTIONInterface
 
 logger = logging.getLogger(f"{_log_root}.ScanWorkflow" if _log_root else "ScanWorkflow")
+
+# ---------------------------------------------------------------------------
+# Null CSV writer — used when a raw-stream writer thread must keep running
+# (to feed the science pipeline) but file I/O has been disabled.
+# ---------------------------------------------------------------------------
+
+class _NullCsvWriter:
+    """Drop-in replacement for csv.writer that silently discards all rows."""
+    def writerow(self, _row) -> None:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # ConsoleTelemetry CSV helpers
@@ -61,6 +76,12 @@ class ScanRequest:
     data_dir: str
     disable_laser: bool
     expected_size: int = 32837
+    # CSV output flags — all enabled by default.  Flip to False once the
+    # corresponding downstream consumer no longer needs the file, so the
+    # pipeline avoids unnecessary disk I/O.
+    write_raw_csv: bool = True
+    write_corrected_csv: bool = True
+    write_telemetry_csv: bool = True
 
 
 @dataclass
@@ -211,7 +232,7 @@ class ScanWorkflow:
                 _telem_poller = getattr(
                     getattr(self._interface, "console_module", None), "telemetry", None
                 )
-                if _telem_poller is not None:
+                if _telem_poller is not None and request.write_telemetry_csv:
                     try:
                         _telem_fh = open(  # noqa: WPS515
                             telemetry_path, "w", newline="", encoding="utf-8"
@@ -359,24 +380,40 @@ class ScanWorkflow:
                     stop_evt = threading.Event()
                     sensor.uart.histo.start_streaming(q, expected_size=request.expected_size)
 
-                    filename = f"scan_{request.subject_id}_{ts}_{side}_mask{mask:02X}.csv"
-                    filepath = os.path.join(request.data_dir, filename)
+                    if request.write_raw_csv:
+                        filename = f"scan_{request.subject_id}_{ts}_{side}_mask{mask:02X}.csv"
+                        filepath = os.path.join(request.data_dir, filename)
+                        t = threading.Thread(
+                            target=stream_queue_to_csv_file,
+                            kwargs={
+                                "q": q,
+                                "stop_evt": stop_evt,
+                                "filename": filepath,
+                                "extra_headers": ["tcm", "tcl", "pdc"],
+                                "extra_cols_fn": extra_cols_fn,
+                                "on_row_fn": _make_row_handler(side, science_pipeline),
+                                "on_error_fn": lambda e, fn=filename: _emit_log(
+                                    f"Writer error ({fn}): {e}"
+                                ),
+                            },
+                            daemon=True,
+                        )
+                    else:
+                        # No file output — run a bare drain thread so the science
+                        # pipeline still receives data via on_row_fn.
+                        filepath = ""
+                        _row_handler = _make_row_handler(side, science_pipeline)
+                        def _drain(q=q, stop_evt=stop_evt, on_row_fn=_row_handler):
+                            parse_stream_to_csv(
+                                q=q,
+                                stop_evt=stop_evt,
+                                csv_writer=_NullCsvWriter(),
+                                buffer_accumulator=bytearray(),
+                                extra_cols_fn=None,
+                                on_row_fn=on_row_fn,
+                            )
+                        t = threading.Thread(target=_drain, daemon=True)
 
-                    t = threading.Thread(
-                        target=stream_queue_to_csv_file,
-                        kwargs={
-                            "q": q,
-                            "stop_evt": stop_evt,
-                            "filename": filepath,
-                            "extra_headers": ["tcm", "tcl", "pdc"],
-                            "extra_cols_fn": extra_cols_fn,
-                            "on_row_fn": _make_row_handler(side, science_pipeline),
-                            "on_error_fn": lambda e, fn=filename: _emit_log(
-                                f"Writer error ({fn}): {e}"
-                            ),
-                        },
-                        daemon=True,
-                    )
                     t.start()
                     writer_threads[side] = t
                     writer_stops[side] = stop_evt
@@ -385,7 +422,8 @@ class ScanWorkflow:
                         left_path = filepath
                     elif side == "right":
                         right_path = filepath
-                    _emit_log(f"{side.capitalize()} raw CSV: {os.path.basename(filepath)}")
+                    if filepath:
+                        _emit_log(f"{side.capitalize()} raw CSV: {os.path.basename(filepath)}")
                     if on_side_stream_fn:
                         on_side_stream_fn(side, filepath)
 
@@ -465,49 +503,53 @@ class ScanWorkflow:
                     _emit_log(f"Telemetry CSV created: {os.path.basename(telemetry_path)}")
 
                 # Build one merged corrected CSV, aligned by frame_id, with normalized timestamp.
-                corrected_columns = (
-                    [f"bfi_l{i}" for i in range(1, 9)]
-                    + [f"bfi_r{i}" for i in range(1, 9)]
-                    + [f"bvi_l{i}" for i in range(1, 9)]
-                    + [f"bvi_r{i}" for i in range(1, 9)]
-                    + [f"mean_l{i}" for i in range(1, 9)]
-                    + [f"mean_r{i}" for i in range(1, 9)]
-                    + [f"std_l{i}" for i in range(1, 9)]
-                    + [f"std_r{i}" for i in range(1, 9)]
-                    + [f"contrast_l{i}" for i in range(1, 9)]
-                    + [f"contrast_r{i}" for i in range(1, 9)]
-                )
-                try:
-                    with corrected_lock:
-                        frame_ids = sorted(corrected_by_frame.keys())
-                        if frame_ids:
-                            base_ts = min(
-                                float(corrected_by_frame[fid]["timestamp_s"])
-                                for fid in frame_ids
-                            )
-                        else:
-                            base_ts = 0.0
-
-                        with open(
-                            corrected_path, "w", newline="", encoding="utf-8"
-                        ) as cfh:
-                            cw = csv.writer(cfh)
-                            cw.writerow(["frame_id", "timestamp_s", *corrected_columns])
-                            for fid in frame_ids:
-                                frame_entry = corrected_by_frame[fid]
-                                rel_ts = float(frame_entry["timestamp_s"]) - base_ts
-                                values = frame_entry["values"]
-                                row = [fid, rel_ts]
-                                row.extend(
-                                    values.get(col, "") for col in corrected_columns
-                                )
-                                cw.writerow(row)
-                    _emit_log(
-                        f"Merged corrected CSV created: {os.path.basename(corrected_path)}"
-                    )
-                except Exception as corrected_err:
-                    _emit_log(f"Failed to create merged corrected CSV: {corrected_err}")
+                if not request.write_corrected_csv:
                     corrected_path = ""
+
+                if corrected_path:
+                    corrected_columns = (
+                        [f"bfi_l{i}" for i in range(1, 9)]
+                        + [f"bfi_r{i}" for i in range(1, 9)]
+                        + [f"bvi_l{i}" for i in range(1, 9)]
+                        + [f"bvi_r{i}" for i in range(1, 9)]
+                        + [f"mean_l{i}" for i in range(1, 9)]
+                        + [f"mean_r{i}" for i in range(1, 9)]
+                        + [f"std_l{i}" for i in range(1, 9)]
+                        + [f"std_r{i}" for i in range(1, 9)]
+                        + [f"contrast_l{i}" for i in range(1, 9)]
+                        + [f"contrast_r{i}" for i in range(1, 9)]
+                    )
+                    try:
+                        with corrected_lock:
+                            frame_ids = sorted(corrected_by_frame.keys())
+                            if frame_ids:
+                                base_ts = min(
+                                    float(corrected_by_frame[fid]["timestamp_s"])
+                                    for fid in frame_ids
+                                )
+                            else:
+                                base_ts = 0.0
+
+                            with open(
+                                corrected_path, "w", newline="", encoding="utf-8"
+                            ) as cfh:
+                                cw = csv.writer(cfh)
+                                cw.writerow(["frame_id", "timestamp_s", *corrected_columns])
+                                for fid in frame_ids:
+                                    frame_entry = corrected_by_frame[fid]
+                                    rel_ts = float(frame_entry["timestamp_s"]) - base_ts
+                                    values = frame_entry["values"]
+                                    row = [fid, rel_ts]
+                                    row.extend(
+                                        values.get(col, "") for col in corrected_columns
+                                    )
+                                    cw.writerow(row)
+                        _emit_log(
+                            f"Merged corrected CSV created: {os.path.basename(corrected_path)}"
+                        )
+                    except Exception as corrected_err:
+                        _emit_log(f"Failed to create merged corrected CSV: {corrected_err}")
+                        corrected_path = ""
 
                 result = ScanResult(
                     ok=ok,
