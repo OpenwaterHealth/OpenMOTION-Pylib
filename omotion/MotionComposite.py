@@ -88,7 +88,12 @@ class MotionComposite(SignalWrapper):
 
         self.running = False
         self._set_state(ConnectionState.DISCONNECTED)
-        self.signal_disconnect.emit(self.desc, "composite_usb")
+        try:
+            self.signal_disconnect.emit(self.desc, "composite_usb")
+        except RuntimeError as e:
+            # The Qt C++ backing object can already be deleted when this fires
+            # from a background disconnect thread during app shutdown.
+            logger.debug("%s: signal_disconnect.emit skipped (object deleted): %s", self.desc, e)
         logger.info(f"{self.desc}: Disconnected")
 
     def is_connected(self) -> bool:
@@ -104,11 +109,20 @@ class MotionComposite(SignalWrapper):
         return self.state == ConnectionState.CONNECTED
 
     def _handle_interface_disconnect(self, source, error):
-        if not self.running:
-            return
-        logger.warning(f"{self.desc}: Interface {source} disconnected: {error}")
-        self._set_state(ConnectionState.ERROR, reason="usb_error")
-        self.disconnect()
+        # This callback fires on a background thread.  The MotionComposite Qt
+        # C++ object may already be deleted if app shutdown is racing GC, so
+        # wrap the whole body to avoid crashing the background thread.
+        try:
+            if not self.running:
+                return
+            logger.warning(f"{self.desc}: Interface {source} disconnected: {error}")
+            self._set_state(ConnectionState.ERROR, reason="usb_error")
+            self.disconnect()
+        except RuntimeError as e:
+            logger.debug(
+                "%s: _handle_interface_disconnect suppressed (object deleted): %s",
+                self.desc, e,
+            )
 
     def _set_state(self, new_state: ConnectionState, reason: str | None = None):
         if self.state == new_state:

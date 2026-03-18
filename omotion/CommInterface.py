@@ -287,16 +287,24 @@ class CommInterface(USBInterfaceBase):
                 elif e.errno == 10060:
                     pass
                 elif e.errno == 32:
-                    logger.error(f"{self.desc} read error: DISCONNECT{e}")
+                    # Only log at ERROR when this is unexpected (not a clean shutdown).
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: DISCONNECT{e}")
                     self._trigger_disconnect(e)
                     break
 
                 elif e.errno == 19 or e.errno == 5:
-                    logger.error(f"{self.desc} read error: IO Error{e}")
+                    # errno 19 = ENODEV (device unplugged or GC'd during shutdown).
+                    # errno  5 = EIO   (device I/O error).
+                    # Both are expected when the app is tearing down — only log at
+                    # ERROR when the disconnect is genuinely unintentional.
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: IO Error{e}")
                     self._trigger_disconnect(e)
                     break
                 else:
-                    logger.error(f"{self.desc} read error: Unknown Error{e}")
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: Unknown Error{e}")
                     self._trigger_disconnect(e)
                     break
 
