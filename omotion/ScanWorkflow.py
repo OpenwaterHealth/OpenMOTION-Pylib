@@ -16,6 +16,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(f"{_log_root}.ScanWorkflow" if _log_root else "ScanWorkflow")
 
+# ---------------------------------------------------------------------------
+# ConsoleTelemetry CSV helpers
+# ---------------------------------------------------------------------------
+
+_TELEMETRY_HEADERS: list[str] = [
+    "timestamp",
+    "tcm", "tcl", "pdc",
+    "tec_v_raw", "tec_set_raw", "tec_curr_raw", "tec_volt_raw", "tec_good",
+    *[f"pdu_raw_{i}" for i in range(16)],
+    *[f"pdu_volt_{i}" for i in range(16)],
+    "safety_se", "safety_so", "safety_ok",
+    "read_ok", "error",
+]
+
+
+def _snap_to_row(snap) -> list:
+    """Convert a ConsoleTelemetry snapshot to a flat CSV row."""
+    row: list = [
+        snap.timestamp,
+        snap.tcm, snap.tcl, snap.pdc,
+        snap.tec_v_raw, snap.tec_set_raw, snap.tec_curr_raw, snap.tec_volt_raw,
+        int(snap.tec_good),
+    ]
+    pdu_raws = snap.pdu_raws or []
+    pdu_volts = snap.pdu_volts or []
+    for i in range(16):
+        row.append(pdu_raws[i] if i < len(pdu_raws) else "")
+    for i in range(16):
+        row.append(pdu_volts[i] if i < len(pdu_volts) else "")
+    row.extend([
+        snap.safety_se, snap.safety_so, int(snap.safety_ok),
+        int(snap.read_ok), snap.error or "",
+    ])
+    return row
+
 
 @dataclass
 class ScanRequest:
@@ -37,6 +72,7 @@ class ScanResult:
     canceled: bool
     scan_timestamp: str
     corrected_path: str = ""
+    telemetry_path: str = ""
 
 
 @dataclass
@@ -143,6 +179,7 @@ class ScanWorkflow:
             left_path = ""
             right_path = ""
             corrected_path = ""
+            telemetry_path = ""
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             active_sides = []
             writer_threads: dict[str, threading.Thread] = {}
@@ -156,9 +193,53 @@ class ScanWorkflow:
             corrected_path = os.path.join(
                 request.data_dir, f"scan_{request.subject_id}_{ts}_corrected.csv"
             )
+            telemetry_path = os.path.join(
+                request.data_dir, f"scan_{request.subject_id}_{ts}_telemetry.csv"
+            )
+            # Telemetry CSV state (populated in try block if console is available)
+            _telem_poller = None
+            _telem_listener = None
+            _telem_fh = None
+            _telem_lock = threading.Lock()
+            _telem_stop = threading.Event()
 
             try:
                 os.makedirs(request.data_dir, exist_ok=True)
+
+                # Open the telemetry CSV and register a listener on the poller.
+                # The guard handles headless configs where there is no console module.
+                _telem_poller = getattr(
+                    getattr(self._interface, "console_module", None), "telemetry", None
+                )
+                if _telem_poller is not None:
+                    try:
+                        _telem_fh = open(  # noqa: WPS515
+                            telemetry_path, "w", newline="", encoding="utf-8"
+                        )
+                        _telem_csv = csv.writer(_telem_fh)
+                        _telem_csv.writerow(_TELEMETRY_HEADERS)
+                        _telem_fh.flush()
+
+                        def _on_telemetry(snap):
+                            if _telem_stop.is_set():
+                                return
+                            with _telem_lock:
+                                if _telem_stop.is_set():
+                                    return
+                                try:
+                                    _telem_csv.writerow(_snap_to_row(snap))
+                                    _telem_fh.flush()
+                                except Exception as _te:
+                                    logger.debug("Telemetry CSV write error: %s", _te)
+
+                        _telem_listener = _on_telemetry
+                        _telem_poller.add_listener(_telem_listener)
+                    except Exception as _telem_err:
+                        _emit_log(f"Failed to open telemetry CSV: {_telem_err}")
+                        telemetry_path = ""
+                else:
+                    telemetry_path = ""
+
                 active_sides = self._resolve_active_sides(
                     request.left_camera_mask, request.right_camera_mask
                 )
@@ -304,6 +385,7 @@ class ScanWorkflow:
                         left_path = filepath
                     elif side == "right":
                         right_path = filepath
+                    _emit_log(f"{side.capitalize()} raw CSV: {os.path.basename(filepath)}")
                     if on_side_stream_fn:
                         on_side_stream_fn(side, filepath)
 
@@ -364,6 +446,24 @@ class ScanWorkflow:
                 if science_pipeline is not None:
                     science_pipeline.stop()
 
+                # Telemetry CSV teardown — signal the listener to stop writing,
+                # wait for any in-flight write to drain, then close the file.
+                _telem_stop.set()
+                with _telem_lock:
+                    pass  # acquire+release: ensures any in-flight write has exited
+                if _telem_poller is not None and _telem_listener is not None:
+                    try:
+                        _telem_poller.remove_listener(_telem_listener)
+                    except Exception:
+                        pass
+                if _telem_fh is not None:
+                    try:
+                        _telem_fh.close()
+                    except Exception:
+                        pass
+                if telemetry_path:
+                    _emit_log(f"Telemetry CSV created: {os.path.basename(telemetry_path)}")
+
                 # Build one merged corrected CSV, aligned by frame_id, with normalized timestamp.
                 corrected_columns = (
                     [f"bfi_l{i}" for i in range(1, 9)]
@@ -415,6 +515,7 @@ class ScanWorkflow:
                     left_path=left_path,
                     right_path=right_path,
                     corrected_path=corrected_path,
+                    telemetry_path=telemetry_path,
                     canceled=self._stop_evt.is_set(),
                     scan_timestamp=ts,
                 )
