@@ -63,7 +63,7 @@ from omotion.config import (
 )
 
 from omotion.GitHubReleases import GitHubReleases
-from omotion.MotionConfig import MotionConfig
+from omotion.MotionConfig import MotionConfig, MotionConfigHeader
 from omotion.CommandError import CommandError
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
@@ -1662,15 +1662,22 @@ class MOTIONConsole:
                 logger.error("Error writing config to device")
                 return None
 
-            # Response contains updated header (with new seq/crc)
+            # The firmware write ACK returns only the updated 16-byte header
+            # (with the new seq/crc stamped by the device) — it does NOT echo
+            # back the full JSON payload.  Parse just the header and reattach
+            # the json_data we sent so the caller gets a fully-populated object.
             try:
-                updated_config = MotionConfig.from_wire_bytes(r.data)
+                updated_header = MotionConfigHeader.from_bytes(bytes(r.data[:16]))
+                updated_config = MotionConfig(
+                    header=updated_header,
+                    json_data=config.json_data.copy(),
+                )
                 logger.info(
-                    f"Config written successfully: new seq={updated_config.header.seq}"
+                    "Config written successfully: new seq=%d", updated_config.header.seq
                 )
                 return updated_config
             except Exception as e:
-                logger.error(f"Failed to parse write response: {e}")
+                logger.error("Failed to parse write ACK header: %s", e)
                 return None
 
         except ValueError as v:
