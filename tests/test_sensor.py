@@ -119,12 +119,190 @@ def test_sensor_fan_status_roundtrip(any_sensor):
 # 3.4 Debug flags
 # ===========================================================================
 
+from omotion.config import (
+    DEBUG_FLAG_USB_PRINTF,
+    DEBUG_FLAG_HISTO_THROTTLE,
+    DEBUG_FLAG_FAKE_DATA,
+    DEBUG_FLAG_COMM_VERBOSE,
+    DEBUG_FLAG_CMD_VERBOSE,
+)
+
+_ALL_DEBUG_FLAGS = (
+    DEBUG_FLAG_USB_PRINTF
+    | DEBUG_FLAG_HISTO_THROTTLE
+    | DEBUG_FLAG_FAKE_DATA
+    | DEBUG_FLAG_COMM_VERBOSE
+    | DEBUG_FLAG_CMD_VERBOSE
+)
+
+
 def test_debug_flags_roundtrip(any_sensor):
+    """Baseline: write 0x03 and read it back (pre-existing sanity check)."""
     original = any_sensor.get_debug_flags()
     try:
         any_sensor.set_debug_flags(0x03)
         readback = any_sensor.get_debug_flags()
         assert readback == 0x03, f"Debug flags readback {readback:#04x}, expected 0x03"
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_usb_printf(any_sensor):
+    """Bit 0 — DEBUG_FLAG_USB_PRINTF: enables firmware printf output over USB."""
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(DEBUG_FLAG_USB_PRINTF) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_USB_PRINTF, (
+            f"USB_PRINTF bit not set; readback=0x{readback:08X}"
+        )
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_USB_PRINTF), (
+            f"USB_PRINTF bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_histo_throttle(any_sensor):
+    """Bit 1 — DEBUG_FLAG_HISTO_THROTTLE: firmware sends real histogram data every 5 s only.
+
+    While throttled, the sensor must still acknowledge commands promptly — it
+    claims success for intermediate requests rather than blocking.
+    """
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(DEBUG_FLAG_HISTO_THROTTLE) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_HISTO_THROTTLE, (
+            f"HISTO_THROTTLE bit not set; readback=0x{readback:08X}"
+        )
+        # Behavioral check: the command/response path must remain live while
+        # throttled.  ping() is a fast NOP-style command that should not hang.
+        assert any_sensor.ping() is True, (
+            "Sensor stopped responding to ping with HISTO_THROTTLE active"
+        )
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_HISTO_THROTTLE), (
+            f"HISTO_THROTTLE bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_fake_data(any_sensor):
+    """Bit 2 — DEBUG_FLAG_FAKE_DATA: firmware turns off cameras and streams synthetic data."""
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(DEBUG_FLAG_FAKE_DATA) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_FAKE_DATA, (
+            f"FAKE_DATA bit not set; readback=0x{readback:08X}"
+        )
+        # Behavioral check: regular commands must still succeed while fake data
+        # is active (firmware is not wedged).
+        assert any_sensor.ping() is True, (
+            "Sensor stopped responding to ping with FAKE_DATA active"
+        )
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_FAKE_DATA), (
+            f"FAKE_DATA bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_comm_verbose(any_sensor):
+    """Bit 4 — DEBUG_FLAG_COMM_VERBOSE: firmware logs each command ID and response."""
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(DEBUG_FLAG_COMM_VERBOSE) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_COMM_VERBOSE, (
+            f"COMM_VERBOSE bit not set; readback=0x{readback:08X}"
+        )
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_COMM_VERBOSE), (
+            f"COMM_VERBOSE bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_cmd_verbose(any_sensor):
+    """Bit 5 — DEBUG_FLAG_CMD_VERBOSE: firmware prints inside command handlers."""
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(DEBUG_FLAG_CMD_VERBOSE) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_CMD_VERBOSE, (
+            f"CMD_VERBOSE bit not set; readback=0x{readback:08X}"
+        )
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_CMD_VERBOSE), (
+            f"CMD_VERBOSE bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flags_each_independent(any_sensor):
+    """Each flag can be set and cleared in isolation without contaminating other bits."""
+    individual_flags = [
+        ("USB_PRINTF",     DEBUG_FLAG_USB_PRINTF),
+        ("HISTO_THROTTLE", DEBUG_FLAG_HISTO_THROTTLE),
+        ("FAKE_DATA",      DEBUG_FLAG_FAKE_DATA),
+        ("COMM_VERBOSE",   DEBUG_FLAG_COMM_VERBOSE),
+        ("CMD_VERBOSE",    DEBUG_FLAG_CMD_VERBOSE),
+    ]
+    original = any_sensor.get_debug_flags()
+    try:
+        for name, flag in individual_flags:
+            # Start from a clean zero baseline.
+            any_sensor.set_debug_flags(0x00)
+            any_sensor.set_debug_flags(flag)
+            readback = any_sensor.get_debug_flags()
+            assert readback & flag, (
+                f"{name} (0x{flag:02X}) not set in readback 0x{readback:08X}"
+            )
+            # Clear and confirm gone.
+            any_sensor.set_debug_flags(0x00)
+            readback = any_sensor.get_debug_flags()
+            assert not (readback & flag), (
+                f"{name} (0x{flag:02X}) still present after clear: 0x{readback:08X}"
+            )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flags_combined_all(any_sensor):
+    """All defined debug flags can be set simultaneously and each bit survives."""
+    original = any_sensor.get_debug_flags()
+    try:
+        assert any_sensor.set_debug_flags(_ALL_DEBUG_FLAGS) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback == _ALL_DEBUG_FLAGS, (
+            f"Combined flags readback 0x{readback:08X}, expected 0x{_ALL_DEBUG_FLAGS:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flags_cleared_by_zero(any_sensor):
+    """Writing 0x00 clears every debug bit the SDK knows about."""
+    original = any_sensor.get_debug_flags()
+    try:
+        any_sensor.set_debug_flags(_ALL_DEBUG_FLAGS)
+        assert any_sensor.set_debug_flags(0x00) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & _ALL_DEBUG_FLAGS == 0, (
+            f"Bits still set after writing 0x00: 0x{readback:08X}"
+        )
     finally:
         any_sensor.set_debug_flags(original)
 

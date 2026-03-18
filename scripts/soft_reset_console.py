@@ -45,17 +45,26 @@ def main() -> int:
             print("Aborted.")
             return 0
 
+    # Stop the background telemetry poller before the reset so it exits
+    # cleanly while the device is still alive.  If we reset first and then
+    # stop, the poller is mid-poll on a dead serial port and logs a cascade
+    # of ClearCommError / tec_status / _read_all errors before it notices.
+    interface.console_module.telemetry.stop()
+
     print("[+] Sending soft reset to console …")
     try:
         ok = interface.console_module.soft_reset()
     except Exception as exc:
         print(f"   ❌  Exception: {exc}")
+        interface.disconnect()
         return 1
 
     if ok:
         print("   ✅  Soft reset sent successfully. Console should reboot.")
+        interface.disconnect()
         return 0
     print("   ❌  Console did not report success.")
+    interface.disconnect()
     return 1
 
 

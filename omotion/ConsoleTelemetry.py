@@ -230,6 +230,16 @@ class ConsoleTelemetryPoller:
             snap.read_ok = False
             snap.error = str(exc)
             logger.error("ConsoleTelemetryPoller _read_all error: %s", exc)
+            # If the underlying UART is no longer connected (e.g. the device
+            # rebooted or was unplugged), stop polling immediately instead of
+            # retrying every second until stop() is called externally.
+            if not self._console.is_connected():
+                logger.info(
+                    "ConsoleTelemetryPoller: console disconnected, stopping poll loop"
+                )
+                with self._lock:
+                    self._running = False
+                self._wake.set()
 
         snap.timestamp = time.time()
         return snap

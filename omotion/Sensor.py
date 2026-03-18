@@ -213,6 +213,8 @@ class MOTIONSensor:
         """Set firmware debug flags (32-bit bitmask).
 
         Bit 0 (DEBUG_FLAG_USB_PRINTF) enables firmware printf output over USB.
+        Bit 4 (DEBUG_FLAG_COMM_VERBOSE) enables cmd id and "." response prints.
+        Bit 5 (DEBUG_FLAG_CMD_VERBOSE) enables printf in command handlers.
         """
         if self.uart.demo_mode:
             return True
