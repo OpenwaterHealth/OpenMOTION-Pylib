@@ -132,8 +132,10 @@ def test_stream_histogram_data_returned(any_sensor):
         assert len(histogram) == 1024, "Expected 1024 histogram bins"
         assert isinstance(temperature_c, float)
     finally:
-        any_sensor.disable_camera_fpga(0x01)
-        any_sensor.disable_camera_power(0x01)
+        try:
+            any_sensor.disable_camera_fpga(0x01)
+        finally:
+            any_sensor.disable_camera_power(0x01)
 
 
 @pytest.mark.slow
@@ -144,10 +146,14 @@ def test_stream_interface_no_data_loss(any_sensor):
     """
     from omotion.MotionProcessing import create_science_pipeline
 
+    # Full bring-up: power → 500 ms settle → program_fpga → 100 ms settle → configure
     any_sensor.enable_camera_power(0x01)
-    time.sleep(0.05)
-    any_sensor.enable_camera_fpga(0)
-    any_sensor.camera_configure_registers(0)
+    time.sleep(0.5)
+    ok = any_sensor.program_fpga(camera_position=0x01, manual_process=False)
+    if ok is False:
+        pytest.fail("program_fpga(0x01) returned False")
+    time.sleep(0.1)
+    any_sensor.camera_configure_registers(0x01)
     any_sensor.enable_aggregator_fsin()
 
     frames = []
@@ -163,15 +169,15 @@ def test_stream_interface_no_data_loss(any_sensor):
         bfi_i_max=_BFI_ONES,
         on_science_frame_fn=on_science_frame,
     )
-    any_sensor.enable_camera(0)
+    any_sensor.enable_camera(0x01)
 
     try:
         time.sleep(2.0)
     finally:
-        any_sensor.disable_camera(0)
+        any_sensor.disable_camera(0x01)
         any_sensor.disable_aggregator_fsin()
         pipeline.stop()
-        any_sensor.disable_camera_fpga(0)
+        any_sensor.disable_camera_fpga(0x01)
         any_sensor.disable_camera_power(0x01)
 
     assert len(frames) > 0, "No science frames received during 2 s stream"
