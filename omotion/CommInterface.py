@@ -9,9 +9,6 @@ from omotion.config import (
     OW_DATA,
     OW_CMD_ECHO,
 )
-
-# Max data_len we accept (sanity check to avoid runaway buffer)
-OW_MAX_PACKET_DATA_LEN = 4096 * 2
 import usb.core
 import usb.util
 import time
@@ -23,6 +20,9 @@ from omotion import _log_root
 logger = logging.getLogger(
     f"{_log_root}.CommInterface" if _log_root else "CommInterface"
 )
+
+# Max data_len we accept (sanity check to avoid runaway buffer)
+OW_MAX_PACKET_DATA_LEN = 4096 * 2
 
 _PACKET_TYPE_NAMES = {
     value: name
@@ -142,9 +142,8 @@ class CommInterface(USBInterfaceBase):
             f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
         )
 
-        with self._io_lock:
-            self.write(tx_bytes)
-            time.sleep(0.0005)
+        self.write(tx_bytes)
+        time.sleep(0.0005)
 
         if not self.async_mode:
             start = time.monotonic()
