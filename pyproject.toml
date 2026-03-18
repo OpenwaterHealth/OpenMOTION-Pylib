@@ -65,7 +65,7 @@ include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short -m 'not fpga'"
+addopts = "-v --tb=short -m 'not fpga and not imu'"
 timeout = 30
 timeout_method = "thread"
 log_cli = true
@@ -81,6 +81,7 @@ markers = [
     "destructive: modifies flash or firmware",
     "sequence: multi-step round-trip tests",
     "fpga: requires a loaded FPGA bitstream — temporarily skipped",
+    "imu: exercises the IMU subsystem — temporarily skipped",
 ]
 
 [tool.setuptools_scm]

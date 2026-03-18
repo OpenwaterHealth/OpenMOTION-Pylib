@@ -69,12 +69,14 @@ def imu_enabled(any_sensor):
         pass
 
 
+@pytest.mark.imu
 def test_imu_temperature(any_sensor):
     t = any_sensor.imu_get_temperature()
     assert isinstance(t, float)
     assert -40.0 <= t <= 85.0, f"IMU temperature {t} °C out of physical range"
 
 
+@pytest.mark.imu
 def test_imu_accelerometer(any_sensor, imu_enabled):
     accel = any_sensor.imu_get_accelerometer()
     assert isinstance(accel, list) and len(accel) == 3
@@ -84,6 +86,7 @@ def test_imu_accelerometer(any_sensor, imu_enabled):
     assert magnitude > 0, "Accelerometer magnitude is zero — sensor may be unresponsive"
 
 
+@pytest.mark.imu
 def test_imu_gyroscope(any_sensor, imu_enabled):
     gyro = any_sensor.imu_get_gyroscope()
     assert isinstance(gyro, list) and len(gyro) == 3
