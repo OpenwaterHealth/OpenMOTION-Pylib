@@ -167,3 +167,4 @@ cython_debug/
 histogram.bin
 histogram.csv
 /camera-test-data/*
+/reports/*

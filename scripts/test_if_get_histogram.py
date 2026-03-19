@@ -38,12 +38,16 @@ def parse_args():
 def run_get_histogram_test(interface, camera_id, test_pattern, side):
     print(f"Running get histogram test on {side} sensor for camera={camera_id}, test_pattern={test_pattern}...")
 
+    sensor = interface.sensors.get(side)
+    if sensor is None:
+        print(f"[{side.capitalize()}] Sensor not connected.")
+        return
+
     # Run histogram test for specific side
-    hist_result = interface.get_camera_histogram(
-        sensor_side=side,          # <-- pass side to method
+    hist_result = sensor.get_camera_histogram(
         camera_id=camera_id,
         test_pattern_id=test_pattern,
-        auto_upload=True
+        auto_upload=True,
     )
 
     if hist_result and isinstance(hist_result, tuple) and len(hist_result) == 2:

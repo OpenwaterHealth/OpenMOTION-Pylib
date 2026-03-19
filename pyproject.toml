@@ -32,6 +32,11 @@ keywords = ["stm32", "fpga", "camera", "usb", "serial", "openmotion"]
 
 [project.optional-dependencies]
 keyboard = ["keyboard>=0.13.5"]
+dev = [
+  "pytest>=8.0",
+  "pytest-html>=4.0",
+  "pytest-timeout>=2.3",
+]
 
 [project.urls]
 Repository = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib"
@@ -56,6 +61,27 @@ include-package-data = true
     "dfu-util/**/*.dylib",
     "dfu-util/**/*.a",
     "dfu-util/**/*.la",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short -m 'not fpga and not imu'"
+timeout = 30
+timeout_method = "thread"
+log_cli = true
+log_cli_level = "WARNING"
+log_cli_format = "%(asctime)s  %(levelname)-8s  %(name)s: %(message)s"
+log_cli_date_format = "%H:%M:%S"
+markers = [
+    "console: requires a connected console module",
+    "sensor: requires at least one connected sensor module",
+    "sensor_left: tests specific to the left sensor",
+    "sensor_right: tests specific to the right sensor",
+    "slow: takes more than 10 s",
+    "destructive: modifies flash or firmware",
+    "sequence: multi-step round-trip tests",
+    "fpga: requires a loaded FPGA bitstream — temporarily skipped",
+    "imu: exercises the IMU subsystem — temporarily skipped",
 ]
 
 [tool.setuptools_scm]

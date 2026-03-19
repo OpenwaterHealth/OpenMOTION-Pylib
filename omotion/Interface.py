@@ -3,6 +3,7 @@ import logging
 from typing import Any, Iterable
 from omotion.Console import MOTIONConsole
 from omotion.DualMotionComposite import DualMotionComposite
+from omotion.ScanWorkflow import ScanWorkflow
 from omotion.Sensor import MOTIONSensor
 from omotion.MotionUart import MOTIONUart
 
@@ -40,6 +41,7 @@ class MOTIONInterface(SignalWrapper):
         self._console_uart = None
         self.console_module = None
         self.sensors = None
+        self.scan_workflow = None
 
         # Create a MOTIONConsole Device instance as part of the interface
         logger.debug(
@@ -77,12 +79,18 @@ class MOTIONInterface(SignalWrapper):
         # Initialize any already connected devices
         self._dual_composite.check_usb_status()
         self._initialize_sensors()
+        self.scan_workflow = ScanWorkflow(self)
+
+        # If the console was already connected at construction time, start its poller.
+        if self.console_module and self.console_module.is_connected():
+            logger.info("Console already connected at init – starting telemetry poller")
+            self.console_module.telemetry.start()
 
         # Connect console UART signals to interface (works with PyQt or MOTIONSignal shim)
         if self._console_uart:
             logger.info("Connecting console COMM signals to MOTIONInterface")
-            self._console_uart.signal_connect.connect(self.signal_connect)
-            self._console_uart.signal_disconnect.connect(self.signal_disconnect)
+            self._console_uart.signal_connect.connect(self._on_console_connect)
+            self._console_uart.signal_disconnect.connect(self._on_console_disconnect)
             self._console_uart.signal_data_received.connect(self.signal_data_received)
 
         # Connect DualMotionComposite signals to interface (works with PyQt or MOTIONSignal shim)
@@ -91,6 +99,20 @@ class MOTIONInterface(SignalWrapper):
             self._dual_composite.signal_connect.connect(self._on_sensor_connect)
             self._dual_composite.signal_disconnect.connect(self._on_sensor_disconnect)
             self._dual_composite.signal_data_received.connect(self.signal_data_received)
+
+    def _on_console_connect(self, device_id: str, connection_type: str) -> None:
+        """Handle console connection: start the telemetry poller and forward the signal."""
+        logger.info("Console connected (%s) – starting telemetry poller", device_id)
+        if self.console_module:
+            self.console_module.telemetry.start()
+        self.signal_connect.emit(device_id, connection_type)
+
+    def _on_console_disconnect(self, device_id: str, connection_type: str) -> None:
+        """Handle console disconnection: stop the telemetry poller and forward the signal."""
+        logger.info("Console disconnected (%s) – stopping telemetry poller", device_id)
+        if self.console_module:
+            self.console_module.telemetry.stop()
+        self.signal_disconnect.emit(device_id, connection_type)
 
     def _initialize_sensors(self):
         """Initialize MOTIONSensor instances for any currently connected MotionComposite devices."""
@@ -265,148 +287,74 @@ class MOTIONInterface(SignalWrapper):
 
         return console_connected, left_connected, right_connected
 
-    def get_camera_histogram(
+    def start_scan(self, request, **kwargs) -> bool:
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.start_scan(request, **kwargs)
+
+    def cancel_scan(self, **kwargs) -> None:
+        if self.scan_workflow:
+            self.scan_workflow.cancel_scan(**kwargs)
+
+    def get_single_histogram(
         self,
-        sensor_side: str,  # "left" or "right"
+        side: str,
         camera_id: int,
         test_pattern_id: int = 4,
         auto_upload: bool = True,
-    ) -> tuple[list[int], list[int]] | None:
+    ):
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.get_single_histogram(
+            side=side,
+            camera_id=camera_id,
+            test_pattern_id=test_pattern_id,
+            auto_upload=auto_upload,
+        )
+
+    def start_configure_camera_sensors(self, request, **kwargs) -> bool:
+        if not self.scan_workflow:
+            self.scan_workflow = ScanWorkflow(self)
+        return self.scan_workflow.start_configure_camera_sensors(request, **kwargs)
+
+    def cancel_configure_camera_sensors(self, **kwargs) -> None:
+        if self.scan_workflow:
+            self.scan_workflow.cancel_configure_camera_sensors(**kwargs)
+
+    def disconnect(self) -> None:
+        """Disconnect all devices and clean up resources.
+
+        Stops the telemetry poller, disconnects the console UART, and
+        disconnects all sensor composites.  Each step is wrapped individually
+        so a failure at one does not prevent the remaining cleanup.
         """
-        High-level method to get a histogram from a specific camera
-        on a specific sensor module ("left" or "right").
-        """
+        if self.console_module and hasattr(self.console_module, "telemetry"):
+            try:
+                self.console_module.telemetry.stop()
+            except Exception as e:
+                logger.warning("Error stopping telemetry poller: %s", e)
 
-        import time
+        if self.console_module:
+            try:
+                self.console_module.disconnect()
+            except Exception as e:
+                logger.warning("Error disconnecting console: %s", e)
 
-        if sensor_side not in ("left", "right"):
-            logger.error("sensor_side must be 'left' or 'right'.")
-            return None
-
-        if not (0 <= camera_id <= 7):
-            logger.error("Camera ID must be 1–8.")
-            return None
-
-        sensor = self.sensors[sensor_side]
-        if sensor is None:
-            logger.error(f"{sensor_side.capitalize()} sensor not connected.")
-            return None
-
-        camera_mask = 1 << (camera_id)
-        test_pattern = test_pattern_id
-
-        # Step 1: Get status
-        status_map = sensor.get_camera_status(camera_mask)
-        print(f"[{sensor_side.capitalize()}] Camera {camera_id} Status: {status_map}")
-        if not status_map or camera_id not in status_map:
-            logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
-            return None
-
-        status = status_map[camera_id]
-        logger.debug(
-            f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}"
-        )
-
-        if not status & (1 << 0):  # Not READY
-            logger.debug(f"[{sensor_side.capitalize()}] Camera peripheral not READY.")
-            return None
-
-        # Step 2: Program FPGA if needed
-        if not (status & (1 << 1) and status & (1 << 2)):
-            logger.debug(f"[{sensor_side.capitalize()}] FPGA Configuration Started")
-            start_time = time.time()
-            if auto_upload:
-                if not sensor.program_fpga(
-                    camera_position=camera_mask, manual_process=False
-                ):
-                    logger.error(
-                        f"[{sensor_side.capitalize()}] Failed to program FPGA."
-                    )
-                    return None
-            logger.debug(
-                f"[{sensor_side.capitalize()}] FPGAs programmed | Time: {(time.time() - start_time) * 1000:.2f} ms"
-            )
-
-        # Step 3: Configure registers if needed
-        if not (status & (1 << 1) and status & (1 << 2)):
-            logger.debug(
-                f"[{sensor_side.capitalize()}] Programming camera sensor registers."
-            )
-            if not sensor.camera_configure_registers(camera_mask):
-                logger.error(
-                    f"[{sensor_side.capitalize()}] Failed to configure registers."
-                )
-                return None
-
-        # Step 4: Set test pattern
-        logger.debug(f"[{sensor_side.capitalize()}] Setting test pattern...")
-        if not sensor.camera_configure_test_pattern(camera_mask, test_pattern):
-            logger.error(f"[{sensor_side.capitalize()}] Failed to set test pattern.")
-            return None
-
-        # Step 5: Verify ready for histogram
-        status_map = sensor.get_camera_status(camera_mask)
-        if not status_map or camera_id not in status_map:
-            logger.error(f"[{sensor_side.capitalize()}] Failed to get camera status.")
-            return None
-
-        status = status_map[camera_id]
-        logger.debug(
-            f"[{sensor_side.capitalize()}] Camera {camera_id} status: 0x{status:02X} → {sensor.decode_camera_status(status)}"
-        )
-        if not (status & (1 << 0) and status & (1 << 1) and status & (1 << 2)):
-            logger.error(f"[{sensor_side.capitalize()}] Not configured for histogram.")
-            return None
-
-        # Step 6: Capture histogram
-        logger.debug(f"[{sensor_side.capitalize()}] Capturing histogram...")
-        if not sensor.camera_capture_histogram(camera_mask):
-            logger.error(f"[{sensor_side.capitalize()}] Capture failed.")
-            return None
-
-        # Step 7: Retrieve histogram
-        logger.debug(f"[{sensor_side.capitalize()}] Retrieving histogram...")
-        histogram = sensor.camera_get_histogram(camera_mask)
-        if histogram is None:
-            logger.error(f"[{sensor_side.capitalize()}] Histogram retrieval failed.")
-            return None
-
-        logger.debug(
-            f"[{sensor_side.capitalize()}] Histogram frame received successfully."
-        )
-        histogram = histogram[:4096]
-        return self.bytes_to_integers(histogram)
+        # DualMotionComposite.disconnect() only acts when given a specific target;
+        # calling it with no target does nothing.  Disconnect each side explicitly
+        # so their read threads are stopped before the process exits.
+        if self._dual_composite:
+            for side in ("left", "right"):
+                try:
+                    self._dual_composite.disconnect(target=side)
+                except Exception as e:
+                    logger.warning("Error disconnecting %s sensor: %s", side, e)
 
     def __del__(self):
         try:
-            self.stop_monitoring()
-            if self.console_module:
-                self.console_module.disconnect()
-            if self._dual_composite:
-                self._dual_composite.disconnect()
-        except RuntimeError as e:
-            logger.debug(f"Destructor skipped due to RuntimeError: {e}")
+            self.disconnect()
         except Exception as e:
             logger.debug(f"Destructor skipped due to: {e}")
-
-    @staticmethod
-    def bytes_to_integers(byte_array):
-        # Check that the byte array is exactly 4096 bytes
-        if len(byte_array) != 4096:
-            raise ValueError("Input byte array must be exactly 4096 bytes.")
-        # Initialize an empty list to store the converted integers
-        integers = []
-        hidden_figures = []
-        # Iterate over the byte array in chunks of 4 bytes
-        for i in range(0, len(byte_array), 4):
-            bytes = byte_array[i : i + 4]
-            # Unpack each 4-byte chunk as a single integer (big-endian)
-            # integer = struct.unpack_from('<I', byte_array, i)[0]
-            # if(bytes[0] + bytes[1] + bytes[2] + bytes[3] > 0):
-            #     print(str(i) + " " + str(bytes[0:3]))
-            hidden_figures.append(bytes[3])
-            integers.append(int.from_bytes(bytes[0:3], byteorder="little"))
-        return (integers, hidden_figures)
 
     @staticmethod
     def get_sdk_version() -> str:

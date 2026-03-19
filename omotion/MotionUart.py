@@ -99,22 +99,47 @@ class MOTIONUart(SignalWrapper):
             raise e
 
     def disconnect(self):
-        """Close the serial port."""
+        """Close the serial port.
+
+        Safe to call multiple times — subsequent calls after the first are
+        no-ops so that both the error-recovery path inside send_packet() and
+        the explicit teardown path in MOTIONInterface.disconnect() can each
+        call this without double-emitting signals or crashing during Python
+        interpreter shutdown.
+        """
         self.running = False
         if self.demo_mode:
             logger.info("Demo mode: Simulating UART disconnection.")
-            self._set_state(ConnectionState.DISCONNECTED, reason="demo_mode")
-            self.signal_disconnect.emit(self.descriptor, "demo_mode")
+            if self.state != ConnectionState.DISCONNECTED:
+                self._set_state(ConnectionState.DISCONNECTED, reason="demo_mode")
+                try:
+                    self.signal_disconnect.emit(self.descriptor, "demo_mode")
+                except Exception as e:
+                    logger.debug("signal_disconnect.emit skipped during shutdown: %s", e)
             return
 
         if self.read_thread:
-            self.read_thread.join()
+            self.read_thread.join(timeout=2.0)
+            self.read_thread = None
         if self.serial and self.serial.is_open:
-            self.serial.close()
+            try:
+                self.serial.close()
+            except Exception as e:
+                logger.debug("serial.close() raised during disconnect: %s", e)
             self.serial = None
-        logger.info("Disconnected from UART.")
-        self._set_state(ConnectionState.DISCONNECTED)
-        self.signal_disconnect.emit(self.descriptor, self.port)
+
+        # Only transition and emit if we haven't already done so.  This makes
+        # disconnect() idempotent — critical because send_packet()'s error
+        # handler and MOTIONInterface.disconnect() can both call this.
+        if self.state != ConnectionState.DISCONNECTED:
+            logger.info("Disconnected from UART.")
+            self._set_state(ConnectionState.DISCONNECTED)
+            try:
+                self.signal_disconnect.emit(self.descriptor, self.port)
+            except Exception as e:
+                # The underlying Qt/C++ object can already be deleted when
+                # Python tears down objects at interpreter exit.
+                logger.debug("signal_disconnect.emit skipped during shutdown: %s", e)
         self.port = None
 
     def is_connected(self) -> bool:

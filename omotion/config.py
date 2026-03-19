@@ -113,6 +113,8 @@ DEBUG_FLAG_HISTO_THROTTLE = (
 DEBUG_FLAG_FAKE_DATA = (
     0x04  # Turn on or off fake data mode, turns off cameras and sends fake data
 )
+DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_comms
+DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10

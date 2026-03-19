@@ -1,0 +1,46 @@
+name: Full Hardware Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+
+jobs:
+  full-validation:
+    name: Full hardware validation (including destructive tests)
+    runs-on: [self-hosted, hardware, openmotion]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ \
+            --junitxml=reports/junit_full.xml \
+            --html=reports/report_full.html \
+            --self-contained-html
+
+      - name: Upload full report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-test-report-${{ github.run_number }}
+          path: reports/
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: reports/junit_full.xml
+          comment_title: Full Hardware Validation Results
+          check_name: Full Hardware Validation
