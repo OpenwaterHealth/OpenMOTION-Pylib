@@ -135,7 +135,7 @@ class CommInterface(USBInterfaceBase):
         tx_bytes = uart_packet.to_bytes()
         packet_type_name = _PACKET_TYPE_NAMES.get(packetType)
         cmd_names = _CMD_NAMES.get(packet_type_name, {})
-        logger.info(
+        logger.debug(
             f"{self.desc}: TX id=0x{id:04X} "
             f"type={_format_named(packetType, _PACKET_TYPE_NAMES)} "
             f"cmd={_format_named(command, cmd_names)} "
