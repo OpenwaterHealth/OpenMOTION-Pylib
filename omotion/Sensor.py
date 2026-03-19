@@ -28,8 +28,6 @@ from omotion.config import (
     OW_FPGA_ERASE_SRAM,
     OW_FPGA_EXIT_SRAM_PROG,
     OW_FPGA_ID,
-    OW_FPGA_OFF,
-    OW_FPGA_ON,
     OW_FPGA_PROG_SRAM,
     OW_FPGA_RESET,
     OW_FPGA_STATUS,
@@ -330,38 +328,6 @@ class MOTIONSensor:
             packetType=OW_FPGA, command=OW_FPGA_ACTIVATE, addr=camera_position
         )
         return r.packet_type not in _ERROR_TYPES
-
-    def enable_camera_fpga(self, camera_position: int) -> bool:
-        """Enable (power on) the FPGA for the camera(s) indicated by the bitmask."""
-        self._check_camera_mask(camera_position)
-        if self.uart.demo_mode:
-            return True
-        r = self._send(
-            packetType=OW_FPGA, command=OW_FPGA_ON, addr=camera_position, timeout=0.5
-        )
-        if r.packet_type in _ERROR_TYPES:
-            logger.error(
-                "enable_camera_fpga(0x%02x) rejected by firmware: packet_type=%s",
-                camera_position, r.packet_type,
-            )
-            return False
-        return True
-
-    def disable_camera_fpga(self, camera_position: int) -> bool:
-        """Disable (power off) the FPGA for the camera(s) indicated by the bitmask."""
-        self._check_camera_mask(camera_position)
-        if self.uart.demo_mode:
-            return True
-        r = self._send(
-            packetType=OW_FPGA, command=OW_FPGA_OFF, addr=camera_position
-        )
-        if r.packet_type in _ERROR_TYPES:
-            logger.error(
-                "disable_camera_fpga(0x%02x) rejected by firmware: packet_type=%s",
-                camera_position, r.packet_type,
-            )
-            return False
-        return True
 
     def check_camera_fpga(self, camera_position: int) -> bool:
         """Return True if the FPGA ID check passes for the given bitmask."""

@@ -352,21 +352,9 @@ def _power_up(sensor, mask=0x01):
 
 @pytest.mark.slow
 @pytest.mark.fpga
-def test_fpga_enable_disable(any_sensor):
+def test_fpga_check_after_program(any_sensor):
     _power_up(any_sensor)
     try:
-        assert any_sensor.enable_camera_fpga(0x01) is True
-        assert any_sensor.disable_camera_fpga(0x01) is True
-    finally:
-        any_sensor.disable_camera_power(0x01)
-
-
-@pytest.mark.slow
-@pytest.mark.fpga
-def test_fpga_check_after_enable(any_sensor):
-    _power_up(any_sensor)
-    try:
-        assert any_sensor.enable_camera_fpga(0x01) is True
         any_sensor.camera_configure_registers(0x01)
         assert any_sensor.check_camera_fpga(0x01) is True
     finally:
@@ -378,7 +366,6 @@ def test_fpga_check_after_enable(any_sensor):
 def test_fpga_status(any_sensor):
     _power_up(any_sensor)
     try:
-        assert any_sensor.enable_camera_fpga(0x01) is True
         any_sensor.camera_configure_registers(0x01)
         result = any_sensor.get_status_fpga(0x01)
         assert result is not None
@@ -391,7 +378,6 @@ def test_fpga_status(any_sensor):
 def test_fpga_usercode(any_sensor):
     _power_up(any_sensor)
     try:
-        assert any_sensor.enable_camera_fpga(0x01) is True
         any_sensor.camera_configure_registers(0x01)
         result = any_sensor.get_usercode_fpga(0x01)
         assert result is not None
@@ -404,7 +390,6 @@ def test_fpga_usercode(any_sensor):
 def test_fpga_activate(any_sensor):
     _power_up(any_sensor)
     try:
-        assert any_sensor.enable_camera_fpga(0x01) is True
         any_sensor.camera_configure_registers(0x01)
         assert any_sensor.activate_camera_fpga(0x01) is True
     finally:
@@ -470,10 +455,7 @@ def _bring_up_camera(sensor, mask=0x01, configure=True):
 
 
 def _tear_down_camera(sensor, cam=0, mask=0x01):
-    try:
-        sensor.disable_camera_fpga(mask)  # disable_camera_fpga takes a bitmask
-    finally:
-        sensor.disable_camera_power(mask)
+    sensor.disable_camera_power(mask)
 
 
 @pytest.mark.slow

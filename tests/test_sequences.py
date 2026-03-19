@@ -74,10 +74,7 @@ def _camera_up(sensor, mask=0x01, configure=True):
 
 
 def _camera_down(sensor, cam=0, mask=0x01):
-    try:
-        sensor.disable_camera_fpga(mask)  # disable_camera_fpga takes a bitmask
-    finally:
-        sensor.disable_camera_power(mask)
+    sensor.disable_camera_power(mask)
 
 
 # ===========================================================================
@@ -153,7 +150,6 @@ def test_fpga_enable_histogram_disable(any_sensor):
         histogram, _ = _decode_raw_histogram(raw)
         assert len(histogram) == 1024
 
-        assert any_sensor.disable_camera_fpga(0x01) is True
     finally:
         any_sensor.disable_camera_power(0x01)
 

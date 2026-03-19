@@ -132,10 +132,7 @@ def test_stream_histogram_data_returned(any_sensor):
         assert len(histogram) == 1024, "Expected 1024 histogram bins"
         assert isinstance(temperature_c, float)
     finally:
-        try:
-            any_sensor.disable_camera_fpga(0x01)
-        finally:
-            any_sensor.disable_camera_power(0x01)
+        any_sensor.disable_camera_power(0x01)
 
 
 @pytest.mark.slow
@@ -246,10 +243,7 @@ def test_stream_interface_no_data_loss(any_sensor, motion):
                     try:
                         pipeline.stop()
                     finally:
-                        try:
-                            any_sensor.disable_camera_fpga(0x01)
-                        finally:
-                            any_sensor.disable_camera_power(0x01)
+                        any_sensor.disable_camera_power(0x01)
 
     assert len(frames) > 0, "No science frames received during 2 s stream"
 
