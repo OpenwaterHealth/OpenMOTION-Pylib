@@ -39,6 +39,14 @@ HISTO_BINS_SQ = HISTO_BINS * HISTO_BINS
 FRAME_ID_MODULUS = 256
 FRAME_ROLLOVER_THRESHOLD = 128
 
+# Expected sum of all histogram bins for a valid frame.
+# When this is not None, any parsed histogram whose bin sum differs from this
+# value is treated as corrupt and silently dropped from the sample list.
+# Set to the integer value confirmed during calibration; leave as None to
+# disable the check (e.g. during development before the expected value is
+# known).
+EXPECTED_HISTOGRAM_SUM: int | None = 2_457_606
+
 logger = logging.getLogger(
     f"{_log_root}.MotionProcessing" if _log_root else "MotionProcessing"
 )
@@ -224,12 +232,30 @@ def parse_histogram_packet(
     return hists, ids, temps, packet.timestamp_s, packet.bytes_consumed
 
 
-def parse_histogram_packet_structured(pkt: memoryview) -> HistogramPacket:
+def parse_histogram_packet_structured(
+    pkt: memoryview,
+    expected_row_sum: int | None = None,
+) -> HistogramPacket:
     """
     Parse a binary histogram packet into normalized packet/sample dataclasses.
 
-    Returns:
-        HistogramPacket with parsed samples and metadata.
+    Parameters
+    ----------
+    pkt
+        Raw bytes of a single histogram packet.
+    expected_row_sum
+        When not None, each parsed sample's bin sum is compared against this
+        value.  Samples whose sum does not match are logged as warnings and
+        excluded from the returned ``HistogramPacket.samples`` list — they are
+        treated as if the frame never arrived (will not be written to CSV and
+        will not be fed into the science pipeline).  Pass ``None`` (default) to
+        disable the check.  The module-level ``EXPECTED_HISTOGRAM_SUM``
+        constant is a convenient global override point.
+
+    Returns
+    -------
+    HistogramPacket
+        Packet with parsed samples and metadata.
     """
     if len(pkt) < MIN_PACKET_SIZE:
         raise ValueError("Packet too small")
@@ -284,6 +310,19 @@ def parse_histogram_packet_structured(pkt: memoryview) -> HistogramPacket:
 
         ts_val = timestamp_sec if timestamp_sec is not None else 0.0
         row_sum = int(hist.sum(dtype=np.uint64))
+
+        # Sum validation — drop corrupt/doubled frames before they reach the
+        # pipeline.  The expected value is the invariant photon-count total
+        # that every valid frame must satisfy.
+        _expected = expected_row_sum if expected_row_sum is not None else EXPECTED_HISTOGRAM_SUM
+        if _expected is not None and row_sum != _expected:
+            logger.warning(
+                "Histogram sum mismatch for cam %d frame %d: "
+                "got %d, expected %d — dropping sample",
+                int(cam_id), int(frame_id), row_sum, _expected,
+            )
+            continue
+
         samples.append(
             HistogramSample(
                 cam_id=int(cam_id),
@@ -385,10 +424,22 @@ def parse_stream_to_csv(
     buffer_accumulator: bytearray,
     extra_cols_fn: Callable[[], list] | None = None,
     on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
+    expected_row_sum: int | None = None,
 ) -> int:
     """
     Parse streaming histogram binary data and write CSV rows.
-    Returns number of rows written.
+
+    Parameters
+    ----------
+    expected_row_sum
+        Forwarded to ``parse_histogram_packet_structured``.  When not None,
+        samples whose histogram bin sum does not match are silently dropped
+        from both CSV output and the ``on_row_fn`` callback.
+
+    Returns
+    -------
+    int
+        Number of rows written to ``csv_writer``.
     """
     rows_written = 0
 
@@ -405,7 +456,9 @@ def parse_stream_to_csv(
         while offset + MIN_PACKET_SIZE <= len(buffer_accumulator):
             try:
                 pkt_view = memoryview(buffer_accumulator[offset:])
-                packet = parse_histogram_packet_structured(pkt_view)
+                packet = parse_histogram_packet_structured(
+                    pkt_view, expected_row_sum=expected_row_sum
+                )
                 offset += packet.bytes_consumed
 
                 for sample in packet.samples:
@@ -449,6 +502,7 @@ def stream_queue_to_csv_file(
     on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
     on_complete_fn: Callable[[int], None] | None = None,
     on_error_fn: Callable[[Exception], None] | None = None,
+    expected_row_sum: int | None = None,
 ) -> int:
     """
     High-level helper: parse stream queue data and write a CSV file end-to-end.
@@ -457,6 +511,13 @@ def stream_queue_to_csv_file(
     - destination filename
     - queue + stop event
     - optional callbacks for extra columns and row handling.
+
+    Parameters
+    ----------
+    expected_row_sum
+        Forwarded to ``parse_stream_to_csv`` / ``parse_histogram_packet_structured``.
+        Samples whose histogram bin sum does not match are dropped from both
+        the CSV and the ``on_row_fn`` callback before being written.
     """
     rows_written = 0
     extra_headers = extra_headers or []
@@ -484,6 +545,7 @@ def stream_queue_to_csv_file(
                 buffer_accumulator=buffer_accumulator,
                 extra_cols_fn=extra_cols_fn,
                 on_row_fn=on_row_fn,
+                expected_row_sum=expected_row_sum,
             )
     except Exception as e:
         if on_error_fn:
@@ -672,6 +734,7 @@ class SciencePipeline:
         frame_timeout_s: float = 0.5,
         correction_warmup_count: int = 10,
         correction_mean_threshold: float = 66.0,
+        expected_row_sum: int | None = None,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -682,6 +745,7 @@ class SciencePipeline:
         self._frame_timeout_s = frame_timeout_s
         self._correction_warmup_count = correction_warmup_count
         self._correction_mean_threshold = correction_mean_threshold
+        self._expected_row_sum = expected_row_sum
 
         # Derive the set of (side, cam_id) keys that must be present for a
         # frame to be considered complete.
@@ -700,6 +764,14 @@ class SciencePipeline:
 
         # Pending frames waiting to collect all expected samples.
         self._frame_buffers: dict[int, _FrameBuffer] = {}
+
+        # Tracks which (side, cam_id) pairs have received their first frame.
+        # Used to detect stale frames from a previous scan (expected frame_id == 1
+        # for the very first frame of a new scan).
+        self._first_frame_seen: set[tuple[str, int]] = set()
+
+        # Counts frame-ID desynchronization events between cameras in a frame.
+        self._sync_error_count: int = 0
 
         self._ingress_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -747,6 +819,38 @@ class SciencePipeline:
 
             side, cam_id, raw_frame_id, ts, hist, row_sum, temp = item
             key = (side, cam_id)
+
+            # --- 0a. Sum validation (defense-in-depth) -------------------------
+            # parse_histogram_packet_structured already filters these out when
+            # expected_row_sum is set, but samples can also be enqueued directly
+            # (e.g. in tests).  Re-check here so the pipeline is always clean.
+            _expected_sum = (
+                self._expected_row_sum
+                if self._expected_row_sum is not None
+                else EXPECTED_HISTOGRAM_SUM
+            )
+            if _expected_sum is not None and row_sum != _expected_sum:
+                logger.warning(
+                    "SciencePipeline: histogram sum mismatch for %s cam %d "
+                    "frame %d: got %d, expected %d — dropping sample",
+                    side, cam_id, raw_frame_id, row_sum, _expected_sum,
+                )
+                continue
+
+            # --- 0b. First-frame staleness check --------------------------------
+            # The very first histogram received for each (side, cam_id) after
+            # pipeline start should have frame_id == 1.  Any other value means
+            # we are receiving a leftover frame from the previous scan.
+            if key not in self._first_frame_seen:
+                self._first_frame_seen.add(key)
+                if raw_frame_id != 1:
+                    logger.warning(
+                        "SciencePipeline: first frame for %s cam %d has "
+                        "frame_id=%d (expected 1) — likely stale from previous "
+                        "scan; dropping sample",
+                        side, cam_id, raw_frame_id,
+                    )
+                    continue
 
             # --- 1. Unwrap frame ID -------------------------------------------
             if key not in self._unwrappers:
@@ -861,6 +965,26 @@ class SciencePipeline:
                 self._emit_science_frame(abs_frame, buf)
 
     def _emit_science_frame(self, absolute_frame: int, buf: _FrameBuffer) -> None:
+        # --- Frame ID synchronization check ------------------------------------
+        # All samples in a completed trigger frame should share the same raw
+        # frame_id.  A mismatch means left and right (or multiple cameras on
+        # one side) are out of step — typically caused by dropped packets on
+        # one side that let that side advance its counter ahead of the other.
+        if buf.samples:
+            raw_ids_by_key = {key: s.frame_id for key, s in buf.samples.items()}
+            unique_raw_ids = set(raw_ids_by_key.values())
+            if len(unique_raw_ids) > 1:
+                self._sync_error_count += 1
+                detail = ", ".join(
+                    f"{side}/cam{cam_id}={fid}"
+                    for (side, cam_id), fid in sorted(raw_ids_by_key.items())
+                )
+                logger.error(
+                    "SciencePipeline: frame ID sync error on absolute frame %d "
+                    "(sync_errors=%d): %s",
+                    absolute_frame, self._sync_error_count, detail,
+                )
+
         if not self._on_science_frame_fn:
             return
         frame = ScienceFrame(
@@ -888,9 +1012,18 @@ def create_science_pipeline(
     frame_timeout_s: float = 0.5,
     correction_warmup_count: int = 10,
     correction_mean_threshold: float = 66.0,
+    expected_row_sum: int | None = None,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
+
+    Parameters
+    ----------
+    expected_row_sum
+        When not None, samples enqueued directly into the pipeline whose
+        histogram bin sum does not match this value are discarded before metric
+        computation.  Complements the sum check already performed during binary
+        packet parsing.  Pass None (default) to disable.
     """
     pipeline = SciencePipeline(
         left_camera_mask=left_camera_mask,
@@ -904,6 +1037,7 @@ def create_science_pipeline(
         frame_timeout_s=frame_timeout_s,
         correction_warmup_count=correction_warmup_count,
         correction_mean_threshold=correction_mean_threshold,
+        expected_row_sum=expected_row_sum,
     )
     pipeline.start()
     return pipeline
