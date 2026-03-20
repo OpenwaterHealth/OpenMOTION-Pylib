@@ -223,21 +223,25 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     other_fail += 1
 
                 # ---------- fast resync ----------
-                pat = b"\xAA\x00\x41"        # EOF of bad packet + SOF of next
                 old_off = off
-                off = off+1
-                mv_slice = data[off:]
-                nxt = data.obj.find(pat, off)        # no extra copy
-                if nxt != -1:
-                    off = nxt
-
-                    skip_bytes = off - old_off
-                    skip_packets = skip_bytes / 32833
-                    print(f"    Resyncing, skipped {skip_bytes} bytes")
-
-                    mv = memoryview(data)  # shorthand
-                    chunk = mv[old_off:off]
-                    bad_header_packets.append((old_off, off, chunk))
+                search_from = off + 1
+                found_sync = False
+                while search_from + MIN_PACKET_SIZE <= len(data):
+                    nxt = data.obj.find(b"\xAA\x00", search_from)
+                    if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(data):
+                        break
+                    candidate_size = _U32.unpack_from(data, nxt + 2)[0]
+                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                        off = nxt
+                        skip_bytes = off - old_off
+                        print(f"    Resyncing, skipped {skip_bytes} bytes")
+                        mv = memoryview(data)
+                        chunk = mv[old_off:off]
+                        bad_header_packets.append((old_off, off, chunk))
+                        found_sync = True
+                        break
+                    search_from = nxt + 1
+                if found_sync:
                     continue
                 # --------------------------------------
 

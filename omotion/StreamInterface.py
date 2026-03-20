@@ -37,32 +37,49 @@ _HEADER_SIZE = 6   # SOF(1) + type(1) + size(4)
 _FOOTER_SIZE = 3   # CRC(2) + EOF(1)
 
 
+try:
+    from omotion.utils import util_crc16 as _util_crc16
+except ImportError:
+    import binascii
+
+    def _util_crc16(buf):
+        return binascii.crc_hqx(buf, 0xFFFF)
+
+
 def _decompress_histo_cmp(raw: bytes) -> bytes:
     """
     Given a raw TYPE_HISTO_CMP packet, decompress the payload and return
     a reconstructed TYPE_HISTO packet (so downstream consumers are unaffected).
+
+    Raises ValueError if the compressed packet CRC is invalid (USB corruption).
     """
     if len(raw) < _HEADER_SIZE + _FOOTER_SIZE:
-        return raw  # too small, pass through
+        raise ValueError("Compressed packet too small")
 
-    # Decompress the payload between header and footer
-    compressed_payload = raw[_HEADER_SIZE : len(raw) - _FOOTER_SIZE]
+    # ── Verify the compressed packet's CRC BEFORE decompressing ──
+    # This catches USB corruption before we feed garbage to the decompressor.
+    footer_off = len(raw) - _FOOTER_SIZE
+    crc_expected = struct.unpack_from("<H", raw, footer_off)[0]
+    if raw[footer_off + 2] != 0xDD:
+        raise ValueError("Compressed packet missing EOF marker")
+    crc_actual = _util_crc16(raw[: footer_off - 1])  # matches firmware CRC range
+    if crc_actual != crc_expected:
+        raise ValueError(
+            f"Compressed packet CRC mismatch "
+            f"(got 0x{crc_actual:04X}, expected 0x{crc_expected:04X})"
+        )
+
+    # ── Decompress the payload between header and footer ──
+    compressed_payload = raw[_HEADER_SIZE : footer_off]
     decompressed = _rle_decompress(compressed_payload)
 
-    # Rebuild as a TYPE_HISTO packet: header + decompressed payload + footer
+    # ── Rebuild as a TYPE_HISTO packet ──
     new_total = _HEADER_SIZE + len(decompressed) + _FOOTER_SIZE
     header = struct.pack("<BBI", raw[0], TYPE_HISTO, new_total)
 
-    # Recompute CRC over header + decompressed payload (excluding last byte, matching firmware)
-    try:
-        from omotion.utils import util_crc16
-    except ImportError:
-        import binascii
-        def util_crc16(buf):
-            return binascii.crc_hqx(buf, 0xFFFF)
-
+    # Recompute CRC for the decompressed packet (excluding last byte, matching firmware)
     crc_data = header + decompressed
-    crc = util_crc16(crc_data[: len(crc_data) - 1])
+    crc = _util_crc16(crc_data[: len(crc_data) - 1])
     footer = struct.pack("<HB", crc, 0xDD)
 
     return header + decompressed + footer
@@ -136,6 +153,10 @@ class StreamInterface(USBInterfaceBase):
                                 f"compressed_size={compressed_size}, "
                                 f"error={exc} (errors: {cmp_errors}/{cmp_count})"
                             )
+                            # Drop this packet — do NOT queue corrupted data,
+                            # as it would poison the downstream parser's buffer
+                            # and break resync for all subsequent packets.
+                            continue
                     elif pkt_type not in (TYPE_HISTO, TYPE_HISTO_CMP) and pkt_count <= 5:
                         logger.warning(
                             f"{self.desc}: unexpected pkt_type=0x{pkt_type:02X}, "
