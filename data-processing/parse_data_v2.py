@@ -49,6 +49,8 @@ HISTO_BLOCK_SIZE = 1 + 1 + HISTO_BYTES + 4 + 1  # SOH + cam + histo + temp + EOH
 MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
+TYPE_HISTO = 0x00
+TYPE_HISTO_CMP = 0x01
 
 # ─── Pre‑compiled struct formats ────────────────────────────────────────────
 _U32  = struct.Struct("<I")
@@ -56,6 +58,26 @@ _U16  = struct.Struct("<H")
 _F32  = struct.Struct("<f")
 _HDR  = struct.Struct("<BBI")          # SOF, type, length
 _BLK_HEAD = struct.Struct("<BB")       # SOH, cam_id
+
+# ─── RLE decompressor (PackBits-style) ─────────────────────────
+def _rle_decompress(data: bytes) -> bytes:
+    """Decompress PackBits-style byte-level RLE data."""
+    result = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        ctrl = data[i]
+        i += 1
+        if ctrl < 0x80:
+            count = ctrl + 1
+            result.extend(data[i : i + count])
+            i += count
+        else:
+            count = ctrl - 0x80 + 3
+            result.extend(bytes([data[i]]) * count)
+            i += 1
+    return bytes(result)
+
 
 # ─── Fast helpers ───────────────────────────────────────────────────────────
 def _get_u32(buf: memoryview, offset: int) -> int:
@@ -78,13 +100,27 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     max_packet_size = 32833  # 6 + 3 + 1024 * 4 + 1 + 4 + 1
     
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
-    if sof != SOF or pkt_type != 0x00:
+    if sof != SOF or pkt_type not in (TYPE_HISTO, TYPE_HISTO_CMP):
         #make a copy of the packet as bytes
         pkt_bad = pkt.tobytes()
         raise ValueError("Bad header")
     pkt_len_2 = len(pkt)
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
+
+    # If compressed, decompress payload and rebuild as a standard packet
+    if pkt_type == TYPE_HISTO_CMP:
+        compressed_payload = bytes(pkt[PACKET_HEADER_SIZE : pkt_len - PACKET_FOOTER_SIZE])
+        decompressed = _rle_decompress(compressed_payload)
+        new_total = PACKET_HEADER_SIZE + len(decompressed) + PACKET_FOOTER_SIZE
+        new_header = struct.pack("<BBI", SOF, TYPE_HISTO, new_total)
+        crc_data = new_header + decompressed
+        crc = _crc16(memoryview(crc_data[: len(crc_data) - 1]))
+        new_footer = struct.pack("<HB", crc, EOF)
+        rebuilt = new_header + decompressed + new_footer
+        # Recurse with the decompressed packet (now TYPE_HISTO)
+        hists, ids, temps, _ = parse_histogram_packet(memoryview(rebuilt))
+        return hists, ids, temps, pkt_len  # return original pkt_len for offset tracking
 
     payload_end = pkt_len - PACKET_FOOTER_SIZE
     off = PACKET_HEADER_SIZE           # start of payload
