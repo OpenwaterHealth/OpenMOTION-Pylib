@@ -9,6 +9,8 @@ import numpy as np
 import queue
 import threading
 from omotion import _log_root
+from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP, CMP_UNCMP_CRC_SIZE
+from omotion.utils import rle_decompress as _rle_decompress
 
 try:
     # Accelerated CRC implementation if available.
@@ -261,11 +263,57 @@ def parse_histogram_packet_structured(
         raise ValueError("Packet too small")
 
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
-    if sof != SOF or pkt_type != 0x00:
+    if sof != SOF or pkt_type not in (TYPE_HISTO, TYPE_HISTO_CMP):
         raise ValueError("Bad header")
 
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
+
+    # If compressed, verify both CRCs, decompress, and rebuild as a standard packet.
+    # Packet layout: [Header 6B][Compressed N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
+    if pkt_type == TYPE_HISTO_CMP:
+        footer_off = pkt_len - PACKET_FOOTER_SIZE            # offset of PKT_CRC16
+        uncmp_crc_off = footer_off - CMP_UNCMP_CRC_SIZE      # offset of UNCMP_CRC16
+
+        # 1. Verify transport CRC
+        pkt_crc_expected = struct.unpack_from("<H", pkt, footer_off)[0]
+        pkt_crc_actual = _crc16(memoryview(pkt[: footer_off - 1]))
+        if pkt_crc_actual != pkt_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP transport CRC mismatch "
+                f"(got 0x{pkt_crc_actual:04X}, expected 0x{pkt_crc_expected:04X})"
+            )
+
+        # 2. Decompress
+        uncmp_crc_expected = struct.unpack_from("<H", pkt, uncmp_crc_off)[0]
+        compressed_payload = bytes(pkt[PACKET_HEADER_SIZE : uncmp_crc_off])
+        decompressed = _rle_decompress(compressed_payload)
+
+        # 3. Verify decompressed payload CRC
+        uncmp_crc_actual = _crc16(memoryview(decompressed[:-1]))
+        if uncmp_crc_actual != uncmp_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP decompressed CRC mismatch "
+                f"(got 0x{uncmp_crc_actual:04X}, expected 0x{uncmp_crc_expected:04X}) "
+                f"— decompressor produced wrong output"
+            )
+
+        # 4. Rebuild as a TYPE_HISTO packet and recurse
+        new_total = PACKET_HEADER_SIZE + len(decompressed) + PACKET_FOOTER_SIZE
+        new_header = struct.pack("<BBI", SOF, TYPE_HISTO, new_total)
+        crc_data = new_header + decompressed
+        crc = _crc16(memoryview(crc_data[: len(crc_data) - 1]))
+        new_footer = struct.pack("<HB", crc, EOF)
+        rebuilt = new_header + decompressed + new_footer
+        packet = parse_histogram_packet_structured(
+            memoryview(rebuilt), expected_row_sum=expected_row_sum
+        )
+        # Preserve original bytes_consumed for offset tracking
+        return HistogramPacket(
+            samples=packet.samples,
+            timestamp_s=packet.timestamp_s,
+            bytes_consumed=pkt_len,
+        )
 
     payload_len = pkt_len - PACKET_HEADER_SIZE - PACKET_FOOTER_SIZE
     if payload_len < HISTO_BLOCK_SIZE:
@@ -401,12 +449,26 @@ def process_bin_file(
                 else:
                     other_fail += 1
 
-                # Resync to the next likely packet boundary marker.
-                pat = b"\xaa\x00\x41"
-                off = off + 1
-                nxt = data.obj.find(pat, off)
-                if nxt != -1:
-                    off = nxt
+                # Resync: search for next valid packet header (SOF byte)
+                old_off = off
+                search_from = off + 1
+                found_sync = False
+                while search_from + MIN_PACKET_SIZE <= len(data):
+                    nxt = data.obj.find(b"\xAA", search_from)
+                    if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(data):
+                        break
+                    # Verify type byte is a known histogram type
+                    pkt_type_byte = data[nxt + 1]
+                    if pkt_type_byte not in (TYPE_HISTO, TYPE_HISTO_CMP):
+                        search_from = nxt + 1
+                        continue
+                    candidate_size = _U32.unpack_from(data, nxt + 2)[0]
+                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                        off = nxt
+                        found_sync = True
+                        break
+                    search_from = nxt + 1
+                if found_sync:
                     continue
                 break
 
@@ -477,12 +539,32 @@ def parse_stream_to_csv(
                         )
 
             except ValueError as e:
-                pat = b"\xaa\x00\x41"
-                offset += 1
-                nxt = buffer_accumulator.find(pat, offset)
-                if nxt != -1:
-                    offset = nxt
-                    logger.warning("Parser error, resyncing: %s", e)
+                old_off = offset
+                search_from = offset + 1
+                found_sync = False
+                while search_from + MIN_PACKET_SIZE <= len(buffer_accumulator):
+                    nxt = buffer_accumulator.find(b"\xaa", search_from)
+                    if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(buffer_accumulator):
+                        break
+                    # Verify type byte is a known histogram type
+                    pkt_type_byte = buffer_accumulator[nxt + 1]
+                    if pkt_type_byte not in (TYPE_HISTO, TYPE_HISTO_CMP):
+                        search_from = nxt + 1
+                        continue
+                    candidate_size = struct.unpack_from(
+                        "<I", buffer_accumulator, nxt + 2
+                    )[0]
+                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                        offset = nxt
+                        found_sync = True
+                        logger.warning(
+                            "Parser error at offset %d, resynced to %d "
+                            "(skipped %d bytes): %s",
+                            old_off, nxt, nxt - old_off, e,
+                        )
+                        break
+                    search_from = nxt + 1
+                if found_sync:
                     continue
                 break
 
