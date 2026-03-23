@@ -33,8 +33,11 @@ def _rle_decompress(data: bytes) -> bytes:
     return bytes(result)
 
 
-_HEADER_SIZE = 6   # SOF(1) + type(1) + size(4)
-_FOOTER_SIZE = 3   # CRC(2) + EOF(1)
+_HEADER_SIZE = 6      # SOF(1) + type(1) + size(4)
+_FOOTER_SIZE = 3      # CRC(2) + EOF(1)
+# TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the *uncompressed*
+# payload inserted immediately before the normal footer.
+_UNCMP_CRC_SIZE = 2
 
 
 try:
@@ -51,33 +54,52 @@ def _decompress_histo_cmp(raw: bytes) -> bytes:
     Given a raw TYPE_HISTO_CMP packet, decompress the payload and return
     a reconstructed TYPE_HISTO packet (so downstream consumers are unaffected).
 
-    Raises ValueError if the compressed packet CRC is invalid (USB corruption).
+    Packet layout (TYPE_HISTO_CMP):
+      [Header 6B][Compressed payload N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
+
+    Two CRCs are checked:
+      1. PKT_CRC16  – covers header + compressed payload + UNCMP_CRC16 (transport integrity)
+      2. UNCMP_CRC16 – covers the *decompressed* payload (decompressor correctness)
+
+    Raises ValueError on any integrity failure.
     """
-    if len(raw) < _HEADER_SIZE + _FOOTER_SIZE:
+    if len(raw) < _HEADER_SIZE + _UNCMP_CRC_SIZE + _FOOTER_SIZE:
         raise ValueError("Compressed packet too small")
 
-    # ── Verify the compressed packet's CRC BEFORE decompressing ──
-    # This catches USB corruption before we feed garbage to the decompressor.
-    footer_off = len(raw) - _FOOTER_SIZE
-    crc_expected = struct.unpack_from("<H", raw, footer_off)[0]
+    # ── 1. Verify transport CRC (covers everything before PKT_CRC) ──
+    footer_off = len(raw) - _FOOTER_SIZE        # offset of PKT_CRC16
+    pkt_crc_expected = struct.unpack_from("<H", raw, footer_off)[0]
     if raw[footer_off + 2] != 0xDD:
         raise ValueError("Compressed packet missing EOF marker")
-    crc_actual = _util_crc16(raw[: footer_off - 1])  # matches firmware CRC range
-    if crc_actual != crc_expected:
+    pkt_crc_actual = _util_crc16(raw[: footer_off - 1])   # matches firmware range
+    if pkt_crc_actual != pkt_crc_expected:
         raise ValueError(
             f"Compressed packet CRC mismatch "
-            f"(got 0x{crc_actual:04X}, expected 0x{crc_expected:04X})"
+            f"(got 0x{pkt_crc_actual:04X}, expected 0x{pkt_crc_expected:04X})"
         )
 
-    # ── Decompress the payload between header and footer ──
-    compressed_payload = raw[_HEADER_SIZE : footer_off]
+    # ── 2. Extract UNCMP_CRC16 (sits just before the footer) ──
+    uncmp_crc_off = footer_off - _UNCMP_CRC_SIZE
+    uncmp_crc_expected = struct.unpack_from("<H", raw, uncmp_crc_off)[0]
+
+    # ── 3. Decompress (compressed payload is between header and UNCMP_CRC) ──
+    compressed_payload = raw[_HEADER_SIZE : uncmp_crc_off]
     decompressed = _rle_decompress(compressed_payload)
 
-    # ── Rebuild as a TYPE_HISTO packet ──
+    # ── 4. Verify decompressed payload CRC ──
+    uncmp_crc_actual = _util_crc16(decompressed[:-1])   # same off-by-one as firmware
+    if uncmp_crc_actual != uncmp_crc_expected:
+        raise ValueError(
+            f"Decompressed payload CRC mismatch "
+            f"(got 0x{uncmp_crc_actual:04X}, expected 0x{uncmp_crc_expected:04X}) "
+            f"— decompressor produced wrong output"
+        )
+
+    # ── 5. Rebuild as a TYPE_HISTO packet ──
     new_total = _HEADER_SIZE + len(decompressed) + _FOOTER_SIZE
     header = struct.pack("<BBI", raw[0], TYPE_HISTO, new_total)
 
-    # Recompute CRC for the decompressed packet (excluding last byte, matching firmware)
+    # Recompute CRC for the reconstructed packet (excluding last byte, matching firmware)
     crc_data = header + decompressed
     crc = _util_crc16(crc_data[: len(crc_data) - 1])
     footer = struct.pack("<HB", crc, 0xDD)

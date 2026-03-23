@@ -51,6 +51,9 @@ MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
 TYPE_HISTO = 0x00
 TYPE_HISTO_CMP = 0x01
+# TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the uncompressed
+# payload inserted before the normal footer.
+CMP_UNCMP_CRC_SIZE = 2
 
 # ─── Pre‑compiled struct formats ────────────────────────────────────────────
 _U32  = struct.Struct("<I")
@@ -108,17 +111,42 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
 
-    # If compressed, decompress payload and rebuild as a standard packet
+    # If compressed, verify both CRCs, decompress, and rebuild as a standard packet.
+    # Packet layout: [Header 6B][Compressed N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
     if pkt_type == TYPE_HISTO_CMP:
-        compressed_payload = bytes(pkt[PACKET_HEADER_SIZE : pkt_len - PACKET_FOOTER_SIZE])
+        footer_off = pkt_len - PACKET_FOOTER_SIZE            # offset of PKT_CRC16
+        uncmp_crc_off = footer_off - CMP_UNCMP_CRC_SIZE      # offset of UNCMP_CRC16
+
+        # 1. Verify transport CRC
+        pkt_crc_expected = struct.unpack_from("<H", pkt, footer_off)[0]
+        pkt_crc_actual = _crc16(memoryview(pkt[: footer_off - 1]))
+        if pkt_crc_actual != pkt_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP transport CRC mismatch "
+                f"(got 0x{pkt_crc_actual:04X}, expected 0x{pkt_crc_expected:04X})"
+            )
+
+        # 2. Decompress
+        uncmp_crc_expected = struct.unpack_from("<H", pkt, uncmp_crc_off)[0]
+        compressed_payload = bytes(pkt[PACKET_HEADER_SIZE : uncmp_crc_off])
         decompressed = _rle_decompress(compressed_payload)
+
+        # 3. Verify decompressed payload CRC
+        uncmp_crc_actual = _crc16(memoryview(decompressed[:-1]))
+        if uncmp_crc_actual != uncmp_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP decompressed CRC mismatch "
+                f"(got 0x{uncmp_crc_actual:04X}, expected 0x{uncmp_crc_expected:04X}) "
+                f"— decompressor produced wrong output"
+            )
+
+        # 4. Rebuild as a TYPE_HISTO packet and recurse
         new_total = PACKET_HEADER_SIZE + len(decompressed) + PACKET_FOOTER_SIZE
         new_header = struct.pack("<BBI", SOF, TYPE_HISTO, new_total)
         crc_data = new_header + decompressed
         crc = _crc16(memoryview(crc_data[: len(crc_data) - 1]))
         new_footer = struct.pack("<HB", crc, EOF)
         rebuilt = new_header + decompressed + new_footer
-        # Recurse with the decompressed packet (now TYPE_HISTO)
         hists, ids, temps, _ = parse_histogram_packet(memoryview(rebuilt))
         return hists, ids, temps, pkt_len  # return original pkt_len for offset tracking
 
