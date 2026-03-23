@@ -49,6 +49,11 @@ HISTO_BLOCK_SIZE = 1 + 1 + HISTO_BYTES + 4 + 1  # SOH + cam + histo + temp + EOH
 MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
+TYPE_HISTO = 0x00
+TYPE_HISTO_CMP = 0x01
+# TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the uncompressed
+# payload inserted before the normal footer.
+CMP_UNCMP_CRC_SIZE = 2
 
 # ─── Pre‑compiled struct formats ────────────────────────────────────────────
 _U32  = struct.Struct("<I")
@@ -56,6 +61,26 @@ _U16  = struct.Struct("<H")
 _F32  = struct.Struct("<f")
 _HDR  = struct.Struct("<BBI")          # SOF, type, length
 _BLK_HEAD = struct.Struct("<BB")       # SOH, cam_id
+
+# ─── RLE decompressor (PackBits-style) ─────────────────────────
+def _rle_decompress(data: bytes) -> bytes:
+    """Decompress PackBits-style byte-level RLE data."""
+    result = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        ctrl = data[i]
+        i += 1
+        if ctrl < 0x80:
+            count = ctrl + 1
+            result.extend(data[i : i + count])
+            i += count
+        else:
+            count = ctrl - 0x80 + 3
+            result.extend(bytes([data[i]]) * count)
+            i += 1
+    return bytes(result)
+
 
 # ─── Fast helpers ───────────────────────────────────────────────────────────
 def _get_u32(buf: memoryview, offset: int) -> int:
@@ -78,13 +103,52 @@ def parse_histogram_packet(pkt: memoryview) -> Tuple[
     max_packet_size = 32833  # 6 + 3 + 1024 * 4 + 1 + 4 + 1
     
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
-    if sof != SOF or pkt_type != 0x00:
+    if sof != SOF or pkt_type not in (TYPE_HISTO, TYPE_HISTO_CMP):
         #make a copy of the packet as bytes
         pkt_bad = pkt.tobytes()
         raise ValueError("Bad header")
     pkt_len_2 = len(pkt)
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
+
+    # If compressed, verify both CRCs, decompress, and rebuild as a standard packet.
+    # Packet layout: [Header 6B][Compressed N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
+    if pkt_type == TYPE_HISTO_CMP:
+        footer_off = pkt_len - PACKET_FOOTER_SIZE            # offset of PKT_CRC16
+        uncmp_crc_off = footer_off - CMP_UNCMP_CRC_SIZE      # offset of UNCMP_CRC16
+
+        # 1. Verify transport CRC
+        pkt_crc_expected = struct.unpack_from("<H", pkt, footer_off)[0]
+        pkt_crc_actual = _crc16(memoryview(pkt[: footer_off - 1]))
+        if pkt_crc_actual != pkt_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP transport CRC mismatch "
+                f"(got 0x{pkt_crc_actual:04X}, expected 0x{pkt_crc_expected:04X})"
+            )
+
+        # 2. Decompress
+        uncmp_crc_expected = struct.unpack_from("<H", pkt, uncmp_crc_off)[0]
+        compressed_payload = bytes(pkt[PACKET_HEADER_SIZE : uncmp_crc_off])
+        decompressed = _rle_decompress(compressed_payload)
+
+        # 3. Verify decompressed payload CRC
+        uncmp_crc_actual = _crc16(memoryview(decompressed[:-1]))
+        if uncmp_crc_actual != uncmp_crc_expected:
+            raise ValueError(
+                f"TYPE_HISTO_CMP decompressed CRC mismatch "
+                f"(got 0x{uncmp_crc_actual:04X}, expected 0x{uncmp_crc_expected:04X}) "
+                f"— decompressor produced wrong output"
+            )
+
+        # 4. Rebuild as a TYPE_HISTO packet and recurse
+        new_total = PACKET_HEADER_SIZE + len(decompressed) + PACKET_FOOTER_SIZE
+        new_header = struct.pack("<BBI", SOF, TYPE_HISTO, new_total)
+        crc_data = new_header + decompressed
+        crc = _crc16(memoryview(crc_data[: len(crc_data) - 1]))
+        new_footer = struct.pack("<HB", crc, EOF)
+        rebuilt = new_header + decompressed + new_footer
+        hists, ids, temps, _ = parse_histogram_packet(memoryview(rebuilt))
+        return hists, ids, temps, pkt_len  # return original pkt_len for offset tracking
 
     payload_end = pkt_len - PACKET_FOOTER_SIZE
     off = PACKET_HEADER_SIZE           # start of payload
@@ -187,21 +251,25 @@ def process_bin_file(src_bin: str, dst_csv: str,
                     other_fail += 1
 
                 # ---------- fast resync ----------
-                pat = b"\xAA\x00\x41"        # EOF of bad packet + SOF of next
                 old_off = off
-                off = off+1
-                mv_slice = data[off:]
-                nxt = data.obj.find(pat, off)        # no extra copy
-                if nxt != -1:
-                    off = nxt
-
-                    skip_bytes = off - old_off
-                    skip_packets = skip_bytes / 32833
-                    print(f"    Resyncing, skipped {skip_bytes} bytes")
-
-                    mv = memoryview(data)  # shorthand
-                    chunk = mv[old_off:off]
-                    bad_header_packets.append((old_off, off, chunk))
+                search_from = off + 1
+                found_sync = False
+                while search_from + MIN_PACKET_SIZE <= len(data):
+                    nxt = data.obj.find(b"\xAA\x00", search_from)
+                    if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(data):
+                        break
+                    candidate_size = _U32.unpack_from(data, nxt + 2)[0]
+                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                        off = nxt
+                        skip_bytes = off - old_off
+                        print(f"    Resyncing, skipped {skip_bytes} bytes")
+                        mv = memoryview(data)
+                        chunk = mv[old_off:off]
+                        bad_header_packets.append((old_off, off, chunk))
+                        found_sync = True
+                        break
+                    search_from = nxt + 1
+                if found_sync:
                     continue
                 # --------------------------------------
 
