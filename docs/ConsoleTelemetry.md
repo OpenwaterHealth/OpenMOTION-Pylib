@@ -20,7 +20,7 @@
 # Pull: read the last snapshot
 snap = motion_interface.console_module.telemetry.get_snapshot()
 if snap and snap.read_ok:
-    print(snap.tcm, snap.tec_voltage)
+    print(snap.tcm, snap.tec_volt_raw)
 
 # Push: register a callback (fires on the poller thread, ~1 Hz)
 def on_update(snap: ConsoleTelemetry):
