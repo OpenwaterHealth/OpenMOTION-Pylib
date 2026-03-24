@@ -17,6 +17,9 @@ import queue
 from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
+# Max data_len we accept (sanity check to avoid runaway buffer)
+OW_MAX_PACKET_DATA_LEN = 4096 * 2
+
 logger = logging.getLogger(
     f"{_log_root}.CommInterface" if _log_root else "CommInterface"
 )
