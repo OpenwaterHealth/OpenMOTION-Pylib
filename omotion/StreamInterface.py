@@ -39,27 +39,15 @@ class StreamInterface(USBInterfaceBase):
 
     def stop_streaming(self):
         self.stop_event.set()
-        thread_alive = False
         if self.thread:
-            # Wait longer than one read timeout window so the reader thread can
-            # consume any in-flight tail transfers and exit cleanly.
-            self.thread.join(timeout=8.0)
-            thread_alive = self.thread.is_alive()
-
-        if thread_alive:
-            # Keep queue pointers intact if the reader is still alive; clearing
-            # them would cause any late reads to be silently dropped.
-            self.isStreaming = True
-            logger.warning(
-                f"{self.desc}: stop_streaming timeout — reader thread still alive; "
-                "leaving stream attached to avoid dropping data"
-            )
-            return
-
+            self.thread.join(timeout=2.0)
         self.isStreaming = False
         self.data_queue = None
         self.expected_size = None
-        logger.info(f"{self.desc}: Streaming stopped — {self.packets_received} USB packet(s) received")
+        logger.info(
+            f"{self.desc}: Streaming stopped — "
+            f"{self.packets_received} USB read chunk(s) received"
+        )
 
     def flush_stale_data(
         self,
@@ -150,9 +138,7 @@ class StreamInterface(USBInterfaceBase):
     def drain_final(
         self,
         expected_size: int,
-        timeout_ms: int = 250,
-        quiet_period_ms: int = 1200,
-        max_total_ms: int = 3000,
+        timeout_ms: int = 750,
     ) -> list[bytes]:
         """
         After ``stop_streaming()`` has returned, attempt one or more reads to
@@ -169,13 +155,8 @@ class StreamInterface(USBInterfaceBase):
         expected_size
             Read buffer size — same value used for ``start_streaming()``.
         timeout_ms
-            How long to wait per individual read attempt.
-        quiet_period_ms
-            Continue polling until this much time has passed with no recovered
-            chunks.  This avoids missing bursty late arrivals separated by one
-            timeout window.
-        max_total_ms
-            Hard cap on total drain duration.
+            How long to wait per read attempt.  750 ms is comfortably beyond
+            the ~250 ms worst-case MCU DMA flush latency.
 
         Returns
         -------
@@ -190,31 +171,21 @@ class StreamInterface(USBInterfaceBase):
             return []
 
         chunks: list[bytes] = []
-        t_start = time.monotonic()
-        last_data_t = t_start
         while True:
-            now = time.monotonic()
-            elapsed_ms = int((now - t_start) * 1000)
-            quiet_ms = int((now - last_data_t) * 1000)
-            if elapsed_ms >= max_total_ms:
-                break
-            if quiet_ms >= quiet_period_ms:
-                break
             try:
                 data = self.dev.read(
                     self.ep_in.bEndpointAddress, expected_size, timeout=timeout_ms
                 )
                 if data:
                     chunks.append(bytes(data))
-                    last_data_t = time.monotonic()
                     logger.info(
                         f"{self.desc}: drain_final recovered {len(data)} bytes "
                         f"(chunk {len(chunks)})"
                     )
             except usb.core.USBError as e:
                 if e.errno in (110, 10060):
-                    # Timeout can be transient; keep polling until quiet_period_ms.
-                    continue
+                    # Timeout — endpoint is empty, nothing more to recover.
+                    break
                 elif e.errno in (19, 5, 32):
                     logger.warning(f"{self.desc}: device error during drain_final: {e}")
                     break
@@ -233,15 +204,14 @@ class StreamInterface(USBInterfaceBase):
         # Read timeout must exceed the worst-case USB transfer latency for the
         # final frame.  Normal cadence is ~25 ms; the last frame of a scan can
         # take up to 250 ms because the MCU flushes its DMA buffer only after
-        # the trigger is stopped.  900 ms gives additional margin for host-side
-        # scheduling jitter observed on Windows.
+        # the trigger is stopped.  500 ms gives a comfortable 2x margin.
         #
         # Exit condition: stop was requested AND the last read timed out.
         # A timeout while stop is pending means the endpoint is empty — all
         # in-flight transfers have been received.  Exiting on stop_event alone
         # (the old behaviour) caused the final frame to be dropped whenever it
         # arrived after the 100 ms read window had already closed.
-        _READ_TIMEOUT_MS = 900
+        _READ_TIMEOUT_MS = 500
 
         while True:
             try:

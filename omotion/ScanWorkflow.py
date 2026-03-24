@@ -494,16 +494,12 @@ class ScanWorkflow:
                 except Exception:
                     pass
 
-                # After disabling cameras the MCU can still be finalizing one
-                # more histogram frame and corresponding USB transfer.  Keep the
-                # read loop alive long enough for that transfer to land before
-                # stop_streaming() asks the reader thread to exit.
-                #
-                # Empirically, a short 350 ms pause still allows intermittent
-                # one-frame truncation at scan end on some Windows hosts.  Use a
-                # longer grace interval to reduce shutdown race probability.
-                STREAM_STOP_GRACE_SEC = 1.20
-                time.sleep(STREAM_STOP_GRACE_SEC)
+                # After disabling cameras the MCU still needs up to ~250 ms to
+                # flush its DMA buffer and complete the final USB bulk transfer.
+                # Waiting here while _stream_loop is still running ensures that
+                # transfer is received and queued BEFORE stop_streaming() signals
+                # the loop to exit.
+                time.sleep(0.35)
 
                 for side, _, sensor in active_sides:
                     try:
@@ -520,10 +516,7 @@ class ScanWorkflow:
                     if q is not None:
                         try:
                             final_chunks = sensor.uart.histo.drain_final(
-                                expected_size=request.expected_size,
-                                timeout_ms=300,
-                                quiet_period_ms=3000,
-                                max_total_ms=8000,
+                                expected_size=request.expected_size
                             )
                             for chunk in final_chunks:
                                 q.put(chunk)
@@ -541,7 +534,7 @@ class ScanWorkflow:
                 for t in writer_threads.values():
                     t.join(timeout=5.0)
 
-                # Per-side summary: USB packets received vs rows written to CSV.
+                # Per-side summary: USB read chunks received vs rows written to CSV.
                 # Compare against the MCU's own frame-sent printout to locate
                 # exactly where any frame loss is occurring.
                 for side, _, sensor in active_sides:
@@ -549,7 +542,7 @@ class ScanWorkflow:
                     rows = writer_row_counts.get(side, 0)
                     side_path = left_path if side == "left" else right_path
                     _emit_log(
-                        f"{side.capitalize()} — USB packets received: {usb_pkts} | "
+                        f"{side.capitalize()} — USB read chunks received: {usb_pkts} | "
                         f"CSV rows written: {rows}"
                         + (f" | {os.path.basename(side_path)}" if side_path else "")
                     )
