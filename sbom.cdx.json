@@ -1,0 +1,95 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-03-23T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "OpenwaterHealth",
+        "name": "openmotion-sbom-generator",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:github/OpenwaterHealth/OpenMOTION-Pylib@0.0.0",
+      "name": "openmotion-pylib",
+      "version": "0.0.0+local",
+      "purl": "pkg:github/OpenwaterHealth/OpenMOTION-Pylib@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-or-later"
+          }
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyserial@3.5",
+      "name": "pyserial",
+      "version": "3.5",
+      "purl": "pkg:pypi/pyserial@3.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/crcmod@1.7",
+      "name": "crcmod",
+      "version": "1.7",
+      "purl": "pkg:pypi/crcmod@1.7",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/numpy@2.2.5",
+      "name": "numpy",
+      "version": "2.2.5",
+      "purl": "pkg:pypi/numpy@2.2.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/matplotlib@3.10.1",
+      "name": "matplotlib",
+      "version": "3.10.1",
+      "purl": "pkg:pypi/matplotlib@3.10.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyusb@1.3.1",
+      "name": "pyusb",
+      "version": "1.3.1",
+      "purl": "pkg:pypi/pyusb@1.3.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/libusb1@3.3.1",
+      "name": "libusb1",
+      "version": "3.3.1",
+      "purl": "pkg:pypi/libusb1@3.3.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/keyboard@0.13.5",
+      "name": "keyboard",
+      "version": "0.13.5",
+      "purl": "pkg:pypi/keyboard@0.13.5",
+      "scope": "optional"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/requests@2.32.5",
+      "name": "requests",
+      "version": "2.32.5",
+      "purl": "pkg:pypi/requests@2.32.5",
+      "scope": "required"
+    }
+  ]
+}
