@@ -284,6 +284,25 @@ def calculate_file_crc(file_name):
         return crc
 
 
+def rle_decompress(data: bytes) -> bytes:
+    """Decompress PackBits-style byte-level RLE data."""
+    result = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        ctrl = data[i]
+        i += 1
+        if ctrl < 0x80:
+            count = ctrl + 1
+            result.extend(data[i : i + count])
+            i += count
+        else:
+            count = ctrl - 0x80 + 3
+            result.extend(bytes([data[i]]) * count)
+            i += 1
+    return bytes(result)
+
+
 def format_and_print_hex(data):
     """
     Format the received data as hex and print it.

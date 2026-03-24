@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
+from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
 from omotion.config import (
     FPGA_PROG_CFG_READ_PAGE,
     FPGA_PROG_CFG_RESET,
@@ -62,7 +63,7 @@ from omotion.config import (
 )
 
 from omotion.GitHubReleases import GitHubReleases
-from omotion.MotionConfig import MotionConfig
+from omotion.MotionConfig import MotionConfig, MotionConfigHeader
 from omotion.CommandError import CommandError
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
@@ -117,6 +118,9 @@ class MOTIONConsole:
         """
 
         self.uart = uart
+
+        # Telemetry poller – started/stopped by MOTIONInterface on connect/disconnect
+        self.telemetry = ConsoleTelemetryPoller(self)
 
         if self.uart and not self.uart.asyncMode:
             self.uart.check_usb_status()
@@ -1057,20 +1061,21 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error during get_lsync_pulsecount: %s", e)
 
-    def read_gpio_value(self) -> float:
+    def read_gpio_value(self) -> int:
         """
-        Read ADC value
+        Read GPIO value.
 
         Returns:
-            float: The read value.
+            int: The GPIO register value (4-byte unsigned integer).
 
         Raises:
-            ValueError: If the UART is not connected.
-            Exception: If an error occurs while retrieving the pulse count.
+            ValueError: If the UART is not connected or the firmware returns
+                an unexpected response.
+            Exception: If an error occurs during communication.
         """
         try:
             if self.uart.demo_mode:
-                return True
+                return 0
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
@@ -1079,42 +1084,37 @@ class MOTIONConsole:
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_GPIO, data=None
             )
             self.uart.clear_buffer()
-            # r.print_packet()
             if r.packet_type == OW_ERROR:
-                logger.error("Error retrieving LSYNC pulse count")
-                return 0
+                raise ValueError("Device returned an error for OW_CTRL_READ_GPIO")
             if r.data_len == 4:
-                # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack("<I", r.data)[0]
-                return pulse_count
-            else:
-                logger.error("Unexpected data length for LSYNC pulse count")
-                return 0
+                return struct.unpack("<I", r.data)[0]
+            raise ValueError(
+                f"Unexpected data length for GPIO read: got {r.data_len}, expected 4"
+            )
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
         except Exception as e:
             logger.error("Unexpected error during read_gpio_value: %s", e)
-            raise  # Re-raise the exception for the caller to handle
-
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
     def read_adc_value(self) -> float:
         """
-        Read ADC value
+        Read ADC value.
 
         Returns:
-            float: The read value.
+            float: The ADC reading as a 32-bit float.
 
         Raises:
-            ValueError: If the UART is not connected.
-            Exception: If an error occurs while retrieving the pulse count.
+            ValueError: If the UART is not connected or the firmware returns
+                an unexpected response.
+            Exception: If an error occurs during communication.
         """
         try:
             if self.uart.demo_mode:
-                return True
+                return 0.0
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
@@ -1123,25 +1123,21 @@ class MOTIONConsole:
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_ADC, data=None
             )
             self.uart.clear_buffer()
-            # r.print_packet()
             if r.packet_type == OW_ERROR:
-                logger.error("Error retrieving LSYNC pulse count")
-                return 0
+                raise ValueError("Device returned an error for OW_CTRL_READ_ADC")
             if r.data_len == 4:
-                # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack("<I", r.data)[0]
-                return pulse_count
-            else:
-                logger.error("Unexpected data length for LSYNC pulse count")
-                return 0
+                return struct.unpack("<f", r.data)[0]
+            raise ValueError(
+                f"Unexpected data length for ADC read: got {r.data_len}, expected 4"
+            )
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
         except Exception as e:
             logger.error("Unexpected error during read_adc_value: %s", e)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
     def get_temperatures(self, return_all: bool = False) -> tuple[float, float, float]:
         """
@@ -1666,15 +1662,22 @@ class MOTIONConsole:
                 logger.error("Error writing config to device")
                 return None
 
-            # Response contains updated header (with new seq/crc)
+            # The firmware write ACK returns only the updated 16-byte header
+            # (with the new seq/crc stamped by the device) — it does NOT echo
+            # back the full JSON payload.  Parse just the header and reattach
+            # the json_data we sent so the caller gets a fully-populated object.
             try:
-                updated_config = MotionConfig.from_wire_bytes(r.data)
+                updated_header = MotionConfigHeader.from_bytes(bytes(r.data[:16]))
+                updated_config = MotionConfig(
+                    header=updated_header,
+                    json_data=config.json_data.copy(),
+                )
                 logger.info(
-                    f"Config written successfully: new seq={updated_config.header.seq}"
+                    "Config written successfully: new seq=%d", updated_config.header.seq
                 )
                 return updated_config
             except Exception as e:
-                logger.error(f"Failed to parse write response: {e}")
+                logger.error("Failed to parse write ACK header: %s", e)
                 return None
 
         except ValueError as v:

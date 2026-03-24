@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 
 
 class CommandError(RuntimeError):
@@ -7,6 +7,6 @@ class CommandError(RuntimeError):
     or when the response payload cannot be decoded.
     """
 
-    def __init__(self, message: str, response: Optional[any] = None) -> None:
+    def __init__(self, message: str, response: Optional[Any] = None) -> None:
         super().__init__(message)
         self.response = response

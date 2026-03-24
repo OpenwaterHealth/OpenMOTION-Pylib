@@ -1,0 +1,720 @@
+# OpenMotion SDK — Test Plan
+
+## Overview
+
+This document defines the hardware-in-the-loop test suite for the OpenMotion SDK. Tests are grouped by system (console / sensor), then by subsystem, and finally by individual function. The plan also covers common command sequences, communication-path verification, and the recommended pytest infrastructure for a GitHub Actions CI workflow backed by physical hardware runners.
+
+All tests are written against the public SDK API (`MOTIONConsole`, `MOTIONSensor`, `MOTIONInterface`). Lower-level transport classes (`MOTIONUart`, `CommInterface`, `StreamInterface`) are exercised indirectly; dedicated transport tests are called out where the transport behaviour itself is the thing under test.
+
+---
+
+## 1. Test Environment and Fixtures
+
+### 1.1 Hardware requirements
+
+| Role | Device | Notes |
+|---|---|---|
+| Console DUT | Console module (USB VCP) | Must be powered and enumerated before the test session starts |
+| Sensor DUT (left) | Sensor module on USB port `…,2` | Optional; skip sensor tests if absent |
+| Sensor DUT (right) | Sensor module on USB port `…,3` | Optional |
+
+### 1.2 Pytest fixtures (conftest.py)
+
+```python
+# tests/conftest.py
+import pytest
+from omotion.Interface import MOTIONInterface
+
+@pytest.fixture(scope="session")
+def motion():
+    iface = MOTIONInterface()
+    iface.connect()
+    yield iface
+    iface.disconnect()
+
+@pytest.fixture(scope="session")
+def console(motion):
+    c = motion.console_module
+    if not c.is_connected():
+        pytest.skip("Console not connected")
+    return c
+
+@pytest.fixture(scope="session")
+def sensor_left(motion):
+    s = motion.sensors.left
+    if s is None or not s.is_connected():
+        pytest.skip("Left sensor not connected")
+    return s
+
+@pytest.fixture(scope="session")
+def sensor_right(motion):
+    s = motion.sensors.right
+    if s is None or not s.is_connected():
+        pytest.skip("Right sensor not connected")
+    return s
+```
+
+Session-scoped fixtures keep the USB connection open for the entire test run. Individual test modules may use function-scoped fixtures that call a `teardown` sequence if their test mutates device state.
+
+### 1.3 Markers
+
+```ini
+# pytest.ini
+[pytest]
+markers =
+    console:      tests that require a connected console module
+    sensor:       tests that require at least one connected sensor module
+    sensor_left:  tests specific to the left sensor
+    sensor_right: tests specific to the right sensor
+    slow:         tests that take more than 10 s (e.g. full scans, DFU)
+    destructive:  tests that modify flash or firmware
+    sequence:     multi-step round-trip tests
+```
+
+Run only fast, non-destructive tests:
+```
+pytest -m "not slow and not destructive"
+```
+
+---
+
+## 2. Console Module Tests
+
+### 2.1 Basic connectivity
+
+**`test_console_ping`**
+Sends a `ping()` call and asserts `True` is returned.
+
+**`test_console_version`**
+Calls `get_version()`. Asserts the returned string is non-empty and follows the expected semver pattern (`\d+\.\d+\.\d+`).
+
+**`test_console_hardware_id`**
+Calls `get_hardware_id()`. Asserts the returned string is non-empty and has the expected length / prefix for the board variant.
+
+**`test_console_echo`**
+Calls `echo(b"hello")`. Asserts the echoed payload equals the sent bytes and the returned length equals `5`.
+
+**`test_console_echo_empty`**
+Calls `echo(b"")`. Asserts the returned payload is empty and length is `0`.
+
+**`test_console_toggle_led`**
+Calls `toggle_led()` twice. Asserts each call returns `True`.
+
+**`test_console_board_id`**
+Calls `read_board_id()`. Asserts the returned integer is within the set of known board IDs.
+
+**`test_console_messages`**
+Calls `get_messages()`. Asserts the returned string is a string (may be empty).
+
+### 2.2 TEC subsystem
+
+**`test_tec_status_types`**
+Calls `tec_status()`. Asserts the returned tuple is `(float, float, float, float, bool)` and all float values are within physically plausible ADC ranges (0–3.3 V).
+
+**`test_tec_adc_channels`**
+Calls `tec_adc(ch)` for channels 0, 1, 2, 3. Asserts each returns a float in [0.0, 3.3].
+
+**`test_tec_voltage_read`**
+Calls `tec_voltage()` (no argument). Asserts the returned float is in [0.0, 3.3].
+
+**`test_tec_voltage_set`**
+Sets a known voltage with `tec_voltage(1.5)`. Reads back with `tec_voltage()`. Asserts the read-back value is within ±0.05 V of the set point.
+
+**`test_temperatures`**
+Calls `get_temperatures()`. Asserts a 3-tuple of floats is returned; each value is in the range -40 to 85 °C.
+
+### 2.3 PDU monitor
+
+**`test_pdu_mon_structure`**
+Calls `read_pdu_mon()`. Asserts `PDUMon` is not `None`, `len(raws) == 16`, `len(volts) == 16`. Asserts all `raws` are `int` and all `volts` are `float`.
+
+**`test_pdu_mon_ranges`**
+Asserts every voltage in `volts` is in [-0.5, 60.0] V (gross sanity bounds). Reports a warning (not a failure) for channels that read zero, as unloaded rails may legitimately be zero.
+
+### 2.4 I2C pass-through
+
+**`test_i2c_scan`**
+Calls `scan_i2c_mux_channel(mux_index=0, channel=0)`. Asserts the returned list is a list of integers, each in [0, 127].
+
+**`test_i2c_read_write_roundtrip`**
+Writes a known byte to a scratch register on a known I2C device. Reads it back. Asserts the read value equals the written value.
+
+**`test_i2c_read_bad_address`**
+Calls `read_i2c_packet` with a non-existent I2C address. Asserts that `CommandError` or `ValueError` is raised (graceful error propagation).
+
+### 2.5 GPIO and ADC
+
+**`test_read_gpio`**
+Calls `read_gpio_value()`. Asserts the returned value is a float.
+
+**`test_read_adc`**
+Calls `read_adc_value()`. Asserts the returned float is in [0.0, 3.3].
+
+### 2.6 Fan control
+
+**`test_fan_set_and_get`**
+Sets fan speed to 75 with `set_fan_speed(75)`. Reads back with `get_fan_speed()`. Asserts the read value equals 75.
+
+**`test_fan_min_max`**
+Sets speed to 0 and 100. Asserts both succeed. Restores a default value (50) after the test.
+
+### 2.7 RGB indicator
+
+**`test_rgb_set_and_get`**
+Calls `set_rgb_led(0x01)`. Reads back with `get_rgb_led()`. Asserts the read value matches what was set.
+
+### 2.8 Frame sync / trigger
+
+**`test_fsync_pulsecount`**
+Calls `get_fsync_pulsecount()`. Asserts the returned value is a non-negative integer.
+
+**`test_lsync_pulsecount`**
+Calls `get_lsync_pulsecount()`. Asserts the returned value is a non-negative integer.
+
+**`test_trigger_set_get`**
+Calls `set_trigger_json({"rate": 10})`. Calls `get_trigger_json()`. Asserts the returned dict contains the `"rate"` key with value 10.
+
+**`test_trigger_start_stop`**
+Calls `start_trigger()`. Asserts `True`. Waits 200 ms. Calls `stop_trigger()`. Asserts `True`. Asserts `get_lsync_pulsecount()` increased.
+
+### 2.9 Configuration (MotionConfig)
+
+**`test_read_config`**
+Calls `read_config()`. Asserts the returned object is either `None` (no config stored) or a valid `MotionConfig` with a non-None `json` payload.
+
+**`test_write_read_config_roundtrip`**
+Constructs a `MotionConfig` with a known JSON string. Writes it with `write_config()`. Reads it back. Asserts the JSON content round-trips without modification.
+
+**`test_write_config_json_roundtrip`**
+Calls `write_config_json('{"key": "value"}')`. Reads back with `read_config()`. Asserts the parsed JSON matches.
+
+### 2.10 FPGA programming (console-side)
+
+These tests are marked `destructive` and `slow`. They are excluded from the standard CI run and are run manually or on a dedicated flash-validation runner.
+
+**`test_fpga_prog_open_close`**
+Calls `fpga_prog_open(MuxChannel.FPGA_A)` then `fpga_prog_close(MuxChannel.FPGA_A)`. Asserts no exception is raised.
+
+**`test_fpga_prog_erase`** (destructive)
+Opens, erases (mode 0), closes. Asserts no exception.
+
+**`test_fpga_prog_read_status`**
+Opens, calls `fpga_prog_read_status(MuxChannel.FPGA_A)`. Asserts the returned integer matches the expected idle status bitmask. Closes.
+
+**`test_fpga_prog_cfg_reset`**
+Opens, calls `fpga_prog_cfg_reset`. Asserts no exception. Closes.
+
+**`test_fpga_prog_featrow_roundtrip`** (destructive)
+Reads feature row, writes the same content back, reads again. Asserts identity.
+
+**`test_fpga_prog_ufm_roundtrip`** (destructive)
+Writes a known page to UFM, reads it back, asserts equality.
+
+**`test_full_fpga_flash`** (destructive, slow)
+Executes a full FPGA flash using `FPGAProgrammer`. Monitors progress callbacks. Asserts final status is success.
+
+### 2.11 DFU
+
+**`test_enter_dfu`** (destructive)
+Calls `enter_dfu()`. Asserts `True` is returned. This causes the device to re-enumerate; the fixture marks the console as disconnected and the test runner must reconnect before continuing.
+
+### 2.12 Console telemetry poller
+
+**`test_telemetry_poller_starts_on_connect`**
+Connects the console. Waits 1.5 s. Calls `console.telemetry.get_snapshot()`. Asserts the snapshot is not `None` and `read_ok is True`.
+
+**`test_telemetry_fields_populated`**
+Gets a snapshot. Asserts `tcm >= 0`, `tcl >= 0`, `pdu_raws` has 16 elements, `safety_ok` is a bool, `timestamp > 0`.
+
+**`test_telemetry_listener_fires`**
+Registers a callback via `add_listener`. Waits 2.5 s. Asserts the callback was called at least twice (confirming ~1 Hz rate). Removes the listener.
+
+**`test_telemetry_poller_stops`**
+Calls `console.telemetry.stop()`. Waits 2 s. Records the snapshot timestamp. Waits another 2 s. Asserts the snapshot timestamp has not changed (poller is idle).
+
+**`test_safety_interlock_clear`**
+Reads `safety_ok` from a snapshot on a powered-up, non-faulted system. Asserts `True`.
+
+---
+
+## 3. Sensor Module Tests
+
+The tests in this section apply to both the left and right sensors unless otherwise noted. Parametrized tests using `@pytest.mark.parametrize("sensor", ["sensor_left", "sensor_right"])` reduce duplication.
+
+### 3.1 Basic connectivity
+
+**`test_sensor_ping`**
+Calls `ping()`. Asserts `True`.
+
+**`test_sensor_version`**
+Calls `get_version()`. Asserts non-empty semver string.
+
+**`test_sensor_hardware_id`**
+Calls `get_hardware_id()`. Asserts non-empty string.
+
+**`test_sensor_echo`**
+Calls `echo(b"test")`. Asserts round-trip equality.
+
+**`test_sensor_toggle_led`**
+Calls `toggle_led()` twice. Asserts both return `True`.
+
+### 3.2 IMU
+
+**`test_imu_temperature`**
+Calls `imu_get_temperature()`. Asserts a float in [-40, 85].
+
+**`test_imu_accelerometer`**
+Calls `imu_get_accelerometer()`. Asserts a list of 3 integers. Asserts the magnitude is in the range [0.5g, 2.0g] in raw units (i.e. device is sitting still on a bench).
+
+**`test_imu_gyroscope`**
+Calls `imu_get_gyroscope()`. Asserts a list of 3 integers. For a stationary device, asserts all three values are within ±100 raw LSB of zero.
+
+### 3.3 Fan control (sensor)
+
+**`test_sensor_fan_on`**
+Calls `set_fan_control(True)`. Asserts `True`.
+
+**`test_sensor_fan_off`**
+Calls `set_fan_control(False)`. Asserts `True`.
+
+**`test_sensor_fan_status`**
+Calls `set_fan_control(True)`, then `get_fan_control_status()`. Asserts `True`. Calls `set_fan_control(False)`, then `get_fan_control_status()`. Asserts `False`.
+
+### 3.4 Debug flags
+
+**`test_debug_flags_roundtrip`**
+Sets flags to `0x03` with `set_debug_flags(0x03)`. Reads back with `get_debug_flags()`. Asserts value is `0x03`. Restores to `0x00`.
+
+### 3.5 Camera power
+
+**`test_camera_power_on_off`**
+Calls `enable_camera_power(0xFF)` (all cameras). Asserts `True`. Waits 100 ms. Calls `disable_camera_power(0xFF)`. Asserts `True`.
+
+**`test_camera_power_status`**
+Calls `enable_camera_power(0x01)`. Calls `get_camera_power_status()`. Asserts the returned list indicates camera 0 is powered. Calls `disable_camera_power(0x01)`.
+
+**`test_camera_power_selective`**
+Enables camera 0 only (`mask=0x01`). Asserts `get_camera_power_status()` shows camera 0 on and cameras 1–N off. Cleans up.
+
+### 3.6 FPGA control
+
+**`test_fpga_enable_disable`**
+Calls `enable_camera_fpga(0)`. Asserts `True`. Calls `disable_camera_fpga(0)`. Asserts `True`.
+
+**`test_fpga_check_after_enable`**
+Calls `enable_camera_fpga(0)`. Calls `check_camera_fpga(0)`. Asserts `True`. Cleans up.
+
+**`test_fpga_status`**
+Calls `enable_camera_fpga(0)`. Calls `get_status_fpga(0)`. Asserts a value is returned. Cleans up.
+
+**`test_fpga_usercode`**
+Calls `enable_camera_fpga(0)`. Calls `get_usercode_fpga(0)`. Asserts a non-None value. Cleans up.
+
+**`test_fpga_activate`**
+Calls `activate_camera_fpga(0)`. Asserts `True`. Cleans up.
+
+**`test_fpga_reset`**
+Calls `reset_camera_sensor(0)`. Asserts `True`.
+
+### 3.7 Camera configuration
+
+**`test_camera_configure_registers`**
+Calls `camera_configure_registers(0)`. Asserts `True`.
+
+**`test_camera_configure_test_pattern`**
+Calls `camera_configure_test_pattern(camera_position=0, pattern=1)`. Asserts `True`.
+
+**`test_camera_status`**
+Calls `get_camera_status(0)`. Asserts the returned dict/value is not `None`.
+
+**`test_camera_security_uid`**
+Calls `read_camera_security_uid(0)`. Asserts the returned bytes have the expected length for the camera variant.
+
+**`test_cached_security_uid`**
+Calls `refresh_id_cache()`. Calls `get_cached_camera_security_uid(0)`. Asserts the returned hex string is non-empty. Calls `clear_id_cache()`.
+
+**`test_camera_switch`**
+Calls `switch_camera(1)` then `switch_camera(0)`. Asserts no exception is raised.
+
+### 3.8 Frame sync
+
+**`test_fsin_enable_disable`**
+Calls `enable_aggregator_fsin()`. Asserts `True`. Calls `disable_aggregator_fsin()`. Asserts `True`.
+
+**`test_fsin_external_enable_disable`**
+Calls `enable_camera_fsin_ext()`. Asserts `True`. Calls `disable_camera_fsin_ext()`. Asserts `True`.
+
+**`test_camera_enable_disable`**
+Calls `enable_camera(0)`. Asserts `True`. Calls `disable_camera(0)`. Asserts `True`.
+
+### 3.9 Single-frame histogram capture
+
+**`test_single_histogram_raw_bytes`**
+Sets up camera (power on → FPGA enable → configure). Calls `camera_capture_histogram(0)`. Calls `camera_get_histogram(0)`. Asserts the returned `bytearray` has the expected histogram packet length (4105 bytes).
+
+**`test_single_histogram_parsed`**
+Calls `get_camera_histogram(camera_position=0)`. Asserts the returned list of `HistogramSample` is non-empty. Asserts each sample has `data_len == 1024` bins.
+
+**`test_single_histogram_bin_sum`**
+Gets a histogram from a camera illuminated by the laser at known intensity. Asserts the total photon count (sum of bins) is within an expected range. This test requires a stable optical target; it is gated by a fixture that checks for the `OPTICAL_TARGET` environment variable.
+
+### 3.10 IMU streaming
+
+**`test_imu_streaming_receives_data`**
+The IMU `StreamInterface` (interface 2) is exercised by reading several IMU packets at low level. Asserts that at least one valid packet arrives within 500 ms.
+
+### 3.11 Sensor DFU
+
+**`test_sensor_enter_dfu`** (destructive)
+Calls `enter_dfu()`. Asserts `True`. Marks the sensor fixture as requires reconnect.
+
+---
+
+## 4. Communication Path Tests
+
+These tests verify that bytes take the correct path through the transport stack and that no packets are silently dropped.
+
+### 4.1 UART framing (console)
+
+**`test_uart_crc_corruption_rejected`**
+Constructs a `UartPacket`, flips one byte in the CRC field, sends raw bytes over the serial port. Asserts the response is a `CommandError` with `BAD_CRC` (not a silent discard).
+
+**`test_uart_response_arrives_on_correct_queue`**
+Sends two commands with different packet IDs concurrently (two threads). Asserts each thread receives the response matching its own ID. (Tests the per-ID `queue.Queue` routing in `MOTIONUart` async mode.)
+
+**`test_uart_sync_mode_blocking`**
+Forces `MOTIONUart` into sync mode (if exposed). Sends a `ping`. Asserts the response arrives within the timeout and is correct.
+
+**`test_uart_timeout_raises`**
+Sends a command to a known-nonexistent address with a very short timeout. Asserts `TimeoutError` is raised.
+
+### 4.2 USB bulk command path (sensor)
+
+**`test_comm_interface_response_routing`**
+Sends two `ping` commands back-to-back. Asserts both responses arrive and are `True`. (Exercises the `CommInterface` response queue under concurrent load.)
+
+**`test_comm_interface_no_missed_acks`**
+Sends 100 `echo` commands in a tight loop with a unique 2-byte payload each. Collects all responses. Asserts that 100 responses are received, they are all `True`, and the echoed payloads all match. This test is the primary "no missed comms" verification for the USB command endpoint.
+
+**`test_comm_interface_timeout`**
+Sends a known-unresponsive command pattern. Asserts `TimeoutError` within the expected window.
+
+**`test_stream_interface_receives_on_correct_endpoint`**
+Starts histogram streaming on the sensor. After 500 ms, stops it. Inspects the raw bytes queued on `StreamInterface` for interface 1 (histogram). Asserts all packet headers indicate they arrived on the histogram bulk endpoint (interface index 1, not 0 or 2). Asserts no data appeared on the IMU interface during this test.
+
+**`test_stream_interface_no_data_loss`**
+Streams histograms for 2 s. Counts frames received via `SciencePipeline.on_science_frame_fn`. Queries the sensor for its internal frame counter. Asserts the two counts match (zero frame loss).
+
+### 4.3 Dual-sensor USB topology
+
+**`test_left_right_assignment`**
+Enumerates USB devices. Asserts the device with `port_numbers[-1] == 2` is mapped to `sensors.left` and the device with `port_numbers[-1] == 3` to `sensors.right`.
+
+**`test_dual_composite_auto_reconnect`**
+Disconnects and reconnects a sensor module (simulated by calling `release()` and then plugging the device back in). Asserts the `signal_connect` fires with the correct side name within 5 s.
+
+---
+
+## 5. Sequence Tests
+
+These are the round-trip end-to-end tests. Each test function stands up a complete subsystem, exercises it, then tears it back down.
+
+### 5.1 Camera bring-up and single frame
+
+```
+test_camera_full_bringup_single_frame
+```
+
+Steps:
+1. `enable_camera_power(mask)` — power on camera 0.
+2. Wait 50 ms.
+3. `enable_camera_fpga(0)` — assert `True`.
+4. `camera_configure_registers(0)` — assert `True`.
+5. `camera_capture_histogram(0)` — trigger one capture.
+6. `camera_get_histogram(0)` — assert bytes, correct length.
+7. Parse via `parse_histogram_packet()` — assert one `HistogramSample` returned.
+8. Assert `HistogramSample.data_len == 1024`.
+9. `disable_camera_fpga(0)` — assert `True`.
+10. `disable_camera_power(mask)` — assert `True`.
+
+Asserts at every step. If any step fails, the teardown (steps 9–10) is run in a `finally` block.
+
+### 5.2 Camera power cycle
+
+```
+test_camera_power_cycle
+```
+
+Steps:
+1. Power on.
+2. Assert power status shows on.
+3. Power off.
+4. Assert power status shows off.
+5. Power on again.
+6. Assert power status shows on.
+7. Power off. Restore.
+
+### 5.3 FPGA enable → histogram → disable
+
+```
+test_fpga_enable_histogram_disable
+```
+
+Steps:
+1. Power camera on.
+2. Enable FPGA.
+3. Check FPGA (`check_camera_fpga`) — assert `True`.
+4. Configure registers.
+5. Capture and read one histogram.
+6. Parse histogram.
+7. Disable FPGA.
+8. Check FPGA — assert `False` (disabled).
+9. Power off.
+
+### 5.4 Streaming acquisition
+
+```
+test_streaming_acquisition
+```
+
+Steps:
+1. Power on camera.
+2. Enable FPGA.
+3. Configure registers.
+4. Enable FSIN (`enable_aggregator_fsin`).
+5. Start histogram streaming.
+6. Collect `N = 30` science frames via `SciencePipeline`.
+7. Disable FSIN.
+8. Stop streaming.
+9. Assert `len(frames) == N`.
+10. Assert each frame has `absolute_frame_id` monotonically increasing by 1.
+11. Assert each frame's BFI is in a physically plausible range (0.0–1.0).
+12. Disable FPGA. Power off.
+
+### 5.5 External FSIN enable → scan → disable
+
+```
+test_external_fsin_sequence
+```
+
+Steps:
+1. Enable camera and FPGA.
+2. `enable_camera_fsin_ext()`.
+3. Assert `True`. Wait 200 ms.
+4. Capture one frame.
+5. `disable_camera_fsin_ext()`. Assert `True`.
+6. Tear down camera.
+
+### 5.6 Test pattern verification
+
+```
+test_test_pattern_histogram
+```
+
+Steps:
+1. Bring camera up.
+2. `camera_configure_test_pattern(0, pattern=1)`.
+3. Capture and read histogram.
+4. Assert all bins are equal (flat pattern) or follow the expected deterministic pattern for the configured mode.
+5. Tear down.
+
+### 5.7 Console trigger + LSYNC count
+
+```
+test_trigger_lsync_sequence
+```
+
+Steps:
+1. Read baseline `get_lsync_pulsecount()`.
+2. `set_trigger_json({"rate": 10})`.
+3. `start_trigger()`.
+4. Wait 1.1 s.
+5. `stop_trigger()`.
+6. Read final `get_lsync_pulsecount()`.
+7. Assert delta is ≥ 9 and ≤ 12 (approximately 10 pulses per second).
+
+### 5.8 Dual-sensor aligned frame acquisition
+
+```
+test_dual_sensor_frame_alignment
+```
+
+Steps:
+1. Bring up left and right cameras.
+2. Start streaming on both.
+3. Collect 20 `ScienceFrame` objects (both left and right samples present).
+4. Assert each `ScienceFrame` has matching `absolute_frame_id` for both sides.
+5. Tear down both.
+
+### 5.9 Full scan workflow
+
+```
+test_scan_workflow_end_to_end
+```
+
+Steps:
+1. Build a `ScanRequest` with a 5-second duration.
+2. Call `ScanWorkflow.start_scan()`.
+3. Collect progress callbacks.
+4. Assert `ScanResult.success is True`.
+5. Assert at least one CSV file was written with a non-zero row count.
+6. Assert the `ScanResult.frame_count` matches the row count in the CSV.
+
+---
+
+## 6. Error and Edge Case Tests
+
+**`test_command_error_on_nak`**
+Sends a command byte that the firmware returns NAK for (use `echo` against the sensor with a deliberately overlong payload if that triggers NAK in the protocol). Asserts `CommandError` is raised.
+
+**`test_value_error_on_crc_mismatch`**
+Manually corrupts an incoming packet buffer and attempts to parse it with `UartPacket(buffer=...)`. Asserts `ValueError` is raised.
+
+**`test_timeout_error_no_device`**
+Attempts a `ping` on a `MOTIONUart` instance backed by a serial port that has been closed. Asserts `TimeoutError` or `serial.SerialException`.
+
+**`test_usb_error_propagates`**
+With the sensor connected, calls `release()` on the `CommInterface` to simulate a disconnect, then attempts `ping()`. Asserts `usb.core.USBError` or `ValueError("not connected")`.
+
+**`test_double_connect_is_idempotent`**
+Calls `connect()` on an already-connected transport. Asserts no exception and device remains functional.
+
+**`test_double_disconnect_is_idempotent`**
+Calls `disconnect()` twice. Asserts no exception.
+
+---
+
+## 7. Pytest Infrastructure Recommendations
+
+### 7.1 Repository layout
+
+```
+openmotion-sdk/
+├── omotion/
+├── tests/
+│   ├── conftest.py              # session fixtures, markers
+│   ├── test_console.py          # Section 2 tests
+│   ├── test_sensor.py           # Section 3 tests
+│   ├── test_comm_paths.py       # Section 4 tests
+│   ├── test_sequences.py        # Section 5 tests
+│   ├── test_errors.py           # Section 6 tests
+│   └── hardware/
+│       └── README.md            # instructions for runner setup
+├── pytest.ini
+└── pyproject.toml
+```
+
+Add to `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+markers = [
+    "console", "sensor", "sensor_left", "sensor_right",
+    "slow", "destructive", "sequence"
+]
+addopts = "-v --tb=short"
+```
+
+### 7.2 GitHub Actions hardware runner
+
+Self-hosted runners are required for hardware-in-the-loop tests. Each runner machine must have a console module and at least one sensor module permanently attached. The runner must have `libusb` installed and the appropriate udev rules (Linux) or WinUSB driver (Windows) configured.
+
+**Runner registration:**
+```bash
+# On the runner machine
+./config.sh --url https://github.com/<org>/<repo> \
+            --token <RUNNER_TOKEN> \
+            --labels "hardware,openmotion"
+```
+
+**Workflow file** (`.github/workflows/hardware-tests.yml`):
+
+```yaml
+name: Hardware Tests
+
+on:
+  push:
+    branches: [testing]
+  pull_request:
+    branches: [testing]
+
+jobs:
+  hardware-tests:
+    runs-on: [self-hosted, hardware, openmotion]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run fast non-destructive tests
+        run: |
+          pytest tests/ \
+            -m "not destructive and not slow" \
+            --junitxml=reports/junit.xml \
+            --html=reports/report.html
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: reports/
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: reports/junit.xml
+```
+
+**Separate workflow for destructive/slow tests** — run only on explicit `workflow_dispatch` trigger or on the `release` branch:
+
+```yaml
+name: Full Hardware Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+
+jobs:
+  full-validation:
+    runs-on: [self-hosted, hardware, openmotion]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run full suite including destructive tests
+        run: pytest tests/ --junitxml=reports/junit_full.xml
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-test-report
+          path: reports/
+```
+
+### 7.3 Test output and GitHub integration
+
+Use `--junitxml` to produce JUnit XML that GitHub Actions parses natively for the test summary panel. The `EnricoMi/publish-unit-test-result-action` action publishes per-test pass/fail results as PR check annotations and a summary comment.
+
+For richer HTML reports, `pytest-html` generates a self-contained report artifact that can be browsed from the Actions run page.
+
+### 7.4 Isolation and ordering
+
+Mark any test that modifies persistent device state (fan speed, TEC setpoint, trigger config, config flash) with `@pytest.fixture(autouse=True)` teardown functions to restore defaults. Use `pytest-ordering` or alphabetical test naming to enforce a stable execution order when sequence tests depend on prior state.
+
+### 7.5 Skipping gracefully when hardware is absent
+
+The session-scoped fixtures (Section 1.2) call `pytest.skip()` when the targeted device is not present. This allows the same test suite to run in CI with only partial hardware attached — for example, a console-only runner will run all console tests and skip sensor tests without failing the build.
+
+Set the environment variable `OPENMOTION_DEMO=1` to substitute `demo_mode=True` in the fixtures, enabling a fully offline dry-run of the test scaffolding without any physical hardware.

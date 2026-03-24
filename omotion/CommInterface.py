@@ -9,9 +9,6 @@ from omotion.config import (
     OW_DATA,
     OW_CMD_ECHO,
 )
-
-# Max data_len we accept (sanity check to avoid runaway buffer)
-OW_MAX_PACKET_DATA_LEN = 4096 * 2
 import usb.core
 import usb.util
 import time
@@ -20,9 +17,15 @@ import queue
 from omotion.USBInterfaceBase import USBInterfaceBase
 from omotion import _log_root
 
+# Max data_len we accept (sanity check to avoid runaway buffer)
+OW_MAX_PACKET_DATA_LEN = 4096 * 2
+
 logger = logging.getLogger(
     f"{_log_root}.CommInterface" if _log_root else "CommInterface"
 )
+
+# Max data_len we accept (sanity check to avoid runaway buffer)
+OW_MAX_PACKET_DATA_LEN = 4096 * 2
 
 _PACKET_TYPE_NAMES = {
     value: name
@@ -135,16 +138,15 @@ class CommInterface(USBInterfaceBase):
         tx_bytes = uart_packet.to_bytes()
         packet_type_name = _PACKET_TYPE_NAMES.get(packetType)
         cmd_names = _CMD_NAMES.get(packet_type_name, {})
-        logger.info(
+        logger.debug(
             f"{self.desc}: TX id=0x{id:04X} "
             f"type={_format_named(packetType, _PACKET_TYPE_NAMES)} "
             f"cmd={_format_named(command, cmd_names)} "
             f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
         )
 
-        with self._io_lock:
-            self.write(tx_bytes)
-            time.sleep(0.0005)
+        self.write(tx_bytes)
+        time.sleep(0.0005)
 
         if not self.async_mode:
             start = time.monotonic()
@@ -178,9 +180,38 @@ class CommInterface(USBInterfaceBase):
         with self._buffer_lock:
             self._read_buffer.clear()
 
-    def write(self, data, timeout=100):
+    def write(self, data, timeout=100, _retries=5):
         with self._io_lock:
-            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+            for attempt in range(1 + _retries):
+                try:
+                    return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+                except usb.core.USBError as e:
+                    # Firmware back-pressure: the device's OUT FIFO is temporarily
+                    # full.  Back off briefly and retry so callers don't have to
+                    # care about transient busy periods (e.g. after program_fpga).
+                    if e.errno in (110, 10060):  # ETIMEDOUT / WSAETIMEDOUT
+                        if attempt < _retries:
+                            delay = 0.05 * (attempt + 1)  # 50 ms, 100 ms, 150 ms …
+                            logger.warning(
+                                "%s: write timeout (attempt %d/%d), retrying in %.0f ms",
+                                self.desc, attempt + 1, 1 + _retries, delay * 1000,
+                            )
+                            time.sleep(delay)
+                            continue
+                        logger.error("%s: write timed out after %d attempts", self.desc, 1 + _retries)
+                        raise
+                    # A stalled endpoint (EPIPE / broken-pipe) can be recovered by
+                    # issuing a CLEAR_HALT control transfer.  Try once; if it works
+                    # re-send the original data.  Any other USB error is re-raised
+                    # so callers and _read_loop disconnect logic see it normally.
+                    if e.errno in (32, -9):  # EPIPE on Linux; LIBUSB_ERROR_PIPE cross-platform
+                        logger.warning("%s: OUT endpoint stalled, attempting clear_halt", self.desc)
+                        try:
+                            usb.util.clear_halt(self.dev, self.ep_out)
+                            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
+                        except Exception as recovery_err:
+                            logger.error("%s: clear_halt recovery failed: %s", self.desc, recovery_err)
+                    raise
 
     def receive(self, length=512, timeout=100):
         with self._io_lock:
@@ -203,7 +234,13 @@ class CommInterface(USBInterfaceBase):
         # triggering disconnect callbacks/logging if the device disappears.
         self._disconnect_notified = True
         if self.read_thread:
-            self.read_thread.join()
+            # Safety net: _trigger_disconnect now dispatches on_disconnect to a
+            # separate daemon thread, so this guard should never fire in normal
+            # operation.  It stays here to prevent a hang if anyone calls
+            # stop_read_thread() from a context where the read thread is on the
+            # call stack (joining the current thread raises RuntimeError).
+            if threading.current_thread() is not self.read_thread:
+                self.read_thread.join(timeout=2.0)
         logger.info(f"{self.desc}: Read thread stopped")
 
     def _trigger_disconnect(self, error):
@@ -216,10 +253,19 @@ class CommInterface(USBInterfaceBase):
         logger.error(f"{self.desc}: triggering disconnect due to USB error: {error}")
         self.stop_event.set()
         if callable(self.on_disconnect):
-            try:
-                self.on_disconnect(self.desc, error)
-            except Exception as cb_error:
-                logger.error(f"{self.desc}: disconnect callback failed: {cb_error}")
+            # Dispatch the disconnect callback to a new daemon thread rather than
+            # calling it directly from the read thread.  on_disconnect typically
+            # calls MotionComposite.disconnect() → stop_read_thread() → join(),
+            # which would deadlock if run on the read thread itself.  By handing
+            # off to a separate thread the read loop exits naturally (stop_event
+            # is already set) and the join in stop_read_thread() completes quickly.
+            t = threading.Thread(
+                target=self.on_disconnect,
+                args=(self.desc, error),
+                daemon=True,
+                name=f"{self.desc}-disconnect",
+            )
+            t.start()
 
     def _read_loop(self):
         while not self.stop_event.is_set():
@@ -243,16 +289,24 @@ class CommInterface(USBInterfaceBase):
                 elif e.errno == 10060:
                     pass
                 elif e.errno == 32:
-                    logger.error(f"{self.desc} read error: DISCONNECT{e}")
+                    # Only log at ERROR when this is unexpected (not a clean shutdown).
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: DISCONNECT{e}")
                     self._trigger_disconnect(e)
                     break
 
                 elif e.errno == 19 or e.errno == 5:
-                    logger.error(f"{self.desc} read error: IO Error{e}")
+                    # errno 19 = ENODEV (device unplugged or GC'd during shutdown).
+                    # errno  5 = EIO   (device I/O error).
+                    # Both are expected when the app is tearing down — only log at
+                    # ERROR when the disconnect is genuinely unintentional.
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: IO Error{e}")
                     self._trigger_disconnect(e)
                     break
                 else:
-                    logger.error(f"{self.desc} read error: Unknown Error{e}")
+                    if not self._disconnect_notified:
+                        logger.error(f"{self.desc} read error: Unknown Error{e}")
                     self._trigger_disconnect(e)
                     break
 
@@ -297,6 +351,14 @@ class CommInterface(USBInterfaceBase):
                 and uart_packet.packet_type == OW_DATA
                 and uart_packet.command == OW_CMD_ECHO
             ):
-                logger.info(f"[MCU] {self.desc}: {uart_packet.data}")
+                _raw = bytes(uart_packet.data[:uart_packet.data_len]) if uart_packet.data_len > 0 else b""
+                try:
+                    _text = _raw.decode("utf-8", errors="replace").rstrip("\x00").strip()
+                except Exception:
+                    _text = ""
+                if _text:
+                    logger.warning("[%s PRINTF] %s", self.desc, _text)
+                else:
+                    logger.warning("[%s] MCU echo: data=%s", self.desc, _raw.hex() if _raw else "")
             else:
                 self.response_queue.put(uart_packet)
