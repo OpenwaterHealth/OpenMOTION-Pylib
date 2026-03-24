@@ -205,6 +205,8 @@ class ScanWorkflow:
             active_sides = []
             writer_threads: dict[str, threading.Thread] = {}
             writer_stops: dict[str, threading.Event] = {}
+            writer_row_counts: dict[str, int] = {}
+            writer_queues: dict[str, queue.Queue] = {}
             science_pipeline = None
             corrected_lock = threading.Lock()
             # Keyed by absolute_frame_id (monotonic, rollover-safe) rather than
@@ -283,14 +285,6 @@ class ScanWorkflow:
                             )
 
                 time.sleep(0.1)
-
-                _emit_log("Enabling cameras...")
-                for side, mask, _ in active_sides:
-                    res = self._interface.run_on_sensors("enable_camera", mask, target=side)
-                    if not self._ok_from_result(res, side):
-                        raise RuntimeError(
-                            f"Failed to enable camera on {side} (mask 0x{mask:02X})."
-                        )
 
                 _emit_log("Setting up streaming...")
 
@@ -377,7 +371,22 @@ class ScanWorkflow:
 
                 for side, mask, sensor in active_sides:
                     q = queue.Queue()
+                    writer_queues[side] = q
                     stop_evt = threading.Event()
+
+                    # Drain any USB data left over from the previous scan before
+                    # arming the new writer thread.  This runs while the MCU
+                    # trigger is still off, so only stale prior-scan frames can
+                    # be in the endpoint buffer — no real data is discarded.
+                    flushed = sensor.uart.histo.flush_stale_data(
+                        expected_size=request.expected_size
+                    )
+                    if flushed:
+                        _emit_log(
+                            f"Flushed {flushed} stale bytes from {side} USB endpoint "
+                            f"({flushed // request.expected_size} frame(s)) before scan start."
+                        )
+
                     sensor.uart.histo.start_streaming(q, expected_size=request.expected_size)
 
                     if request.write_raw_csv:
@@ -395,6 +404,7 @@ class ScanWorkflow:
                                 "on_error_fn": lambda e, fn=filename: _emit_log(
                                     f"Writer error ({fn}): {e}"
                                 ),
+                                "on_complete_fn": lambda n, s=side: writer_row_counts.__setitem__(s, n),
                             },
                             daemon=True,
                         )
@@ -403,8 +413,8 @@ class ScanWorkflow:
                         # pipeline still receives data via on_row_fn.
                         filepath = ""
                         _row_handler = _make_row_handler(side, science_pipeline)
-                        def _drain(q=q, stop_evt=stop_evt, on_row_fn=_row_handler):
-                            parse_stream_to_csv(
+                        def _drain(q=q, stop_evt=stop_evt, on_row_fn=_row_handler, s=side):
+                            n = parse_stream_to_csv(
                                 q=q,
                                 stop_evt=stop_evt,
                                 csv_writer=_NullCsvWriter(),
@@ -412,6 +422,7 @@ class ScanWorkflow:
                                 extra_cols_fn=None,
                                 on_row_fn=on_row_fn,
                             )
+                            writer_row_counts[s] = n
                         t = threading.Thread(target=_drain, daemon=True)
 
                     t.start()
@@ -426,6 +437,16 @@ class ScanWorkflow:
                         _emit_log(f"{side.capitalize()} raw CSV: {os.path.basename(filepath)}")
                     if on_side_stream_fn:
                         on_side_stream_fn(side, filepath)
+
+                # Arm host-side streaming before enabling cameras so the first
+                # frame packet is not missed at scan start.
+                _emit_log("Enabling cameras...")
+                for side, mask, _ in active_sides:
+                    res = self._interface.run_on_sensors("enable_camera", mask, target=side)
+                    if not self._ok_from_result(res, side):
+                        raise RuntimeError(
+                            f"Failed to enable camera on {side} (mask 0x{mask:02X})."
+                        )
 
                 _emit_log("Starting trigger...")
                 if not self._interface.console_module.start_trigger():
@@ -462,6 +483,8 @@ class ScanWorkflow:
                 if on_trigger_state_fn:
                     on_trigger_state_fn("OFF")
 
+                time.sleep(0.5)
+
                 try:
                     for side, mask, _ in active_sides:
                         try:
@@ -471,16 +494,66 @@ class ScanWorkflow:
                 except Exception:
                     pass
 
+                # After disabling cameras the MCU can still be finalizing one
+                # more histogram frame and corresponding USB transfer.  Keep the
+                # read loop alive long enough for that transfer to land before
+                # stop_streaming() asks the reader thread to exit.
+                #
+                # Empirically, a short 350 ms pause still allows intermittent
+                # one-frame truncation at scan end on some Windows hosts.  Use a
+                # longer grace interval to reduce shutdown race probability.
+                STREAM_STOP_GRACE_SEC = 1.20
+                time.sleep(STREAM_STOP_GRACE_SEC)
+
                 for side, _, sensor in active_sides:
                     try:
                         sensor.uart.histo.stop_streaming()
                     except Exception:
                         pass
+                    # Post-stop drain: _stream_loop exits when it gets a timeout
+                    # while stop_event is set.  If the MCU's final USB transfer
+                    # arrives after that timeout window (which can happen >350 ms
+                    # after trigger-off), the frame lands in the host endpoint
+                    # buffer with no reader.  drain_final() recovers it here,
+                    # before the writer thread is told to stop.
+                    q = writer_queues.get(side)
+                    if q is not None:
+                        try:
+                            final_chunks = sensor.uart.histo.drain_final(
+                                expected_size=request.expected_size,
+                                timeout_ms=300,
+                                quiet_period_ms=3000,
+                                max_total_ms=8000,
+                            )
+                            for chunk in final_chunks:
+                                q.put(chunk)
+                            if final_chunks:
+                                _emit_log(
+                                    f"{side.capitalize()}: post-stop drain recovered "
+                                    f"{len(final_chunks)} late USB transfer(s) "
+                                    f"({sum(len(c) for c in final_chunks)} bytes)"
+                                )
+                        except Exception as _drain_err:
+                            logger.warning("%s: post-stop drain error: %s", side, _drain_err)
 
                 for stop_evt in writer_stops.values():
                     stop_evt.set()
                 for t in writer_threads.values():
                     t.join(timeout=5.0)
+
+                # Per-side summary: USB packets received vs rows written to CSV.
+                # Compare against the MCU's own frame-sent printout to locate
+                # exactly where any frame loss is occurring.
+                for side, _, sensor in active_sides:
+                    usb_pkts = sensor.uart.histo.packets_received
+                    rows = writer_row_counts.get(side, 0)
+                    side_path = left_path if side == "left" else right_path
+                    _emit_log(
+                        f"{side.capitalize()} — USB packets received: {usb_pkts} | "
+                        f"CSV rows written: {rows}"
+                        + (f" | {os.path.basename(side_path)}" if side_path else "")
+                    )
+
                 if science_pipeline is not None:
                     science_pipeline.stop()
 

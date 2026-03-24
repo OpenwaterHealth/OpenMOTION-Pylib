@@ -29,7 +29,11 @@ PACKET_HEADER_SIZE = 6
 PACKET_FOOTER_SIZE = 3
 HISTO_BLOCK_SIZE = 1 + 1 + HISTOGRAM_BYTES + 4 + 1  # SOH + cam + histo + temp + EOH
 TIMESTAMP_SIZE = 4
-MIN_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
+MIN_PACKET_ENVELOPE_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE
+MIN_HISTO_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
+# TYPE_HISTO_CMP has: header + compressed_payload(>=1) + uncmp_crc16(2) + footer(3)
+MIN_HISTO_CMP_PACKET_SIZE = PACKET_HEADER_SIZE + 1 + CMP_UNCMP_CRC_SIZE + PACKET_FOOTER_SIZE
+MAX_PACKET_SIZE = 32837
 
 SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
 HISTO_BINS = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
@@ -59,6 +63,14 @@ _U32 = struct.Struct("<I")
 _F32 = struct.Struct("<f")
 _HDR = struct.Struct("<BBI")
 _BLK_HEAD = struct.Struct("<BB")
+
+
+def _candidate_packet_size_ok(pkt_type_byte: int, candidate_size: int) -> bool:
+    if pkt_type_byte == TYPE_HISTO:
+        return MIN_HISTO_PACKET_SIZE <= candidate_size <= MAX_PACKET_SIZE
+    if pkt_type_byte == TYPE_HISTO_CMP:
+        return MIN_HISTO_CMP_PACKET_SIZE <= candidate_size <= MAX_PACKET_SIZE
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +271,7 @@ def parse_histogram_packet_structured(
     HistogramPacket
         Packet with parsed samples and metadata.
     """
-    if len(pkt) < MIN_PACKET_SIZE:
+    if len(pkt) < MIN_PACKET_ENVELOPE_SIZE:
         raise ValueError("Packet too small")
 
     sof, pkt_type, pkt_len = _HDR.unpack_from(pkt, 0)
@@ -272,6 +284,8 @@ def parse_histogram_packet_structured(
     # If compressed, verify both CRCs, decompress, and rebuild as a standard packet.
     # Packet layout: [Header 6B][Compressed N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
     if pkt_type == TYPE_HISTO_CMP:
+        if pkt_len < MIN_HISTO_CMP_PACKET_SIZE:
+            raise ValueError("TYPE_HISTO_CMP packet too small")
         footer_off = pkt_len - PACKET_FOOTER_SIZE            # offset of PKT_CRC16
         uncmp_crc_off = footer_off - CMP_UNCMP_CRC_SIZE      # offset of UNCMP_CRC16
 
@@ -427,7 +441,7 @@ def process_bin_file(
             ]
         )
 
-        while off + MIN_PACKET_SIZE <= len(data):
+        while off + MIN_PACKET_ENVELOPE_SIZE <= len(data):
             try:
                 packet = parse_histogram_packet_structured(data[off:])
                 off += packet.bytes_consumed
@@ -453,7 +467,7 @@ def process_bin_file(
                 old_off = off
                 search_from = off + 1
                 found_sync = False
-                while search_from + MIN_PACKET_SIZE <= len(data):
+                while search_from + PACKET_HEADER_SIZE <= len(data):
                     nxt = data.obj.find(b"\xAA", search_from)
                     if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(data):
                         break
@@ -463,7 +477,7 @@ def process_bin_file(
                         search_from = nxt + 1
                         continue
                     candidate_size = _U32.unpack_from(data, nxt + 2)[0]
-                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                    if _candidate_packet_size_ok(int(pkt_type_byte), int(candidate_size)):
                         off = nxt
                         found_sync = True
                         break
@@ -507,7 +521,7 @@ def parse_stream_to_csv(
 
     while not stop_evt.is_set() or not q.empty():
         try:
-            data = q.get(timeout=0.100)
+            data = q.get(timeout=0.300)
             if data:
                 buffer_accumulator.extend(data)
             q.task_done()
@@ -515,7 +529,7 @@ def parse_stream_to_csv(
             continue
 
         offset = 0
-        while offset + MIN_PACKET_SIZE <= len(buffer_accumulator):
+        while offset + MIN_PACKET_ENVELOPE_SIZE <= len(buffer_accumulator):
             try:
                 pkt_view = memoryview(buffer_accumulator[offset:])
                 packet = parse_histogram_packet_structured(
@@ -542,7 +556,7 @@ def parse_stream_to_csv(
                 old_off = offset
                 search_from = offset + 1
                 found_sync = False
-                while search_from + MIN_PACKET_SIZE <= len(buffer_accumulator):
+                while search_from + PACKET_HEADER_SIZE <= len(buffer_accumulator):
                     nxt = buffer_accumulator.find(b"\xaa", search_from)
                     if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(buffer_accumulator):
                         break
@@ -554,7 +568,7 @@ def parse_stream_to_csv(
                     candidate_size = struct.unpack_from(
                         "<I", buffer_accumulator, nxt + 2
                     )[0]
-                    if MIN_PACKET_SIZE <= candidate_size <= 32837:
+                    if _candidate_packet_size_ok(int(pkt_type_byte), int(candidate_size)):
                         offset = nxt
                         found_sync = True
                         logger.warning(
@@ -570,6 +584,82 @@ def parse_stream_to_csv(
 
         if offset > 0:
             del buffer_accumulator[:offset]
+
+    # --- Final accumulator flush ------------------------------------------------
+    # The main loop exits as soon as stop_evt is set and the queue is empty, but
+    # bytes may still be sitting in buffer_accumulator from the last dequeue —
+    # in particular the final frame, which the USB layer can deliver up to 250 ms
+    # after the trigger stops.  Attempt one more full parse pass and log anything
+    # that was recovered (or couldn't be parsed) so frame loss is visible in logs.
+    if buffer_accumulator:
+        logger.warning(
+            "parse_stream_to_csv: %d bytes remain in accumulator after "
+            "stream end — attempting final parse pass",
+            len(buffer_accumulator),
+        )
+        rows_before_final_flush = rows_written
+        offset = 0
+        while offset + MIN_PACKET_ENVELOPE_SIZE <= len(buffer_accumulator):
+            try:
+                pkt_view = memoryview(buffer_accumulator[offset:])
+                packet = parse_histogram_packet_structured(
+                    pkt_view, expected_row_sum=expected_row_sum
+                )
+                offset += packet.bytes_consumed
+                for sample in packet.samples:
+                    extra_cols = extra_cols_fn() if extra_cols_fn else []
+                    row = sample.to_csv_row(extra_cols=extra_cols)
+                    csv_writer.writerow(row)
+                    rows_written += 1
+                    if on_row_fn:
+                        on_row_fn(
+                            sample.cam_id,
+                            sample.frame_id,
+                            sample.timestamp_s,
+                            sample.histogram,
+                            sample.row_sum,
+                            sample.temperature_c,
+                        )
+            except ValueError as e:
+                old_off = offset
+                search_from = offset + 1
+                found_sync = False
+                while search_from + PACKET_HEADER_SIZE <= len(buffer_accumulator):
+                    nxt = buffer_accumulator.find(b"\xaa", search_from)
+                    if nxt == -1 or nxt + PACKET_HEADER_SIZE > len(buffer_accumulator):
+                        break
+                    pkt_type_byte = buffer_accumulator[nxt + 1]
+                    if pkt_type_byte not in (TYPE_HISTO, TYPE_HISTO_CMP):
+                        search_from = nxt + 1
+                        continue
+                    candidate_size = struct.unpack_from(
+                        "<I", buffer_accumulator, nxt + 2
+                    )[0]
+                    if _candidate_packet_size_ok(int(pkt_type_byte), int(candidate_size)):
+                        offset = nxt
+                        found_sync = True
+                        logger.warning(
+                            "parse_stream_to_csv: final flush parser error at "
+                            "offset %d, resynced to %d (skipped %d bytes): %s",
+                            old_off, nxt, nxt - old_off, e,
+                        )
+                        break
+                    search_from = nxt + 1
+                if found_sync:
+                    continue
+                break
+        if offset > 0:
+            logger.info(
+                "parse_stream_to_csv: final flush recovered %d additional row(s)",
+                rows_written - rows_before_final_flush,
+            )
+            del buffer_accumulator[:offset]
+        if buffer_accumulator:
+            logger.warning(
+                "parse_stream_to_csv: %d bytes could not be parsed and were "
+                "discarded — likely an incomplete final packet",
+                len(buffer_accumulator),
+            )
 
     return rows_written
 
