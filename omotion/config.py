@@ -91,6 +91,10 @@ OW_HISTO_PACKET = 0x01
 OW_SCAN_PACKET = 0x02
 OW_IMAGE_PACKET = 0x03
 
+# Histogram streaming packet type bytes (byte[1] of histogram stream packets)
+TYPE_HISTO = 0x00
+TYPE_HISTO_CMP = 0x01  # RLE-compressed histogram packet
+
 # Global Commands
 OW_CMD_PING = 0x00
 OW_CMD_VERSION = 0x02
@@ -113,7 +117,9 @@ DEBUG_FLAG_HISTO_THROTTLE = (
 DEBUG_FLAG_FAKE_DATA = (
     0x04  # Turn on or off fake data mode, turns off cameras and sends fake data
 )
-
+DEBUG_FLAG_HISTO_CMP = 0x40  # Send compressed histogram packets (TYPE_HISTO_CMP)
+DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_comms
+DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
 OW_CTRL_SET_IND = 0x11
