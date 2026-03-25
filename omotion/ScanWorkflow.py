@@ -214,10 +214,10 @@ class ScanWorkflow:
             # frame 0 on pass 1 for scans longer than 256 trigger cycles.
             corrected_by_frame: dict[int, dict] = {}
             corrected_path = os.path.join(
-                request.data_dir, f"scan_{request.subject_id}_{ts}_corrected.csv"
+                request.data_dir, f"{ts}_{request.subject_id}_corrected.csv"
             )
             telemetry_path = os.path.join(
-                request.data_dir, f"scan_{request.subject_id}_{ts}_telemetry.csv"
+                request.data_dir, f"{ts}_{request.subject_id}_telemetry.csv"
             )
             # Telemetry CSV state (populated in try block if console is available)
             _telem_poller = None
@@ -390,7 +390,7 @@ class ScanWorkflow:
                     sensor.uart.histo.start_streaming(q, expected_size=request.expected_size)
 
                     if request.write_raw_csv:
-                        filename = f"scan_{request.subject_id}_{ts}_{side}_mask{mask:02X}.csv"
+                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
                         filepath = os.path.join(request.data_dir, filename)
                         t = threading.Thread(
                             target=stream_queue_to_csv_file,
