@@ -981,13 +981,22 @@ class SciencePipeline:
         self._sync_error_count: int = 0
 
         # --- Dark-frame correction state ---
-        # Per (side, cam_id): ordered list of (absolute_frame_id, u1, variance)
+        # Per (side, cam_id): ordered list of
+        #   (absolute_frame_id, raw_frame_id, timestamp_s, u1, variance)
         # for each dark frame observed.
-        self._dark_history: dict[tuple[str, int], list[tuple[int, float, float]]] = {}
+        self._dark_history: dict[tuple[str, int], list[tuple[int, int, float, float, float]]] = {}
 
         # Per (side, cam_id): stored moments for frames between the last two
         # dark frames, awaiting correction.
         self._pending_moments: dict[tuple[str, int], list[_StoredFrameMoments]] = {}
+
+        # Per (side, cam_id): last uncorrected sample emitted for that camera.
+        # Used to repeat values on dark frames so the live plot sees no blip.
+        self._last_uncorrected: dict[tuple[str, int], CorrectedSample] = {}
+
+        # Per (side, cam_id): last corrected sample from the previous batch.
+        # Used to interpolate the corrected value for the start dark frame.
+        self._last_corrected: dict[tuple[str, int], CorrectedSample] = {}
 
         self._ingress_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -1087,7 +1096,7 @@ class SciencePipeline:
             if self._is_dark_frame(absolute_frame):
                 variance = max(0.0, u2 - u1 * u1)
                 dark_list = self._dark_history.setdefault(key, [])
-                dark_list.append((absolute_frame, u1, variance))
+                dark_list.append((absolute_frame, raw_frame_id, ts, u1, variance))
                 logger.debug(
                     "Dark frame %d for %s cam %d (dark #%d): "
                     "u1=%.2f var=%.4f",
@@ -1098,7 +1107,44 @@ class SciencePipeline:
                 # With 2+ dark frames we can correct the preceding interval.
                 if len(dark_list) >= 2:
                     self._emit_corrected_for_camera(key)
-                continue  # dark frames produce no uncorrected output
+
+                # Rule 1: emit an uncorrected sample for the dark frame that
+                # repeats the last known good (non-dark) values so the live
+                # plot sees no blip at the dark-frame position.
+                prev = self._last_uncorrected.get(key)
+                if prev is not None:
+                    dark_uncorrected = CorrectedSample(
+                        side=prev.side,
+                        cam_id=prev.cam_id,
+                        frame_id=raw_frame_id,
+                        absolute_frame_id=absolute_frame,
+                        timestamp_s=ts,
+                        mean=prev.mean,
+                        std_dev=prev.std_dev,
+                        contrast=prev.contrast,
+                        bfi_corrected=prev.bfi_corrected,
+                        bvi_corrected=prev.bvi_corrected,
+                        is_corrected=False,
+                    )
+                    if self._on_uncorrected_fn:
+                        try:
+                            self._on_uncorrected_fn(dark_uncorrected)
+                        except Exception:
+                            pass
+                    if key in self._expected_keys:
+                        buf = self._frame_buffers.get(absolute_frame)
+                        if buf is None:
+                            buf = _FrameBuffer(
+                                arrived_at=time.monotonic(),
+                                min_timestamp_s=ts,
+                            )
+                            self._frame_buffers[absolute_frame] = buf
+                        buf.samples[key] = dark_uncorrected
+                        buf.min_timestamp_s = min(buf.min_timestamp_s, ts)
+                        if self._expected_keys.issubset(buf.samples.keys()):
+                            self._emit_science_frame(absolute_frame, buf)
+                            del self._frame_buffers[absolute_frame]
+                continue
 
             # --- 5. Store moments for later dark-frame correction --------------
             self._pending_moments.setdefault(key, []).append(
@@ -1149,6 +1195,8 @@ class SciencePipeline:
                     self._on_uncorrected_fn(uncorrected)
                 except Exception:
                     pass
+
+            self._last_uncorrected[key] = uncorrected
 
             # --- 7. Accumulate into frame buffer for ScienceFrame alignment ----
             if key in self._expected_keys:
@@ -1220,14 +1268,24 @@ class SciencePipeline:
     def _emit_corrected_for_camera(self, key: tuple[str, int]) -> None:
         """Compute dark-frame-corrected BFI/BVI for one camera's interval.
 
-        Uses linear interpolation of the dark baseline between the two most
-        recent dark frames, matching the algorithm in
-        ``visualize_bloodflow.py``.  Emits a ``CorrectedBatch`` via the
-        ``on_corrected_batch_fn`` callback.
+        Applies linear interpolation of the dark baseline across the interval
+        between the two most recent dark frames, then emits a ``CorrectedBatch``
+        that includes:
+
+        * All non-dark frames in the open interval (prev_dark, curr_dark),
+          corrected by subtracting the linearly-interpolated dark baseline.
+        * The ``prev_dark`` frame itself (Rule 2), whose corrected BFI/BVI
+          are linearly interpolated between the last corrected sample of the
+          *previous* batch (frame prev_dark − 1) and the first corrected
+          sample of this batch (frame prev_dark + 1).  If no previous batch
+          exists yet, the first non-dark frame value is repeated.
+
+        The ``curr_dark`` frame is not included here; it becomes ``prev_dark``
+        in the next batch and will be handled at that time.
         """
         dark_list = self._dark_history[key]
-        prev_abs, prev_u1, prev_var = dark_list[-2]
-        curr_abs, curr_u1, curr_var = dark_list[-1]
+        prev_abs, prev_raw_fid, prev_ts, prev_u1, prev_var = dark_list[-2]
+        curr_abs, _curr_raw_fid, _curr_ts, curr_u1, curr_var = dark_list[-1]
 
         pending = self._pending_moments.get(key, [])
         if not pending:
@@ -1240,17 +1298,18 @@ class SciencePipeline:
             if fm.absolute_frame_id <= prev_abs or fm.absolute_frame_id >= curr_abs:
                 continue
 
-            # Linear interpolation weight (0 at prev dark, 1 at curr dark)
+            # Linear interpolation weight ∈ (0, 1) across the open interval.
+            # t = 0 corresponds to prev_dark, t = 1 to curr_dark.
             if interval > 1:
-                t = (fm.absolute_frame_id - prev_abs) / (interval - 1)
+                t = (fm.absolute_frame_id - prev_abs) / interval
             else:
-                t = 0.0
+                t = 0.5
 
-            # Interpolated dark baseline
+            # Interpolated dark baseline at this frame position
             dark_u1 = prev_u1 + (curr_u1 - prev_u1) * t
             dark_var = prev_var + (curr_var - prev_var) * t
 
-            # Dark-corrected metrics
+            # Dark-corrected moments
             corrected_mean = fm.u1 - dark_u1
             raw_var = fm.u2 - fm.u1 * fm.u1
             corrected_var = raw_var - dark_var
@@ -1278,6 +1337,49 @@ class SciencePipeline:
                     is_corrected=True,
                 )
             )
+
+        # Rule 2: corrected value for the prev_dark frame itself is linearly
+        # interpolated between its two adjacent non-dark neighbors:
+        #   left_neighbor  = last corrected sample of the previous batch
+        #                    (absolute_frame_id == prev_abs − 1)
+        #   right_neighbor = first corrected sample of this batch
+        #                    (absolute_frame_id == prev_abs + 1)
+        # If the left neighbor is unavailable (first interval), we fall back
+        # to repeating the right neighbor.
+        if corrected_samples:
+            first_cs = corrected_samples[0]   # prev_abs + 1
+            left_cs = self._last_corrected.get(key)  # prev_abs - 1, may be None
+            if left_cs is not None:
+                dark_bfi = (left_cs.bfi_corrected + first_cs.bfi_corrected) / 2.0
+                dark_bvi = (left_cs.bvi_corrected + first_cs.bvi_corrected) / 2.0
+                dark_mean = (left_cs.mean + first_cs.mean) / 2.0
+                dark_std = (left_cs.std_dev + first_cs.std_dev) / 2.0
+                dark_contrast = (left_cs.contrast + first_cs.contrast) / 2.0
+            else:
+                dark_bfi = first_cs.bfi_corrected
+                dark_bvi = first_cs.bvi_corrected
+                dark_mean = first_cs.mean
+                dark_std = first_cs.std_dev
+                dark_contrast = first_cs.contrast
+
+            dark_corrected = CorrectedSample(
+                side=key[0],
+                cam_id=key[1],
+                frame_id=prev_raw_fid,
+                absolute_frame_id=prev_abs,
+                timestamp_s=prev_ts,
+                mean=dark_mean,
+                std_dev=dark_std,
+                contrast=dark_contrast,
+                bfi_corrected=dark_bfi,
+                bvi_corrected=dark_bvi,
+                is_corrected=True,
+            )
+            # Insert at front so the batch is in chronological order.
+            corrected_samples.insert(0, dark_corrected)
+
+            # Record the last corrected sample of this batch for the next interval.
+            self._last_corrected[key] = corrected_samples[-1]
 
         # Keep only moments that fall after the current dark (shouldn't
         # normally happen, but guards against edge-case ordering).

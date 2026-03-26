@@ -117,17 +117,110 @@ Always creates `CommInterface` in async mode. Claims all three on `connect()`, r
 | `parse_histogram_packet()` | Extracts `HistogramSample` list from raw bytes; handles multi-camera packets |
 | `bytes_to_integers()` | Converts 4096 histogram bytes to 1024 int bins + hidden figures |
 | `compute_realtime_stats()` | Computes mean, std, contrast, BFI, BVI from a histogram |
-| `SciencePipeline` | Single background thread; aligns frames from left and right sensors by `absolute_frame_id`; fires corrected-sample and science-frame callbacks |
+| `SciencePipeline` | Single background thread; discards warmup frames; routes dark frames to baseline estimation; emits uncorrected samples in real time and dark-frame-corrected batches once per dark interval |
 | `stream_queue_to_csv_file()` | CSV writer thread; consumes from a `queue.Queue` |
 
 **`ScanWorkflow`** — orchestrates a complete acquisition:
 1. Enable cameras on active sides.
 2. Start frame sync (internal or external).
 3. Begin histogram streaming on both sides simultaneously.
-4. Run `SciencePipeline` for real-time BFI/BVI.
+4. Run `SciencePipeline`, which emits two interleaved streams:
+   - **Uncorrected stream** (`on_uncorrected_fn`) — fires every non-dark frame for real-time display.
+   - **Corrected batch** (`on_corrected_batch_fn`) — fires once per dark interval with dark-baseline-corrected BFI/BVI for the full preceding interval; written to the corrected CSV.
 5. Write raw histogram CSV (parallel writer threads per side).
 6. Invoke application callbacks for logging, progress, and live sample display.
 7. Tear down on completion or cancellation.
+
+---
+
+## Science pipeline algorithm
+
+This section gives a mathematically precise description of `SciencePipeline` intended for readers familiar with speckle contrast imaging theory.
+
+### Notation
+
+Let *n* denote the **absolute frame index** — a monotonically increasing integer produced by `FrameIdUnwrapper` that handles rollover of the firmware's 8-bit counter.  All frame positions below refer to absolute frame indices.
+
+For a histogram **h** of *N* = Σ_k h_k total photon counts over 1024 bins (k = 0…1023):
+
+| Symbol | Definition |
+|---|---|
+| μ₁ | First moment (mean): μ₁ = N⁻¹ Σ_k k·h_k |
+| μ₂ | Second moment: μ₂ = N⁻¹ Σ_k k²·h_k |
+| σ² | Variance: σ² = μ₂ − μ₁² |
+| K | Speckle contrast: K = σ / μ₁ |
+
+### Frame schedule
+
+**Discard count** `d` (default 9): frames n = 1…d are hardware warmup frames and are silently dropped; no data is produced for them.
+
+**Dark frames** are scheduled at:
+- n = d + 1 (the first usable frame, which is always a dark)
+- n = 1 + m·Δ for m = 1, 2, 3, … where Δ = `dark_interval` (default 600)
+
+During a dark frame the laser illumination is off; the histogram captures only ambient photons and detector dark current, providing a measurement of the signal floor.
+
+**Bright (non-dark) frames** are all frames in (d+1, ∞) that are not on the dark schedule.
+
+### Uncorrected stream
+
+For each bright frame *n*, the pipeline immediately computes and emits (via `on_uncorrected_fn`) a `CorrectedSample` with `is_corrected = False`:
+
+- μ₁(n), σ(n), K(n) computed directly from the raw histogram
+- BFI and BVI scaled from K(n) and μ₁(n) using the per-camera calibration arrays (see §Calibration below)
+
+For each **dark frame** *D*, the pipeline emits a `CorrectedSample` with `is_corrected = False` whose metric values are **copied from the immediately preceding bright frame** (n = D − 1).  This suppresses the laser-off artefact from the live display; the user sees a continuous, blip-free trace.
+
+First moments μ₁(n) and second moments μ₂(n) are retained in a per-camera buffer (`_pending_moments`) for later dark-frame correction.
+
+### Corrected batch (dark-frame correction)
+
+When the second consecutive dark frame at position D_curr arrives, the pipeline corrects all bright frames in the open interval (D_prev, D_curr) and emits a `CorrectedBatch` via `on_corrected_batch_fn`.
+
+**Baseline interpolation.** At each bright frame n ∈ (D_prev, D_curr), the dark baseline is estimated by linear interpolation between the two bounding dark measurements:
+
+```
+t(n)   = (n − D_prev) / (D_curr − D_prev)
+
+μ̄₁(n)  = μ₁(D_prev) + t(n) · [μ₁(D_curr) − μ₁(D_prev)]
+σ̄²(n)  = σ²(D_prev) + t(n) · [σ²(D_curr) − σ²(D_prev)]
+```
+
+**Corrected moments.**
+
+```
+μ̃₁(n)  = μ₁(n) − μ̄₁(n)
+σ̃²(n)  = max(0, σ²(n) − σ̄²(n))
+K̃(n)   = √σ̃²(n) / μ̃₁(n)      (defined as 0 when μ̃₁ ≤ 0)
+```
+
+BFI and BVI are then computed from K̃(n) and μ̃₁(n) via the calibration mapping (§Calibration).
+
+**Corrected dark frame.** The dark frame D_prev is itself included in the batch with corrected values interpolated linearly between its two adjacent bright neighbors:
+
+```
+bfi_corr(D_prev) = [ bfi_corr(D_prev − 1) + bfi_corr(D_prev + 1) ] / 2
+```
+
+and equivalently for bvi, μ̃₁, σ̃, K̃.  Here D_prev − 1 is taken from the last sample of the *previous* corrected batch; if no previous batch exists (first interval), the right neighbor value is used directly.  The current dark D_curr is *not* included in this batch; it is emitted as D_prev of the next batch.
+
+### Calibration
+
+BFI and BVI are computed from corrected (or raw) contrast K and mean μ₁ using per-camera min/max calibration constants stored in four arrays of shape (2, 8) — module index (0 = left, 1 = right) × camera position:
+
+```
+BFI = ( 1 − (K − C_min) / (C_max − C_min) ) × 10
+BVI = ( 1 − (μ₁ − I_min) / (I_max − I_min) ) × 10
+```
+
+where C_min, C_max are contrast bounds and I_min, I_max are intensity bounds, all from the `bfi_c_*` / `bfi_i_*` calibration arrays passed at pipeline construction.
+
+### Output streams summary
+
+| Stream | Callback | Trigger | `is_corrected` | Use |
+|---|---|---|---|---|
+| Uncorrected | `on_uncorrected_fn` | Every bright frame + every dark frame | `False` | Real-time live plot |
+| Corrected batch | `on_corrected_batch_fn` | Arrival of each new dark frame (after the first) | `True` | Corrected CSV; plot snap update |
 
 ### Configuration
 
@@ -241,8 +334,9 @@ logger = logging.getLogger(f"{_log_root}.ModuleName" if _log_root else "ModuleNa
 | `MotionConfigHeader` / `MotionConfig` | `MotionConfig` | Binary header + JSON device configuration |
 | `HistogramSample` | `MotionProcessing` | One camera's histogram for one frame |
 | `RealtimeSample` | `MotionProcessing` | `HistogramSample` + mean / std / contrast / BFI / BVI |
-| `CorrectedSample` | `MotionProcessing` | Dark-frame corrected BFI / BVI |
-| `ScienceFrame` | `MotionProcessing` | All corrected samples for one aligned frame (both sides) |
+| `CorrectedSample` | `MotionProcessing` | One camera's science metrics for one frame; `is_corrected=False` for the real-time uncorrected stream, `True` when dark-baseline correction has been applied |
+| `CorrectedBatch` | `MotionProcessing` | All dark-frame-corrected `CorrectedSample`s for one interval between consecutive dark frames, including the interpolated corrected value for the leading dark frame itself |
+| `ScienceFrame` | `MotionProcessing` | All uncorrected samples for one aligned trigger frame (both sides) |
 | `ConsoleTelemetry` | `ConsoleTelemetry` | One snapshot of all console health data |
 | `PDUMon` | `Console` | 16-channel ADC raw counts and scaled voltages |
 | `TelemetrySample` | `Console` | Timestamped temperature + TEC ADC snapshot |
