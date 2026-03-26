@@ -1351,7 +1351,7 @@ class MOTIONConsole:
             logger.error("Unexpected error during tec_adc: %s", e)
             raise  # Re-raise the exception for the caller to handle
 
-    def tec_status(self) -> Tuple[float, float, float, float, bool]:
+    def tec_status(self) -> Tuple[str, str, str, str, bool]:
         """
         Get TEC status: (voltage, Temperature Setpoint, TEC Current, TEC Voltage, TEC Good)
 
@@ -1372,36 +1372,73 @@ class MOTIONConsole:
 
             logger.debug("Getting TEC Status")
 
-            # 1) Enabled flag
             r = self.uart.send_packet(
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_STATUS, data=None
             )
             if r.packet_type == OW_ERROR:
                 logger.error("Device returned OW_ERROR for OW_CTRL_TEC_STATUS")
                 raise Exception("Error executing tec_status command")
-            if r.data_len != 1:
-                raise ValueError(
-                    f"Unexpected data length for TEC status flag: {r.data_len}, expected 1"
-                )
-            tec_good = bool(r.data[0])
 
-            # 2) Read all four ADC channels (reserved=4 => all)
-            s = self.uart.send_packet(
-                id=None,
-                packetType=OW_CONTROLLER,
-                command=OW_CTRL_TECADC,
-                reserved=4,
-                data=None,
+            self.uart.clear_buffer()
+
+            # TecStats: uint32 timestamp_ms, float vout, float temp_set,
+            #           float tec_curr, float tec_volt, bool tec_status  (21 bytes)
+            TEC_STATS_FMT = "<I4f?"
+            TEC_STATS_SIZE = struct.calcsize(TEC_STATS_FMT)  # 21 bytes
+
+            # Backward compatibility: older firmware returns a single status byte
+            if r.data_len == 1:
+                tec_good = bool(r.data[0])
+                
+                # Fetch the four TEC ADC floats                
+                s = self.uart.send_packet(
+                    id=None,
+                    packetType=OW_CONTROLLER,
+                    command=OW_CTRL_TECADC,
+                    reserved=4,
+                    data=None,
+                )
+                
+                if s.packet_type == OW_ERROR:
+                    logger.error("Device returned OW_ERROR for OW_CTRL_TECADC(all)")
+                    raise Exception("Error executing tec_adc(all) command")
+                if s.data_len != 16:
+                    raise ValueError(
+                        f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16"
+                    )
+
+                vout, temp_set, tec_curr, tec_volt = struct.unpack("<4f", s.data)    
+                
+                logger.debug(
+                    "Legacy TEC Status - V: %.6f V, SET: %.6f V, TEC_C: %.6f V, TEC_V: %.6f V, GOOD: %s",
+                    vout,
+                    temp_set,
+                    tec_curr,
+                    tec_volt,
+                    tec_good,
+                )
+
+                return (
+                    f"{vout:.6f}",
+                    f"{temp_set:.6f}",
+                    f"{tec_curr:.6f}",
+                    f"{tec_volt:.6f}",
+                    tec_good,
+                )
+            elif r.data_len < TEC_STATS_SIZE:
+                raise ValueError(
+                    f"TecStats response too short: {r.data_len} bytes, expected {TEC_STATS_SIZE}"
+                )
+            elif r.data_len > TEC_STATS_SIZE:
+                logger.warning(
+                    "TecStats response has %d extra bytes (got %d, expected %d); extra bytes will be ignored",
+                    r.data_len - TEC_STATS_SIZE,
+                    r.data_len,
+                    TEC_STATS_SIZE,
+                )
+            _ts_ms, vout, temp_set, tec_curr, tec_volt, tec_good = struct.unpack(
+                TEC_STATS_FMT, r.data[:TEC_STATS_SIZE]
             )
-            if s.packet_type == OW_ERROR:
-                logger.error("Device returned OW_ERROR for OW_CTRL_TECADC(all)")
-                raise Exception("Error executing tec_adc(all) command")
-            if s.data_len != 16:
-                raise ValueError(
-                    f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16"
-                )
-
-            vout, temp_set, tec_curr, tec_volt = struct.unpack("<4f", s.data)
 
             logger.debug(
                 "TEC Status - V: %.6f V, SET: %.6f V, TEC_C: %.6f V, TEC_V: %.6f V, GOOD: %s",
@@ -1411,6 +1448,7 @@ class MOTIONConsole:
                 tec_volt,
                 tec_good,
             )
+            
             return (
                 f"{vout:.6f}",
                 f"{temp_set:.6f}",
