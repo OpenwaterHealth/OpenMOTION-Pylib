@@ -182,6 +182,25 @@ class CorrectedSample:
     contrast: float
     bfi_corrected: float
     bvi_corrected: float
+    is_corrected: bool = False  # True when dark-frame interpolation has been applied
+
+
+@dataclass
+class CorrectedBatch:
+    """
+    Batch of dark-frame-corrected samples for one interval between two
+    consecutive dark frames.  Emitted once per dark-frame interval (e.g.
+    every 600 frames / 15 seconds at 40 Hz) after the linear interpolation
+    of the dark baseline has been computed.
+
+    ``dark_frame_start`` / ``dark_frame_end`` are the absolute frame IDs of
+    the two bounding dark frames used for interpolation.
+    ``samples`` contains one ``CorrectedSample`` per (side, cam_id) per
+    non-dark frame in the interval, with ``is_corrected=True``.
+    """
+    dark_frame_start: int
+    dark_frame_end: int
+    samples: list[CorrectedSample]
 
 
 @dataclass
@@ -842,6 +861,19 @@ class _FrameBuffer:
     samples: dict[tuple[str, int], CorrectedSample] = field(default_factory=dict)
 
 
+@dataclass
+class _StoredFrameMoments:
+    """Per-sample first/second moments stored between dark frames for later correction."""
+    side: str
+    cam_id: int
+    frame_id: int              # raw u8
+    absolute_frame_id: int
+    timestamp_s: float
+    u1: float                  # first moment  (mean of histogram)
+    u2: float                  # second moment (mean of bins²)
+    temperature_c: float
+
+
 class SciencePipeline:
     """
     Unified single-threaded science computation pipeline for both sensor sides.
@@ -849,23 +881,29 @@ class SciencePipeline:
     All histogram samples — from left and right sensors alike — are fed in
     through a single ingress queue.  A single worker thread:
 
-      1. Unwraps the raw u8 frame ID for each (side, cam_id) pair into a
-         monotonically increasing ``absolute_frame_id`` so that frame-boundary
-         crossing (255 → 0) never causes key collisions downstream.
-      2. Computes BFI/BVI metrics via ``compute_realtime_metrics``.
-      3. Applies dark-frame correction per (side, cam_id).
-      4. Fires ``on_corrected_fn`` with the CorrectedSample immediately, so
-         the GUI can update in real time without waiting for frame alignment.
-      5. Groups all corrected samples by ``absolute_frame_id`` into a
-         ``_FrameBuffer``.  Once all expected (side, cam_id) pairs have
-         contributed a sample for a given absolute frame, a ``ScienceFrame``
-         is assembled and ``on_science_frame_fn`` is called.  Partial frames
-         older than ``frame_timeout_s`` are flushed automatically so that a
-         single dropped packet on one side does not stall the pipeline.
+      1. Discards the first ``discard_count`` frames (default 9) which are
+         noisy camera-warmup frames.
+      2. Unwraps the raw u8 frame ID for each (side, cam_id) pair into a
+         monotonically increasing ``absolute_frame_id``.
+      3. Identifies dark frames by schedule: frame ``discard_count + 1``
+         (the 10th frame) is the first dark reference, then every
+         ``dark_interval`` frames from frame 1 (i.e. 601, 1201, …).
+      4. For **non-dark** frames: computes uncorrected BFI/BVI from the raw
+         histogram and fires ``on_uncorrected_fn`` immediately.  Also stores
+         the first/second moments for later dark-frame correction.
+      5. For **dark** frames: stores the dark baseline statistics.  When two
+         consecutive dark frames are available for a camera, linearly
+         interpolates the dark baseline across the interval and computes
+         corrected BFI/BVI for every stored frame in that interval.  The
+         result is emitted via ``on_corrected_batch_fn`` as a
+         ``CorrectedBatch``.
+      6. Groups uncorrected samples by ``absolute_frame_id`` into a
+         ``_FrameBuffer``.  Once all expected cameras have contributed, a
+         ``ScienceFrame`` is assembled and ``on_science_frame_fn`` is called.
 
-    Running everything in one thread ensures that all derived quantities for
-    a frame are available simultaneously and can be written to SQLite as a
-    single atomic transaction.
+    This means consumers receive:
+    - A **continuous stream** of uncorrected samples (real-time, every frame)
+    - **Periodic batches** of properly corrected samples (every dark interval)
 
     Parameters
     ----------
@@ -874,22 +912,22 @@ class SciencePipeline:
         Pass 0x00 for a side that is not connected.
     bfi_c_min/max, bfi_i_min/max
         Calibration arrays, shape (2, 8) — module index × camera position.
-    on_corrected_fn
-        Called immediately after correction is applied for each sample.
-        Receives a ``CorrectedSample``.
+    on_uncorrected_fn
+        Called immediately for each non-dark frame with uncorrected BFI/BVI.
+        Receives a ``CorrectedSample`` with ``is_corrected=False``.
+    on_corrected_batch_fn
+        Called once per dark-frame interval with a ``CorrectedBatch``
+        containing dark-frame-corrected BFI/BVI for every frame in that
+        interval.
     on_science_frame_fn
-        Called once per complete aligned frame.  Receives a ``ScienceFrame``
-        whose ``samples`` dict contains every expected (side, cam_id) key
-        (or as many as arrived before the timeout).
+        Called once per complete aligned frame.  Receives a ``ScienceFrame``.
+    dark_interval
+        Number of frames between scheduled dark frames (default 600 = 15 s
+        at 40 Hz).
+    discard_count
+        Number of initial frames to discard (default 9, frames 1–9).
     frame_timeout_s
-        Seconds after the first sample in a frame arrives before the
-        incomplete frame is flushed anyway.  Keeps the pipeline moving when
-        a sensor drops a packet.
-    correction_warmup_count
-        Number of frames per camera to observe before applying correction.
-    correction_mean_threshold
-        Mean intensity below which a frame is treated as a dark frame and
-        the previous corrected values are held.
+        Seconds before an incomplete frame is flushed.
     """
 
     def __init__(
@@ -901,22 +939,24 @@ class SciencePipeline:
         bfi_c_max,
         bfi_i_min,
         bfi_i_max,
-        on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
+        on_uncorrected_fn: Callable[[CorrectedSample], None] | None = None,
+        on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
         on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
+        dark_interval: int = 600,
+        discard_count: int = 9,
         frame_timeout_s: float = 0.5,
-        correction_warmup_count: int = 10,
-        correction_mean_threshold: float = 66.0,
         expected_row_sum: int | None = None,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
         self._bfi_i_min = bfi_i_min
         self._bfi_i_max = bfi_i_max
-        self._on_corrected_fn = on_corrected_fn
+        self._on_uncorrected_fn = on_uncorrected_fn
+        self._on_corrected_batch_fn = on_corrected_batch_fn
         self._on_science_frame_fn = on_science_frame_fn
+        self._dark_interval = dark_interval
+        self._discard_count = discard_count
         self._frame_timeout_s = frame_timeout_s
-        self._correction_warmup_count = correction_warmup_count
-        self._correction_mean_threshold = correction_mean_threshold
         self._expected_row_sum = expected_row_sum
 
         # Derive the set of (side, cam_id) keys that must be present for a
@@ -931,19 +971,23 @@ class SciencePipeline:
         # One FrameIdUnwrapper per (side, cam_id) — created lazily on first use.
         self._unwrappers: dict[tuple[str, int], FrameIdUnwrapper] = {}
 
-        # Dark-frame correction state per (side, cam_id).
-        self._correction_state: dict[tuple[str, int], dict] = {}
-
         # Pending frames waiting to collect all expected samples.
         self._frame_buffers: dict[int, _FrameBuffer] = {}
 
         # Tracks which (side, cam_id) pairs have received their first frame.
-        # Used to detect stale frames from a previous scan (expected frame_id == 1
-        # for the very first frame of a new scan).
         self._first_frame_seen: set[tuple[str, int]] = set()
 
         # Counts frame-ID desynchronization events between cameras in a frame.
         self._sync_error_count: int = 0
+
+        # --- Dark-frame correction state ---
+        # Per (side, cam_id): ordered list of (absolute_frame_id, u1, variance)
+        # for each dark frame observed.
+        self._dark_history: dict[tuple[str, int], list[tuple[int, float, float]]] = {}
+
+        # Per (side, cam_id): stored moments for frames between the last two
+        # dark frames, awaiting correction.
+        self._pending_moments: dict[tuple[str, int], list[_StoredFrameMoments]] = {}
 
         self._ingress_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -993,9 +1037,6 @@ class SciencePipeline:
             key = (side, cam_id)
 
             # --- 0a. Sum validation (defense-in-depth) -------------------------
-            # parse_histogram_packet_structured already filters these out when
-            # expected_row_sum is set, but samples can also be enqueued directly
-            # (e.g. in tests).  Re-check here so the pipeline is always clean.
             _expected_sum = (
                 self._expected_row_sum
                 if self._expected_row_sum is not None
@@ -1010,9 +1051,6 @@ class SciencePipeline:
                 continue
 
             # --- 0b. First-frame staleness check --------------------------------
-            # The very first histogram received for each (side, cam_id) after
-            # pipeline start should have frame_id == 1.  Any other value means
-            # we are receiving a leftover frame from the previous scan.
             if key not in self._first_frame_seen:
                 self._first_frame_seen.add(key)
                 if raw_frame_id != 1:
@@ -1029,7 +1067,54 @@ class SciencePipeline:
                 self._unwrappers[key] = FrameIdUnwrapper()
             absolute_frame = self._unwrappers[key].unwrap(raw_frame_id)
 
-            # --- 2. Compute BFI/BVI metrics ------------------------------------
+            # --- 2. Discard early warmup frames (1 through discard_count) ------
+            if absolute_frame <= self._discard_count:
+                logger.debug(
+                    "Discarding warmup frame %d for %s cam %d",
+                    absolute_frame, side, cam_id,
+                )
+                continue
+
+            # --- 3. Compute raw moments from histogram -------------------------
+            if row_sum > 0:
+                u1 = float(np.dot(hist, HISTO_BINS) / row_sum)
+                u2 = float(np.dot(hist, HISTO_BINS_SQ) / row_sum)
+            else:
+                u1 = 0.0
+                u2 = 0.0
+
+            # --- 4. Dark frame handling ----------------------------------------
+            if self._is_dark_frame(absolute_frame):
+                variance = max(0.0, u2 - u1 * u1)
+                dark_list = self._dark_history.setdefault(key, [])
+                dark_list.append((absolute_frame, u1, variance))
+                logger.debug(
+                    "Dark frame %d for %s cam %d (dark #%d): "
+                    "u1=%.2f var=%.4f",
+                    absolute_frame, side, cam_id, len(dark_list),
+                    u1, variance,
+                )
+
+                # With 2+ dark frames we can correct the preceding interval.
+                if len(dark_list) >= 2:
+                    self._emit_corrected_for_camera(key)
+                continue  # dark frames produce no uncorrected output
+
+            # --- 5. Store moments for later dark-frame correction --------------
+            self._pending_moments.setdefault(key, []).append(
+                _StoredFrameMoments(
+                    side=side,
+                    cam_id=cam_id,
+                    frame_id=raw_frame_id,
+                    absolute_frame_id=absolute_frame,
+                    timestamp_s=ts,
+                    u1=u1,
+                    u2=u2,
+                    temperature_c=temp,
+                )
+            )
+
+            # --- 6. Compute uncorrected BFI/BVI and emit immediately ----------
             sample = compute_realtime_metrics(
                 side=side,
                 cam_id=cam_id,
@@ -1045,34 +1130,7 @@ class SciencePipeline:
                 bfi_i_max=self._bfi_i_max,
             )
 
-            # --- 3. Dark-frame correction --------------------------------------
-            state = self._correction_state.get(key)
-            if state is None:
-                state = {"count": 0, "last_bfi": None, "last_bvi": None}
-                self._correction_state[key] = state
-
-            state["count"] += 1
-            in_warmup = state["count"] <= self._correction_warmup_count
-
-            if in_warmup:
-                bfi_corr, bvi_corr = sample.bfi, sample.bvi
-            else:
-                bfi_corr, bvi_corr = compute_corrected_values(
-                    mean_val=sample.mean,
-                    bfi_val=sample.bfi,
-                    bvi_val=sample.bvi,
-                    last_bfi=state["last_bfi"],
-                    last_bvi=state["last_bvi"],
-                    mean_threshold=self._correction_mean_threshold,
-                )
-
-            # Only update the held values when the frame is bright enough to
-            # be a valid (non-dark) measurement.
-            if sample.mean >= self._correction_mean_threshold:
-                state["last_bfi"] = bfi_corr
-                state["last_bvi"] = bvi_corr
-
-            corrected = CorrectedSample(
+            uncorrected = CorrectedSample(
                 side=side,
                 cam_id=cam_id,
                 frame_id=raw_frame_id,
@@ -1081,18 +1139,18 @@ class SciencePipeline:
                 mean=sample.mean,
                 std_dev=sample.std_dev,
                 contrast=sample.contrast,
-                bfi_corrected=bfi_corr,
-                bvi_corrected=bvi_corr,
+                bfi_corrected=sample.bfi,
+                bvi_corrected=sample.bvi,
+                is_corrected=False,
             )
 
-            # --- 4. Per-sample callback (real-time GUI update) -----------------
-            if self._on_corrected_fn:
+            if self._on_uncorrected_fn:
                 try:
-                    self._on_corrected_fn(corrected)
+                    self._on_uncorrected_fn(uncorrected)
                 except Exception:
                     pass
 
-            # --- 5. Accumulate into frame buffer ---------------------------------
+            # --- 7. Accumulate into frame buffer for ScienceFrame alignment ----
             if key in self._expected_keys:
                 buf = self._frame_buffers.get(absolute_frame)
                 if buf is None:
@@ -1101,10 +1159,9 @@ class SciencePipeline:
                         min_timestamp_s=ts,
                     )
                     self._frame_buffers[absolute_frame] = buf
-                buf.samples[key] = corrected
+                buf.samples[key] = uncorrected
                 buf.min_timestamp_s = min(buf.min_timestamp_s, ts)
 
-                # Emit as soon as all expected cameras have reported.
                 if self._expected_keys.issubset(buf.samples.keys()):
                     self._emit_science_frame(absolute_frame, buf)
                     del self._frame_buffers[absolute_frame]
@@ -1115,6 +1172,129 @@ class SciencePipeline:
         for abs_frame in sorted(self._frame_buffers):
             self._emit_science_frame(abs_frame, self._frame_buffers[abs_frame])
         self._frame_buffers.clear()
+
+    # ------------------------------------------------------------------
+    # Dark-frame correction helpers
+    # ------------------------------------------------------------------
+
+    def _is_dark_frame(self, absolute_frame: int) -> bool:
+        """Return True if *absolute_frame* is a scheduled dark frame.
+
+        The first usable dark is at ``discard_count + 1`` (frame 10 by
+        default).  Subsequent darks follow the firmware schedule: frames
+        1, 1 + dark_interval, 1 + 2·dark_interval, … — but the very first
+        (frame 1) is discarded as warmup noise.
+        """
+        if absolute_frame == self._discard_count + 1:
+            return True
+        return (
+            absolute_frame > self._discard_count + 1
+            and (absolute_frame - 1) % self._dark_interval == 0
+        )
+
+    def _calibrate_bfi_bvi(
+        self, side: str, cam_id: int, contrast: float, mean_val: float,
+    ) -> tuple[float, float]:
+        """Compute calibrated BFI/BVI from corrected contrast and mean."""
+        module_idx = 0 if side == "left" else 1
+        cam_pos = int(cam_id) % 8
+
+        if (
+            module_idx >= self._bfi_c_min.shape[0]
+            or cam_pos >= self._bfi_c_min.shape[1]
+        ):
+            return contrast * 10.0, mean_val * 10.0
+
+        cmin = float(self._bfi_c_min[module_idx, cam_pos])
+        cmax = float(self._bfi_c_max[module_idx, cam_pos])
+        cden = (cmax - cmin) or 1.0
+        bfi = (1.0 - ((contrast - cmin) / cden)) * 10.0
+
+        imin = float(self._bfi_i_min[module_idx, cam_pos])
+        imax = float(self._bfi_i_max[module_idx, cam_pos])
+        iden = (imax - imin) or 1.0
+        bvi = (1.0 - ((mean_val - imin) / iden)) * 10.0
+
+        return float(bfi), float(bvi)
+
+    def _emit_corrected_for_camera(self, key: tuple[str, int]) -> None:
+        """Compute dark-frame-corrected BFI/BVI for one camera's interval.
+
+        Uses linear interpolation of the dark baseline between the two most
+        recent dark frames, matching the algorithm in
+        ``visualize_bloodflow.py``.  Emits a ``CorrectedBatch`` via the
+        ``on_corrected_batch_fn`` callback.
+        """
+        dark_list = self._dark_history[key]
+        prev_abs, prev_u1, prev_var = dark_list[-2]
+        curr_abs, curr_u1, curr_var = dark_list[-1]
+
+        pending = self._pending_moments.get(key, [])
+        if not pending:
+            return
+
+        interval = curr_abs - prev_abs
+        corrected_samples: list[CorrectedSample] = []
+
+        for fm in pending:
+            if fm.absolute_frame_id <= prev_abs or fm.absolute_frame_id >= curr_abs:
+                continue
+
+            # Linear interpolation weight (0 at prev dark, 1 at curr dark)
+            if interval > 1:
+                t = (fm.absolute_frame_id - prev_abs) / (interval - 1)
+            else:
+                t = 0.0
+
+            # Interpolated dark baseline
+            dark_u1 = prev_u1 + (curr_u1 - prev_u1) * t
+            dark_var = prev_var + (curr_var - prev_var) * t
+
+            # Dark-corrected metrics
+            corrected_mean = fm.u1 - dark_u1
+            raw_var = fm.u2 - fm.u1 * fm.u1
+            corrected_var = raw_var - dark_var
+            corrected_std = float(np.sqrt(max(0.0, corrected_var)))
+            corrected_contrast = (
+                corrected_std / corrected_mean if corrected_mean > 0 else 0.0
+            )
+
+            bfi, bvi = self._calibrate_bfi_bvi(
+                key[0], key[1], corrected_contrast, corrected_mean,
+            )
+
+            corrected_samples.append(
+                CorrectedSample(
+                    side=key[0],
+                    cam_id=key[1],
+                    frame_id=fm.frame_id,
+                    absolute_frame_id=fm.absolute_frame_id,
+                    timestamp_s=fm.timestamp_s,
+                    mean=float(corrected_mean),
+                    std_dev=corrected_std,
+                    contrast=float(corrected_contrast),
+                    bfi_corrected=float(bfi),
+                    bvi_corrected=float(bvi),
+                    is_corrected=True,
+                )
+            )
+
+        # Keep only moments that fall after the current dark (shouldn't
+        # normally happen, but guards against edge-case ordering).
+        self._pending_moments[key] = [
+            fm for fm in pending if fm.absolute_frame_id >= curr_abs
+        ]
+
+        if corrected_samples and self._on_corrected_batch_fn:
+            batch = CorrectedBatch(
+                dark_frame_start=prev_abs,
+                dark_frame_end=curr_abs,
+                samples=corrected_samples,
+            )
+            try:
+                self._on_corrected_batch_fn(batch)
+            except Exception:
+                logger.exception("Error in on_corrected_batch_fn callback")
 
     def _flush_stale_frames(self) -> None:
         """Emit and evict frames that have been waiting longer than the timeout."""
@@ -1179,11 +1359,12 @@ def create_science_pipeline(
     bfi_c_max,
     bfi_i_min,
     bfi_i_max,
-    on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
+    on_uncorrected_fn: Callable[[CorrectedSample], None] | None = None,
+    on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
     on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
+    dark_interval: int = 600,
+    discard_count: int = 9,
     frame_timeout_s: float = 0.5,
-    correction_warmup_count: int = 10,
-    correction_mean_threshold: float = 66.0,
     expected_row_sum: int | None = None,
 ) -> SciencePipeline:
     """
@@ -1191,11 +1372,18 @@ def create_science_pipeline(
 
     Parameters
     ----------
+    on_uncorrected_fn
+        Fires immediately per non-dark frame with uncorrected BFI/BVI.
+    on_corrected_batch_fn
+        Fires once per dark-frame interval with a ``CorrectedBatch``
+        containing dark-frame-corrected samples for the entire interval.
+    dark_interval
+        Frames between dark frames (default 600 = 15 s at 40 Hz).
+    discard_count
+        Number of initial warmup frames to discard (default 9).
     expected_row_sum
-        When not None, samples enqueued directly into the pipeline whose
-        histogram bin sum does not match this value are discarded before metric
-        computation.  Complements the sum check already performed during binary
-        packet parsing.  Pass None (default) to disable.
+        When not None, samples whose histogram bin sum does not match this
+        value are discarded.
     """
     pipeline = SciencePipeline(
         left_camera_mask=left_camera_mask,
@@ -1204,11 +1392,12 @@ def create_science_pipeline(
         bfi_c_max=bfi_c_max,
         bfi_i_min=bfi_i_min,
         bfi_i_max=bfi_i_max,
-        on_corrected_fn=on_corrected_fn,
+        on_uncorrected_fn=on_uncorrected_fn,
+        on_corrected_batch_fn=on_corrected_batch_fn,
         on_science_frame_fn=on_science_frame_fn,
+        dark_interval=dark_interval,
+        discard_count=discard_count,
         frame_timeout_s=frame_timeout_s,
-        correction_warmup_count=correction_warmup_count,
-        correction_mean_threshold=correction_mean_threshold,
         expected_row_sum=expected_row_sum,
     )
     pipeline.start()
@@ -1249,9 +1438,7 @@ class RealtimeProcessingPipeline(SciencePipeline):
             bfi_c_max=bfi_c_max,
             bfi_i_min=bfi_i_min,
             bfi_i_max=bfi_i_max,
-            on_corrected_fn=on_corrected_fn,
-            correction_warmup_count=correction_warmup_count,
-            correction_mean_threshold=correction_mean_threshold,
+            on_uncorrected_fn=on_corrected_fn,
         )
         self.side = side
         self._on_sample_fn = on_sample_fn  # kept for compat; not called in new design
@@ -1290,8 +1477,6 @@ def create_realtime_processing_pipeline(
         bfi_i_max=bfi_i_max,
         on_sample_fn=on_sample_fn,
         on_corrected_fn=on_corrected_fn,
-        correction_warmup_count=correction_warmup_count,
-        correction_mean_threshold=correction_mean_threshold,
     )
     pipeline.start()
     return pipeline

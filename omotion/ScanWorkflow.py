@@ -10,6 +10,7 @@ from typing import Callable, TYPE_CHECKING
 
 from omotion import _log_root
 from omotion.MotionProcessing import (
+    CorrectedBatch,
     create_science_pipeline,
     parse_stream_to_csv,
     stream_queue_to_csv_file,
@@ -177,7 +178,8 @@ class ScanWorkflow:
         on_progress_fn: Callable[[int], None] | None = None,
         on_trigger_state_fn: Callable[[str], None] | None = None,
         on_sample_fn: Callable[[object], None] | None = None,
-        on_corrected_fn: Callable[[object], None] | None = None,
+        on_uncorrected_fn: Callable[[object], None] | None = None,
+        on_corrected_batch_fn: Callable[[object], None] | None = None,
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
@@ -303,45 +305,51 @@ class ScanWorkflow:
                         (m for s, m, _ in active_sides if s == "right"), 0x00
                     )
 
-                    def _on_corrected_sample(sample):
-                        # Per-sample real-time callback (fires immediately for GUI).
+                    def _on_uncorrected_sample(sample):
+                        # Per-sample real-time callback (fires immediately for
+                        # GUI with uncorrected BFI/BVI).
+                        if on_uncorrected_fn:
+                            on_uncorrected_fn(sample)
+
+                    def _on_corrected_batch(batch: CorrectedBatch):
+                        # Fires once per dark-frame interval with properly
+                        # corrected BFI/BVI for the entire interval.
                         try:
-                            # Use absolute_frame_id as the merge key so rollover
-                            # at frame 255→0 never produces a collision.
-                            frame_key = int(sample.absolute_frame_id)
-                            col_suffix = f"{sample.side[0]}{int(sample.cam_id) + 1}"
                             with corrected_lock:
-                                frame_entry = corrected_by_frame.get(frame_key)
-                                if frame_entry is None:
-                                    frame_entry = {
-                                        "timestamp_s": float(sample.timestamp_s),
-                                        "values": {},
-                                    }
-                                    corrected_by_frame[frame_key] = frame_entry
-                                else:
-                                    frame_entry["timestamp_s"] = min(
-                                        float(frame_entry["timestamp_s"]),
-                                        float(sample.timestamp_s),
+                                for sample in batch.samples:
+                                    frame_key = int(sample.absolute_frame_id)
+                                    col_suffix = f"{sample.side[0]}{int(sample.cam_id) + 1}"
+                                    frame_entry = corrected_by_frame.get(frame_key)
+                                    if frame_entry is None:
+                                        frame_entry = {
+                                            "timestamp_s": float(sample.timestamp_s),
+                                            "values": {},
+                                        }
+                                        corrected_by_frame[frame_key] = frame_entry
+                                    else:
+                                        frame_entry["timestamp_s"] = min(
+                                            float(frame_entry["timestamp_s"]),
+                                            float(sample.timestamp_s),
+                                        )
+                                    frame_entry["values"][f"bfi_{col_suffix}"] = float(
+                                        sample.bfi_corrected
                                     )
-                                frame_entry["values"][f"bfi_{col_suffix}"] = float(
-                                    sample.bfi_corrected
-                                )
-                                frame_entry["values"][f"bvi_{col_suffix}"] = float(
-                                    sample.bvi_corrected
-                                )
-                                frame_entry["values"][f"mean_{col_suffix}"] = float(
-                                    sample.mean
-                                )
-                                frame_entry["values"][f"std_{col_suffix}"] = float(
-                                    sample.std_dev
-                                )
-                                frame_entry["values"][f"contrast_{col_suffix}"] = float(
-                                    sample.contrast
-                                )
+                                    frame_entry["values"][f"bvi_{col_suffix}"] = float(
+                                        sample.bvi_corrected
+                                    )
+                                    frame_entry["values"][f"mean_{col_suffix}"] = float(
+                                        sample.mean
+                                    )
+                                    frame_entry["values"][f"std_{col_suffix}"] = float(
+                                        sample.std_dev
+                                    )
+                                    frame_entry["values"][f"contrast_{col_suffix}"] = float(
+                                        sample.contrast
+                                    )
                         except Exception as agg_err:
-                            _emit_log(f"Corrected aggregation error: {agg_err}")
-                        if on_corrected_fn:
-                            on_corrected_fn(sample)
+                            _emit_log(f"Corrected batch aggregation error: {agg_err}")
+                        if on_corrected_batch_fn:
+                            on_corrected_batch_fn(batch)
 
                     science_pipeline = create_science_pipeline(
                         left_camera_mask=left_mask_active,
@@ -350,7 +358,8 @@ class ScanWorkflow:
                         bfi_c_max=self._bfi_c_max,
                         bfi_i_min=self._bfi_i_min,
                         bfi_i_max=self._bfi_i_max,
-                        on_corrected_fn=_on_corrected_sample,
+                        on_uncorrected_fn=_on_uncorrected_sample,
+                        on_corrected_batch_fn=_on_corrected_batch,
                         on_science_frame_fn=on_sample_fn,  # repurposed for aligned-frame callback
                     )
 
@@ -417,7 +426,7 @@ class ScanWorkflow:
                             n = parse_stream_to_csv(
                                 q=q,
                                 stop_evt=stop_evt,
-                                csv_writer=_NullCsvWriter(),
+                                csv_writer=_NullCsvWriter(), #TODO bring the nullcsvwriter to somewhere closer in code for readability
                                 buffer_accumulator=bytearray(),
                                 extra_cols_fn=None,
                                 on_row_fn=on_row_fn,
