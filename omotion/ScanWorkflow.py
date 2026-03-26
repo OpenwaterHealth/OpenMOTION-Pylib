@@ -11,6 +11,7 @@ from typing import Callable, TYPE_CHECKING
 from omotion import _log_root
 from omotion.MotionProcessing import (
     CorrectedBatch,
+    HISTO_SIZE_WORDS,
     create_science_pipeline,
     parse_stream_to_csv,
     stream_queue_to_csv_file,
@@ -30,6 +31,50 @@ class _NullCsvWriter:
     """Drop-in replacement for csv.writer that silently discards all rows."""
     def writerow(self, _row) -> None:
         pass
+
+
+class _TruncatingCsvWriter:
+    """Wraps a real csv.writer and file handle.
+
+    Writes normally until ``deadline`` (a ``time.time()`` value) is reached,
+    then flushes and closes the file and silently discards all subsequent rows.
+    The science pipeline's ``on_row_fn`` callback is unaffected — data
+    continues to flow to the pipeline regardless of whether the file is open.
+
+    ``on_truncate_fn``, if provided, is called exactly once at the moment the
+    file is closed so the caller can emit a log message.
+    """
+
+    def __init__(
+        self,
+        real_writer,
+        file_handle,
+        deadline: float,
+        on_truncate_fn=None,
+    ):
+        self._real = real_writer
+        self._fh = file_handle
+        self._deadline = deadline
+        self._on_truncate_fn = on_truncate_fn
+        self._done = False
+
+    def writerow(self, row) -> None:
+        if self._done:
+            return
+        if time.time() >= self._deadline:
+            self._done = True
+            try:
+                self._fh.flush()
+                self._fh.close()
+            except Exception:
+                pass
+            if self._on_truncate_fn:
+                try:
+                    self._on_truncate_fn()
+                except Exception:
+                    pass
+            return
+        self._real.writerow(row)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +128,10 @@ class ScanRequest:
     write_raw_csv: bool = True
     write_corrected_csv: bool = True
     write_telemetry_csv: bool = True
+    # Maximum number of seconds for which raw histogram CSVs are written.
+    # None (default) means write for the full scan duration.
+    # Has no effect when write_raw_csv is False.
+    raw_csv_duration_sec: float | None = None
 
 
 @dataclass
@@ -378,6 +427,8 @@ class ScanWorkflow:
                             )
                     return _on_row
 
+                _RAW_CSV_EXTRA_HEADERS = ["tcm", "tcl", "pdc"]
+
                 for side, mask, sensor in active_sides:
                     q = queue.Queue()
                     writer_queues[side] = q
@@ -398,7 +449,10 @@ class ScanWorkflow:
 
                     sensor.uart.histo.start_streaming(q, expected_size=request.expected_size)
 
-                    if request.write_raw_csv:
+                    _row_handler = _make_row_handler(side, science_pipeline)
+
+                    if request.write_raw_csv and request.raw_csv_duration_sec is None:
+                        # Full-duration histogram CSV.
                         filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
                         filepath = os.path.join(request.data_dir, filename)
                         t = threading.Thread(
@@ -407,9 +461,9 @@ class ScanWorkflow:
                                 "q": q,
                                 "stop_evt": stop_evt,
                                 "filename": filepath,
-                                "extra_headers": ["tcm", "tcl", "pdc"],
+                                "extra_headers": _RAW_CSV_EXTRA_HEADERS,
                                 "extra_cols_fn": extra_cols_fn,
-                                "on_row_fn": _make_row_handler(side, science_pipeline),
+                                "on_row_fn": _row_handler,
                                 "on_error_fn": lambda e, fn=filename: _emit_log(
                                     f"Writer error ({fn}): {e}"
                                 ),
@@ -417,16 +471,73 @@ class ScanWorkflow:
                             },
                             daemon=True,
                         )
+
+                    elif request.write_raw_csv and request.raw_csv_duration_sec is not None:
+                        # Time-limited histogram CSV: write for raw_csv_duration_sec
+                        # seconds, then close the file and discard further rows while
+                        # continuing to feed the science pipeline.
+                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
+                        filepath = os.path.join(request.data_dir, filename)
+                        _dur = float(request.raw_csv_duration_sec)
+
+                        def _timed_write(
+                            q=q,
+                            stop_evt=stop_evt,
+                            on_row_fn=_row_handler,
+                            fp=filepath,
+                            ecfn=extra_cols_fn,
+                            s=side,
+                            dur=_dur,
+                        ):
+                            rows_written = 0
+                            fh = None
+                            try:
+                                fh = open(fp, "w", newline="", encoding="utf-8")  # noqa: WPS515
+                                real_writer = csv.writer(fh)
+                                real_writer.writerow([
+                                    "cam_id", "frame_id", "timestamp_s",
+                                    *range(HISTO_SIZE_WORDS),
+                                    "temperature", "sum",
+                                    *_RAW_CSV_EXTRA_HEADERS,
+                                ])
+                                deadline = time.time() + dur
+                                trunc = _TruncatingCsvWriter(
+                                    real_writer, fh, deadline,
+                                    on_truncate_fn=lambda: _emit_log(
+                                        f"{s.capitalize()} histogram CSV closed after "
+                                        f"{dur:.0f}s limit"
+                                    ),
+                                )
+                                rows_written = parse_stream_to_csv(
+                                    q=q,
+                                    stop_evt=stop_evt,
+                                    csv_writer=trunc,
+                                    buffer_accumulator=bytearray(),
+                                    extra_cols_fn=ecfn,
+                                    on_row_fn=on_row_fn,
+                                )
+                            except Exception as e:
+                                _emit_log(f"Writer error ({os.path.basename(fp)}): {e}")
+                            finally:
+                                if fh is not None:
+                                    try:
+                                        fh.close()
+                                    except Exception:
+                                        pass
+                                writer_row_counts[s] = rows_written
+
+                        t = threading.Thread(target=_timed_write, daemon=True)
+
                     else:
                         # No file output — run a bare drain thread so the science
                         # pipeline still receives data via on_row_fn.
                         filepath = ""
-                        _row_handler = _make_row_handler(side, science_pipeline)
+
                         def _drain(q=q, stop_evt=stop_evt, on_row_fn=_row_handler, s=side):
                             n = parse_stream_to_csv(
                                 q=q,
                                 stop_evt=stop_evt,
-                                csv_writer=_NullCsvWriter(), #TODO bring the nullcsvwriter to somewhere closer in code for readability
+                                csv_writer=_NullCsvWriter(),
                                 buffer_accumulator=bytearray(),
                                 extra_cols_fn=None,
                                 on_row_fn=on_row_fn,
