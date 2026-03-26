@@ -13,7 +13,7 @@ from omotion.MotionProcessing import (
     CorrectedBatch,
     HISTO_SIZE_WORDS,
     create_science_pipeline,
-    drain_histogram_stream,
+    parse_histogram_stream,
 )
 
 if TYPE_CHECKING:
@@ -446,7 +446,7 @@ class ScanWorkflow:
                                     f"{dur:.0f}s limit"
                                 )
 
-                            rows_written = drain_histogram_stream(
+                            rows_written = parse_histogram_stream(
                                 q=q,
                                 stop_evt=stop_evt,
                                 csv_writer=real_writer,

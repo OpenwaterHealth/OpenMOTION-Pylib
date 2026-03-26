@@ -512,7 +512,7 @@ def process_bin_file(
     logger.info("Parsed %d packets, %d OK", total_packets, packet_ok)
 
 
-def drain_histogram_stream(
+def parse_histogram_stream(
     q: queue.Queue,
     stop_evt: threading.Event,
     csv_writer,
@@ -524,7 +524,7 @@ def drain_histogram_stream(
     on_csv_closed_fn: Callable[[], None] | None = None,
 ) -> int:
     """
-    Drain a histogram USB stream queue, feed the science pipeline, and
+    Parse a histogram USB stream queue, feed the science pipeline, and
     optionally write CSV rows.
 
     ``on_row_fn`` is the primary output and is called for every valid parsed
@@ -745,7 +745,7 @@ def stream_queue_to_csv_file(
     Parameters
     ----------
     expected_row_sum
-        Forwarded to ``drain_histogram_stream`` / ``parse_histogram_packet_structured``.
+        Forwarded to ``parse_histogram_stream`` / ``parse_histogram_packet_structured``.
         Samples whose histogram bin sum does not match are dropped from both
         the CSV and the ``on_row_fn`` callback before being written.
     """
@@ -768,7 +768,7 @@ def stream_queue_to_csv_file(
             )
 
             buffer_accumulator = bytearray()
-            rows_written = drain_histogram_stream(
+            rows_written = parse_histogram_stream(
                 q=q,
                 stop_evt=stop_evt,
                 csv_writer=csv_writer,
