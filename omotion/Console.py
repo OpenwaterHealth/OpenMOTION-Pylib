@@ -1372,7 +1372,6 @@ class MOTIONConsole:
 
             logger.debug("Getting TEC Status")
 
-            # 1) Enabled flag
             r = self.uart.send_packet(
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_TEC_STATUS, data=None
             )
@@ -1389,6 +1388,13 @@ class MOTIONConsole:
             if r.data_len < TEC_STATS_SIZE:
                 raise ValueError(
                     f"TecStats response too short: {r.data_len} bytes, expected {TEC_STATS_SIZE}"
+                )
+            elif r.data_len > TEC_STATS_SIZE:
+                logger.warning(
+                    "TecStats response has %d extra bytes (got %d, expected %d); extra bytes will be ignored",
+                    r.data_len - TEC_STATS_SIZE,
+                    r.data_len,
+                    TEC_STATS_SIZE,
                 )
             _ts_ms, vout, temp_set, tec_curr, tec_volt, tec_good = struct.unpack(
                 TEC_STATS_FMT, r.data[:TEC_STATS_SIZE]
