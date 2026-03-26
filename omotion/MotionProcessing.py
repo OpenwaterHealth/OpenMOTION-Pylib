@@ -512,7 +512,7 @@ def process_bin_file(
     logger.info("Parsed %d packets, %d OK", total_packets, packet_ok)
 
 
-def parse_stream_to_csv(
+def drain_histogram_stream(
     q: queue.Queue,
     stop_evt: threading.Event,
     csv_writer,
@@ -520,16 +520,32 @@ def parse_stream_to_csv(
     extra_cols_fn: Callable[[], list] | None = None,
     on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
     expected_row_sum: int | None = None,
+    csv_deadline: float | None = None,
+    on_csv_closed_fn: Callable[[], None] | None = None,
 ) -> int:
     """
-    Parse streaming histogram binary data and write CSV rows.
+    Drain a histogram USB stream queue, feed the science pipeline, and
+    optionally write CSV rows.
+
+    ``on_row_fn`` is the primary output and is called for every valid parsed
+    sample regardless of CSV state.  CSV writing via ``csv_writer`` is
+    secondary and can be disabled entirely (``csv_writer=None``) or
+    automatically stopped after a wall-clock deadline (``csv_deadline``).
 
     Parameters
     ----------
+    csv_writer
+        A ``csv.writer``-compatible object, or ``None`` to skip CSV output.
+    csv_deadline
+        ``time.monotonic()``-style deadline after which CSV writing stops but
+        ``on_row_fn`` continues.  ``None`` means write for the full duration.
+    on_csv_closed_fn
+        Called exactly once when ``csv_deadline`` is reached and the writer
+        is deactivated.  Useful for emitting a log message to the caller.
     expected_row_sum
         Forwarded to ``parse_histogram_packet_structured``.  When not None,
         samples whose histogram bin sum does not match are silently dropped
-        from both CSV output and the ``on_row_fn`` callback.
+        from both the CSV and the ``on_row_fn`` callback.
 
     Returns
     -------
@@ -537,6 +553,7 @@ def parse_stream_to_csv(
         Number of rows written to ``csv_writer``.
     """
     rows_written = 0
+    _csv_active = csv_writer is not None
 
     while not stop_evt.is_set() or not q.empty():
         try:
@@ -557,10 +574,22 @@ def parse_stream_to_csv(
                 offset += packet.bytes_consumed
 
                 for sample in packet.samples:
-                    extra_cols = extra_cols_fn() if extra_cols_fn else []
-                    row = sample.to_csv_row(extra_cols=extra_cols)
-                    csv_writer.writerow(row)
-                    rows_written += 1
+                    # Check CSV deadline before every row so the cutoff is
+                    # accurate to within one sample period (~25 ms at 40 Hz).
+                    if _csv_active and csv_deadline is not None and time.monotonic() >= csv_deadline:
+                        _csv_active = False
+                        if on_csv_closed_fn:
+                            try:
+                                on_csv_closed_fn()
+                            except Exception:
+                                pass
+
+                    if _csv_active:
+                        extra_cols = extra_cols_fn() if extra_cols_fn else []
+                        row = sample.to_csv_row(extra_cols=extra_cols)
+                        csv_writer.writerow(row)
+                        rows_written += 1
+
                     if on_row_fn:
                         on_row_fn(
                             sample.cam_id,
@@ -626,10 +655,20 @@ def parse_stream_to_csv(
                 )
                 offset += packet.bytes_consumed
                 for sample in packet.samples:
-                    extra_cols = extra_cols_fn() if extra_cols_fn else []
-                    row = sample.to_csv_row(extra_cols=extra_cols)
-                    csv_writer.writerow(row)
-                    rows_written += 1
+                    if _csv_active and csv_deadline is not None and time.monotonic() >= csv_deadline:
+                        _csv_active = False
+                        if on_csv_closed_fn:
+                            try:
+                                on_csv_closed_fn()
+                            except Exception:
+                                pass
+
+                    if _csv_active:
+                        extra_cols = extra_cols_fn() if extra_cols_fn else []
+                        row = sample.to_csv_row(extra_cols=extra_cols)
+                        csv_writer.writerow(row)
+                        rows_written += 1
+
                     if on_row_fn:
                         on_row_fn(
                             sample.cam_id,
@@ -706,7 +745,7 @@ def stream_queue_to_csv_file(
     Parameters
     ----------
     expected_row_sum
-        Forwarded to ``parse_stream_to_csv`` / ``parse_histogram_packet_structured``.
+        Forwarded to ``drain_histogram_stream`` / ``parse_histogram_packet_structured``.
         Samples whose histogram bin sum does not match are dropped from both
         the CSV and the ``on_row_fn`` callback before being written.
     """
@@ -729,7 +768,7 @@ def stream_queue_to_csv_file(
             )
 
             buffer_accumulator = bytearray()
-            rows_written = parse_stream_to_csv(
+            rows_written = drain_histogram_stream(
                 q=q,
                 stop_evt=stop_evt,
                 csv_writer=csv_writer,

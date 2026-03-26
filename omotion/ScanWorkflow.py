@@ -27,54 +27,6 @@ logger = logging.getLogger(f"{_log_root}.ScanWorkflow" if _log_root else "ScanWo
 # (to feed the science pipeline) but file I/O has been disabled.
 # ---------------------------------------------------------------------------
 
-class _NullCsvWriter:
-    """Drop-in replacement for csv.writer that silently discards all rows."""
-    def writerow(self, _row) -> None:
-        pass
-
-
-class _TruncatingCsvWriter:
-    """Wraps a real csv.writer and file handle.
-
-    Writes normally until ``deadline`` (a ``time.time()`` value) is reached,
-    then flushes and closes the file and silently discards all subsequent rows.
-    The science pipeline's ``on_row_fn`` callback is unaffected — data
-    continues to flow to the pipeline regardless of whether the file is open.
-
-    ``on_truncate_fn``, if provided, is called exactly once at the moment the
-    file is closed so the caller can emit a log message.
-    """
-
-    def __init__(
-        self,
-        real_writer,
-        file_handle,
-        deadline: float,
-        on_truncate_fn=None,
-    ):
-        self._real = real_writer
-        self._fh = file_handle
-        self._deadline = deadline
-        self._on_truncate_fn = on_truncate_fn
-        self._done = False
-
-    def writerow(self, row) -> None:
-        if self._done:
-            return
-        if time.time() >= self._deadline:
-            self._done = True
-            try:
-                self._fh.flush()
-                self._fh.close()
-            except Exception:
-                pass
-            if self._on_truncate_fn:
-                try:
-                    self._on_truncate_fn()
-                except Exception:
-                    pass
-            return
-        self._real.writerow(row)
 
 
 # ---------------------------------------------------------------------------
