@@ -85,6 +85,7 @@ class CommInterface(USBInterfaceBase):
         self.on_disconnect = None
         self._disconnect_notified = False
         self._io_lock = threading.RLock()
+        self._send_lock = threading.Lock()
         if self.async_mode:
             self.response_queue = queue.Queue()
             self.response_thread = threading.Thread(
@@ -115,66 +116,71 @@ class CommInterface(USBInterfaceBase):
         timeout=10.0,
         max_retries=0,
     ) -> UartPacket:
-        if id is None:
-            self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
-            id = self.packet_count
+        with self._send_lock:
+            if id is None:
+                self.packet_count = (self.packet_count + 1) & 0xFFFF or 1
+                id = self.packet_count
 
-        if data:
-            if not isinstance(data, (bytes, bytearray)):
-                raise ValueError("Data must be bytes or bytearray")
-            payload = data
-        else:
-            payload = b""
+            if data:
+                if not isinstance(data, (bytes, bytearray)):
+                    raise ValueError("Data must be bytes or bytearray")
+                payload = data
+            else:
+                payload = b""
 
-        uart_packet = UartPacket(
-            id=id,
-            packet_type=packetType,
-            command=command,
-            addr=addr,
-            reserved=reserved,
-            data=payload,
-        )
+            uart_packet = UartPacket(
+                id=id,
+                packet_type=packetType,
+                command=command,
+                addr=addr,
+                reserved=reserved,
+                data=payload,
+            )
 
-        tx_bytes = uart_packet.to_bytes()
-        packet_type_name = _PACKET_TYPE_NAMES.get(packetType)
-        cmd_names = _CMD_NAMES.get(packet_type_name, {})
-        logger.debug(
-            f"{self.desc}: TX id=0x{id:04X} "
-            f"type={_format_named(packetType, _PACKET_TYPE_NAMES)} "
-            f"cmd={_format_named(command, cmd_names)} "
-            f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
-        )
+            tx_bytes = uart_packet.to_bytes()
+            packet_type_name = _PACKET_TYPE_NAMES.get(packetType)
+            cmd_names = _CMD_NAMES.get(packet_type_name, {})
+            logger.debug(
+                f"{self.desc}: TX id=0x{id:04X} "
+                f"type={_format_named(packetType, _PACKET_TYPE_NAMES)} "
+                f"cmd={_format_named(command, cmd_names)} "
+                f"addr=0x{addr:02X} reserved=0x{reserved:02X} len={len(payload)} data={tx_bytes.hex()}"
+            )
 
-        self.write(tx_bytes)
-        time.sleep(0.0005)
+            self.write(tx_bytes)
+            time.sleep(0.0005)
 
-        if not self.async_mode:
-            start = time.monotonic()
-            data = bytearray()
-            with self._io_lock:
-                while time.monotonic() - start < timeout:
-                    try:
-                        resp = self.receive()
-                        time.sleep(0.005)
-                        if resp:
-                            data.extend(resp)
-                            if data and data[-1] == OW_END_BYTE:
-                                return UartPacket(buffer=data)
-                    except usb.core.USBError:
-                        continue
-            last_error = TimeoutError("No response")
-        else:
-            start_time = time.monotonic()
-            while time.monotonic() - start_time < timeout:
-                if self.response_queue.empty():
-                    time.sleep(0.0005)
-                else:
-                    time.sleep(
-                        0.001
-                    )  # wait for a moment to let the MCU finish processing that it has finished sending the packet
-                    # this delay could be placed anywhere at the end of the send_packet function just to give the MCU time to finish processing
-                    return self.response_queue.get()
-            raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
+            if not self.async_mode:
+                start = time.monotonic()
+                data = bytearray()
+                with self._io_lock:
+                    while time.monotonic() - start < timeout:
+                        try:
+                            resp = self.receive()
+                            time.sleep(0.005)
+                            if resp:
+                                data.extend(resp)
+                                if data and data[-1] == OW_END_BYTE:
+                                    return UartPacket(buffer=data)
+                        except usb.core.USBError:
+                            continue
+                last_error = TimeoutError("No response")
+            else:
+                start_time = time.monotonic()
+                while time.monotonic() - start_time < timeout:
+                    if self.response_queue.empty():
+                        time.sleep(0.0005)
+                    else:
+                        time.sleep(0.001)
+                        pkt = self.response_queue.get()
+                        if pkt.id != id:
+                            logger.warning(
+                                "%s: discarding stale response id=0x%04X (expected 0x%04X)",
+                                self.desc, pkt.id, id,
+                            )
+                            continue
+                        return pkt
+                raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
 
     def clear_buffer(self):
         with self._buffer_lock:
