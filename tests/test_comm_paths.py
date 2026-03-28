@@ -116,11 +116,22 @@ def test_stream_histogram_data_returned(any_sensor):
     returned by camera_get_histogram must be 4100 bytes and decode to
     1024 histogram bins + float32 temperature.
     """
-    any_sensor.enable_camera_power(0x01)
+    ok = any_sensor.enable_camera_power(0x01)
+    if ok is False:
+        pytest.fail(
+            "enable_camera_power returned False — "
+            "TCA9548A I2C mux may be stuck (err: HAL_ERROR); power cycle the sensor"
+        )
     time.sleep(0.5)
-    any_sensor.program_fpga(camera_position=0x01, manual_process=False)
+    ok = any_sensor.program_fpga(camera_position=0x01, manual_process=False)
+    if ok is False:
+        any_sensor.disable_camera_power(0x01)
+        pytest.fail("program_fpga returned False — FPGA bitstream load failed")
     time.sleep(0.1)
-    any_sensor.camera_configure_registers(0x01)
+    ok = any_sensor.camera_configure_registers(0x01)
+    if ok is False:
+        any_sensor.disable_camera_power(0x01)
+        pytest.fail("camera_configure_registers returned False")
 
     try:
         any_sensor.camera_capture_histogram(0x01)

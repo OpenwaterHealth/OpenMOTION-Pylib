@@ -353,9 +353,8 @@ def _power_up(sensor, mask=0x01):
 @pytest.mark.slow
 @pytest.mark.fpga
 def test_fpga_check_after_program(any_sensor):
-    _power_up(any_sensor)
+    _bring_up_camera(any_sensor)  # power → program_fpga → configure_registers
     try:
-        any_sensor.camera_configure_registers(0x01)
         assert any_sensor.check_camera_fpga(0x01) is True
     finally:
         _tear_down_camera(any_sensor)
@@ -364,11 +363,10 @@ def test_fpga_check_after_program(any_sensor):
 @pytest.mark.slow
 @pytest.mark.fpga
 def test_fpga_status(any_sensor):
-    _power_up(any_sensor)
+    _bring_up_camera(any_sensor)  # power → program_fpga → configure_registers
     try:
-        any_sensor.camera_configure_registers(0x01)
         result = any_sensor.get_status_fpga(0x01)
-        assert result is not None
+        assert result is True
     finally:
         _tear_down_camera(any_sensor)
 
@@ -376,11 +374,10 @@ def test_fpga_status(any_sensor):
 @pytest.mark.slow
 @pytest.mark.fpga
 def test_fpga_usercode(any_sensor):
-    _power_up(any_sensor)
+    _bring_up_camera(any_sensor)  # power → program_fpga → configure_registers
     try:
-        any_sensor.camera_configure_registers(0x01)
         result = any_sensor.get_usercode_fpga(0x01)
-        assert result is not None
+        assert result is True
     finally:
         _tear_down_camera(any_sensor)
 
@@ -388,9 +385,8 @@ def test_fpga_usercode(any_sensor):
 @pytest.mark.slow
 @pytest.mark.fpga
 def test_fpga_activate(any_sensor):
-    _power_up(any_sensor)
+    _bring_up_camera(any_sensor)  # power → program_fpga → configure_registers
     try:
-        any_sensor.camera_configure_registers(0x01)
         assert any_sensor.activate_camera_fpga(0x01) is True
     finally:
         _tear_down_camera(any_sensor)
@@ -404,6 +400,78 @@ def test_fpga_reset(any_sensor):
         assert any_sensor.reset_camera_sensor(0x01) is True
     finally:
         _tear_down_camera(any_sensor)
+
+
+@pytest.mark.slow
+@pytest.mark.fpga
+def test_program_fpga_success(any_sensor):
+    """program_fpga on its own returns True — firmware loads bitstream into SRAM."""
+    ok = any_sensor.enable_camera_power(0x01)
+    if ok is False:
+        pytest.fail("enable_camera_power returned False")
+    time.sleep(0.5)
+    try:
+        result = any_sensor.program_fpga(camera_position=0x01, manual_process=False)
+        assert result is True, "program_fpga returned False — bitstream load failed"
+    finally:
+        any_sensor.disable_camera_power(0x01)
+
+
+@pytest.mark.slow
+@pytest.mark.fpga
+def test_bloodflow_app_camera_fpga_sequence(any_sensor):
+    """Exact production sequence from ScanWorkflow / motion_connector:
+    enable_camera_power → program_fpga → camera_configure_registers.
+    All three must succeed; any failure here explains flakiness in the app."""
+    ok = any_sensor.enable_camera_power(0x01)
+    assert ok is not False, "enable_camera_power failed"
+    time.sleep(0.5)
+    try:
+        ok = any_sensor.program_fpga(camera_position=0x01, manual_process=False)
+        assert ok is True, "program_fpga failed — FPGA will be unconfigured"
+        time.sleep(0.1)
+        ok = any_sensor.camera_configure_registers(0x01)
+        assert ok is True, "camera_configure_registers failed after FPGA load"
+    finally:
+        any_sensor.disable_camera_power(0x01)
+
+
+@pytest.mark.slow
+@pytest.mark.fpga
+def test_camera_status_bits_after_bringup(any_sensor):
+    """After full bring-up the status word must have READY + FPGA_DONE + REGS_DONE set."""
+    _bring_up_camera(any_sensor)
+    try:
+        status_map = any_sensor.get_camera_status(0x01)
+        assert status_map is not None, "get_camera_status returned None"
+        status = status_map.get(0)
+        assert status is not None, "No status entry for camera 0"
+        assert bool(status & (1 << 0)), f"READY bit not set (status=0x{status:02X})"
+        assert bool(status & (1 << 1)), f"FPGA_DONE bit not set (status=0x{status:02X})"
+        assert bool(status & (1 << 2)), f"REGS_DONE bit not set (status=0x{status:02X})"
+    finally:
+        _tear_down_camera(any_sensor)
+
+
+@pytest.mark.slow
+@pytest.mark.fpga
+def test_sram_prog_enter_erase_exit(any_sensor):
+    """Manual SRAM programming primitives (used by flash_sensors.py manual flow):
+    power → reset → activate → check ID → enter SRAM prog → erase → exit."""
+    ok = any_sensor.enable_camera_power(0x01)
+    if ok is False:
+        pytest.fail("enable_camera_power returned False")
+    time.sleep(0.5)
+    try:
+        assert any_sensor.reset_camera_sensor(0x01) is True
+        time.sleep(0.1)
+        assert any_sensor.activate_camera_fpga(0x01) is True
+        assert any_sensor.check_camera_fpga(0x01) is True
+        assert any_sensor.enter_sram_prog_fpga(0x01) is True
+        assert any_sensor.erase_sram_fpga(0x01) is True
+        assert any_sensor.exit_sram_prog_fpga(0x01) is True
+    finally:
+        any_sensor.disable_camera_power(0x01)
 
 
 # ===========================================================================
