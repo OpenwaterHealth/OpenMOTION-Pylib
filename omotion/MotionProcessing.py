@@ -1545,6 +1545,54 @@ def create_science_pipeline(
     return pipeline
 
 
+def feed_pipeline_from_csv(
+    csv_path: str,
+    side: str,
+    pipeline: "SciencePipeline",
+) -> int:
+    """
+    Read a raw histogram CSV file and enqueue every row into a SciencePipeline.
+
+    The CSV must have at minimum the columns produced by the raw-histogram
+    writer: ``cam_id``, ``frame_id``, ``timestamp_s``, histogram bins labeled
+    ``"0"`` through ``"1023"``, ``temperature``, and ``sum``.  Extra columns
+    such as ``tcm``, ``tcl``, and ``pdc`` are silently ignored.
+
+    Parameters
+    ----------
+    csv_path
+        Path to the raw histogram CSV file.
+    side
+        Sensor side — ``"left"`` or ``"right"``.
+    pipeline
+        A running :class:`SciencePipeline` instance (created via
+        :func:`create_science_pipeline`).
+
+    Returns
+    -------
+    int
+        Number of rows enqueued into the pipeline.
+    """
+    rows_fed = 0
+    with open(csv_path, "r", newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            cam_id = int(row["cam_id"])
+            frame_id = int(row["frame_id"])
+            timestamp_s = float(row["timestamp_s"])
+            temperature_c = float(row.get("temperature", 0.0))
+            hist = np.array(
+                [int(row[str(i)]) for i in range(HISTO_SIZE_WORDS)],
+                dtype=np.uint32,
+            )
+            row_sum = int(row["sum"])
+            pipeline.enqueue(
+                side, cam_id, frame_id, timestamp_s, hist, row_sum, temperature_c
+            )
+            rows_fed += 1
+    return rows_fed
+
+
 # ---------------------------------------------------------------------------
 # Backward-compatibility shims
 # ---------------------------------------------------------------------------
