@@ -5,14 +5,14 @@ Hardware-free tests for the science data pipeline (`SciencePipeline` in `omotion
 ## Running the tests
 
 ```bash
-# With pytest
+# Correctness tests (synthetic fixtures, no hardware required)
 pytest tests/test_pipeline_csv.py -v
+python tests/test_pipeline_csv.py          # standalone, no pytest needed
+python scripts/run_pipeline_csv_tests.py   # auto-generates fixtures if missing
 
-# Standalone (no pytest required)
-python tests/test_pipeline_csv.py
-
-# Via the dedicated runner script (auto-generates fixtures if missing)
-python scripts/run_pipeline_csv_tests.py
+# Performance test (real captured scan data)
+pytest tests/test_pipeline_perf.py -v -s  # -s shows the stats report
+python tests/test_pipeline_perf.py         # standalone with full report
 ```
 
 ## How it works
@@ -48,7 +48,64 @@ Fixtures use the same column format as live scans (`cam_id`, `frame_id`, `timest
 | `frame_id_rollover_left.csv` | left cam 0 | 275 | 10 | Raw u8 frame ID wraps 255→0 at frame 256 |
 | `multi_interval_left.csv` | left cam 0 | 25 | 5 | Four complete dark intervals |
 
-## Test suites
+---
+
+## Performance test — `test_pipeline_perf.py`
+
+Feeds two real captured scan CSVs (left and right, all 8 cameras each) through the pipeline and measures end-to-end throughput, latency, and output quality.  The CSVs are not committed to the repository — they must be present in `tests/fixtures/` for this test to run; it is skipped automatically if the files are missing.
+
+**Input files:**
+| File | Rows | Cameras | Duration |
+|---|---|---|---|
+| `scan_owC18EHALL_20251217_160949_left_maskFF.csv` | 5,240 | 8 (mask 0xFF) | ~16.4 s |
+| `scan_owC18EHALL_20251217_160949_right_maskFF.csv` | 5,240 | 8 (mask 0xFF) | ~16.4 s |
+
+**Metrics collected:**
+
+| Metric | Description |
+|---|---|
+| CSV load + enqueue time | Wall time to read both files and put all rows on the pipeline queue |
+| Pipeline drain time | Time from last enqueue to `pipeline.stop()` returning |
+| Total processing time | Sum of the above |
+| Throughput | Total rows processed per second |
+| Real-time factor | Original scan duration / total processing time (>1 = faster than real-time) |
+| Uncorrected callback count | Total `on_uncorrected_fn` calls received |
+| Corrected batches emitted | Total `on_corrected_batch_fn` calls received |
+| Science frames emitted | Total `on_science_frame_fn` calls received |
+| Complete science frames | Frames where all 16 cameras (both sides) contributed |
+| Callback interval stats | Min / max / mean / median / std / p95 / p99 of gaps between uncorrected callbacks |
+| Batch size stats | Min / mean / max samples per corrected batch |
+
+**Pytest assertions:**
+
+| Test | What it checks |
+|---|---|
+| `test_all_rows_ingested` | Exactly 5,240 rows ingested from each side |
+| `test_uncorrected_callbacks_received` | At least one uncorrected callback fired |
+| `test_corrected_batches_emitted` | At least one corrected batch emitted for a 16s scan |
+| `test_science_frames_emitted` | At least one science frame assembled |
+| `test_realtime_factor` | Processing completes at least 2× faster than real-time |
+| `test_callback_interval_p99` | p99 gap between uncorrected callbacks is under 500 ms |
+| `test_print_report` | Prints the full stats report (visible with `pytest -s`) |
+
+**Notes on "complete science frames":** In this test both CSV files are fed sequentially (all left rows first, then all right). In a live scan the two sides are interleaved. Sequential ingestion means some frame buffers timeout before the matching side arrives, so complete-frame percentage is lower here than in production. This is expected and does not indicate a bug.
+
+**Typical results on a development machine:**
+
+```
+CSV load + enqueue time:    ~4.2 s
+Pipeline drain time:        ~0.3 s
+Total processing time:      ~4.6 s
+Throughput:                 ~2,300 rows/s
+Real-time factor:           ~3.5x
+Uncorrected callbacks:      10,320  (655 frames × 8 cams × 2 sides, minus warmup/dark)
+Corrected batches:          16      (1 batch per camera after the one dark interval)
+Batch size:                 591 samples each
+```
+
+---
+
+## Correctness test suites — `test_pipeline_csv.py`
 
 ### TestSingleCamBasic
 Single left camera, 12 frames. Dark frames land at absolute positions 3, 6, and 11, producing two complete correction intervals (3→6, 6→11).
