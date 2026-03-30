@@ -985,6 +985,7 @@ class SciencePipeline:
         discard_count: int = 9,
         frame_timeout_s: float = 0.5,
         expected_row_sum: int | None = None,
+        noise_floor: int = 74,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -997,6 +998,7 @@ class SciencePipeline:
         self._discard_count = discard_count
         self._frame_timeout_s = frame_timeout_s
         self._expected_row_sum = expected_row_sum
+        self._noise_floor = int(noise_floor)
 
         # Derive the set of (side, cam_id) keys that must be present for a
         # frame to be considered complete.
@@ -1123,7 +1125,18 @@ class SciencePipeline:
                 )
                 continue
 
-            # --- 3. Compute raw moments from histogram -------------------------
+            # --- 3. Noise floor decimation ------------------------------------
+            # Zero out any bin whose count is below the noise floor threshold
+            # before computing moments.  This suppresses low-level dark noise
+            # that would otherwise bias the mean and variance estimates.
+            if self._noise_floor > 0:
+                below = hist < self._noise_floor
+                if below.any():
+                    hist = hist.copy()
+                    hist[below] = 0
+                    row_sum = int(hist.sum(dtype=np.uint64))
+
+            # --- 4. Compute raw moments from histogram -------------------------
             if row_sum > 0:
                 u1 = float(np.dot(hist, HISTO_BINS) / row_sum)
                 u2 = float(np.dot(hist, HISTO_BINS_SQ) / row_sum)
@@ -1131,7 +1144,7 @@ class SciencePipeline:
                 u1 = 0.0
                 u2 = 0.0
 
-            # --- 4. Dark frame handling ----------------------------------------
+            # --- 5. Dark frame handling ----------------------------------------
             if self._is_dark_frame(absolute_frame):
                 variance = max(0.0, u2 - u1 * u1)
                 dark_list = self._dark_history.setdefault(key, [])
@@ -1507,6 +1520,7 @@ def create_science_pipeline(
     discard_count: int = 9,
     frame_timeout_s: float = 0.5,
     expected_row_sum: int | None = None,
+    noise_floor: int = 74,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
@@ -1525,6 +1539,9 @@ def create_science_pipeline(
     expected_row_sum
         When not None, samples whose histogram bin sum does not match this
         value are discarded.
+    noise_floor
+        Histogram bins with a count strictly below this value are zeroed
+        before moment computation (default 164).  Set to 0 to disable.
     """
     pipeline = SciencePipeline(
         left_camera_mask=left_camera_mask,
@@ -1540,6 +1557,7 @@ def create_science_pipeline(
         discard_count=discard_count,
         frame_timeout_s=frame_timeout_s,
         expected_row_sum=expected_row_sum,
+        noise_floor=noise_floor,
     )
     pipeline.start()
     return pipeline
