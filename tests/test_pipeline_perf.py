@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from omotion.MotionProcessing import (
     CorrectedBatch,
-    CorrectedSample,
+    Sample,
     ScienceFrame,
     create_science_pipeline,
     feed_pipeline_from_csv,
@@ -82,7 +82,7 @@ class _PerfCollector:
         self.science_frames:    list[ScienceFrame] = []
         self.science_frame_times: list[float] = []
 
-    def on_uncorrected(self, sample: CorrectedSample) -> None:
+    def on_uncorrected(self, sample: Sample) -> None:
         t = time.perf_counter()
         with self._lock:
             self.uncorrected_times.append(t)

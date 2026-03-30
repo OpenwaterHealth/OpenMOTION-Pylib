@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from omotion.MotionProcessing import (
     CorrectedBatch,
-    CorrectedSample,
+    Sample,
     ScienceFrame,
     create_science_pipeline,
     feed_pipeline_from_csv,
@@ -240,10 +240,10 @@ class TestDarkCorrectionMath:
         """BFI and BVI outputs should be finite and within a sane range."""
         for batch in self.batches:
             for s in batch.samples:
-                assert np.isfinite(s.bfi_corrected), f"BFI not finite at frame {s.absolute_frame_id}"
-                assert np.isfinite(s.bvi_corrected), f"BVI not finite at frame {s.absolute_frame_id}"
-                assert -50 < s.bfi_corrected < 50, f"BFI out of range: {s.bfi_corrected}"
-                assert -50 < s.bvi_corrected < 50, f"BVI out of range: {s.bvi_corrected}"
+                assert np.isfinite(s.bfi), f"BFI not finite at frame {s.absolute_frame_id}"
+                assert np.isfinite(s.bvi), f"BVI not finite at frame {s.absolute_frame_id}"
+                assert -50 < s.bfi < 50, f"BFI out of range: {s.bfi}"
+                assert -50 < s.bvi < 50, f"BVI out of range: {s.bvi}"
 
     def test_contrast_nonnegative(self):
         for batch in self.batches:

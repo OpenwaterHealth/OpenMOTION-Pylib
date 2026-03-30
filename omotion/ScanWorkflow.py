@@ -332,10 +332,10 @@ class ScanWorkflow:
                                             float(sample.timestamp_s),
                                         )
                                     frame_entry["values"][f"bfi_{col_suffix}"] = float(
-                                        sample.bfi_corrected
+                                        sample.bfi
                                     )
                                     frame_entry["values"][f"bvi_{col_suffix}"] = float(
-                                        sample.bvi_corrected
+                                        sample.bvi
                                     )
                                     frame_entry["values"][f"mean_{col_suffix}"] = float(
                                         sample.mean

@@ -155,7 +155,7 @@ class HistogramPacket:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class RealtimeSample:
+class Sample:
     side: str
     cam_id: int
     frame_id: int           # raw u8 from the wire
@@ -168,20 +168,6 @@ class RealtimeSample:
     contrast: float
     bfi: float
     bvi: float
-
-
-@dataclass
-class CorrectedSample:
-    side: str
-    cam_id: int
-    frame_id: int           # raw u8 from the wire
-    absolute_frame_id: int  # monotonic counter with rollover handled
-    timestamp_s: float
-    mean: float
-    std_dev: float
-    contrast: float
-    bfi_corrected: float
-    bvi_corrected: float
     is_corrected: bool = False  # True when dark-frame interpolation has been applied
 
 
@@ -195,12 +181,12 @@ class CorrectedBatch:
 
     ``dark_frame_start`` / ``dark_frame_end`` are the absolute frame IDs of
     the two bounding dark frames used for interpolation.
-    ``samples`` contains one ``CorrectedSample`` per (side, cam_id) per
+    ``samples`` contains one ``Sample`` per (side, cam_id) per
     non-dark frame in the interval, with ``is_corrected=True``.
     """
     dark_frame_start: int
     dark_frame_end: int
-    samples: list[CorrectedSample]
+    samples: list[Sample]
 
 
 @dataclass
@@ -214,14 +200,14 @@ class ScienceFrame:
     x-axis without worrying about u8 rollover collisions.
     ``frame_id`` is the raw 0–255 value as it appears in the binary stream
     and on disk in CSV files.
-    ``samples`` maps (side, cam_id) → CorrectedSample for every camera that
+    ``samples`` maps (side, cam_id) → Sample for every camera that
     reported during this trigger cycle.
     """
 
     absolute_frame: int
     frame_id: int
     timestamp_s: float
-    samples: dict[tuple[str, int], CorrectedSample]
+    samples: dict[tuple[str, int], Sample]
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +792,7 @@ def compute_realtime_metrics(
     bfi_c_max,
     bfi_i_min,
     bfi_i_max,
-) -> RealtimeSample:
+) -> Sample:
     """
     Pure metric computation for one histogram row.
     """
@@ -844,7 +830,7 @@ def compute_realtime_metrics(
         bvi_val = (1.0 - ((mean_val - imin) / iden)) * 10.0
 
     timestamp = float(timestamp_s) if timestamp_s else time.time()
-    return RealtimeSample(
+    return Sample(
         side=side,
         cam_id=int(cam_id),
         frame_id=int(frame_id),
@@ -897,7 +883,7 @@ class _FrameBuffer:
     """Internal accumulator for one trigger-cycle's worth of samples."""
     arrived_at: float          # monotonic wall time when the first sample arrived
     min_timestamp_s: float     # lowest sensor timestamp seen so far in this frame
-    samples: dict[tuple[str, int], CorrectedSample] = field(default_factory=dict)
+    samples: dict[tuple[str, int], Sample] = field(default_factory=dict)
 
 
 @dataclass
@@ -911,6 +897,7 @@ class _StoredFrameMoments:
     u1: float                  # first moment  (mean of histogram)
     u2: float                  # second moment (mean of bins²)
     temperature_c: float
+    row_sum: int
 
 
 class SciencePipeline:
@@ -978,7 +965,7 @@ class SciencePipeline:
         bfi_c_max,
         bfi_i_min,
         bfi_i_max,
-        on_uncorrected_fn: Callable[[CorrectedSample], None] | None = None,
+        on_uncorrected_fn: Callable[[Sample], None] | None = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
         on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
         dark_interval: int = 600,
@@ -1033,11 +1020,11 @@ class SciencePipeline:
 
         # Per (side, cam_id): last uncorrected sample emitted for that camera.
         # Used to repeat values on dark frames so the live plot sees no blip.
-        self._last_uncorrected: dict[tuple[str, int], CorrectedSample] = {}
+        self._last_uncorrected: dict[tuple[str, int], Sample] = {}
 
         # Per (side, cam_id): last corrected sample from the previous batch.
         # Used to interpolate the corrected value for the start dark frame.
-        self._last_corrected: dict[tuple[str, int], CorrectedSample] = {}
+        self._last_corrected: dict[tuple[str, int], Sample] = {}
 
         self._ingress_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -1165,17 +1152,19 @@ class SciencePipeline:
                 # plot sees no blip at the dark-frame position.
                 prev = self._last_uncorrected.get(key)
                 if prev is not None:
-                    dark_uncorrected = CorrectedSample(
+                    dark_uncorrected = Sample(
                         side=prev.side,
                         cam_id=prev.cam_id,
                         frame_id=raw_frame_id,
                         absolute_frame_id=absolute_frame,
                         timestamp_s=ts,
+                        row_sum=prev.row_sum,
+                        temperature_c=prev.temperature_c,
                         mean=prev.mean,
                         std_dev=prev.std_dev,
                         contrast=prev.contrast,
-                        bfi_corrected=prev.bfi_corrected,
-                        bvi_corrected=prev.bvi_corrected,
+                        bfi=prev.bfi,
+                        bvi=prev.bvi,
                         is_corrected=False,
                     )
                     if self._on_uncorrected_fn:
@@ -1209,11 +1198,12 @@ class SciencePipeline:
                     u1=u1,
                     u2=u2,
                     temperature_c=temp,
+                    row_sum=row_sum,
                 )
             )
 
             # --- 6. Compute uncorrected BFI/BVI and emit immediately ----------
-            sample = compute_realtime_metrics(
+            uncorrected = compute_realtime_metrics(
                 side=side,
                 cam_id=cam_id,
                 frame_id=raw_frame_id,
@@ -1226,21 +1216,7 @@ class SciencePipeline:
                 bfi_c_max=self._bfi_c_max,
                 bfi_i_min=self._bfi_i_min,
                 bfi_i_max=self._bfi_i_max,
-            )
-
-            uncorrected = CorrectedSample(
-                side=side,
-                cam_id=cam_id,
-                frame_id=raw_frame_id,
-                absolute_frame_id=absolute_frame,
-                timestamp_s=ts,
-                mean=sample.mean,
-                std_dev=sample.std_dev,
-                contrast=sample.contrast,
-                bfi_corrected=sample.bfi,
-                bvi_corrected=sample.bvi,
-                is_corrected=False,
-            )
+            )  # is_corrected defaults to False
 
             if self._on_uncorrected_fn:
                 try:
@@ -1344,7 +1320,7 @@ class SciencePipeline:
             return
 
         interval = curr_abs - prev_abs
-        corrected_samples: list[CorrectedSample] = []
+        corrected_samples: list[Sample] = []
 
         for fm in pending:
             if fm.absolute_frame_id <= prev_abs or fm.absolute_frame_id >= curr_abs:
@@ -1375,17 +1351,19 @@ class SciencePipeline:
             )
 
             corrected_samples.append(
-                CorrectedSample(
+                Sample(
                     side=key[0],
                     cam_id=key[1],
                     frame_id=fm.frame_id,
                     absolute_frame_id=fm.absolute_frame_id,
                     timestamp_s=fm.timestamp_s,
+                    row_sum=fm.row_sum,
+                    temperature_c=fm.temperature_c,
                     mean=float(corrected_mean),
                     std_dev=corrected_std,
                     contrast=float(corrected_contrast),
-                    bfi_corrected=float(bfi),
-                    bvi_corrected=float(bvi),
+                    bfi=float(bfi),
+                    bvi=float(bvi),
                     is_corrected=True,
                 )
             )
@@ -1402,29 +1380,31 @@ class SciencePipeline:
             first_cs = corrected_samples[0]   # prev_abs + 1
             left_cs = self._last_corrected.get(key)  # prev_abs - 1, may be None
             if left_cs is not None:
-                dark_bfi = (left_cs.bfi_corrected + first_cs.bfi_corrected) / 2.0
-                dark_bvi = (left_cs.bvi_corrected + first_cs.bvi_corrected) / 2.0
+                dark_bfi = (left_cs.bfi + first_cs.bfi) / 2.0
+                dark_bvi = (left_cs.bvi + first_cs.bvi) / 2.0
                 dark_mean = (left_cs.mean + first_cs.mean) / 2.0
                 dark_std = (left_cs.std_dev + first_cs.std_dev) / 2.0
                 dark_contrast = (left_cs.contrast + first_cs.contrast) / 2.0
             else:
-                dark_bfi = first_cs.bfi_corrected
-                dark_bvi = first_cs.bvi_corrected
+                dark_bfi = first_cs.bfi
+                dark_bvi = first_cs.bvi
                 dark_mean = first_cs.mean
                 dark_std = first_cs.std_dev
                 dark_contrast = first_cs.contrast
 
-            dark_corrected = CorrectedSample(
+            dark_corrected = Sample(
                 side=key[0],
                 cam_id=key[1],
                 frame_id=prev_raw_fid,
                 absolute_frame_id=prev_abs,
                 timestamp_s=prev_ts,
+                row_sum=first_cs.row_sum,
+                temperature_c=first_cs.temperature_c,
                 mean=dark_mean,
                 std_dev=dark_std,
                 contrast=dark_contrast,
-                bfi_corrected=dark_bfi,
-                bvi_corrected=dark_bvi,
+                bfi=dark_bfi,
+                bvi=dark_bvi,
                 is_corrected=True,
             )
             # Insert at front so the batch is in chronological order.
@@ -1513,7 +1493,7 @@ def create_science_pipeline(
     bfi_c_max,
     bfi_i_min,
     bfi_i_max,
-    on_uncorrected_fn: Callable[[CorrectedSample], None] | None = None,
+    on_uncorrected_fn: Callable[[Sample], None] | None = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
     on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
     dark_interval: int = 600,
@@ -1618,6 +1598,11 @@ def feed_pipeline_from_csv(
 # worker + correction worker) and was constructed per-side.  New code should
 # use SciencePipeline / create_science_pipeline instead.
 
+# RealtimeSample and CorrectedSample have been merged into Sample.
+# These aliases keep existing call-sites working without changes.
+RealtimeSample = Sample
+CorrectedSample = Sample
+
 class RealtimeProcessingPipeline(SciencePipeline):
     """Deprecated — use SciencePipeline instead."""
 
@@ -1629,8 +1614,8 @@ class RealtimeProcessingPipeline(SciencePipeline):
         bfi_c_max,
         bfi_i_min,
         bfi_i_max,
-        on_sample_fn: Callable[[RealtimeSample], None] | None = None,
-        on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
+        on_sample_fn: Callable[[Sample], None] | None = None,
+        on_corrected_fn: Callable[[Sample], None] | None = None,
         correction_warmup_count: int = 10,
         correction_mean_threshold: float = 66.0,
     ):
