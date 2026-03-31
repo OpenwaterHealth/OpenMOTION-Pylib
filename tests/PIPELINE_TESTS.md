@@ -17,9 +17,9 @@ python tests/test_pipeline_perf.py         # standalone with full report
 
 ## How it works
 
-`feed_pipeline_from_csv(csv_path, side, pipeline)` (added to `omotion/MotionProcessing.py`) reads a raw histogram CSV and enqueues every row into a running `SciencePipeline`. This lets any captured or synthetic histogram data be replayed through the pipeline without hardware.
+`feed_pipeline_from_csv(csv_path, side, pipeline)` (in `omotion/MotionProcessing.py`) reads a raw histogram CSV and enqueues every row into a running `SciencePipeline`. This lets any captured or synthetic histogram data be replayed through the pipeline without hardware.
 
-Each test creates a `SciencePipeline` wired to three collector lists, feeds one or more fixture CSVs into it, calls `pipeline.stop()` to drain the queue, then asserts against what was collected.
+Each test creates a `SciencePipeline` wired to two collector lists (uncorrected samples, corrected batches), feeds one or more fixture CSVs into it, calls `pipeline.stop()` to drain the queue, then asserts against what was collected.
 
 ## Fixture files
 
@@ -71,8 +71,6 @@ Feeds two real captured scan CSVs (left and right, all 8 cameras each) through t
 | Real-time factor | Original scan duration / total processing time (>1 = faster than real-time) |
 | Uncorrected callback count | Total `on_uncorrected_fn` calls received |
 | Corrected batches emitted | Total `on_corrected_batch_fn` calls received |
-| Science frames emitted | Total `on_science_frame_fn` calls received |
-| Complete science frames | Frames where all 16 cameras (both sides) contributed |
 | Callback interval stats | Min / max / mean / median / std / p95 / p99 of gaps between uncorrected callbacks |
 | Batch size stats | Min / mean / max samples per corrected batch |
 
@@ -83,12 +81,9 @@ Feeds two real captured scan CSVs (left and right, all 8 cameras each) through t
 | `test_all_rows_ingested` | Exactly 5,240 rows ingested from each side |
 | `test_uncorrected_callbacks_received` | At least one uncorrected callback fired |
 | `test_corrected_batches_emitted` | At least one corrected batch emitted for a 16s scan |
-| `test_science_frames_emitted` | At least one science frame assembled |
 | `test_realtime_factor` | Processing completes at least 2× faster than real-time |
 | `test_callback_interval_p99` | p99 gap between uncorrected callbacks is under 500 ms |
 | `test_print_report` | Prints the full stats report (visible with `pytest -s`) |
-
-**Notes on "complete science frames":** In this test both CSV files are fed sequentially (all left rows first, then all right). In a live scan the two sides are interleaved. Sequential ingestion means some frame buffers timeout before the matching side arrives, so complete-frame percentage is lower here than in production. This is expected and does not indicate a bug.
 
 **Typical results on a development machine:**
 
@@ -146,9 +141,9 @@ After subtracting the dark baseline (mean ≈ 14.5) from the regular signal (mea
 | `test_corrections_still_fire_after_rollover` | At least one batch has `dark_frame_end > 255` |
 
 ### TestMultiCamLeft
-Two cameras (cam 0 and cam 1) on the left side, 12 frames. The pipeline must accumulate samples from both cameras into each `ScienceFrame` and emit corrected batches for both.
+Two cameras (cam 0 and cam 1) on the left side, 12 frames. The pipeline must emit corrected batches for both cameras.
 
-Note: the pipeline emits one `CorrectedBatch` per (side, cam_id) per dark interval, so a single batch object covers only one camera. The multi-camera check is done across all batches.
+Note: the pipeline emits one `CorrectedBatch` per `(side, cam_id)` per dark interval, so a single batch object covers only one camera. The multi-camera check is done across all batches.
 
 | Test | What it checks |
 |---|---|
@@ -156,10 +151,9 @@ Note: the pipeline emits one `CorrectedBatch` per (side, cam_id) per dark interv
 | `test_both_cameras_in_uncorrected` | Both cam 0 and cam 1 appear in the uncorrected stream |
 | `test_at_least_one_batch` | At least one corrected batch is emitted |
 | `test_batch_contains_both_cameras` | Across all batches, both camera IDs are represented |
-| `test_science_frames_assembled` | At least one `ScienceFrame` contains samples for both cameras |
 
 ### TestBothSides
-Left cam 0 and right cam 0 fed into a single pipeline instance. Both sides should appear in all output streams, and at least one `ScienceFrame` should contain samples from both sides.
+Left cam 0 and right cam 0 fed into a single pipeline instance. Both sides should appear in all output streams.
 
 | Test | What it checks |
 |---|---|
@@ -167,7 +161,6 @@ Left cam 0 and right cam 0 fed into a single pipeline instance. Both sides shoul
 | `test_both_sides_in_uncorrected` | Both `"left"` and `"right"` appear in uncorrected samples |
 | `test_at_least_one_batch` | At least one corrected batch is emitted |
 | `test_batches_contain_both_sides` | Across all batches, both sides are represented |
-| `test_science_frames_contain_both_sides` | At least one `ScienceFrame` has both `("left", 0)` and `("right", 0)` |
 
 ### TestMultipleIntervals
 25 frames, producing dark frames at 3, 6, 11, 16, and 21. This gives four complete correction intervals and verifies that batches are emitted in the correct order with the correct boundaries.

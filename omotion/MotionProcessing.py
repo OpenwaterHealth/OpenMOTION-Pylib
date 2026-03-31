@@ -1012,7 +1012,6 @@ class SciencePipeline:
             try:
                 item = self._ingress_queue.get(timeout=0.050)
             except queue.Empty:
-                self._flush_stale_frames()
                 continue
 
             side, cam_id, raw_frame_id, ts, hist, row_sum, temp = item

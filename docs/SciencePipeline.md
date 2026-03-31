@@ -12,16 +12,17 @@ Each camera produces a 1024-bin histogram at 40 Hz.  The science pipeline:
 
 1. **Discards** the first 9 frames from every camera (hardware warmup).
 2. **Identifies dark frames** by a fixed schedule based on firmware timing.  Dark frames are acquired with the laser off and provide a measurement of the ambient + dark-current floor.
-3. **Emits an uncorrected sample** for every non-dark frame immediately, using the raw histogram statistics with no dark subtraction.  For dark frames, it re-emits the previous non-dark frame's values so the live display shows no artefact.
-4. **Buffers** the raw first and second moments of every non-dark frame.
-5. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives an interpolated corrected value derived from its two adjacent non-dark neighbors.
+3. **Zeroes noise-floor bins** — histogram bins below the noise floor threshold (default 74 counts) are zeroed before moment computation to suppress low-level dark noise.
+4. **Emits an uncorrected sample** for every non-dark frame immediately, using the raw histogram statistics with no dark subtraction.  For dark frames, it re-emits the previous non-dark frame's values so the live display shows no artefact.
+5. **Buffers** the raw first and second moments of every non-dark frame.
+6. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives an interpolated corrected value derived from its two adjacent non-dark neighbors.
 
 Consumers therefore receive:
 
 | Stream | Type | Rate | `is_corrected` | Destination |
 |---|---|---|---|---|
-| Uncorrected | `CorrectedSample` per camera | ~40 Hz (every non-dark + every dark) | `False` | Live plot |
-| Corrected batch | `CorrectedBatch` per camera | ~1 per 15 s (configurable) | `True` | Corrected CSV + plot snap |
+| Uncorrected | `Sample` per camera | ~40 Hz (every non-dark + every dark) | `False` | Live plot |
+| Corrected batch | `CorrectedBatch` per camera | ~1 per 15 s (configurable) | `True` | Corrected CSV (streaming) + plot snap |
 
 ---
 
@@ -84,9 +85,25 @@ Note that frame n = 1 satisfies the formula `(n−1) mod 600 == 0` but is alread
 
 ---
 
-## 5. Moment computation
+## 5. Noise floor decimation
 
-For every frame that passes the discard and dark-schedule checks, the pipeline computes the first two moments of the histogram.  Let **h** = (h₀, h₁, …, h₁₀₂₃) be the bin values (in counts) and *N* = Σ_k h_k the total count.
+Before moment computation, bins with a count strictly below `noise_floor` (default **74**) are zeroed:
+
+```python
+below = hist < noise_floor
+if below.any():
+    hist = hist.copy()
+    hist[below] = 0
+    row_sum = int(hist.sum())
+```
+
+This suppresses low-level dark noise that would otherwise bias the mean and variance estimates.  The recalculated `row_sum` is used for all subsequent moment math.  This step runs on both dark and bright frames.
+
+---
+
+## 6. Moment computation
+
+For every frame that passes the discard and dark-schedule checks, the pipeline computes the first two moments of the (noise-floor-decimated) histogram.  Let **h** = (h₀, h₁, …, h₁₀₂₃) be the bin values (in counts) and *N* = Σ_k h_k the total count after decimation.
 
 ```
 μ₁ = (1/N) Σ_{k=0}^{1023} k · h_k          # first moment (mean bin index)
@@ -111,28 +128,28 @@ These are computed identically for both dark and bright frames.
 
 ---
 
-## 6. Uncorrected stream
+## 7. Uncorrected stream
 
-### 6.1 Bright frames
+### 7.1 Bright frames
 
-For each bright frame *n*, the pipeline immediately constructs and emits a `CorrectedSample` with `is_corrected = False`:
+For each bright frame *n*, the pipeline immediately constructs and emits a `Sample` with `is_corrected = False`:
 
 | Field | Value |
 |---|---|
 | `mean` | μ₁(n) |
 | `std_dev` | σ(n) |
 | `contrast` | K(n) = σ(n) / μ₁(n) |
-| `bfi_corrected` | BFI(K(n), μ₁(n)) — see §8 |
-| `bvi_corrected` | BVI(K(n), μ₁(n)) — see §8 |
+| `bfi` | BFI(K(n), μ₁(n)) — see §9 |
+| `bvi` | BVI(K(n), μ₁(n)) — see §9 |
 | `is_corrected` | `False` |
 
 This fires the `on_uncorrected_fn` callback immediately, before any dark-frame correction is available.
 
 The moments μ₁(n) and μ₂(n) are also stored in `_pending_moments[key]` as a `_StoredFrameMoments` object for later dark-frame correction.
 
-### 6.2 Dark frames — live display masking
+### 7.2 Dark frames — live display masking
 
-**Rule:** When a dark frame *D* arrives, the `on_uncorrected_fn` callback receives a `CorrectedSample` whose metric values (`mean`, `std_dev`, `contrast`, `bfi_corrected`, `bvi_corrected`) are copied from the immediately preceding bright frame's `CorrectedSample`.  Only `frame_id`, `absolute_frame_id`, and `timestamp_s` are updated to reflect the dark frame's true position.
+**Rule:** When a dark frame *D* arrives, the `on_uncorrected_fn` callback receives a `Sample` whose metric values (`mean`, `std_dev`, `contrast`, `bfi`, `bvi`) are copied from the immediately preceding bright frame's `Sample`.  Only `frame_id`, `absolute_frame_id`, and `timestamp_s` are updated to reflect the dark frame's true position.
 
 ```python
 # Pseudo-code
@@ -150,7 +167,7 @@ If no preceding bright frame exists (i.e. the very first frame in the scan is a 
 
 ---
 
-## 7. Corrected batch computation
+## 8. Corrected batch computation
 
 The corrected batch is computed and emitted by `_emit_corrected_for_camera(key)`, which is called each time a second (or later) consecutive dark frame arrives for a given `(side, cam_id)` pair.
 
@@ -160,7 +177,7 @@ Let the two bounding dark frames be at absolute positions **D_prev** and **D_cur
 - μ₁(D_curr), σ²(D_curr) — moments of the later dark frame
 - Δ = D_curr − D_prev — interval width in frames
 
-### 7.1 Baseline interpolation
+### 8.1 Baseline interpolation
 
 For each bright frame *n* ∈ (D_prev, D_curr) (i.e. strictly between the two dark frames), the dark baseline is linearly interpolated:
 
@@ -173,7 +190,7 @@ t(n) = (n − D_prev) / Δ            ∈ (0, 1)
 
 `t(n)` is 0 at the first dark and 1 at the second dark, so the interpolation assigns more dark-frame weight to frames closer in time to that dark measurement.
 
-### 7.2 Dark-subtracted moments
+### 8.2 Dark-subtracted moments
 
 ```
 μ̃₁(n) = μ₁(n) − μ̄₁(n)                   # corrected mean
@@ -188,20 +205,20 @@ K̃(n) = σ̃(n) / μ̃₁(n)    if μ̃₁(n) > 0
 
 Clamping `σ̃²` to zero prevents imaginary standard deviations when shot-noise fluctuations cause the measured variance to fall below the interpolated dark variance.
 
-### 7.3 Corrected BFI/BVI
+### 8.3 Corrected BFI/BVI
 
-BFI and BVI are computed from K̃(n) and μ̃₁(n) via the calibration mapping (§8), yielding `bfi_corrected` and `bvi_corrected` for each frame.  These samples are assembled into a `CorrectedBatch` with `is_corrected = True`.
+BFI and BVI are computed from K̃(n) and μ̃₁(n) via the calibration mapping (§9), yielding `bfi` and `bvi` for each frame.  These samples are assembled into a `CorrectedBatch` with `is_corrected = True`.
 
-### 7.4 Corrected value for the dark frame itself
+### 8.4 Corrected value for the dark frame itself
 
 The dark frame D_prev is included in the corrected batch.  Its corrected BFI/BVI are not computed by baseline subtraction (its histogram *is* the baseline); instead they are linearly interpolated between the last corrected sample of the *previous* batch (absolute frame D_prev − 1) and the first corrected sample of the *current* batch (absolute frame D_prev + 1):
 
 ```
-bfi_corr(D_prev)     = [ bfi_corr(D_prev − 1) + bfi_corr(D_prev + 1) ] / 2
-bvi_corr(D_prev)     = [ bvi_corr(D_prev − 1) + bvi_corr(D_prev + 1) ] / 2
-mean_corr(D_prev)    = [ mean_corr(D_prev − 1) + mean_corr(D_prev + 1) ] / 2
-std_corr(D_prev)     = [ std_corr(D_prev − 1)  + std_corr(D_prev + 1)  ] / 2
-contrast_corr(D_prev)= [ K̃(D_prev − 1) + K̃(D_prev + 1) ] / 2
+bfi(D_prev)     = [ bfi(D_prev − 1) + bfi(D_prev + 1) ] / 2
+bvi(D_prev)     = [ bvi(D_prev − 1) + bvi(D_prev + 1) ] / 2
+mean(D_prev)    = [ mean(D_prev − 1) + mean(D_prev + 1) ] / 2
+std_dev(D_prev) = [ std_dev(D_prev − 1)  + std_dev(D_prev + 1)  ] / 2
+contrast(D_prev)= [ K̃(D_prev − 1) + K̃(D_prev + 1) ] / 2
 ```
 
 **Edge case:** If no previous corrected batch exists (this is the first dark interval), the right neighbor value is used directly (no averaging).
@@ -210,7 +227,7 @@ The current dark frame D_curr is **not** included in this batch.  It becomes D_p
 
 **Rationale:** The dark frame's laser-off histogram is a valid measurement of the background floor, not of blood flow.  Interpolating between neighbors removes the dark-frame artefact from the corrected time series.
 
-### 7.5 Batch ordering and content
+### 8.5 Batch ordering and content
 
 The emitted `CorrectedBatch` contains samples in ascending `absolute_frame_id` order:
 
@@ -222,7 +239,7 @@ All samples have `is_corrected = True`.  The batch is emitted via `on_corrected_
 
 ---
 
-## 8. BFI/BVI calibration mapping
+## 9. BFI/BVI calibration mapping
 
 Both the uncorrected and corrected paths share the same linear calibration mapping from (contrast, mean) to (BFI, BVI).  The calibration constants are stored in four NumPy arrays of shape **(2, 8)** — axis 0 is the module index (0 = left sensor, 1 = right sensor), axis 1 is the camera position (0–7).
 
@@ -247,17 +264,28 @@ For the uncorrected stream, K and μ₁ are the raw (not dark-subtracted) values
 
 ---
 
-## 9. Science frame alignment
+## 10. Corrected CSV output
 
-Independent of the correction machinery, the pipeline also aligns samples from all active cameras into **`ScienceFrame`** objects.  A `_FrameBuffer` accumulates `CorrectedSample` objects (uncorrected, `is_corrected = False`) keyed by `(side, cam_id)`.  When the buffer for a given `absolute_frame_id` has received contributions from all expected cameras (as determined by `left_camera_mask` and `right_camera_mask`), a `ScienceFrame` is assembled and `on_science_frame_fn` is fired.
+The `ScanWorkflow` opens the corrected CSV file at the **start** of the scan (not at the end) and writes the header row immediately.  Each time `on_corrected_batch_fn` fires, the workflow accumulates samples from the batch into an in-memory `corrected_by_frame` dict keyed by `absolute_frame_id`.  As soon as all expected cameras have contributed to a given frame, that row is written to disk and removed from the dict.  Rows that are still incomplete at scan end (e.g. the last partial interval) are flushed on teardown.
 
-Dark frames participate in this alignment using the repeated-previous-value uncorrected sample (§6.2), so the aligned frame stream is continuous even across dark frames.
+This means the corrected CSV grows incrementally during the scan rather than being written all-at-once post-scan.  Data up to the last completed interval is on disk even if the scan is interrupted.
 
-Partial frames (missing one or more cameras) are flushed after `frame_timeout_s` (default 0.5 s) to prevent stalls when a sensor drops a packet.
+**Corrected CSV columns:**
+
+```
+frame_id, timestamp_s,
+bfi_l1..bfi_l8, bfi_r1..bfi_r8,
+bvi_l1..bvi_l8, bvi_r1..bvi_r8,
+mean_l1..mean_l8, mean_r1..mean_r8,
+std_l1..std_l8,  std_r1..std_r8,
+contrast_l1..contrast_l8, contrast_r1..contrast_r8
+```
+
+`timestamp_s` is relative to the first corrected frame written (i.e. normalised to zero at the start of the corrected output).
 
 ---
 
-## 10. Input validation and guard rails
+## 11. Input validation and guard rails
 
 ### Histogram sum check
 
@@ -273,15 +301,15 @@ For each `(side, cam_id)` pair, the very first frame received after pipeline sta
 
 ---
 
-## 11. Threading model
+## 12. Threading model
 
-The pipeline runs a single background daemon thread (`SciencePipeline` thread).  All histogram samples are ingested via a `queue.Queue` (`_ingress_queue`).  The worker thread consumes from this queue and is the sole writer of all internal state (`_unwrappers`, `_dark_history`, `_pending_moments`, `_last_uncorrected`, `_last_corrected`, `_frame_buffers`).  No locks are needed for pipeline-internal state.
+The pipeline runs a single background daemon thread (`SciencePipeline` thread).  All histogram samples are ingested via a `queue.Queue` (`_ingress_queue`).  The worker thread consumes from this queue and is the sole writer of all internal state (`_unwrappers`, `_dark_history`, `_pending_moments`, `_last_uncorrected`, `_last_corrected`).  No locks are needed for pipeline-internal state.
 
-Callbacks (`on_uncorrected_fn`, `on_corrected_batch_fn`, `on_science_frame_fn`) are invoked on the science thread.  Implementations that touch UI state must marshal to the UI thread (e.g. via a Qt signal).
+Callbacks (`on_uncorrected_fn`, `on_corrected_batch_fn`) are invoked on the science thread.  Implementations that touch UI state must marshal to the UI thread (e.g. via a Qt signal).
 
 ---
 
-## 12. Complete data flow diagram
+## 13. Complete data flow diagram
 
 ```
 Sensor firmware
@@ -301,6 +329,7 @@ _science_worker (single background thread)
   ├─ [first-frame check] → drop if first raw_frame_id ≠ 1
   ├─ FrameIdUnwrapper.unwrap() → absolute_frame_id
   ├─ [discard check] → drop if absolute_frame_id ≤ 9
+  ├─ [noise floor] → zero bins < 74; recompute row_sum
   │
   ├─ [dark frame?] ──── YES ──────────────────────────────────────────┐
   │                                                                    │
@@ -312,12 +341,11 @@ _science_worker (single background thread)
   │       dark-subtracted BFI/BVI for interval (D_prev, D_curr)       │
   │       + interpolated corrected value for D_prev itself            │
   │       → on_corrected_batch_fn()                                   │
-  │       → corrected CSV                                             │
+  │       → corrected CSV (streaming, flushed per complete row)       │
   │                                                                    │
   │  Emit uncorrected sample with values from _last_uncorrected[key]  │
   │    (frame IDs + timestamp updated to D; BFI/BVI held constant)    │
   │    → on_uncorrected_fn()                                          │
-  │    → _FrameBuffer[abs_frame]  → ScienceFrame alignment            │
   │                                                                    │
   │  continue ◄──────────────────────────────────────────────────────┘
   │
@@ -326,25 +354,24 @@ _science_worker (single background thread)
      Compute μ₁, σ² from histogram                                    │
      Store _StoredFrameMoments(μ₁, μ₂) → _pending_moments[key]       │
                                                                        │
-     compute_realtime_metrics() → RealtimeSample                      │
+     compute_realtime_metrics() → Sample                              │
        (raw K, μ₁, σ → raw BFI/BVI via calibration)                  │
                                                                        │
-     Emit CorrectedSample(is_corrected=False)                         │
+     Emit Sample(is_corrected=False)                                  │
        → on_uncorrected_fn()                                          │
        → _last_uncorrected[key]                                       │
-       → _FrameBuffer[abs_frame]  → ScienceFrame alignment            │
                                                               ◄────────┘
 ```
 
 ---
 
-## 13. Key constants and defaults
+## 14. Key constants and defaults
 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `discard_count` | 9 | Warmup frames dropped at start |
 | `dark_interval` | 600 | Frames between dark acquisitions (15 s at 40 Hz) |
-| `frame_timeout_s` | 0.5 s | Stale partial frame flush threshold |
+| `noise_floor` | 74 | Bins below this count are zeroed before moment computation |
 | `EXPECTED_HISTOGRAM_SUM` | 2,457,606 | Required total count per valid frame (1920 × 1280 px + 6 sentinel) |
 | `FRAME_ID_MODULUS` | 256 | Firmware 8-bit counter rollover period |
 | `FRAME_ROLLOVER_THRESHOLD` | 128 | Max forward delta before rollover is detected |
@@ -354,35 +381,33 @@ _science_worker (single background thread)
 
 ---
 
-## 14. Output data types
+## 15. Output data types
 
 ```python
 @dataclass
-class CorrectedSample:
+class Sample:
     side: str               # "left" or "right"
     cam_id: int             # 0–7
     frame_id: int           # raw 8-bit firmware counter value
     absolute_frame_id: int  # monotonic unwrapped counter
     timestamp_s: float      # sensor-reported timestamp
+    row_sum: int            # total histogram counts after noise floor decimation
+    temperature_c: float    # sensor temperature
     mean: float             # μ₁ or μ̃₁ (corrected) in bin-index units
     std_dev: float          # σ  or σ̃
     contrast: float         # K  or K̃
-    bfi_corrected: float    # BFI on [0, 10] scale
-    bvi_corrected: float    # BVI on [0, 10] scale
+    bfi: float              # BFI on [0, 10] scale
+    bvi: float              # BVI on [0, 10] scale
     is_corrected: bool      # False = uncorrected stream; True = corrected batch
+
+# Backward-compat aliases
+RealtimeSample = Sample
+CorrectedSample = Sample
 
 @dataclass
 class CorrectedBatch:
-    dark_frame_start: int        # absolute_frame_id of D_prev
-    dark_frame_end: int          # absolute_frame_id of D_curr
-    samples: list[CorrectedSample]  # chronological, is_corrected=True
-                                    # includes D_prev, excludes D_curr
-
-@dataclass
-class ScienceFrame:
-    absolute_frame: int
-    frame_id: int
-    timestamp_s: float
-    samples: dict[tuple[str, int], CorrectedSample]  # (side, cam_id) → sample
-                                                      # uncorrected, is_corrected=False
+    dark_frame_start: int   # absolute_frame_id of D_prev
+    dark_frame_end: int     # absolute_frame_id of D_curr
+    samples: list[Sample]   # chronological, is_corrected=True
+                            # includes D_prev, excludes D_curr
 ```
