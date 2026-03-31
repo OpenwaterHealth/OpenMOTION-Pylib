@@ -177,7 +177,6 @@ class ScanWorkflow:
         on_log_fn: Callable[[str], None] | None = None,
         on_progress_fn: Callable[[int], None] | None = None,
         on_trigger_state_fn: Callable[[str], None] | None = None,
-        on_sample_fn: Callable[[object], None] | None = None,
         on_uncorrected_fn: Callable[[object], None] | None = None,
         on_corrected_batch_fn: Callable[[object], None] | None = None,
         on_error_fn: Callable[[Exception], None] | None = None,
@@ -210,11 +209,6 @@ class ScanWorkflow:
             writer_row_counts: dict[str, int] = {}
             writer_queues: dict[str, queue.Queue] = {}
             science_pipeline = None
-            corrected_lock = threading.Lock()
-            # Keyed by absolute_frame_id (monotonic, rollover-safe) rather than
-            # the raw u8 frame_id so that frame 0 on pass 2 does not overwrite
-            # frame 0 on pass 1 for scans longer than 256 trigger cycles.
-            corrected_by_frame: dict[int, dict] = {}
             corrected_path = os.path.join(
                 request.data_dir, f"{ts}_{request.subject_id}_corrected.csv"
             )
@@ -227,6 +221,26 @@ class ScanWorkflow:
             _telem_fh = None
             _telem_lock = threading.Lock()
             _telem_stop = threading.Event()
+
+            # Corrected CSV streaming state
+            corrected_by_frame: dict[int, dict] = {}
+            _corr_fh = None
+            _corr_csv = None
+            _corr_lock = threading.Lock()
+            _corr_base_ts: float | None = None
+            corrected_columns = (
+                [f"bfi_l{i}" for i in range(1, 9)]
+                + [f"bfi_r{i}" for i in range(1, 9)]
+                + [f"bvi_l{i}" for i in range(1, 9)]
+                + [f"bvi_r{i}" for i in range(1, 9)]
+                + [f"mean_l{i}" for i in range(1, 9)]
+                + [f"mean_r{i}" for i in range(1, 9)]
+                + [f"std_l{i}" for i in range(1, 9)]
+                + [f"std_r{i}" for i in range(1, 9)]
+                + [f"contrast_l{i}" for i in range(1, 9)]
+                + [f"contrast_r{i}" for i in range(1, 9)]
+            )
+            expected_col_suffixes: set[str] = set()
 
             try:
                 os.makedirs(request.data_dir, exist_ok=True)
@@ -273,6 +287,29 @@ class ScanWorkflow:
                         "No active sensors to capture (both masks 0x00 or disconnected)."
                     )
 
+                # Compute expected column suffixes from the active camera masks.
+                for _s, _m, _ in active_sides:
+                    _letter = _s[0]
+                    for _i in range(8):
+                        if _m & (1 << _i):
+                            expected_col_suffixes.add(f"{_letter}{_i + 1}")
+
+                # Open corrected CSV immediately and write the header so data is
+                # on disk continuously rather than all-at-once after the scan.
+                if request.write_corrected_csv:
+                    try:
+                        _corr_fh = open(  # noqa: WPS515
+                            corrected_path, "w", newline="", encoding="utf-8"
+                        )
+                        _corr_csv = csv.writer(_corr_fh)
+                        _corr_csv.writerow(["frame_id", "timestamp_s", *corrected_columns])
+                        _corr_fh.flush()
+                    except Exception as _corr_open_err:
+                        _emit_log(f"Failed to open corrected CSV: {_corr_open_err}")
+                        corrected_path = ""
+                else:
+                    corrected_path = ""
+
                 _emit_log("Preparing capture...")
 
                 if not request.disable_laser:
@@ -312,10 +349,11 @@ class ScanWorkflow:
                             on_uncorrected_fn(sample)
 
                     def _on_corrected_batch(batch: CorrectedBatch):
-                        # Fires once per dark-frame interval with properly
-                        # corrected BFI/BVI for the entire interval.
+                        # Fires once per (side, cam_id) per dark-frame interval
+                        # with properly corrected BFI/BVI for that interval.
+                        nonlocal _corr_base_ts
                         try:
-                            with corrected_lock:
+                            with _corr_lock:
                                 for sample in batch.samples:
                                     frame_key = int(sample.absolute_frame_id)
                                     col_suffix = f"{sample.side[0]}{int(sample.cam_id) + 1}"
@@ -346,6 +384,35 @@ class ScanWorkflow:
                                     frame_entry["values"][f"contrast_{col_suffix}"] = float(
                                         sample.contrast
                                     )
+
+                                # Flush frame rows that are complete (all cameras contributed).
+                                if _corr_csv is not None and expected_col_suffixes:
+                                    complete = [
+                                        fid
+                                        for fid, entry in corrected_by_frame.items()
+                                        if all(
+                                            f"bfi_{s}" in entry["values"]
+                                            for s in expected_col_suffixes
+                                        )
+                                    ]
+                                    if complete:
+                                        if _corr_base_ts is None:
+                                            _corr_base_ts = min(
+                                                float(corrected_by_frame[fid]["timestamp_s"])
+                                                for fid in complete
+                                            )
+                                        for fid in sorted(complete):
+                                            entry = corrected_by_frame.pop(fid)
+                                            rel_ts = (
+                                                float(entry["timestamp_s"]) - _corr_base_ts
+                                            )
+                                            row = [fid, rel_ts]
+                                            row.extend(
+                                                entry["values"].get(col, "")
+                                                for col in corrected_columns
+                                            )
+                                            _corr_csv.writerow(row)
+                                        _corr_fh.flush()
                         except Exception as agg_err:
                             _emit_log(f"Corrected batch aggregation error: {agg_err}")
                         if on_corrected_batch_fn:
@@ -360,7 +427,6 @@ class ScanWorkflow:
                         bfi_i_max=self._bfi_i_max,
                         on_uncorrected_fn=_on_uncorrected_sample,
                         on_corrected_batch_fn=_on_corrected_batch,
-                        on_science_frame_fn=on_sample_fn,  # repurposed for aligned-frame callback
                     )
 
                 def _make_row_handler(current_side: str, p):
@@ -593,6 +659,35 @@ class ScanWorkflow:
                 if science_pipeline is not None:
                     science_pipeline.stop()
 
+                # Flush any remaining corrected rows (partial — not all cameras
+                # contributed before the scan ended).
+                with _corr_lock:
+                    if _corr_csv is not None and corrected_by_frame:
+                        if _corr_base_ts is None:
+                            _corr_base_ts = min(
+                                float(e["timestamp_s"])
+                                for e in corrected_by_frame.values()
+                            )
+                        for fid in sorted(corrected_by_frame.keys()):
+                            entry = corrected_by_frame[fid]
+                            rel_ts = float(entry["timestamp_s"]) - _corr_base_ts
+                            row = [fid, rel_ts]
+                            row.extend(
+                                entry["values"].get(col, "") for col in corrected_columns
+                            )
+                            _corr_csv.writerow(row)
+                        corrected_by_frame.clear()
+                if _corr_fh is not None:
+                    try:
+                        _corr_fh.flush()
+                        _corr_fh.close()
+                    except Exception:
+                        pass
+                if corrected_path:
+                    _emit_log(
+                        f"Corrected CSV created: {os.path.basename(corrected_path)}"
+                    )
+
                 # Telemetry CSV teardown — signal the listener to stop writing,
                 # wait for any in-flight write to drain, then close the file.
                 _telem_stop.set()
@@ -610,55 +705,6 @@ class ScanWorkflow:
                         pass
                 if telemetry_path:
                     _emit_log(f"Telemetry CSV created: {os.path.basename(telemetry_path)}")
-
-                # Build one merged corrected CSV, aligned by frame_id, with normalized timestamp.
-                if not request.write_corrected_csv:
-                    corrected_path = ""
-
-                if corrected_path:
-                    corrected_columns = (
-                        [f"bfi_l{i}" for i in range(1, 9)]
-                        + [f"bfi_r{i}" for i in range(1, 9)]
-                        + [f"bvi_l{i}" for i in range(1, 9)]
-                        + [f"bvi_r{i}" for i in range(1, 9)]
-                        + [f"mean_l{i}" for i in range(1, 9)]
-                        + [f"mean_r{i}" for i in range(1, 9)]
-                        + [f"std_l{i}" for i in range(1, 9)]
-                        + [f"std_r{i}" for i in range(1, 9)]
-                        + [f"contrast_l{i}" for i in range(1, 9)]
-                        + [f"contrast_r{i}" for i in range(1, 9)]
-                    )
-                    try:
-                        with corrected_lock:
-                            frame_ids = sorted(corrected_by_frame.keys())
-                            if frame_ids:
-                                base_ts = min(
-                                    float(corrected_by_frame[fid]["timestamp_s"])
-                                    for fid in frame_ids
-                                )
-                            else:
-                                base_ts = 0.0
-
-                            with open(
-                                corrected_path, "w", newline="", encoding="utf-8"
-                            ) as cfh:
-                                cw = csv.writer(cfh)
-                                cw.writerow(["frame_id", "timestamp_s", *corrected_columns])
-                                for fid in frame_ids:
-                                    frame_entry = corrected_by_frame[fid]
-                                    rel_ts = float(frame_entry["timestamp_s"]) - base_ts
-                                    values = frame_entry["values"]
-                                    row = [fid, rel_ts]
-                                    row.extend(
-                                        values.get(col, "") for col in corrected_columns
-                                    )
-                                    cw.writerow(row)
-                        _emit_log(
-                            f"Merged corrected CSV created: {os.path.basename(corrected_path)}"
-                        )
-                    except Exception as corrected_err:
-                        _emit_log(f"Failed to create merged corrected CSV: {corrected_err}")
-                        corrected_path = ""
 
                 result = ScanResult(
                     ok=ok,

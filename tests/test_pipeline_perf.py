@@ -27,7 +27,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from omotion.MotionProcessing import (
     CorrectedBatch,
     Sample,
-    ScienceFrame,
     create_science_pipeline,
     feed_pipeline_from_csv,
 )
@@ -79,8 +78,6 @@ class _PerfCollector:
         self.uncorrected_times: list[float] = []   # perf_counter at each callback
         self.batches:           list[CorrectedBatch] = []
         self.batch_times:       list[float] = []   # perf_counter when batch arrived
-        self.science_frames:    list[ScienceFrame] = []
-        self.science_frame_times: list[float] = []
 
     def on_uncorrected(self, sample: Sample) -> None:
         t = time.perf_counter()
@@ -92,12 +89,6 @@ class _PerfCollector:
         with self._lock:
             self.batches.append(batch)
             self.batch_times.append(t)
-
-    def on_science_frame(self, frame: ScienceFrame) -> None:
-        t = time.perf_counter()
-        with self._lock:
-            self.science_frames.append(frame)
-            self.science_frame_times.append(t)
 
 
 def _fmt(label: str, value: str, width: int = 36) -> str:
@@ -157,8 +148,6 @@ def run_perf_test() -> dict:
         bfi_i_max=BFI_I_MAX,
         on_uncorrected_fn=collector.on_uncorrected,
         on_corrected_batch_fn=collector.on_corrected_batch,
-        on_science_frame_fn=collector.on_science_frame,
-        frame_timeout_s=0.5,
     )
 
     # --- CSV ingestion -------------------------------------------------------
@@ -190,17 +179,6 @@ def run_perf_test() -> dict:
     # Corrected batch sizes.
     batch_sizes = [len(b.samples) for b in collector.batches]
 
-    # Science frame completeness: fraction of frames where all 16 cameras showed up.
-    all_keys = frozenset(
-        (side, cam_id)
-        for side in ("left", "right")
-        for cam_id in range(8)
-    )
-    complete_frames = sum(
-        1 for sf in collector.science_frames
-        if all_keys.issubset(sf.samples.keys())
-    )
-
     return {
         # Inputs
         "left_rows":          left_rows,
@@ -220,8 +198,6 @@ def run_perf_test() -> dict:
         # Outputs
         "uncorrected_count":  len(collector.uncorrected_times),
         "batch_count":        len(collector.batches),
-        "science_frame_count": len(collector.science_frames),
-        "complete_frame_count": complete_frames,
 
         # Uncorrected callback intervals
         "unc_interval_stats": unc_stats,
@@ -265,11 +241,6 @@ def print_report(stats: dict) -> None:
     print("\n  -- Pipeline output --")
     print(_fmt("Uncorrected callbacks:",      f"{stats['uncorrected_count']:,}", W))
     print(_fmt("Corrected batches emitted:",  f"{stats['batch_count']}", W))
-    print(_fmt("Science frames emitted:",     f"{stats['science_frame_count']:,}", W))
-    print(_fmt("Complete science frames",
-               f"(all 16 cams):",             W))
-    print(_fmt("",                            f"{stats['complete_frame_count']:,}  "
-                                              f"({100*stats['complete_frame_count']/max(1,stats['science_frame_count']):.1f}%)", W))
 
     s = stats["unc_interval_stats"]
     if s:
@@ -321,10 +292,6 @@ def test_corrected_batches_emitted(perf_stats):
     """At least one corrected batch must be emitted for a 16-second scan."""
     assert perf_stats["batch_count"] >= 1, "No corrected batches emitted"
 
-
-def test_science_frames_emitted(perf_stats):
-    """Science frames (cross-side alignment) must be assembled."""
-    assert perf_stats["science_frame_count"] > 0, "No science frames emitted"
 
 
 def test_realtime_factor(perf_stats):

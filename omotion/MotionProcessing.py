@@ -189,27 +189,6 @@ class CorrectedBatch:
     samples: list[Sample]
 
 
-@dataclass
-class ScienceFrame:
-    """
-    All science-computed data for a single aligned trigger frame across
-    both sensor sides.
-
-    ``absolute_frame`` is the monotonic frame index produced by
-    FrameIdUnwrapper and is safe to use as a database primary key or plot
-    x-axis without worrying about u8 rollover collisions.
-    ``frame_id`` is the raw 0–255 value as it appears in the binary stream
-    and on disk in CSV files.
-    ``samples`` maps (side, cam_id) → Sample for every camera that
-    reported during this trigger cycle.
-    """
-
-    absolute_frame: int
-    frame_id: int
-    timestamp_s: float
-    samples: dict[tuple[str, int], Sample]
-
-
 # ---------------------------------------------------------------------------
 # Binary packet parsing
 # ---------------------------------------------------------------------------
@@ -879,14 +858,6 @@ def compute_corrected_values(
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _FrameBuffer:
-    """Internal accumulator for one trigger-cycle's worth of samples."""
-    arrived_at: float          # monotonic wall time when the first sample arrived
-    min_timestamp_s: float     # lowest sensor timestamp seen so far in this frame
-    samples: dict[tuple[str, int], Sample] = field(default_factory=dict)
-
-
-@dataclass
 class _StoredFrameMoments:
     """Per-sample first/second moments stored between dark frames for later correction."""
     side: str
@@ -923,9 +894,6 @@ class SciencePipeline:
          corrected BFI/BVI for every stored frame in that interval.  The
          result is emitted via ``on_corrected_batch_fn`` as a
          ``CorrectedBatch``.
-      6. Groups uncorrected samples by ``absolute_frame_id`` into a
-         ``_FrameBuffer``.  Once all expected cameras have contributed, a
-         ``ScienceFrame`` is assembled and ``on_science_frame_fn`` is called.
 
     This means consumers receive:
     - A **continuous stream** of uncorrected samples (real-time, every frame)
@@ -940,20 +908,16 @@ class SciencePipeline:
         Calibration arrays, shape (2, 8) — module index × camera position.
     on_uncorrected_fn
         Called immediately for each non-dark frame with uncorrected BFI/BVI.
-        Receives a ``CorrectedSample`` with ``is_corrected=False``.
+        Receives a ``Sample`` with ``is_corrected=False``.
     on_corrected_batch_fn
         Called once per dark-frame interval with a ``CorrectedBatch``
         containing dark-frame-corrected BFI/BVI for every frame in that
         interval.
-    on_science_frame_fn
-        Called once per complete aligned frame.  Receives a ``ScienceFrame``.
     dark_interval
         Number of frames between scheduled dark frames (default 600 = 15 s
         at 40 Hz).
     discard_count
         Number of initial frames to discard (default 9, frames 1–9).
-    frame_timeout_s
-        Seconds before an incomplete frame is flushed.
     """
 
     def __init__(
@@ -967,10 +931,8 @@ class SciencePipeline:
         bfi_i_max,
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
-        on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
         dark_interval: int = 600,
         discard_count: int = 9,
-        frame_timeout_s: float = 0.5,
         expected_row_sum: int | None = None,
         noise_floor: int = 74,
     ):
@@ -980,33 +942,16 @@ class SciencePipeline:
         self._bfi_i_max = bfi_i_max
         self._on_uncorrected_fn = on_uncorrected_fn
         self._on_corrected_batch_fn = on_corrected_batch_fn
-        self._on_science_frame_fn = on_science_frame_fn
         self._dark_interval = dark_interval
         self._discard_count = discard_count
-        self._frame_timeout_s = frame_timeout_s
         self._expected_row_sum = expected_row_sum
         self._noise_floor = int(noise_floor)
-
-        # Derive the set of (side, cam_id) keys that must be present for a
-        # frame to be considered complete.
-        self._expected_keys: frozenset[tuple[str, int]] = frozenset(
-            (side, cam_id)
-            for side, mask in (("left", left_camera_mask), ("right", right_camera_mask))
-            for cam_id in range(8)
-            if mask & (1 << cam_id)
-        )
 
         # One FrameIdUnwrapper per (side, cam_id) — created lazily on first use.
         self._unwrappers: dict[tuple[str, int], FrameIdUnwrapper] = {}
 
-        # Pending frames waiting to collect all expected samples.
-        self._frame_buffers: dict[int, _FrameBuffer] = {}
-
         # Tracks which (side, cam_id) pairs have received their first frame.
         self._first_frame_seen: set[tuple[str, int]] = set()
-
-        # Counts frame-ID desynchronization events between cameras in a frame.
-        self._sync_error_count: int = 0
 
         # --- Dark-frame correction state ---
         # Per (side, cam_id): ordered list of
@@ -1172,19 +1117,6 @@ class SciencePipeline:
                             self._on_uncorrected_fn(dark_uncorrected)
                         except Exception:
                             pass
-                    if key in self._expected_keys:
-                        buf = self._frame_buffers.get(absolute_frame)
-                        if buf is None:
-                            buf = _FrameBuffer(
-                                arrived_at=time.monotonic(),
-                                min_timestamp_s=ts,
-                            )
-                            self._frame_buffers[absolute_frame] = buf
-                        buf.samples[key] = dark_uncorrected
-                        buf.min_timestamp_s = min(buf.min_timestamp_s, ts)
-                        if self._expected_keys.issubset(buf.samples.keys()):
-                            self._emit_science_frame(absolute_frame, buf)
-                            del self._frame_buffers[absolute_frame]
                 continue
 
             # --- 5. Store moments for later dark-frame correction --------------
@@ -1225,29 +1157,6 @@ class SciencePipeline:
                     pass
 
             self._last_uncorrected[key] = uncorrected
-
-            # --- 7. Accumulate into frame buffer for ScienceFrame alignment ----
-            if key in self._expected_keys:
-                buf = self._frame_buffers.get(absolute_frame)
-                if buf is None:
-                    buf = _FrameBuffer(
-                        arrived_at=time.monotonic(),
-                        min_timestamp_s=ts,
-                    )
-                    self._frame_buffers[absolute_frame] = buf
-                buf.samples[key] = uncorrected
-                buf.min_timestamp_s = min(buf.min_timestamp_s, ts)
-
-                if self._expected_keys.issubset(buf.samples.keys()):
-                    self._emit_science_frame(absolute_frame, buf)
-                    del self._frame_buffers[absolute_frame]
-
-            self._flush_stale_frames()
-
-        # Drain any leftover partial frames on shutdown.
-        for abs_frame in sorted(self._frame_buffers):
-            self._emit_science_frame(abs_frame, self._frame_buffers[abs_frame])
-        self._frame_buffers.clear()
 
     # ------------------------------------------------------------------
     # Dark-frame correction helpers
@@ -1430,61 +1339,6 @@ class SciencePipeline:
             except Exception:
                 logger.exception("Error in on_corrected_batch_fn callback")
 
-    def _flush_stale_frames(self) -> None:
-        """Emit and evict frames that have been waiting longer than the timeout."""
-        if not self._frame_buffers:
-            return
-        now = time.monotonic()
-        stale = [
-            f for f, buf in self._frame_buffers.items()
-            if now - buf.arrived_at >= self._frame_timeout_s
-        ]
-        for abs_frame in sorted(stale):
-            buf = self._frame_buffers.pop(abs_frame)
-            if buf.samples:
-                logger.debug(
-                    "Flushing incomplete frame %d (%d/%d cameras)",
-                    abs_frame,
-                    len(buf.samples),
-                    len(self._expected_keys),
-                )
-                self._emit_science_frame(abs_frame, buf)
-
-    def _emit_science_frame(self, absolute_frame: int, buf: _FrameBuffer) -> None:
-        # --- Frame ID synchronization check ------------------------------------
-        # All samples in a completed trigger frame should share the same raw
-        # frame_id.  A mismatch means left and right (or multiple cameras on
-        # one side) are out of step — typically caused by dropped packets on
-        # one side that let that side advance its counter ahead of the other.
-        if buf.samples:
-            raw_ids_by_key = {key: s.frame_id for key, s in buf.samples.items()}
-            unique_raw_ids = set(raw_ids_by_key.values())
-            if len(unique_raw_ids) > 1:
-                self._sync_error_count += 1
-                detail = ", ".join(
-                    f"{side}/cam{cam_id}={fid}"
-                    for (side, cam_id), fid in sorted(raw_ids_by_key.items())
-                )
-                logger.error(
-                    "SciencePipeline: frame ID sync error on absolute frame %d "
-                    "(sync_errors=%d): %s",
-                    absolute_frame, self._sync_error_count, detail,
-                )
-
-        if not self._on_science_frame_fn:
-            return
-        frame = ScienceFrame(
-            absolute_frame=absolute_frame,
-            frame_id=absolute_frame % FRAME_ID_MODULUS,
-            timestamp_s=buf.min_timestamp_s,
-            samples=dict(buf.samples),
-        )
-        try:
-            self._on_science_frame_fn(frame)
-        except Exception:
-            pass
-
-
 def create_science_pipeline(
     *,
     left_camera_mask: int = 0xFF,
@@ -1495,10 +1349,8 @@ def create_science_pipeline(
     bfi_i_max,
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
-    on_science_frame_fn: Callable[[ScienceFrame], None] | None = None,
     dark_interval: int = 600,
     discard_count: int = 9,
-    frame_timeout_s: float = 0.5,
     expected_row_sum: int | None = None,
     noise_floor: int = 74,
 ) -> SciencePipeline:
@@ -1521,7 +1373,7 @@ def create_science_pipeline(
         value are discarded.
     noise_floor
         Histogram bins with a count strictly below this value are zeroed
-        before moment computation (default 164).  Set to 0 to disable.
+        before moment computation (default 74).  Set to 0 to disable.
     """
     pipeline = SciencePipeline(
         left_camera_mask=left_camera_mask,
@@ -1532,10 +1384,8 @@ def create_science_pipeline(
         bfi_i_max=bfi_i_max,
         on_uncorrected_fn=on_uncorrected_fn,
         on_corrected_batch_fn=on_corrected_batch_fn,
-        on_science_frame_fn=on_science_frame_fn,
         dark_interval=dark_interval,
         discard_count=discard_count,
-        frame_timeout_s=frame_timeout_s,
         expected_row_sum=expected_row_sum,
         noise_floor=noise_floor,
     )

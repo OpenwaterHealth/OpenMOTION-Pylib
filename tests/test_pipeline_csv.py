@@ -35,7 +35,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from omotion.MotionProcessing import (
     CorrectedBatch,
     Sample,
-    ScienceFrame,
     create_science_pipeline,
     feed_pipeline_from_csv,
 )
@@ -80,12 +79,11 @@ def _make_pipeline(left_mask: int = 0x01,
     """
     Create a SciencePipeline wired to three collector lists.
 
-    Returns (pipeline, uncorrected_list, batches_list, frames_list).
+    Returns (pipeline, uncorrected_list, batches_list).
     The pipeline is already started; call pipeline.stop() when done.
     """
-    uncorrected: list[CorrectedSample] = []
-    batches:     list[CorrectedBatch]  = []
-    frames:      list[ScienceFrame]    = []
+    uncorrected: list[Sample]         = []
+    batches:     list[CorrectedBatch] = []
 
     pipeline = create_science_pipeline(
         left_camera_mask=left_mask,
@@ -96,13 +94,11 @@ def _make_pipeline(left_mask: int = 0x01,
         bfi_i_max=BFI_I_MAX,
         on_uncorrected_fn=uncorrected.append,
         on_corrected_batch_fn=batches.append,
-        on_science_frame_fn=frames.append,
         dark_interval=dark_interval,
         discard_count=DISCARD_COUNT,
-        expected_row_sum=None,   # fixture photon count ≠ hardware sum
-        frame_timeout_s=0.1,     # fast flush for tests
+        expected_row_sum=None,   # fixture photon count != hardware sum
     )
-    return pipeline, uncorrected, batches, frames
+    return pipeline, uncorrected, batches
 
 
 def _fixture(name: str) -> str:
@@ -117,7 +113,7 @@ class TestSingleCamBasic:
     """Single left camera, 12 frames — verifies warmup discard and dark detection."""
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x01)
         self.rows = feed_pipeline_from_csv(
             _fixture("single_cam_basic_left.csv"), "left", self.pipeline
@@ -199,7 +195,7 @@ class TestDarkCorrectionMath:
     """
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x01)
         feed_pipeline_from_csv(
             _fixture("single_cam_basic_left.csv"), "left", self.pipeline
@@ -261,7 +257,7 @@ class TestFrameIdRollover:
     """
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x01, dark_interval=ROLLOVER_DARK_INTERVAL)
         self.rows = feed_pipeline_from_csv(
             _fixture("frame_id_rollover_left.csv"), "left", self.pipeline
@@ -302,7 +298,7 @@ class TestMultiCamLeft:
     """Two cameras on the left — verifies frame buffer accumulation."""
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x03)   # cams 0 and 1
         self.rows = feed_pipeline_from_csv(
             _fixture("multi_cam_left.csv"), "left", self.pipeline
@@ -329,22 +325,11 @@ class TestMultiCamLeft:
         assert 0 in all_cam_ids, "cam 0 missing from all corrected batches"
         assert 1 in all_cam_ids, "cam 1 missing from all corrected batches"
 
-    def test_science_frames_assembled(self):
-        """ScienceFrame events must reference both cameras."""
-        if self.frames:
-            # At least some frames should be complete (both cameras present).
-            complete = [
-                sf for sf in self.frames
-                if ("left", 0) in sf.samples and ("left", 1) in sf.samples
-            ]
-            assert complete, "No complete ScienceFrame assembled for both cameras"
-
-
 class TestBothSides:
     """Left cam 0 + right cam 0 fed into a single pipeline."""
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x01, right_mask=0x01)
         left_rows = feed_pipeline_from_csv(
             _fixture("both_sides_left.csv"), "left", self.pipeline
@@ -374,20 +359,11 @@ class TestBothSides:
         assert "left"  in all_sides, "Left side missing from corrected batches"
         assert "right" in all_sides, "Right side missing from corrected batches"
 
-    def test_science_frames_contain_both_sides(self):
-        if self.frames:
-            complete = [
-                sf for sf in self.frames
-                if ("left", 0) in sf.samples and ("right", 0) in sf.samples
-            ]
-            assert complete, "No ScienceFrame contained both left and right cameras"
-
-
 class TestMultipleIntervals:
     """25 frames — dark frames at 3, 6, 11, 16, 21 → at least 4 batches."""
 
     def setup_method(self):
-        self.pipeline, self.uncorrected, self.batches, self.frames = \
+        self.pipeline, self.uncorrected, self.batches = \
             _make_pipeline(left_mask=0x01)
         self.rows = feed_pipeline_from_csv(
             _fixture("multi_interval_left.csv"), "left", self.pipeline
