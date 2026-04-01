@@ -239,6 +239,8 @@ class ScanWorkflow:
                 + [f"std_r{i}" for i in range(1, 9)]
                 + [f"contrast_l{i}" for i in range(1, 9)]
                 + [f"contrast_r{i}" for i in range(1, 9)]
+                + [f"temp_l{i}" for i in range(1, 9)]
+                + [f"temp_r{i}" for i in range(1, 9)]
             )
             expected_col_suffixes: set[str] = set()
 
@@ -383,6 +385,9 @@ class ScanWorkflow:
                                     )
                                     frame_entry["values"][f"contrast_{col_suffix}"] = float(
                                         sample.contrast
+                                    )
+                                    frame_entry["values"][f"temp_{col_suffix}"] = float(
+                                        sample.temperature_c
                                     )
 
                                 # Flush frame rows that are complete (all cameras contributed).

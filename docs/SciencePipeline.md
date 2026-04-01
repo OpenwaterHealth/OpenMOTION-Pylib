@@ -278,7 +278,8 @@ bfi_l1..bfi_l8, bfi_r1..bfi_r8,
 bvi_l1..bvi_l8, bvi_r1..bvi_r8,
 mean_l1..mean_l8, mean_r1..mean_r8,
 std_l1..std_l8,  std_r1..std_r8,
-contrast_l1..contrast_l8, contrast_r1..contrast_r8
+contrast_l1..contrast_l8, contrast_r1..contrast_r8,
+temp_l1..temp_l8, temp_r1..temp_r8
 ```
 
 `timestamp_s` is relative to the first corrected frame written (i.e. normalised to zero at the start of the corrected output).
