@@ -934,7 +934,7 @@ class SciencePipeline:
         dark_interval: int = 600,
         discard_count: int = 9,
         expected_row_sum: int | None = None,
-        noise_floor: int = 74,
+        noise_floor: int = 10,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -1351,7 +1351,7 @@ def create_science_pipeline(
     dark_interval: int = 600,
     discard_count: int = 9,
     expected_row_sum: int | None = None,
-    noise_floor: int = 74,
+    noise_floor: int = 10,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.

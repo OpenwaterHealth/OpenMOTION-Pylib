@@ -12,7 +12,7 @@ Each camera produces a 1024-bin histogram at 40 Hz.  The science pipeline:
 
 1. **Discards** the first 9 frames from every camera (hardware warmup).
 2. **Identifies dark frames** by a fixed schedule based on firmware timing.  Dark frames are acquired with the laser off and provide a measurement of the ambient + dark-current floor.
-3. **Zeroes noise-floor bins** — histogram bins below the noise floor threshold (default 74 counts) are zeroed before moment computation to suppress low-level dark noise.
+3. **Zeroes noise-floor bins** — histogram bins below the noise floor threshold (default 10 counts) are zeroed before moment computation to suppress low-level dark noise.
 4. **Emits an uncorrected sample** for every non-dark frame immediately, using the raw histogram statistics with no dark subtraction.  For dark frames, it re-emits the previous non-dark frame's values so the live display shows no artefact.
 5. **Buffers** the raw first and second moments of every non-dark frame.
 6. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives an interpolated corrected value derived from its two adjacent non-dark neighbors.
@@ -329,7 +329,7 @@ _science_worker (single background thread)
   ├─ [first-frame check] → drop if first raw_frame_id ≠ 1
   ├─ FrameIdUnwrapper.unwrap() → absolute_frame_id
   ├─ [discard check] → drop if absolute_frame_id ≤ 9
-  ├─ [noise floor] → zero bins < 74; recompute row_sum
+  ├─ [noise floor] → zero bins < 10; recompute row_sum
   │
   ├─ [dark frame?] ──── YES ──────────────────────────────────────────┐
   │                                                                    │
