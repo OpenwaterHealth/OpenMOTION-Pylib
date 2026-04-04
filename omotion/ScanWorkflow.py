@@ -457,6 +457,21 @@ class ScanWorkflow:
                     "tcm", "tcl", "pdc",
                 ]
 
+                # _trigger_armed_evt fires the moment start_trigger() succeeds
+                # so each writer computes its CSV deadline from real scan-start
+                # rather than from thread-spawn time (which is several seconds
+                # earlier, before cameras are enabled).  It is also set in the
+                # finally block so threads never hang if the trigger fails.
+                # _csv_stop_evt is broadcast by whichever thread hits its
+                # deadline first so every side stops writing at the same
+                # wall-clock instant, giving equal row counts across CSVs.
+                _trigger_armed_evt = threading.Event()
+                _csv_stop_evt = (
+                    threading.Event()
+                    if request.raw_csv_duration_sec is not None
+                    else None
+                )
+
                 for side, mask, sensor in active_sides:
                     q = queue.Queue()
                     writer_queues[side] = q
@@ -479,18 +494,12 @@ class ScanWorkflow:
 
                     _row_handler = _make_row_handler(side, science_pipeline)
 
-                    # Resolve CSV file path and optional deadline for this side.
+                    # Resolve CSV file path for this side.
                     if request.write_raw_csv:
                         filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
                         filepath = os.path.join(request.data_dir, filename)
-                        _csv_deadline = (
-                            time.monotonic() + float(request.raw_csv_duration_sec)
-                            if request.raw_csv_duration_sec is not None
-                            else None
-                        )
                     else:
                         filepath = ""
-                        _csv_deadline = None
 
                     def _writer(
                         q=q,
@@ -499,9 +508,22 @@ class ScanWorkflow:
                         fp=filepath,
                         ecfn=extra_cols_fn,
                         s=side,
-                        csv_deadline=_csv_deadline,
                         dur=request.raw_csv_duration_sec,
+                        trigger_armed_evt=_trigger_armed_evt,
+                        csv_stop_evt=_csv_stop_evt,
                     ):
+                        # Wait for the hardware trigger to fire before starting
+                        # the CSV deadline countdown.  The data queue is empty
+                        # until FSYNC begins (cameras are enabled but not yet
+                        # clocked) so nothing is lost during the wait.
+                        # _trigger_armed_evt is also set in the finally block so
+                        # this wait never hangs on an error path.
+                        if dur is not None:
+                            trigger_armed_evt.wait()
+                            csv_deadline = time.monotonic() + float(dur)
+                        else:
+                            csv_deadline = None
+
                         rows_written = 0
                         fh = None
                         try:
@@ -526,6 +548,7 @@ class ScanWorkflow:
                                 extra_cols_fn=ecfn,
                                 on_row_fn=on_row_fn,
                                 csv_deadline=csv_deadline,
+                                csv_stop_event=csv_stop_evt,
                                 on_csv_closed_fn=_on_csv_closed if csv_deadline is not None else None,
                             )
                         except Exception as e:
@@ -568,6 +591,8 @@ class ScanWorkflow:
                     raise RuntimeError("Failed to start trigger.")
                 if on_trigger_state_fn:
                     on_trigger_state_fn("ON")
+                # Signal writer threads: trigger is live, start CSV countdowns now.
+                _trigger_armed_evt.set()
 
                 start_t = time.time()
                 last_emit = -1
@@ -643,6 +668,10 @@ class ScanWorkflow:
                                 )
                         except Exception as _drain_err:
                             logger.warning("%s: post-stop drain error: %s", side, _drain_err)
+
+                # Unblock any writer thread still waiting on the trigger event
+                # (e.g. if an error occurred before start_trigger ran).
+                _trigger_armed_evt.set()
 
                 for stop_evt in writer_stops.values():
                     stop_evt.set()

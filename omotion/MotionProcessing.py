@@ -487,6 +487,7 @@ def parse_histogram_stream(
     expected_row_sum: int | None = None,
     csv_deadline: float | None = None,
     on_csv_closed_fn: Callable[[], None] | None = None,
+    csv_stop_event: threading.Event | None = None,
 ) -> int:
     """
     Parse a histogram USB stream queue, feed the science pipeline, and
@@ -505,8 +506,15 @@ def parse_histogram_stream(
         ``time.monotonic()``-style deadline after which CSV writing stops but
         ``on_row_fn`` continues.  ``None`` means write for the full duration.
     on_csv_closed_fn
-        Called exactly once when ``csv_deadline`` is reached and the writer
-        is deactivated.  Useful for emitting a log message to the caller.
+        Called exactly once when ``csv_deadline`` is reached (or
+        ``csv_stop_event`` is set) and the writer is deactivated.  Useful
+        for emitting a log message to the caller.
+    csv_stop_event
+        A :class:`threading.Event` shared across all writer threads for the
+        same scan.  When any thread's deadline fires it sets this event so
+        every other thread stops writing on its next sample check, keeping
+        row counts equal across left/right CSVs.  ``None`` disables
+        cross-thread synchronisation.
     expected_row_sum
         Forwarded to ``parse_histogram_packet_structured``.  When not None,
         samples whose histogram bin sum does not match are silently dropped
@@ -541,8 +549,15 @@ def parse_histogram_stream(
                 for sample in packet.samples:
                     # Check CSV deadline before every row so the cutoff is
                     # accurate to within one sample period (~25 ms at 40 Hz).
-                    if _csv_active and csv_deadline is not None and time.monotonic() >= csv_deadline:
+                    if _csv_active and (
+                        (csv_deadline is not None and time.monotonic() >= csv_deadline)
+                        or (csv_stop_event is not None and csv_stop_event.is_set())
+                    ):
                         _csv_active = False
+                        # Broadcast to peer writer threads sharing this event
+                        # so every side's CSV ends at the same sample boundary.
+                        if csv_stop_event is not None and not csv_stop_event.is_set():
+                            csv_stop_event.set()
                         if on_csv_closed_fn:
                             try:
                                 on_csv_closed_fn()
@@ -620,8 +635,15 @@ def parse_histogram_stream(
                 )
                 offset += packet.bytes_consumed
                 for sample in packet.samples:
-                    if _csv_active and csv_deadline is not None and time.monotonic() >= csv_deadline:
+                    if _csv_active and (
+                        (csv_deadline is not None and time.monotonic() >= csv_deadline)
+                        or (csv_stop_event is not None and csv_stop_event.is_set())
+                    ):
                         _csv_active = False
+                        # Broadcast to peer writer threads sharing this event
+                        # so every side's CSV ends at the same sample boundary.
+                        if csv_stop_event is not None and not csv_stop_event.is_set():
+                            csv_stop_event.set()
                         if on_csv_closed_fn:
                             try:
                                 on_csv_closed_fn()
