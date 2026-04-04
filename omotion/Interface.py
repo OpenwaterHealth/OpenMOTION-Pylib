@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import platform
+import socket
 from typing import Any, Iterable
 from omotion.Console import MOTIONConsole
 from omotion.DualMotionComposite import DualMotionComposite
@@ -99,6 +101,57 @@ class MOTIONInterface(SignalWrapper):
             self._dual_composite.signal_connect.connect(self._on_sensor_connect)
             self._dual_composite.signal_disconnect.connect(self._on_sensor_disconnect)
             self._dual_composite.signal_data_received.connect(self.signal_data_received)
+
+    def log_system_info(self) -> None:
+        """Log host system information to the SDK logger."""
+        try:
+            logger.info("--- System Information ---")
+            logger.info("Hostname:    %s", socket.gethostname())
+            logger.info("Platform:    %s", platform.platform())
+            logger.info("System:      %s %s", platform.system(), platform.release())
+            logger.info("Version:     %s", platform.version())
+            logger.info("Arch:        %s", platform.machine())
+            logger.info("Processor:   %s", platform.processor())
+            logger.info("Python:      %s (%s)", platform.python_version(),
+                        platform.python_implementation())
+            logger.info("SDK version: %s", _SDK_VERSION)
+
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+
+                    class _MEMSTATUSEX(ctypes.Structure):
+                        _fields_ = [
+                            ("dwLength",                ctypes.c_ulong),
+                            ("dwMemoryLoad",            ctypes.c_ulong),
+                            ("ullTotalPhys",            ctypes.c_ulonglong),
+                            ("ullAvailPhys",            ctypes.c_ulonglong),
+                            ("ullTotalPageFile",        ctypes.c_ulonglong),
+                            ("ullAvailPageFile",        ctypes.c_ulonglong),
+                            ("ullTotalVirtual",         ctypes.c_ulonglong),
+                            ("ullAvailVirtual",         ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                        ]
+
+                    mem = _MEMSTATUSEX()
+                    mem.dwLength = ctypes.sizeof(_MEMSTATUSEX)
+                    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+                    logger.info("RAM:         %.2f GB", mem.ullTotalPhys / (1024 ** 3))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("Failed to log system information: %s", e)
+
+    def log_console_info(self) -> None:
+        """Log console device info via MOTIONConsole.log_device_info()."""
+        if self.console_module and self.console_module.is_connected():
+            self.console_module.log_device_info()
+
+    def log_sensor_info(self, side: str) -> None:
+        """Log sensor device info via MOTIONSensor.log_device_info() for *side*."""
+        sensor = self.sensors.get(side) if self.sensors else None
+        if sensor and sensor.is_connected():
+            sensor.log_device_info()
 
     def _on_console_connect(self, device_id: str, connection_type: str) -> None:
         """Handle console connection: start the telemetry poller and forward the signal."""

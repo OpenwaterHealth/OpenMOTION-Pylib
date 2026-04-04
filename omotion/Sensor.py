@@ -225,7 +225,7 @@ class MOTIONSensor:
         if r.packet_type in _ERROR_TYPES:
             return False
         if r.data_len == 4:
-            logger.info("Debug flags set to: 0x%08X", struct.unpack("<I", r.data)[0])
+            logger.debug("Debug flags set to: 0x%08X", struct.unpack("<I", r.data)[0])
         return True
 
     def get_debug_flags(self) -> int:
@@ -979,6 +979,24 @@ class MOTIONSensor:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def log_device_info(self) -> None:
+        """Log sensor firmware version, hardware ID, and cached camera UIDs to the SDK logger."""
+        try:
+            fw_version = self.get_version()
+            hw_id      = self.get_cached_hardware_id() or self.get_hardware_id()
+            if self._cached_camera_uids:
+                uid_summary = ", ".join(
+                    f"cam{k}={v}" for k, v in sorted(self._cached_camera_uids.items()) if v
+                )
+            else:
+                uid_summary = "none cached"
+            logger.info(
+                "Sensor: firmware=%s  hw_id=%s  camera_uids=[%s]",
+                fw_version, hw_id, uid_summary,
+            )
+        except Exception as e:
+            logger.warning("Sensor: failed to read device info: %s", e)
 
     def disconnect(self):
         """Disconnect the UART and clean up."""

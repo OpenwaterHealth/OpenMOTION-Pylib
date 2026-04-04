@@ -2470,6 +2470,15 @@ class MOTIONConsole:
             logger.error("Unexpected error FPGA close: %s", e)
             raise
 
+    def log_device_info(self) -> None:
+        """Log console firmware version and hardware ID to the SDK logger."""
+        try:
+            fw_version = self.get_version()
+            hw_id      = self.get_hardware_id()
+            logger.info("Console: firmware=%s  hw_id=%s", fw_version, hw_id)
+        except Exception as e:
+            logger.warning("Console: failed to read device info: %s", e)
+
     def disconnect(self):
         """
         Disconnect the UART and clean up.
