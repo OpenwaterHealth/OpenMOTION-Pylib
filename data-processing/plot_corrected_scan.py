@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot BFI, BVI, mean, and temperature from a _corrected.csv file produced by
-the OpenMOTION SDK.
+Plot BFI and BVI from a _corrected.csv file produced by the OpenMOTION SDK.
 
 Both sensor sides are shown in one figure.  The subplot grid mirrors the
 physical camera layout described in docs/CameraArrangement.md:
@@ -17,8 +16,8 @@ Inactive cameras are omitted entirely.  Empty rows and columns that result
 from cameras being inactive are collapsed so no whitespace is wasted.
 
 Each subplot shows:
-    Left  y-axis  — BFI (solid blue) and BVI (dashed green), scale 0–10
-    Right y-axis  — Temperature (°C, dash-dot red)
+    Left  y-axis  — BFI (solid black, lw=2)
+    Right y-axis  — BVI (solid red,   lw=1)
 
 Optional secondary figure (--show-signal) adds mean, std, and contrast.
 
@@ -33,7 +32,6 @@ import os
 import sys
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
@@ -150,21 +148,17 @@ def _make_figure(
     n_cols: int,
     *,
     mode: str,       # "bfi" or "signal"
-    csv_path: str,
-    active_sides: list[str],
 ) -> plt.Figure:
     """
-    Build and return one figure.  mode="bfi" plots BFI/BVI/temperature;
+    Build and return one figure.  mode="bfi" plots BFI/BVI;
     mode="signal" plots mean/std/contrast.
     """
     ts = df["timestamp_s"].to_numpy()
 
-    fig_w = max(5 * n_cols, 8)
-    fig_h = max(3.2 * n_rows, 5)
     fig, axes = plt.subplots(
         nrows=n_rows, ncols=n_cols,
-        figsize=(fig_w, fig_h),
-        sharex=True, squeeze=False,
+        figsize=(6 * n_cols, 8),
+        squeeze=False,
     )
 
     # Hide every subplot; we'll re-enable only the active ones.
@@ -178,112 +172,43 @@ def _make_figure(
         ax.set_visible(True)
 
         label = f"{'L' if side == 'left' else 'R'}:  Cam {cam}"
-        ax.set_title(label, fontsize=9, pad=3)
-        ax.grid(True, alpha=0.35)
-        ax.tick_params(axis="both", labelsize=7)
+        ax.set_title(label)
 
         if mode == "bfi":
             bfi_vals = df[_bfi(side, cam)].to_numpy(dtype=float)
             bvi_vals = df[_bvi(side, cam)].to_numpy(dtype=float)
-            ln1, = ax.plot(ts, bfi_vals, "-",  lw=1.3, color="tab:blue",  label="BFI")
-            ln2, = ax.plot(ts, bvi_vals, "--", lw=1.0, color="tab:green", label="BVI")
-            ax.set_ylabel("Index", fontsize=7)
-            # Auto-scale to the actual data; add 5% padding so lines aren't flush with edges.
-            combined = np.concatenate([bfi_vals[np.isfinite(bfi_vals)],
-                                       bvi_vals[np.isfinite(bvi_vals)]])
-            if combined.size:
-                lo, hi = combined.min(), combined.max()
-                pad = max((hi - lo) * 0.05, 0.2)
-                ax.set_ylim(lo - pad, hi + pad)
-            lines, labels = [ln1, ln2], ["BFI", "BVI"]
-
-            temp_col = _temp(side, cam)
-            if temp_col in df.columns and df[temp_col].notna().any():
-                ax2 = ax.twinx()
-                ax2.tick_params(axis="y", labelcolor="tab:red", labelsize=7)
-                ax2.set_ylabel("Temp (°C)", fontsize=7, color="tab:red")
-                ln3, = ax2.plot(
-                    ts, df[temp_col].to_numpy(dtype=float),
-                    "-.", lw=1.0, color="tab:red", label="Temp (°C)",
-                )
-                lines.append(ln3)
-                labels.append("Temp (°C)")
-
-        else:  # signal
-            mean_vals     = df[_mean(side, cam)].to_numpy(dtype=float)
-            std_vals      = df[_std(side, cam)].to_numpy(dtype=float)
-            contrast_vals = df[_contrast(side, cam)].to_numpy(dtype=float)
-            ln1, = ax.plot(ts, mean_vals, "-",  lw=1.3, color="tab:blue",   label="Mean (μ̃)")
-            ln2, = ax.plot(ts, std_vals,  "--", lw=1.0, color="tab:orange", label="Std (σ̃)")
-            ax.set_ylabel("Bin index", fontsize=7)
-            lines, labels = [ln1, ln2], ["Mean (μ̃)", "Std (σ̃)"]
+            ln1, = ax.plot(ts, bfi_vals, "k", lw=2, label="BFI")
+            ax.set_ylabel("BFI")
 
             ax2 = ax.twinx()
-            ax2.tick_params(axis="y", labelcolor="tab:purple", labelsize=7)
-            ax2.set_ylabel("Contrast", fontsize=7, color="tab:purple")
-            ln3, = ax2.plot(
-                ts, contrast_vals,
-                "-.", lw=1.0, color="tab:purple", label="Contrast (K̃)",
-            )
-            lines.append(ln3)
-            labels.append("Contrast (K̃)")
+            ln2, = ax2.plot(ts, bvi_vals, "r", lw=1, label="BVI")
+            ax2.tick_params(axis="y", colors="red")
 
-        ax.legend(lines, labels, fontsize=6, loc="best", framealpha=0.6)
+            lines, labels = [ln1, ln2], ["BFI", "BVI"]
 
-    # x-axis labels on bottom row only (sharex handles the rest)
+        else:  # signal
+            contrast_vals = df[_contrast(side, cam)].to_numpy(dtype=float)
+            mean_vals     = df[_mean(side, cam)].to_numpy(dtype=float)
+            ln1, = ax.plot(ts, contrast_vals, "k", lw=2, label="Contrast")
+            ax.set_ylabel("Contrast")
+            ax.invert_yaxis()
+
+            ax2 = ax.twinx()
+            ln2, = ax2.plot(ts, mean_vals, "r", lw=1, label="Mean")
+            ax2.tick_params(axis="y", colors="red")
+            ax2.invert_yaxis()
+
+            lines, labels = [ln1, ln2], ["Contrast", "Mean"]
+
+        ax.legend(lines, labels)
+
+    # x-axis labels on bottom row only
     for sc in range(n_cols):
-        axes[n_rows - 1, sc].set_xlabel("Time (s)", fontsize=8)
+        axes[n_rows - 1, sc].set_xlabel("Time (s)")
 
-    basename = os.path.splitext(os.path.basename(csv_path))[0]
-    mode_label = "BFI / BVI / Temperature" if mode == "bfi" else "Mean / Std / Contrast"
-    fig.suptitle(f"{basename}  —  {mode_label}", fontsize=11, fontweight="bold")
-
-    # tight_layout must run before we read subplot positions for the headers.
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-
-    # Side header annotations — placed after layout is finalised.
-    _add_side_headers(fig, axes, col_map, active_sides)
+    fig.tight_layout()
 
     return fig
-
-
-def _add_side_headers(
-    fig: plt.Figure,
-    axes: np.ndarray,
-    col_map: dict,
-    active_sides: list[str],
-) -> None:
-    """
-    Draw a centered "LEFT SENSOR" / "RIGHT SENSOR" label above each sensor's
-    columns using figure-space coordinates.
-    """
-    # Collect the subplot column indices that belong to each side.
-    side_subplot_cols: dict[str, list[int]] = {}
-    for side in active_sides:
-        offset = SENSOR_COL_OFFSET[side]
-        cols_in_fig = [
-            col_map[offset + sensor_col]
-            for sensor_col in (0, 1)
-            if (offset + sensor_col) in col_map
-        ]
-        if cols_in_fig:
-            side_subplot_cols[side] = cols_in_fig
-
-    n_rows, n_cols = axes.shape
-    for side, sc_list in side_subplot_cols.items():
-        # Average the x-centres of the relevant subplot columns in figure coords.
-        x_centres = []
-        for sc in sc_list:
-            bbox = axes[0, sc].get_position()
-            x_centres.append((bbox.x0 + bbox.x1) / 2)
-        x_mid = sum(x_centres) / len(x_centres)
-        top_y = axes[0, sc_list[0]].get_position().y1 + 0.01
-        fig.text(
-            x_mid, top_y,
-            f"{'LEFT' if side == 'left' else 'RIGHT'} SENSOR",
-            ha="center", va="bottom",
-            fontsize=9, fontweight="bold", color="dimgray",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +248,6 @@ def main() -> None:
     kwargs = dict(
         cells=cells, row_map=row_map, col_map=col_map,
         n_rows=n_rows, n_cols=n_cols,
-        csv_path=args.csv, active_sides=active_sides,
     )
 
     fig_bfi = _make_figure(df, mode="bfi", **kwargs)
