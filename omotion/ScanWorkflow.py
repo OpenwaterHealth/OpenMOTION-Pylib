@@ -1,3 +1,4 @@
+import concurrent.futures
 import datetime
 import csv
 import logging
@@ -812,78 +813,101 @@ class ScanWorkflow:
                                 f"Error setting camera power for {side}: {e}"
                             ) from e
 
-                tasks: list[tuple[str, int]] = []
-                for side, mask, _ in active:
+                side_positions: dict[str, list[int]] = {}
+                side_sensors: dict = {}
+                for side, mask, sensor in active:
                     positions = [i for i in range(8) if (mask & (1 << i))]
-                    tasks.extend((side, pos) for pos in positions)
+                    side_positions[side] = positions
+                    side_sensors[side] = sensor
 
-                if not tasks:
+                total = sum(len(p) * 2 for p in side_positions.values())
+                if not total:
                     raise RuntimeError("Empty camera masks (left & right)")
 
-                total = len(tasks) * 2
-                done = 0
+                done = [0]
+                done_lock = threading.Lock()
                 _emit_progress(1)
 
-                for side, pos in tasks:
-                    if self._config_stop_evt.is_set():
-                        raise RuntimeError("Canceled")
+                side_errors: dict[str, str] = {}
 
-                    sensor = self._interface.sensors.get(side)
-                    if not sensor or not sensor.is_connected():
-                        raise RuntimeError(f"{side} sensor not connected during configure.")
+                def _configure_side(side: str) -> None:
+                    sensor = side_sensors[side]
+                    for pos in side_positions[side]:
+                        if self._config_stop_evt.is_set():
+                            raise RuntimeError("Canceled")
 
-                    cam_mask_single = 1 << pos
-                    pos1 = pos + 1
+                        if not sensor or not sensor.is_connected():
+                            raise RuntimeError(
+                                f"{side} sensor not connected during configure."
+                            )
 
-                    status_map = sensor.get_camera_status(cam_mask_single)
-                    if not status_map or pos not in status_map:
-                        raise RuntimeError(
-                            f"Failed to read camera status for {side} camera {pos1}."
+                        cam_mask_single = 1 << pos
+                        pos1 = pos + 1
+
+                        status_map = sensor.get_camera_status(cam_mask_single)
+                        if not status_map or pos not in status_map:
+                            raise RuntimeError(
+                                f"Failed to read camera status for {side} camera {pos1}."
+                            )
+                        status = status_map[pos]
+                        if not status & (1 << 0):
+                            raise RuntimeError(
+                                f"{side} camera {pos1} not READY for FPGA/config."
+                            )
+
+                        _emit_log(
+                            f"Programming {side} camera FPGA at position {pos1} "
+                            f"(mask 0x{cam_mask_single:02X})..."
                         )
-                    status = status_map[pos]
-                    if not status & (1 << 0):
-                        raise RuntimeError(
-                            f"{side} camera {pos1} not READY for FPGA/config."
-                        )
+                        if not sensor.program_fpga(
+                            camera_position=cam_mask_single, manual_process=False
+                        ):
+                            raise RuntimeError(
+                                f"Failed to program FPGA on {side} sensor (pos {pos1})."
+                            )
+                        with done_lock:
+                            done[0] += 1
+                            _emit_progress(int((done[0] / total) * 100))
 
-                    msg = (
-                        f"Programming {side} camera FPGA at position {pos1} "
-                        f"(mask 0x{cam_mask_single:02X})..."
-                    )
-                    _emit_log(msg)
-                    results = self._interface.run_on_sensors(
-                        "program_fpga",
-                        camera_position=cam_mask_single,
-                        manual_process=False,
-                        target=side,
-                    )
-                    if not self._ok_from_result(results, side):
-                        raise RuntimeError(
-                            f"Failed to program FPGA on {side} sensor (pos {pos1})."
-                        )
-                    done += 1
-                    _emit_progress(int((done / total) * 100))
+                        if self._config_stop_evt.is_set():
+                            raise RuntimeError("Canceled")
 
-                    if self._config_stop_evt.is_set():
-                        raise RuntimeError("Canceled")
-
-                    time.sleep(0.1)
-                    msg = (
-                        f"Configuring {side} camera sensor registers "
-                        f"at position {pos1}..."
-                    )
-                    _emit_log(msg)
-                    cfg_results = self._interface.run_on_sensors(
-                        "camera_configure_registers",
-                        camera_position=cam_mask_single,
-                        target=side,
-                    )
-                    if not self._ok_from_result(cfg_results, side):
-                        raise RuntimeError(
-                            f"camera_configure_registers failed on {side} at position {pos1}: {cfg_results!r}"
+                        time.sleep(0.1)
+                        _emit_log(
+                            f"Configuring {side} camera sensor registers "
+                            f"at position {pos1}..."
                         )
-                    done += 1
-                    _emit_progress(int((done / total) * 100))
+                        if not sensor.camera_configure_registers(
+                            camera_position=cam_mask_single
+                        ):
+                            raise RuntimeError(
+                                f"camera_configure_registers failed on {side} "
+                                f"at position {pos1}."
+                            )
+                        with done_lock:
+                            done[0] += 1
+                            _emit_progress(int((done[0] / total) * 100))
+
+                # Run each sensor's full configure sequence in parallel
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(side_positions)
+                ) as executor:
+                    fs = {
+                        executor.submit(_configure_side, side): side
+                        for side in side_positions
+                    }
+                    for future in concurrent.futures.as_completed(fs):
+                        side = fs[future]
+                        exc = future.exception()
+                        if exc is not None:
+                            side_errors[side] = str(exc)
+
+                if side_errors:
+                    raise RuntimeError(
+                        "; ".join(
+                            f"{side}: {e}" for side, e in sorted(side_errors.items())
+                        )
+                    )
 
                 ok = True
                 _emit_log("FPGAs programmed & registers configured")
