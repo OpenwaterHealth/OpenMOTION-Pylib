@@ -31,6 +31,7 @@ HISTO_BLOCK_SIZE = 1 + 1 + HISTOGRAM_BYTES + 4 + 1  # SOH + cam + histo + temp +
 TIMESTAMP_SIZE = 4
 MIN_PACKET_ENVELOPE_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE
 MIN_HISTO_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
+MIN_PACKET_SIZE = MIN_HISTO_PACKET_SIZE
 # TYPE_HISTO_CMP has: header + compressed_payload(>=1) + uncmp_crc16(2) + footer(3)
 MIN_HISTO_CMP_PACKET_SIZE = PACKET_HEADER_SIZE + 1 + CMP_UNCMP_CRC_SIZE + PACKET_FOOTER_SIZE
 MAX_PACKET_SIZE = 32837
@@ -211,23 +212,6 @@ def bytes_to_integers(byte_array: bytes | bytearray) -> tuple[list[int], list[in
         hidden_figures.append(chunk[3])
         integers.append(int.from_bytes(chunk[0:3], byteorder="little"))
     return integers, hidden_figures
-
-
-def parse_histogram_packet(
-    pkt: memoryview,
-) -> Tuple[Dict[int, np.ndarray], Dict[int, int], Dict[int, float], Optional[float], int]:
-    """
-    Backward-compatible packet parser returning legacy tuple maps.
-    """
-    packet = parse_histogram_packet_structured(pkt)
-    hists: Dict[int, np.ndarray] = {}
-    ids: Dict[int, int] = {}
-    temps: Dict[int, float] = {}
-    for sample in packet.samples:
-        hists[sample.cam_id] = sample.histogram
-        ids[sample.cam_id] = sample.frame_id
-        temps[sample.cam_id] = sample.temperature_c
-    return hists, ids, temps, packet.timestamp_s, packet.bytes_consumed
 
 
 def parse_histogram_packet_structured(
@@ -1472,85 +1456,3 @@ def feed_pipeline_from_csv(
             rows_fed += 1
     return rows_fed
 
-
-# ---------------------------------------------------------------------------
-# Backward-compatibility shims
-# ---------------------------------------------------------------------------
-# The old RealtimeProcessingPipeline split work across two threads (metric
-# worker + correction worker) and was constructed per-side.  New code should
-# use SciencePipeline / create_science_pipeline instead.
-
-# RealtimeSample and CorrectedSample have been merged into Sample.
-# These aliases keep existing call-sites working without changes.
-RealtimeSample = Sample
-CorrectedSample = Sample
-
-class RealtimeProcessingPipeline(SciencePipeline):
-    """Deprecated — use SciencePipeline instead."""
-
-    def __init__(
-        self,
-        side: str,
-        *,
-        bfi_c_min,
-        bfi_c_max,
-        bfi_i_min,
-        bfi_i_max,
-        on_sample_fn: Callable[[Sample], None] | None = None,
-        on_corrected_fn: Callable[[Sample], None] | None = None,
-        correction_warmup_count: int = 10,
-        correction_mean_threshold: float = 66.0,
-    ):
-        # Map old per-side construction to unified pipeline with a single side.
-        mask = 0xFF
-        left_mask = mask if side == "left" else 0x00
-        right_mask = mask if side == "right" else 0x00
-        super().__init__(
-            left_camera_mask=left_mask,
-            right_camera_mask=right_mask,
-            bfi_c_min=bfi_c_min,
-            bfi_c_max=bfi_c_max,
-            bfi_i_min=bfi_i_min,
-            bfi_i_max=bfi_i_max,
-            on_uncorrected_fn=on_corrected_fn,
-        )
-        self.side = side
-        self._on_sample_fn = on_sample_fn  # kept for compat; not called in new design
-
-    def enqueue(  # type: ignore[override]
-        self,
-        cam_id: int,
-        frame_id: int,
-        timestamp_s: float,
-        hist: np.ndarray,
-        row_sum: int,
-        temperature_c: float,
-    ) -> None:
-        """Old signature without side argument — uses the side set at construction."""
-        super().enqueue(self.side, cam_id, frame_id, timestamp_s, hist, row_sum, temperature_c)
-
-
-def create_realtime_processing_pipeline(
-    side: str,
-    *,
-    bfi_c_min,
-    bfi_c_max,
-    bfi_i_min,
-    bfi_i_max,
-    on_sample_fn: Callable[[RealtimeSample], None] | None = None,
-    on_corrected_fn: Callable[[CorrectedSample], None] | None = None,
-    correction_warmup_count: int = 10,
-    correction_mean_threshold: float = 66.0,
-) -> RealtimeProcessingPipeline:
-    """Deprecated — use create_science_pipeline instead."""
-    pipeline = RealtimeProcessingPipeline(
-        side=side,
-        bfi_c_min=bfi_c_min,
-        bfi_c_max=bfi_c_max,
-        bfi_i_min=bfi_i_min,
-        bfi_i_max=bfi_i_max,
-        on_sample_fn=on_sample_fn,
-        on_corrected_fn=on_corrected_fn,
-    )
-    pipeline.start()
-    return pipeline
