@@ -969,7 +969,9 @@ class SciencePipeline:
 
         # Per (side, cam_id): last corrected sample from the previous batch.
         # Used to interpolate the corrected value for the start dark frame.
-        self._last_corrected: dict[tuple[str, int], Sample] = {}
+        # Stores the two most recent corrected samples per camera so that the
+        # quadratic 4-point stencil can be applied at each dark frame position.
+        self._last_corrected: dict[tuple[str, int], list[Sample]] = {}
 
         self._ingress_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -1276,29 +1278,37 @@ class SciencePipeline:
                 )
             )
 
-        # Rule 2: corrected value for the prev_dark frame itself is linearly
-        # interpolated between its two adjacent non-dark neighbors:
-        #   left_neighbor  = last corrected sample of the previous batch
-        #                    (absolute_frame_id == prev_abs − 1)
-        #   right_neighbor = first corrected sample of this batch
-        #                    (absolute_frame_id == prev_abs + 1)
-        # If the left neighbor is unavailable (first interval), we fall back
-        # to repeating the right neighbor.
+        # Rule 2: corrected value for the prev_dark frame itself is computed
+        # using the same 4-point quadratic stencil as the legacy pipeline:
+        #
+        #   v[dark] = (-1/6)*v[-2] + (2/3)*v[-1] + (2/3)*v[+1] + (-1/6)*v[+2]
+        #
+        # where v[-1]/v[-2] are the last two corrected samples of the previous
+        # batch and v[+1]/v[+2] are the first two corrected samples of this
+        # batch.  Falls back gracefully when fewer neighbours are available:
+        #   - Only v[-1] and v[+1] available  → simple average (linear)
+        #   - No left neighbours at all         → repeat v[+1]
         if corrected_samples:
-            first_cs = corrected_samples[0]   # prev_abs + 1
-            left_cs = self._last_corrected.get(key)  # prev_abs - 1, may be None
-            if left_cs is not None:
-                dark_bfi = (left_cs.bfi + first_cs.bfi) / 2.0
-                dark_bvi = (left_cs.bvi + first_cs.bvi) / 2.0
-                dark_mean = (left_cs.mean + first_cs.mean) / 2.0
-                dark_std = (left_cs.std_dev + first_cs.std_dev) / 2.0
-                dark_contrast = (left_cs.contrast + first_cs.contrast) / 2.0
-            else:
-                dark_bfi = first_cs.bfi
-                dark_bvi = first_cs.bvi
-                dark_mean = first_cs.mean
-                dark_std = first_cs.std_dev
-                dark_contrast = first_cs.contrast
+            right1 = corrected_samples[0]                          # prev_abs + 1
+            right2 = corrected_samples[1] if len(corrected_samples) >= 2 else None
+            prev_batch = self._last_corrected.get(key, [])
+            left1 = prev_batch[-1] if len(prev_batch) >= 1 else None   # prev_abs - 1
+            left2 = prev_batch[-2] if len(prev_batch) >= 2 else None   # prev_abs - 2
+
+            def _quad(attr):
+                r1 = getattr(right1, attr)
+                r2 = getattr(right2, attr) if right2 is not None else None
+                l1 = getattr(left1,  attr) if left1  is not None else None
+                l2 = getattr(left2,  attr) if left2  is not None else None
+                if l1 is not None and r2 is not None and l2 is not None:
+                    # Full 4-point stencil
+                    return (-1/6)*l2 + (2/3)*l1 + (2/3)*r1 + (-1/6)*r2
+                elif l1 is not None:
+                    # Linear fallback: only immediate neighbours
+                    return (l1 + r1) / 2.0
+                else:
+                    # No left history (first interval): repeat right neighbour
+                    return r1
 
             dark_corrected = Sample(
                 side=key[0],
@@ -1306,20 +1316,21 @@ class SciencePipeline:
                 frame_id=prev_raw_fid,
                 absolute_frame_id=prev_abs,
                 timestamp_s=prev_ts,
-                row_sum=first_cs.row_sum,
-                temperature_c=first_cs.temperature_c,
-                mean=dark_mean,
-                std_dev=dark_std,
-                contrast=dark_contrast,
-                bfi=dark_bfi,
-                bvi=dark_bvi,
+                row_sum=right1.row_sum,
+                temperature_c=right1.temperature_c,
+                mean=_quad("mean"),
+                std_dev=_quad("std_dev"),
+                contrast=_quad("contrast"),
+                bfi=_quad("bfi"),
+                bvi=_quad("bvi"),
                 is_corrected=True,
             )
             # Insert at front so the batch is in chronological order.
             corrected_samples.insert(0, dark_corrected)
 
-            # Record the last corrected sample of this batch for the next interval.
-            self._last_corrected[key] = corrected_samples[-1]
+            # Keep the two most recent corrected samples for the next interval.
+            tail = corrected_samples[-2:] if len(corrected_samples) >= 2 else corrected_samples[-1:]
+            self._last_corrected[key] = tail
 
         # Keep only moments that fall after the current dark (shouldn't
         # normally happen, but guards against edge-case ordering).

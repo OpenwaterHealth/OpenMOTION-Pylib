@@ -15,7 +15,7 @@ Each camera produces a 1024-bin histogram at 40 Hz.  The science pipeline:
 3. **Zeroes noise-floor bins** — histogram bins below the noise floor threshold (default 10 counts) are zeroed before moment computation to suppress low-level dark noise.
 4. **Emits an uncorrected sample** for every non-dark frame immediately, using the raw histogram statistics with no dark subtraction.  For dark frames, it re-emits the previous non-dark frame's values so the live display shows no artefact.
 5. **Buffers** the raw first and second moments of every non-dark frame.
-6. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives an interpolated corrected value derived from its two adjacent non-dark neighbors.
+6. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives a corrected value derived from its four nearest non-dark neighbors using a quadratic stencil.
 
 Consumers therefore receive:
 
@@ -87,7 +87,7 @@ Note that frame n = 1 satisfies the formula `(n−1) mod 600 == 0` but is alread
 
 ## 5. Noise floor decimation
 
-Before moment computation, bins with a count strictly below `noise_floor` (default **74**) are zeroed:
+Before moment computation, bins with a count strictly below `noise_floor` (default **10**) are zeroed:
 
 ```python
 below = hist < noise_floor
@@ -211,17 +211,26 @@ BFI and BVI are computed from K̃(n) and μ̃₁(n) via the calibration mapping 
 
 ### 8.4 Corrected value for the dark frame itself
 
-The dark frame D_prev is included in the corrected batch.  Its corrected BFI/BVI are not computed by baseline subtraction (its histogram *is* the baseline); instead they are linearly interpolated between the last corrected sample of the *previous* batch (absolute frame D_prev − 1) and the first corrected sample of the *current* batch (absolute frame D_prev + 1):
+The dark frame D_prev is included in the corrected batch.  Its corrected BFI/BVI are not computed by baseline subtraction (its histogram *is* the baseline); instead they are filled in using the same **4-point quadratic stencil** used by the legacy `VisualizeBloodflow` pipeline, which gives a smooth, accurate interpolation through the dark-frame gap:
 
 ```
-bfi(D_prev)     = [ bfi(D_prev − 1) + bfi(D_prev + 1) ] / 2
-bvi(D_prev)     = [ bvi(D_prev − 1) + bvi(D_prev + 1) ] / 2
-mean(D_prev)    = [ mean(D_prev − 1) + mean(D_prev + 1) ] / 2
-std_dev(D_prev) = [ std_dev(D_prev − 1)  + std_dev(D_prev + 1)  ] / 2
-contrast(D_prev)= [ K̃(D_prev − 1) + K̃(D_prev + 1) ] / 2
+v(D_prev) = (−1/6)·v(D_prev − 2) + (2/3)·v(D_prev − 1)
+          + (2/3)·v(D_prev + 1)  + (−1/6)·v(D_prev + 2)
 ```
 
-**Edge case:** If no previous corrected batch exists (this is the first dark interval), the right neighbor value is used directly (no averaging).
+applied independently to each metric: `bfi`, `bvi`, `mean`, `std_dev`, `contrast`.
+
+- **v(D_prev − 1)** and **v(D_prev − 2)** are the last two corrected samples of the *previous* batch.
+- **v(D_prev + 1)** and **v(D_prev + 2)** are the first two corrected samples of the *current* batch.
+
+**Fallback rules (applied in order when neighbours are unavailable):**
+
+| Available neighbours | Formula used |
+|---|---|
+| All four (normal case) | Full 4-point quadratic stencil above |
+| Left neighbours missing (first interval) but ≥2 right | Linear: `[v(+1) + v(+2)] / 2` — only immediate right used |
+| Only v(−1) and v(+1) available | Simple average: `[v(−1) + v(+1)] / 2` |
+| No left neighbours at all | Repeat `v(D_prev + 1)` |
 
 The current dark frame D_curr is **not** included in this batch.  It becomes D_prev for the next batch and will receive its interpolated corrected value at that time.
 
@@ -372,7 +381,7 @@ _science_worker (single background thread)
 |---|---|---|
 | `discard_count` | 9 | Warmup frames dropped at start |
 | `dark_interval` | 600 | Frames between dark acquisitions (15 s at 40 Hz) |
-| `noise_floor` | 74 | Bins below this count are zeroed before moment computation |
+| `noise_floor` | 10 | Bins below this count are zeroed before moment computation |
 | `EXPECTED_HISTOGRAM_SUM` | 2,457,606 | Required total count per valid frame (1920 × 1280 px + 6 sentinel) |
 | `FRAME_ID_MODULUS` | 256 | Firmware 8-bit counter rollover period |
 | `FRAME_ROLLOVER_THRESHOLD` | 128 | Max forward delta before rollover is detected |
