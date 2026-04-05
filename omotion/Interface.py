@@ -409,6 +409,22 @@ class MOTIONInterface(SignalWrapper):
         except Exception as e:
             logger.debug(f"Destructor skipped due to: {e}")
 
+    def log_system_info(self) -> None:
+        """Log host system and SDK version information."""
+        import sys
+        import platform
+
+        logger.info("SDK version: %s", _SDK_VERSION)
+        logger.info(
+            "Python %s (%s)", platform.python_version(), sys.executable
+        )
+        logger.info(
+            "Platform: %s %s (%s)",
+            platform.system(),
+            platform.release(),
+            platform.machine(),
+        )
+
     @staticmethod
     def get_sdk_version() -> str:
         return _SDK_VERSION
