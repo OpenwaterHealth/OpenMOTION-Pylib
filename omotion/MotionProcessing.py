@@ -58,6 +58,16 @@ FRAME_ROLLOVER_THRESHOLD = 128
 # known).
 EXPECTED_HISTOGRAM_SUM: int | None = 2_457_606
 
+# Camera sensor pedestal height.
+# When no light reaches the sensor the pixel ADC output settles at this
+# offset rather than zero.  The pedestal is a fixed DC bias present in every
+# frame — bright frames and dark frames alike — so it cancels automatically
+# in the dark-corrected stream (corrected_mean = fm.u1 − dark_u1 removes it
+# from both terms).  For the uncorrected real-time stream we subtract it
+# explicitly before emitting the mean so that downstream consumers see a
+# zero-referenced signal.
+PEDESTAL_HEIGHT: float = 64.0
+
 logger = logging.getLogger(
     f"{_log_root}.MotionProcessing" if _log_root else "MotionProcessing"
 )
@@ -800,20 +810,37 @@ def compute_realtime_metrics(
     bfi_c_max,
     bfi_i_min,
     bfi_i_max,
+    pedestal: float = PEDESTAL_HEIGHT,
 ) -> Sample:
     """
-    Pure metric computation for one histogram row.
+    Pure metric computation for one histogram row (uncorrected stream).
+
+    The *pedestal* is subtracted from the raw histogram mean before computing
+    contrast, BVI, and the emitted ``mean`` field.  This removes the fixed ADC
+    DC bias so that downstream consumers see a zero-referenced intensity signal.
+
+    The pedestal does **not** affect the stored ``u1`` values used later for
+    dark-frame correction: those raw values are stored separately in the
+    pipeline, and the pedestal cancels automatically in the subtraction
+    ``corrected_mean = fm.u1 − dark_u1`` because both terms carry it equally.
     """
     if row_sum > 0:
-        mean_val = float(np.dot(hist, HISTO_BINS) / row_sum)
+        raw_mean = float(np.dot(hist, HISTO_BINS) / row_sum)
     else:
-        mean_val = 0.0
+        raw_mean = 0.0
 
+    # Subtract the sensor pedestal for display/calibration purposes.
+    # Clamp to zero so downstream code never sees a negative mean.
+    mean_val = max(0.0, raw_mean - pedestal)
+
+    # Variance is invariant to the pedestal shift (constant subtracted from
+    # every bin centre does not change E[X²]−E[X]²), so we compute it from
+    # the raw second moment but use the pedestal-adjusted mean for contrast.
     if row_sum > 0 and mean_val > 0:
         mean2 = float(np.dot(hist, HISTO_BINS_SQ) / row_sum)
-        var = max(0.0, mean2 - (mean_val * mean_val))
+        var = max(0.0, mean2 - (raw_mean * raw_mean))
         std = np.sqrt(var)
-        contrast = float(std / mean_val) if mean_val > 0 else 0.0
+        contrast = float(std / mean_val)
     else:
         std = 0.0
         contrast = 0.0
