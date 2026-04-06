@@ -1188,9 +1188,64 @@ class SciencePipeline:
 
             self._last_uncorrected[key] = uncorrected
 
+        # After the main loop the queue is fully drained.  The firmware
+        # guarantees the very last frame of every scan is a dark (laser-off)
+        # frame, but that terminal dark does not fall on a scheduled dark
+        # position unless the scan happened to end exactly at the right length.
+        # Flush any buffered intervals now so the corrected CSV is always
+        # populated even for short scans.
+        self._flush_terminal_dark()
+
     # ------------------------------------------------------------------
     # Dark-frame correction helpers
     # ------------------------------------------------------------------
+
+    def _flush_terminal_dark(self) -> None:
+        """Emit corrected batches for any cameras with buffered but un-corrected frames.
+
+        Called once after the ingress queue fully drains.  The firmware
+        guarantees the last frame of every scan is a dark (laser-off) frame, so
+        the last entry in each camera's ``_pending_moments`` list is that
+        terminal dark.  We promote it to a synthetic dark-history entry and
+        call ``_emit_corrected_for_camera`` so the corrected CSV is populated
+        even when the scan ended before the next scheduled dark position.
+
+        If a camera has no dark history at all (scan stopped before frame 10)
+        there is no baseline to correct against, so that camera is skipped.
+        """
+        for key, pending in list(self._pending_moments.items()):
+            if not pending:
+                continue
+            dark_list = self._dark_history.get(key)
+            if not dark_list:
+                # No dark reference captured yet — cannot correct.
+                logger.warning(
+                    "SciencePipeline: scan ended before first dark frame for "
+                    "%s cam %d — skipping terminal flush",
+                    key[0], key[1],
+                )
+                continue
+
+            # The last pending moment is the hardware-guaranteed terminal dark.
+            terminal = pending[-1]
+            terminal_var = max(0.0, terminal.u2 - terminal.u1 * terminal.u1)
+            dark_list.append((
+                terminal.absolute_frame_id,
+                terminal.frame_id,
+                terminal.timestamp_s,
+                terminal.u1,
+                terminal_var,
+            ))
+            # Remove it from pending so _emit_corrected_for_camera doesn't
+            # include it as a corrected bright frame.
+            self._pending_moments[key] = pending[:-1]
+
+            logger.debug(
+                "SciencePipeline: terminal dark flush for %s cam %d at "
+                "absolute frame %d",
+                key[0], key[1], terminal.absolute_frame_id,
+            )
+            self._emit_corrected_for_camera(key)
 
     def _is_dark_frame(self, absolute_frame: int) -> bool:
         """Return True if *absolute_frame* is a scheduled dark frame.
