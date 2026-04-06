@@ -32,6 +32,10 @@ TIMESTAMP_SIZE = 4
 MIN_PACKET_ENVELOPE_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE
 MIN_HISTO_PACKET_SIZE = PACKET_HEADER_SIZE + PACKET_FOOTER_SIZE + HISTO_BLOCK_SIZE
 MIN_PACKET_SIZE = MIN_HISTO_PACKET_SIZE
+
+# TIM5 on the sensor MCU runs at 100 kHz; get_timestamp_ms() returns TIM5->CNT/100
+# so the 32-bit counter wraps every 2^32 / 100 / 1000 ≈ 42949.67 seconds (~11.9 hours).
+_TIMESTAMP_ROLLOVER_S: float = (2**32) / 100.0 / 1000.0
 # TYPE_HISTO_CMP has: header + compressed_payload(>=1) + uncmp_crc16(2) + footer(3)
 MIN_HISTO_CMP_PACKET_SIZE = PACKET_HEADER_SIZE + 1 + CMP_UNCMP_CRC_SIZE + PACKET_FOOTER_SIZE
 MAX_PACKET_SIZE = 32837
@@ -512,6 +516,11 @@ def parse_histogram_stream(
     rows_written = 0
     _csv_active = csv_writer is not None
 
+    # Monotonic timestamp unwrapping: the firmware's 32-bit millisecond counter
+    # rolls over every ~42949.67 s.  Track an offset so timestamps never go backwards.
+    _ts_last: float | None = None
+    _ts_offset: float = 0.0
+
     while not stop_evt.is_set() or not q.empty():
         try:
             data = q.get(timeout=0.300)
@@ -531,6 +540,14 @@ def parse_histogram_stream(
                 offset += packet.bytes_consumed
 
                 for sample in packet.samples:
+                    # Unwrap the firmware's 32-bit millisecond timestamp so it
+                    # increases monotonically across the ~42949 s rollover boundary.
+                    raw_ts = sample.timestamp_s
+                    if _ts_last is not None and (raw_ts + _ts_offset) < (_ts_last - _TIMESTAMP_ROLLOVER_S / 2):
+                        _ts_offset += _TIMESTAMP_ROLLOVER_S
+                    sample.timestamp_s = raw_ts + _ts_offset
+                    _ts_last = sample.timestamp_s
+
                     # Check CSV deadline before every row so the cutoff is
                     # accurate to within one sample period (~25 ms at 40 Hz).
                     if _csv_active and (
@@ -619,6 +636,12 @@ def parse_histogram_stream(
                 )
                 offset += packet.bytes_consumed
                 for sample in packet.samples:
+                    raw_ts = sample.timestamp_s
+                    if _ts_last is not None and (raw_ts + _ts_offset) < (_ts_last - _TIMESTAMP_ROLLOVER_S / 2):
+                        _ts_offset += _TIMESTAMP_ROLLOVER_S
+                    sample.timestamp_s = raw_ts + _ts_offset
+                    _ts_last = sample.timestamp_s
+
                     if _csv_active and (
                         (csv_deadline is not None and time.monotonic() >= csv_deadline)
                         or (csv_stop_event is not None and csv_stop_event.is_set())
