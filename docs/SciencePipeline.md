@@ -225,14 +225,43 @@ t(n) = (n − D_prev) / Δ            ∈ (0, 1)
 μ̃₁(n) = μ₁(n) − μ̄₁(n)                   # corrected mean
 
 raw_σ²(n) = μ₂(n) − μ₁(n)²               # raw variance (from stored moments)
-σ̃²(n)  = max(0, raw_σ²(n) − σ̄²(n))       # corrected variance, clamped ≥ 0
+σ̃²(n)  = raw_σ²(n) − σ̄²(n) − σ²_shot(n) # dark- and shot-noise-corrected variance
+σ̃²(n)  = max(0, σ̃²(n))                   # clamp to prevent imaginary std
 σ̃(n)   = √σ̃²(n)
 
 K̃(n) = σ̃(n) / μ̃₁(n)    if μ̃₁(n) > 0
       = 0.0               otherwise
 ```
 
-Clamping `σ̃²` to zero prevents imaginary standard deviations when shot-noise fluctuations cause the measured variance to fall below the interpolated dark variance.
+The three subtractions remove: (1) the interpolated dark baseline variance, (2) the expected photon shot noise — see §8.3 below.
+
+Clamping `σ̃²` to zero prevents imaginary standard deviations when dark subtraction or shot-noise removal over-corrects due to statistical fluctuations.
+
+### 8.3 Shot-noise correction
+
+Photon shot noise follows Poisson statistics: the variance (in electrons) equals the mean (in electrons).  After converting to digital-number (DN) units and accounting for each camera's analog gain:
+
+```
+σ²_shot(n) = ADC_GAIN · g_cam · max(0, μ̃₁(n))
+```
+
+where:
+
+| Symbol | Value | Meaning |
+|---|---|---|
+| `ADC_GAIN` | (1024 − 64) / 11 000 ≈ 0.0873 DN/e⁻ | Sensor ADC gain: full-scale DN range above pedestal divided by electrons at full scale |
+| `g_cam` | `CAMERA_GAIN_MAP[cam_pos]` | Per-camera analog gain (see table below) |
+| `μ̃₁(n)` | corrected mean (DN) | Dark-subtracted mean; clamped to 0 so a slightly negative corrected mean does not inflate σ² |
+
+**`CAMERA_GAIN_MAP`** — analog gain by camera position within the 8-camera array:
+
+| Position | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Gain | 16 | 4 | 2 | 1 | 1 | 2 | 4 | 16 |
+
+Outer cameras (positions 0 and 7) use higher analog gain to compensate for reduced illumination at the array periphery; central cameras (positions 3 and 4) run at unity gain.
+
+**Rationale:** After dark subtraction the remaining variance contains both the true speckle signal and Poisson shot noise.  Subtracting the expected shot-noise contribution isolates the speckle variance, yielding a contrast `K̃` that is independent of mean photon flux.  Without this correction, higher-intensity frames would appear to have artificially lower contrast.
 
 ### 8.3 Corrected BFI/BVI
 
@@ -412,7 +441,7 @@ _science_worker (single background thread)
      compute_realtime_metrics() → Sample                              │
        mean_val = max(0, raw_μ₁ − 64)  ← pedestal subtracted         │
        σ² from raw_μ₁ (variance is shift-invariant)                  │
-       K = σ / mean_val                                               │
+       K = σ / mean_val  (no shot-noise correction in live stream)    │
        BFI/BVI via calibration mapping                                │
                                                                        │
      Emit Sample(is_corrected=False)                                  │
@@ -439,6 +468,8 @@ _science_worker (single background thread)
 | `dark_interval` | 600 | Frames between dark acquisitions (15 s at 40 Hz) |
 | `noise_floor` | 10 | Bins below this count are zeroed before moment computation |
 | `PEDESTAL_HEIGHT` | 64.0 | ADC zero-light bias subtracted from mean in the uncorrected stream |
+| `ADC_GAIN` | (1024−64)/11000 ≈ 0.0873 DN/e⁻ | Sensor ADC gain used for shot-noise correction |
+| `CAMERA_GAIN_MAP` | [16,4,2,1,1,2,4,16] | Per-camera analog gain (index = cam position 0–7) |
 | `EXPECTED_HISTOGRAM_SUM` | 2,457,606 | Required total count per valid frame (1920 × 1280 px + 6 sentinel) |
 | `FRAME_ID_MODULUS` | 256 | Firmware 8-bit counter rollover period |
 | `FRAME_ROLLOVER_THRESHOLD` | 128 | Max forward delta before rollover is detected |

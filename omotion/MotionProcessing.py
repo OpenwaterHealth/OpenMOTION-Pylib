@@ -68,6 +68,31 @@ EXPECTED_HISTOGRAM_SUM: int | None = 2_457_606
 # zero-referenced signal.
 PEDESTAL_HEIGHT: float = 64.0
 
+# Shot-noise correction constants.
+#
+# Photon shot noise follows Poisson statistics: variance (in electrons) equals
+# mean (in electrons).  Converting to digital units:
+#
+#   shot_noise_var_DN = ADC_GAIN · g · mean_electrons
+#                     = ADC_GAIN · mean_DN
+#
+# where g is the per-camera analog gain and mean_DN is the dark-corrected mean
+# in digital units.  This expected shot-noise contribution is subtracted from
+# the dark-corrected variance in the corrected path so that the residual
+# variance (and therefore the speckle contrast) reflects only laser speckle
+# fluctuations, not photon counting noise.
+#
+# ADC_GAIN: (full-scale DN range above pedestal) / (electrons at full scale)
+#   = (1024 − 64) / 11 000 ≈ 0.0873 DN/e⁻
+#
+# CAMERA_GAIN_MAP: analog gain for each of the 8 camera positions within a
+#   sensor module.  The outer cameras use higher gain to compensate for the
+#   reduced illumination at the array periphery.
+ADC_GAIN: float = (1024 - 64) / 11_000          # DN per electron ≈ 0.0873
+CAMERA_GAIN_MAP: np.ndarray = np.array(
+    [16, 4, 2, 1, 1, 2, 4, 16], dtype=np.float64
+)  # index 0 = cam position 0 (outermost), index 7 = cam position 7 (outermost)
+
 logger = logging.getLogger(
     f"{_log_root}.MotionProcessing" if _log_root else "MotionProcessing"
 )
@@ -1362,6 +1387,16 @@ class SciencePipeline:
             corrected_mean = fm.u1 - dark_u1
             raw_var = fm.u2 - fm.u1 * fm.u1
             corrected_var = raw_var - dark_var
+
+            # Shot-noise correction: subtract the expected Poisson variance.
+            # Shot noise variance in DN = ADC_GAIN · analog_gain · mean_DN.
+            # Use max(0, corrected_mean) so a slightly negative corrected mean
+            # (possible when dark subtraction over-corrects) does not inflate
+            # the variance instead of reducing it.
+            cam_pos = int(key[1]) % 8
+            shot_noise_var = ADC_GAIN * max(0.0, corrected_mean) * CAMERA_GAIN_MAP[cam_pos]
+            corrected_var -= shot_noise_var
+
             corrected_std = float(np.sqrt(max(0.0, corrected_var)))
             corrected_contrast = (
                 corrected_std / corrected_mean if corrected_mean > 0 else 0.0
