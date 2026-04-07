@@ -236,8 +236,6 @@ class ScanWorkflow:
                 + [f"bvi_r{i}" for i in range(1, 9)]
                 + [f"mean_l{i}" for i in range(1, 9)]
                 + [f"mean_r{i}" for i in range(1, 9)]
-                + [f"std_l{i}" for i in range(1, 9)]
-                + [f"std_r{i}" for i in range(1, 9)]
                 + [f"contrast_l{i}" for i in range(1, 9)]
                 + [f"contrast_r{i}" for i in range(1, 9)]
                 + [f"temp_l{i}" for i in range(1, 9)]
@@ -380,9 +378,6 @@ class ScanWorkflow:
                                     )
                                     frame_entry["values"][f"mean_{col_suffix}"] = float(
                                         sample.mean
-                                    )
-                                    frame_entry["values"][f"std_{col_suffix}"] = float(
-                                        sample.std_dev
                                     )
                                     frame_entry["values"][f"contrast_{col_suffix}"] = float(
                                         sample.contrast
