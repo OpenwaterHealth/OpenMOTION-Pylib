@@ -110,8 +110,6 @@ For every frame that passes the discard and dark-schedule checks, the pipeline c
 μ₁ = (1/N) Σ_{k=0}^{1023} k · h_k          # first moment (mean bin index)
 μ₂ = (1/N) Σ_{k=0}^{1023} k² · h_k         # second moment
 σ² = μ₂ − μ₁²                               # variance  (always ≥ 0 by construction)
-σ  = √σ²
-K  = σ / μ₁                                 # speckle contrast
 ```
 
 In NumPy:
@@ -125,7 +123,7 @@ HISTO_BINS_SQ = HISTO_BINS ** 2
 σ² = max(0.0, μ₂ - μ₁**2)
 ```
 
-These are computed identically for both dark and bright frames.
+These are computed identically for both dark and bright frames.  Speckle contrast is derived from these moments in §7 (uncorrected stream) and §8 (corrected batch), where pedestal and shot-noise corrections are applied first.
 
 ---
 
@@ -200,21 +198,21 @@ If no preceding bright frame exists (i.e. the very first frame in the scan is a 
 
 The corrected batch is computed and emitted by `_emit_corrected_for_camera(key)`, which is called each time a second (or later) consecutive dark frame arrives for a given `(side, cam_id)` pair.
 
-Let the two bounding dark frames be at absolute positions **D_prev** and **D_curr**, with:
+Let the two bounding dark frames be at absolute positions **D_prev** and **D_next**, with:
 
 - μ₁(D_prev), σ²(D_prev) — moments of the earlier dark frame
-- μ₁(D_curr), σ²(D_curr) — moments of the later dark frame
-- Δ = D_curr − D_prev — interval width in frames
+- μ₁(D_next), σ²(D_next) — moments of the later dark frame
+- Δ = D_next − D_prev — interval width in frames
 
 ### 8.1 Baseline interpolation
 
-For each bright frame *n* ∈ (D_prev, D_curr) (i.e. strictly between the two dark frames), the dark baseline is linearly interpolated:
+For each bright frame *n* ∈ (D_prev, D_next) (i.e. strictly between the two dark frames), the dark baseline is linearly interpolated:
 
 ```
 t(n) = (n − D_prev) / Δ            ∈ (0, 1)
 
-μ̄₁(n) = μ₁(D_prev) + t(n) · [μ₁(D_curr) − μ₁(D_prev)]
-σ̄²(n) = σ²(D_prev) + t(n) · [σ²(D_curr) − σ²(D_prev)]
+μ̄₁(n) = μ₁(D_prev) + t(n) · [μ₁(D_next) − μ₁(D_prev)]
+σ̄²(n) = σ²(D_prev) + t(n) · [σ²(D_next) − σ²(D_prev)]
 ```
 
 `t(n)` is 0 at the first dark and 1 at the second dark, so the interpolation assigns more dark-frame weight to frames closer in time to that dark measurement.
@@ -290,7 +288,7 @@ applied independently to each metric: `bfi`, `bvi`, `mean`, `std_dev`, `contrast
 | Only v(−1) and v(+1) available | Simple average: `[v(−1) + v(+1)] / 2` |
 | No left neighbours at all | Repeat `v(D_prev + 1)` |
 
-The current dark frame D_curr is **not** included in this batch.  It becomes D_prev for the next batch and will receive its interpolated corrected value at that time.
+The current dark frame D_next is **not** included in this batch.  It becomes D_prev for the next batch and will receive its interpolated corrected value at that time.
 
 **Rationale:** The dark frame's laser-off histogram is a valid measurement of the background floor, not of blood flow.  Interpolating between neighbors removes the dark-frame artefact from the corrected time series.
 
@@ -299,10 +297,10 @@ The current dark frame D_curr is **not** included in this batch.  It becomes D_p
 The emitted `CorrectedBatch` contains samples in ascending `absolute_frame_id` order:
 
 ```
-[D_prev, D_prev+1, D_prev+2, ..., D_curr-1]
+[D_prev, D_prev+1, D_prev+2, ..., D_next-1]
 ```
 
-All samples have `is_corrected = True`.  The batch is emitted via `on_corrected_batch_fn`.  Internally, `_pending_moments[key]` is then truncated to discard all stored moments up to and including D_curr − 1; any moments at or beyond D_curr are retained for the next interval (should not occur in normal operation).
+All samples have `is_corrected = True`.  The batch is emitted via `on_corrected_batch_fn`.  Internally, `_pending_moments[key]` is then truncated to discard all stored moments up to and including D_next − 1; any moments at or beyond D_next are retained for the next interval (should not occur in normal operation).
 
 ### 8.6 Terminal dark flush (short scans)
 
@@ -422,7 +420,7 @@ _science_worker (single background thread)
   │                                                                    │
   │  If ≥2 dark frames in history:                                    │
   │    _emit_corrected_for_camera(key)  ──► CorrectedBatch            │
-  │       dark-subtracted BFI/BVI for interval (D_prev, D_curr)       │
+  │       dark-subtracted BFI/BVI for interval (D_prev, D_next)       │
   │       + interpolated corrected value for D_prev itself            │
   │       → on_corrected_batch_fn()                                   │
   │       → corrected CSV (streaming, flushed per complete row)       │
@@ -506,7 +504,7 @@ CorrectedSample = Sample
 @dataclass
 class CorrectedBatch:
     dark_frame_start: int   # absolute_frame_id of D_prev
-    dark_frame_end: int     # absolute_frame_id of D_curr
+    dark_frame_end: int     # absolute_frame_id of D_next
     samples: list[Sample]   # chronological, is_corrected=True
-                            # includes D_prev, excludes D_curr
+                            # includes D_prev, excludes D_next
 ```
