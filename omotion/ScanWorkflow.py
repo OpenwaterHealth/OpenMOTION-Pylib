@@ -370,17 +370,17 @@ class ScanWorkflow:
                                             float(frame_entry["timestamp_s"]),
                                             float(sample.timestamp_s),
                                         )
-                                    frame_entry["values"][f"bfi_{col_suffix}"] = float(
-                                        sample.bfi
+                                    frame_entry["values"][f"bfi_{col_suffix}"] = round(
+                                        float(sample.bfi), 6
                                     )
-                                    frame_entry["values"][f"bvi_{col_suffix}"] = float(
-                                        sample.bvi
+                                    frame_entry["values"][f"bvi_{col_suffix}"] = round(
+                                        float(sample.bvi), 6
                                     )
-                                    frame_entry["values"][f"mean_{col_suffix}"] = float(
-                                        sample.mean
+                                    frame_entry["values"][f"mean_{col_suffix}"] = round(
+                                        float(sample.mean), 6
                                     )
-                                    frame_entry["values"][f"contrast_{col_suffix}"] = float(
-                                        sample.contrast
+                                    frame_entry["values"][f"contrast_{col_suffix}"] = round(
+                                        float(sample.contrast), 6
                                     )
                                     frame_entry["values"][f"temp_{col_suffix}"] = float(
                                         sample.temperature_c
