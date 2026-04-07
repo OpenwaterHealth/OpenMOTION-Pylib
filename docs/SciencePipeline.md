@@ -13,9 +13,10 @@ Each camera produces a 1024-bin histogram at 40 Hz.  The science pipeline:
 1. **Discards** the first 9 frames from every camera (hardware warmup).
 2. **Identifies dark frames** by a fixed schedule based on firmware timing.  Dark frames are acquired with the laser off and provide a measurement of the ambient + dark-current floor.
 3. **Zeroes noise-floor bins** — histogram bins below the noise floor threshold (default 10 counts) are zeroed before moment computation to suppress low-level dark noise.
-4. **Emits an uncorrected sample** for every non-dark frame immediately, using the raw histogram statistics with no dark subtraction.  For dark frames, it re-emits the previous non-dark frame's values so the live display shows no artefact.
-5. **Buffers** the raw first and second moments of every non-dark frame.
+4. **Emits an uncorrected sample** for every non-dark frame immediately.  The emitted `mean` has the sensor pedestal (64 counts) subtracted so consumers see a zero-referenced intensity signal.  For dark frames, the previous non-dark frame's values are re-emitted so the live display shows no artefact.
+5. **Buffers** the raw (un-pedestal-subtracted) first and second moments of every non-dark frame for use in the corrected path.
 6. **When a second consecutive dark frame arrives**, linearly interpolates the dark baseline across the buffered interval, subtracts it frame-by-frame, recomputes corrected contrast and intensity, applies the per-camera BFI/BVI calibration, and emits a `CorrectedBatch`.  The leading dark frame of the interval also receives a corrected value derived from its four nearest non-dark neighbors using a quadratic stencil.
+7. **On scan stop**, performs a terminal dark flush so the corrected CSV is always populated even for scans shorter than one full dark interval (§8.6).
 
 Consumers therefore receive:
 
@@ -130,24 +131,52 @@ These are computed identically for both dark and bright frames.
 
 ## 7. Uncorrected stream
 
-### 7.1 Bright frames
+### 7.1 Pedestal subtraction
+
+The camera sensor ADC settles at bin index **64** when no photons reach the sensor — a fixed DC bias called the **pedestal**.  The pedestal is present in every frame (both bright and dark) and must be removed before the mean is meaningful as an intensity signal.
+
+Let `raw_μ₁` be the histogram mean as computed in §6.  The pedestal-adjusted mean used for uncorrected output is:
+
+```
+mean_val = max(0.0, raw_μ₁ − PEDESTAL_HEIGHT)     PEDESTAL_HEIGHT = 64.0
+```
+
+Variance is **invariant** to a constant shift of bin indices (subtracting a constant C from every bin centre shifts the mean by C but leaves E[X²]−E[X]² unchanged).  Therefore:
+
+```
+σ² = max(0.0, μ₂ − raw_μ₁²)    # computed from raw_μ₁, not mean_val
+σ  = √σ²
+K  = σ / mean_val               # contrast denominator uses pedestal-adjusted mean
+```
+
+This means contrast — and therefore BFI — reflects the relative fluctuation above the true signal baseline, not above the pedestal floor.
+
+**Important:** the raw `u1` and `u2` values stored in `_pending_moments` and `_dark_history` for later dark-frame correction are **not** pedestal-adjusted.  Both the bright-frame `fm.u1` and the dark-frame `dark_u1` carry the same pedestal, so it cancels exactly in the dark-subtracted corrected stream:
+
+```
+corrected_mean = fm.u1 − dark_u1      # pedestal present in both, cancels
+```
+
+No explicit pedestal subtraction is performed anywhere in the corrected path.
+
+### 7.2 Bright frames
 
 For each bright frame *n*, the pipeline immediately constructs and emits a `Sample` with `is_corrected = False`:
 
 | Field | Value |
 |---|---|
-| `mean` | μ₁(n) |
-| `std_dev` | σ(n) |
-| `contrast` | K(n) = σ(n) / μ₁(n) |
-| `bfi` | BFI(K(n), μ₁(n)) — see §9 |
-| `bvi` | BVI(K(n), μ₁(n)) — see §9 |
+| `mean` | `mean_val` = max(0, raw_μ₁(n) − 64) |
+| `std_dev` | σ(n) — computed from raw_μ₁ (pedestal-invariant) |
+| `contrast` | K(n) = σ(n) / mean_val |
+| `bfi` | BFI(K(n), mean_val) — see §9 |
+| `bvi` | BVI(K(n), mean_val) — see §9 |
 | `is_corrected` | `False` |
 
 This fires the `on_uncorrected_fn` callback immediately, before any dark-frame correction is available.
 
-The moments μ₁(n) and μ₂(n) are also stored in `_pending_moments[key]` as a `_StoredFrameMoments` object for later dark-frame correction.
+The **raw** moments `u1 = raw_μ₁(n)` and `u2 = μ₂(n)` (without pedestal subtraction) are stored in `_pending_moments[key]` as a `_StoredFrameMoments` object for later dark-frame correction.
 
-### 7.2 Dark frames — live display masking
+### 7.3 Dark frames — live display masking
 
 **Rule:** When a dark frame *D* arrives, the `on_uncorrected_fn` callback receives a `Sample` whose metric values (`mean`, `std_dev`, `contrast`, `bfi`, `bvi`) are copied from the immediately preceding bright frame's `Sample`.  Only `frame_id`, `absolute_frame_id`, and `timestamp_s` are updated to reflect the dark frame's true position.
 
@@ -246,6 +275,23 @@ The emitted `CorrectedBatch` contains samples in ascending `absolute_frame_id` o
 
 All samples have `is_corrected = True`.  The batch is emitted via `on_corrected_batch_fn`.  Internally, `_pending_moments[key]` is then truncated to discard all stored moments up to and including D_curr − 1; any moments at or beyond D_curr are retained for the next interval (should not occur in normal operation).
 
+### 8.6 Terminal dark flush (short scans)
+
+The firmware guarantees that the **last frame of every scan is always a dark frame** (laser off), regardless of when the scan is stopped.  However, for scans that end before the second scheduled dark position (e.g. a scan stopped at frame 300, before the frame-601 dark), `_emit_corrected_for_camera` would never be called and the corrected CSV would remain empty.
+
+When the science worker's ingress queue fully drains after the stop event is set, `_flush_terminal_dark()` is called once.  For each camera that has buffered moments but has not yet emitted a corrected batch for this interval, it:
+
+1. Takes the **last entry in `_pending_moments[key]`** — this is the hardware-guaranteed terminal dark frame.
+2. Computes its variance (`max(0, u2 − u1²)`) and appends it to `_dark_history[key]` as a synthetic dark entry.
+3. Removes it from `_pending_moments[key]` so it is not double-counted as a bright frame.
+4. Calls `_emit_corrected_for_camera(key)` to perform the normal baseline interpolation and emit the corrected batch for all buffered frames.
+
+This ensures the corrected CSV always contains output for any scan that reached at least:
+- Frame 10 (first scheduled dark — provides the opening dark baseline), and
+- At least one bright frame after it.
+
+If a camera has no dark history at all (scan stopped before frame 10), the flush logs a `WARNING` and skips that camera — there is no baseline to subtract.
+
 ---
 
 ## 9. BFI/BVI calibration mapping
@@ -340,11 +386,11 @@ _science_worker (single background thread)
   ├─ FrameIdUnwrapper.unwrap() → absolute_frame_id
   ├─ [discard check] → drop if absolute_frame_id ≤ 9
   ├─ [noise floor] → zero bins < 10; recompute row_sum
+  ├─ Compute raw_μ₁, μ₂ (used for storage AND dark history)
   │
   ├─ [dark frame?] ──── YES ──────────────────────────────────────────┐
   │                                                                    │
-  │  Compute μ₁, σ² from histogram                                    │
-  │  Append (abs_frame, raw_fid, ts, μ₁, σ²) to _dark_history[key]  │
+  │  Store (abs_frame, raw_fid, ts, raw_μ₁, σ²) → _dark_history[key] │
   │                                                                    │
   │  If ≥2 dark frames in history:                                    │
   │    _emit_corrected_for_camera(key)  ──► CorrectedBatch            │
@@ -361,16 +407,27 @@ _science_worker (single background thread)
   │
   └─ [bright frame] ──────────────────────────────────────────────────┐
                                                                        │
-     Compute μ₁, σ² from histogram                                    │
-     Store _StoredFrameMoments(μ₁, μ₂) → _pending_moments[key]       │
+     Store _StoredFrameMoments(raw_μ₁, μ₂) → _pending_moments[key]   │
+     (raw values preserved for dark subtraction; pedestal cancels)    │
                                                                        │
      compute_realtime_metrics() → Sample                              │
-       (raw K, μ₁, σ → raw BFI/BVI via calibration)                  │
+       mean_val = max(0, raw_μ₁ − 64)  ← pedestal subtracted         │
+       σ² from raw_μ₁ (variance is shift-invariant)                  │
+       K = σ / mean_val                                               │
+       BFI/BVI via calibration mapping                                │
                                                                        │
      Emit Sample(is_corrected=False)                                  │
        → on_uncorrected_fn()                                          │
        → _last_uncorrected[key]                                       │
                                                               ◄────────┘
+
+[queue drained after stop_event]
+  │
+  └─ _flush_terminal_dark()
+       For each key with buffered moments and ≥1 dark in history:
+         promote last pending moment → synthetic terminal dark entry
+         _emit_corrected_for_camera(key) → CorrectedBatch
+         (ensures corrected CSV populated for scans < dark_interval)
 ```
 
 ---
@@ -382,6 +439,7 @@ _science_worker (single background thread)
 | `discard_count` | 9 | Warmup frames dropped at start |
 | `dark_interval` | 600 | Frames between dark acquisitions (15 s at 40 Hz) |
 | `noise_floor` | 10 | Bins below this count are zeroed before moment computation |
+| `PEDESTAL_HEIGHT` | 64.0 | ADC zero-light bias subtracted from mean in the uncorrected stream |
 | `EXPECTED_HISTOGRAM_SUM` | 2,457,606 | Required total count per valid frame (1920 × 1280 px + 6 sentinel) |
 | `FRAME_ID_MODULUS` | 256 | Firmware 8-bit counter rollover period |
 | `FRAME_ROLLOVER_THRESHOLD` | 128 | Max forward delta before rollover is detected |
@@ -403,9 +461,10 @@ class Sample:
     timestamp_s: float      # sensor-reported timestamp
     row_sum: int            # total histogram counts after noise floor decimation
     temperature_c: float    # sensor temperature
-    mean: float             # μ₁ or μ̃₁ (corrected) in bin-index units
-    std_dev: float          # σ  or σ̃
-    contrast: float         # K  or K̃
+    mean: float             # uncorrected: max(0, raw_μ₁ − 64) (pedestal removed)
+                            # corrected:   μ̃₁ = fm.u1 − dark_u1 (pedestal cancels)
+    std_dev: float          # σ  or σ̃  (variance is shift-invariant; pedestal has no effect)
+    contrast: float         # K  or K̃  (σ / mean, using pedestal-adjusted mean)
     bfi: float              # BFI on [0, 10] scale
     bvi: float              # BVI on [0, 10] scale
     is_corrected: bool      # False = uncorrected stream; True = corrected batch
