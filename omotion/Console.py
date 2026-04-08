@@ -37,6 +37,7 @@ from omotion.config import (
     OW_CONTROLLER,
     OW_CTRL_BOARDID,
     OW_CTRL_GET_FAN,
+    OW_CTRL_SET_FAN,
     OW_CTRL_GET_FSYNC,
     OW_CTRL_GET_IND,
     OW_CTRL_GET_LSYNC,
@@ -613,19 +614,57 @@ class MOTIONConsole:
             print(f"I2C Write failed: {str(e)}")
             return False
 
-    def set_fan_speed(self, *args, **kwargs):
+    def set_fan_speed(self, fan_speed: int = 50) -> int:
         """
-        Deprecated. The console fan lines are now read-only PWM-feedback inputs;
-        there is no host-side drive to configure. The firmware always responds
-        with OW_ERROR for OW_CTRL_SET_FAN.
+        Drive the console fan PWM.
 
-        Use :meth:`get_fan_speed` to read measured fan duty instead.
+        Sends OW_CTRL_SET_FAN with the requested duty cycle. Use
+        :meth:`get_fan_speed` (with ``fan_index=1..3``) to read per-fan
+        PWM feedback.
+
+        Args:
+            fan_speed (int): Desired fan duty cycle, 0..100. Default 50.
+
+        Returns:
+            int: The fan_speed that was set, or -1 on OW_ERROR.
+
+        Raises:
+            ValueError: If the controller is not connected, or fan_speed
+                is not in 0..100.
         """
-        raise NotImplementedError(
-            "set_fan_speed is no longer supported: console fan lines are "
-            "read-only PWM-feedback inputs. Use get_fan_speed(fan_index=1..3) "
-            "to read the measured duty cycle."
-        )
+        if not self.uart.is_connected():
+            raise ValueError("Console controller not connected")
+
+        if fan_speed not in range(101):
+            raise ValueError("Invalid fan speed. Must be 0 to 100")
+
+        try:
+            if self.uart.demo_mode:
+                return fan_speed
+
+            data = bytes([fan_speed & 0xFF])
+
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_FAN,
+                data=data,
+            )
+
+            self.uart.clear_buffer()
+
+            if r.packet_type == OW_ERROR:
+                logger.error("Error setting Fan Speed")
+                return -1
+
+            logger.info("Set fan speed to %d", fan_speed)
+            return fan_speed
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error("Unexpected error during set_fan_speed: %s", e)
+            raise
 
     def get_fan_speed(self, fan_index: int) -> Optional[int]:
         """
