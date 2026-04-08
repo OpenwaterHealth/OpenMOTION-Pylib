@@ -48,7 +48,6 @@ from omotion.config import (
     OW_CTRL_PDUMON,
     OW_CTRL_READ_ADC,
     OW_CTRL_READ_GPIO,
-    OW_CTRL_SET_FAN,
     OW_CTRL_SET_IND,
     OW_CTRL_SET_TRIG,
     OW_CTRL_START_TRIG,
@@ -614,107 +613,75 @@ class MOTIONConsole:
             print(f"I2C Write failed: {str(e)}")
             return False
 
-    def set_fan_speed(self, fan_speed: int = 50) -> int:
+    def set_fan_speed(self, *args, **kwargs):
         """
-        Get the current output fan percentage.
+        Deprecated. The console fan lines are now read-only PWM-feedback inputs;
+        there is no host-side drive to configure. The firmware always responds
+        with OW_ERROR for OW_CTRL_SET_FAN.
+
+        Use :meth:`get_fan_speed` to read measured fan duty instead.
+        """
+        raise NotImplementedError(
+            "set_fan_speed is no longer supported: console fan lines are "
+            "read-only PWM-feedback inputs. Use get_fan_speed(fan_index=1..3) "
+            "to read the measured duty cycle."
+        )
+
+    def get_fan_speed(self, fan_index: int) -> Optional[int]:
+        """
+        Read measured PWM-feedback duty cycle for a console fan.
+
+        The console fan lines are read-only feedback inputs (not commanded
+        setpoints). For each call, the firmware polls the GPIO over a sample
+        window and blocks for ~50 ms before responding.
 
         Args:
-            fan_speed (int): The desired fan speed (default is 50).
+            fan_index (int): Fan to read, 1, 2, or 3.
 
         Returns:
-            int: The current output fan percentage.
+            Optional[int]: Measured duty cycle in 0..100, or None if the
+            firmware reports an error.
 
         Raises:
-            ValueError: If the controller is not connected.
+            ValueError: If the controller is not connected, or fan_index is
+                not in 1..3.
         """
+        if fan_index not in (1, 2, 3):
+            raise ValueError("fan_index must be 1, 2, or 3")
+
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
-
-        if fan_speed not in range(101):
-            raise ValueError("Invalid fan speed. Must be 0 to 100")
 
         try:
             if self.uart.demo_mode:
                 return 40
 
-            logger.info("Getting current output voltage.")
-
-            data = bytes(
-                [
-                    fan_speed & 0xFF,  # Low byte (least significant bits)
-                ]
-            )
-
             r = self.uart.send_packet(
                 id=None,
                 packetType=OW_CONTROLLER,
-                command=OW_CTRL_SET_FAN,
-                data=data,
+                command=OW_CTRL_GET_FAN,
+                addr=fan_index,
             )
 
             self.uart.clear_buffer()
-            # r.print_packet()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error setting Fan Speed")
-                return -1
+                logger.error("Error reading fan %d feedback", fan_index)
+                return None
 
-            logger.info(f"Set fan speed to {fan_speed}")
-            return fan_speed
-
-        except ValueError as v:
-            logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
-
-        except Exception as e:
-            logger.error("Unexpected error during set_fan_speed: %s", e)
-            raise  # Re-raise the exception for the caller to handle
-
-    def get_fan_speed(self) -> int:
-        """
-        Get the current output fan percentage.
-
-        Returns:
-            int: The current output fan percentage.
-
-        Raises:
-            ValueError: If the controller is not connected.
-        """
-        if not self.uart.is_connected():
-            raise ValueError("Console controller not connected")
-
-        try:
-            if self.uart.demo_mode:
-                return 40.0
-
-            logger.info("Getting current output voltage.")
-
-            r = self.uart.send_packet(
-                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FAN
-            )
-
-            self.uart.clear_buffer()
-            # r.print_packet()
-
-            if r.packet_type == OW_ERROR:
-                logger.error("Error setting HV")
-                return 0.0
-
-            elif r.data_len == 1:
+            if r.data_len == 1:
                 fan_value = r.data[0]
-                logger.info(f"Output fan speed is {fan_value}")
+                logger.info("Fan %d PWM feedback: %d%%", fan_index, fan_value)
                 return fan_value
-            else:
-                logger.error("Error getting output voltage from device")
-                return -1
 
-        except ValueError as v:
-            logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            logger.error("Unexpected fan feedback payload length: %d", r.data_len)
+            return None
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error("Unexpected error during get_fan_speed: %s", e)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
     def set_rgb_led(self, rgb_state: int) -> int:
         """

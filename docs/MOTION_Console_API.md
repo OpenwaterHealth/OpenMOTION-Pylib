@@ -208,36 +208,38 @@ Get the current RGB LED state.
 
 ---
 
-## Fan Control
+## Fan Feedback (Read-Only)
 
-### `set_fan_speed(fan_speed: int = 50) -> int`
+The console fan lines are read-only PWM-feedback inputs sampled by the
+firmware. There is no host-side drive — the SDK can only observe measured
+duty cycles, not command setpoints.
 
-Set the fan speed percentage.
+### `set_fan_speed(*args, **kwargs)`
 
-**Parameters:**
-- `fan_speed` (int): The desired fan speed (0-100), default is 50
-
-**Returns:**
-- `int`: The fan speed value that was set, -1 on error
-
-**Raises:**
-- `ValueError`: If device not connected or fan_speed not in range 0-100
-- `Exception`: On communication errors
+**Deprecated.** Always raises `NotImplementedError`. The firmware now
+returns `OW_ERROR` for `OW_CTRL_SET_FAN`. Use `get_fan_speed()` instead.
 
 ---
 
-### `get_fan_speed() -> int`
+### `get_fan_speed(fan_index: int) -> Optional[int]`
 
-Get the current fan speed percentage.
+Read the measured PWM-feedback duty cycle for one console fan.
+
+**Parameters:**
+- `fan_index` (int): Fan to read — must be `1`, `2`, or `3`.
 
 **Returns:**
-- `int`: The current fan speed (0-100)
-- Returns -1 on error
-- Returns 40 in demo mode
+- `Optional[int]`: Measured duty cycle in `0..100`, or `None` if the
+  firmware reports an error.
 
 **Raises:**
-- `ValueError`: If device not connected
-- `Exception`: On communication errors
+- `ValueError`: If device not connected, or `fan_index` is not in `1..3`.
+
+**Notes:**
+- Each call blocks the console firmware for ~50 ms while it polls the
+  feedback GPIO over a sample window.
+- The returned value is **measured feedback**, not a commanded setpoint.
+- Returns `40` in demo mode.
 
 ---
 
@@ -692,15 +694,14 @@ state = console.get_rgb_led()
 print(f"RGB LED state: {state}")
 ```
 
-### Fan Control
+### Fan Feedback
 
 ```python
-# Set fan speed to 75%
-console.set_fan_speed(75)
-
-# Get current fan speed
-speed = console.get_fan_speed()
-print(f"Fan speed: {speed}%")
+# Read measured PWM-feedback duty for each console fan (1..3).
+# Each call blocks the firmware ~50 ms.
+for fan_index in (1, 2, 3):
+    duty = console.get_fan_speed(fan_index=fan_index)
+    print(f"Fan {fan_index}: {duty}%")
 ```
 
 ### I2C Operations
@@ -830,8 +831,8 @@ if console.is_connected():
     # Set LED to green
     console.set_rgb_led(2)
     
-    # Set fan to 60%
-    console.set_fan_speed(60)
+    # Read fan 1 PWM feedback (read-only, ~50 ms)
+    print(f"Fan 1 duty: {console.get_fan_speed(fan_index=1)}%")
     
     # Monitor temperatures
     mcu, safety, ta = console.get_temperatures()

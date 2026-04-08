@@ -71,7 +71,7 @@ The console device wrapper providing access to controller/console MCU operations
 **Access:**
 ```python
 interface.console_module.get_version()
-interface.console_module.set_fan_speed(75)
+interface.console_module.get_fan_speed(fan_index=1)
 ```
 
 ---
@@ -551,10 +551,9 @@ version = console.get_version()
 hw_id = console.get_hardware_id()
 print(f"Console version: {version}, HW ID: {hw_id}")
 
-# Control fan
-console.set_fan_speed(75)
-current_speed = console.get_fan_speed()
-print(f"Fan speed: {current_speed}%")
+# Read fan PWM feedback (read-only, fan_index 1..3, ~50 ms per call)
+duty = console.get_fan_speed(fan_index=1)
+print(f"Fan 1 duty: {duty}%")
 
 # Set LED
 console.set_rgb_led(2)  # Green
@@ -781,9 +780,9 @@ def main():
     console_version = interface.console_module.get_version()
     print(f"Console Firmware: {console_version}")
     
-    # Set fan to 60%
-    interface.console_module.set_fan_speed(60)
-    print("Fan set to 60%")
+    # Read fan 1 PWM feedback (read-only, ~50 ms)
+    duty = interface.console_module.get_fan_speed(fan_index=1)
+    print(f"Fan 1 duty: {duty}%")
     
     # Set LED to green
     interface.console_module.set_rgb_led(2)
