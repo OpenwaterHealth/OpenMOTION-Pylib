@@ -94,6 +94,9 @@ OW_IMAGE_PACKET = 0x03
 # Histogram streaming packet type bytes (byte[1] of histogram stream packets)
 TYPE_HISTO = 0x00
 TYPE_HISTO_CMP = 0x01  # RLE-compressed histogram packet
+# TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the uncompressed
+# payload inserted before the normal footer.
+CMP_UNCMP_CRC_SIZE = 2
 
 # Global Commands
 OW_CMD_PING = 0x00
@@ -120,6 +123,7 @@ DEBUG_FLAG_FAKE_DATA = (
 DEBUG_FLAG_HISTO_CMP = 0x40  # Send compressed histogram packets (TYPE_HISTO_CMP)
 DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_comms
 DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
+
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
 OW_CTRL_SET_IND = 0x11

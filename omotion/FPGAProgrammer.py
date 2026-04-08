@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import time
 from typing import Callable, Optional
+from omotion import _log_root
 from omotion.CommandError import CommandError
 from omotion.Console import MOTIONConsole
 from omotion.config import (
@@ -35,7 +36,7 @@ from omotion.config import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f"{_log_root}.FPGAProgrammer" if _log_root else "FPGAProgrammer")
 
 # --------------------------------------------------------------------------- #
 # Make the project-root jedec_parser importable from the py-demo subtree

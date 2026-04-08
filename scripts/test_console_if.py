@@ -84,19 +84,13 @@ def main():
     except Exception as e:
         print(f"I2C scan error: {e}")
 
-    print("\n[7] Test Fan...")
-    fan_speed = interface.console_module.set_fan_speed(40)
-    if fan_speed < 0:
-        print("Failed to set Fan Speed.")
-    else:
-        print(f"Fan Speed: {fan_speed}")
-
-    print("\n[8] Get Fan Speed...")
-    fan_speed = interface.console_module.get_fan_speed()
-    if fan_speed < 0:
-        print("Failed to set Fan Speed.")
-    else:
-        print(f"Fan Speed: {fan_speed}")
+    print("\n[7] Read fan tachometer RPM (1..3)...")
+    for fan_index in (1, 2, 3):
+        rpm = interface.console_module.get_fan_rpm(fan_index=fan_index)
+        if rpm is None:
+            print(f"  Fan {fan_index}: read failed")
+        else:
+            print(f"  Fan {fan_index} RPM: {rpm}")
 
     print("\n[9] Start trigger...")
     if not interface.console_module.start_trigger():

@@ -44,7 +44,6 @@ def program_all_sensors(interface, camera_position, bit_file):
     steps = [
         ("reset_camera_sensor", "Failed to reset camera sensor."),
         ("activate_camera_fpga", "Failed to activate camera FPGA."),
-        ("enable_camera_fpga", "Failed to enable camera FPGA."),
         ("check_camera_fpga", "Failed to check ID of camera FPGA."),
         ("enter_sram_prog_fpga", "Failed to enter SRAM programming mode for camera FPGA."),
         ("erase_sram_fpga", "Failed to erase SRAM for camera FPGA."),

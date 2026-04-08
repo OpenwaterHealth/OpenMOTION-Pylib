@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
 from omotion import MOTIONUart, _log_root
+from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
 from omotion.config import (
     FPGA_PROG_CFG_READ_PAGE,
     FPGA_PROG_CFG_RESET,
@@ -36,6 +37,7 @@ from omotion.config import (
     OW_CONTROLLER,
     OW_CTRL_BOARDID,
     OW_CTRL_GET_FAN,
+    OW_CTRL_SET_FAN,
     OW_CTRL_GET_FSYNC,
     OW_CTRL_GET_IND,
     OW_CTRL_GET_LSYNC,
@@ -47,7 +49,6 @@ from omotion.config import (
     OW_CTRL_PDUMON,
     OW_CTRL_READ_ADC,
     OW_CTRL_READ_GPIO,
-    OW_CTRL_SET_FAN,
     OW_CTRL_SET_IND,
     OW_CTRL_SET_TRIG,
     OW_CTRL_START_TRIG,
@@ -62,7 +63,7 @@ from omotion.config import (
 )
 
 from omotion.GitHubReleases import GitHubReleases
-from omotion.MotionConfig import MotionConfig
+from omotion.MotionConfig import MotionConfig, MotionConfigHeader
 from omotion.CommandError import CommandError
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
@@ -117,6 +118,9 @@ class MOTIONConsole:
         """
 
         self.uart = uart
+
+        # Telemetry poller – started/stopped by MOTIONInterface on connect/disconnect
+        self.telemetry = ConsoleTelemetryPoller(self)
 
         if self.uart and not self.uart.asyncMode:
             self.uart.check_usb_status()
@@ -236,7 +240,7 @@ class MOTIONConsole:
         """
         try:
             if self.uart.demo_mode:
-                data = b"Hello LIFU!"
+                data = b"Hello Motion!!"
                 return data, len(data)
 
             if not self.uart.is_connected():
@@ -612,16 +616,21 @@ class MOTIONConsole:
 
     def set_fan_speed(self, fan_speed: int = 50) -> int:
         """
-        Get the current output fan percentage.
+        Drive the console fan PWM.
+
+        Sends OW_CTRL_SET_FAN with the requested duty cycle. Use
+        :meth:`get_fan_rpm` (with ``fan_index=1..3``) to read per-fan
+        tachometer RPM.
 
         Args:
-            fan_speed (int): The desired fan speed (default is 50).
+            fan_speed (int): Desired fan duty cycle, 0..100. Default 50.
 
         Returns:
-            int: The current output fan percentage.
+            int: The fan_speed that was set, or -1 on OW_ERROR.
 
         Raises:
-            ValueError: If the controller is not connected.
+            ValueError: If the controller is not connected, or fan_speed
+                is not in 0..100.
         """
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
@@ -631,15 +640,9 @@ class MOTIONConsole:
 
         try:
             if self.uart.demo_mode:
-                return 40
+                return fan_speed
 
-            logger.info("Getting current output voltage.")
-
-            data = bytes(
-                [
-                    fan_speed & 0xFF,  # Low byte (least significant bits)
-                ]
-            )
+            data = bytes([fan_speed & 0xFF])
 
             r = self.uart.send_packet(
                 id=None,
@@ -649,68 +652,75 @@ class MOTIONConsole:
             )
 
             self.uart.clear_buffer()
-            # r.print_packet()
 
             if r.packet_type == OW_ERROR:
                 logger.error("Error setting Fan Speed")
                 return -1
 
-            logger.info(f"Set fan speed to {fan_speed}")
+            logger.info("Set fan speed to %d", fan_speed)
             return fan_speed
 
-        except ValueError as v:
-            logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
-
+        except ValueError:
+            raise
         except Exception as e:
             logger.error("Unexpected error during set_fan_speed: %s", e)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
-    def get_fan_speed(self) -> int:
+    def get_fan_rpm(self, fan_index: int) -> Optional[int]:
         """
-        Get the current output fan percentage.
+        Read measured tachometer RPM for a console fan.
+
+        The console fan lines are read-only tach inputs. For each call, the
+        firmware samples the GPIO over a measurement window and blocks for
+        ~50 ms before responding.
+
+        Args:
+            fan_index (int): Fan to read, 1, 2, or 3.
 
         Returns:
-            int: The current output fan percentage.
+            Optional[int]: Measured RPM as a 16-bit unsigned value, or None
+            if the firmware reports an error.
 
         Raises:
-            ValueError: If the controller is not connected.
+            ValueError: If the controller is not connected, or fan_index is
+                not in 1..3.
         """
+        if fan_index not in (1, 2, 3):
+            raise ValueError("fan_index must be 1, 2, or 3")
+
         if not self.uart.is_connected():
             raise ValueError("Console controller not connected")
 
         try:
             if self.uart.demo_mode:
-                return 40.0
-
-            logger.info("Getting current output voltage.")
+                return 2400
 
             r = self.uart.send_packet(
-                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_FAN
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_GET_FAN,
+                addr=fan_index,
             )
 
             self.uart.clear_buffer()
-            # r.print_packet()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error setting HV")
-                return 0.0
+                logger.error("Error reading fan %d RPM", fan_index)
+                return None
 
-            elif r.data_len == 1:
-                fan_value = r.data[0]
-                logger.info(f"Output fan speed is {fan_value}")
-                return fan_value
-            else:
-                logger.error("Error getting output voltage from device")
-                return -1
+            if r.data_len == 2:
+                rpm = r.data[0] | (r.data[1] << 8)
+                logger.info("Fan %d RPM: %d", fan_index, rpm)
+                return rpm
 
-        except ValueError as v:
-            logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            logger.error("Unexpected fan RPM payload length: %d", r.data_len)
+            return None
 
+        except ValueError:
+            raise
         except Exception as e:
-            logger.error("Unexpected error during get_fan_speed: %s", e)
-            raise  # Re-raise the exception for the caller to handle
+            logger.error("Unexpected error during get_fan_rpm: %s", e)
+            raise
 
     def set_rgb_led(self, rgb_state: int) -> int:
         """
@@ -1057,20 +1067,21 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error during get_lsync_pulsecount: %s", e)
 
-    def read_gpio_value(self) -> float:
+    def read_gpio_value(self) -> int:
         """
-        Read ADC value
+        Read GPIO value.
 
         Returns:
-            float: The read value.
+            int: The GPIO register value (4-byte unsigned integer).
 
         Raises:
-            ValueError: If the UART is not connected.
-            Exception: If an error occurs while retrieving the pulse count.
+            ValueError: If the UART is not connected or the firmware returns
+                an unexpected response.
+            Exception: If an error occurs during communication.
         """
         try:
             if self.uart.demo_mode:
-                return True
+                return 0
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
@@ -1079,42 +1090,37 @@ class MOTIONConsole:
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_GPIO, data=None
             )
             self.uart.clear_buffer()
-            # r.print_packet()
             if r.packet_type == OW_ERROR:
-                logger.error("Error retrieving LSYNC pulse count")
-                return 0
+                raise ValueError("Device returned an error for OW_CTRL_READ_GPIO")
             if r.data_len == 4:
-                # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack("<I", r.data)[0]
-                return pulse_count
-            else:
-                logger.error("Unexpected data length for LSYNC pulse count")
-                return 0
+                return struct.unpack("<I", r.data)[0]
+            raise ValueError(
+                f"Unexpected data length for GPIO read: got {r.data_len}, expected 4"
+            )
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
         except Exception as e:
             logger.error("Unexpected error during read_gpio_value: %s", e)
-            raise  # Re-raise the exception for the caller to handle
-
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
     def read_adc_value(self) -> float:
         """
-        Read ADC value
+        Read ADC value.
 
         Returns:
-            float: The read value.
+            float: The ADC reading as a 32-bit float.
 
         Raises:
-            ValueError: If the UART is not connected.
-            Exception: If an error occurs while retrieving the pulse count.
+            ValueError: If the UART is not connected or the firmware returns
+                an unexpected response.
+            Exception: If an error occurs during communication.
         """
         try:
             if self.uart.demo_mode:
-                return True
+                return 0.0
 
             if not self.uart.is_connected():
                 raise ValueError("Console controller not connected")
@@ -1123,25 +1129,21 @@ class MOTIONConsole:
                 id=None, packetType=OW_CONTROLLER, command=OW_CTRL_READ_ADC, data=None
             )
             self.uart.clear_buffer()
-            # r.print_packet()
             if r.packet_type == OW_ERROR:
-                logger.error("Error retrieving LSYNC pulse count")
-                return 0
+                raise ValueError("Device returned an error for OW_CTRL_READ_ADC")
             if r.data_len == 4:
-                # Assuming the pulse count is returned as a 4-byte integer
-                pulse_count = struct.unpack("<I", r.data)[0]
-                return pulse_count
-            else:
-                logger.error("Unexpected data length for LSYNC pulse count")
-                return 0
+                return struct.unpack("<f", r.data)[0]
+            raise ValueError(
+                f"Unexpected data length for ADC read: got {r.data_len}, expected 4"
+            )
 
         except ValueError as v:
             logger.error("ValueError: %s", v)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
         except Exception as e:
             logger.error("Unexpected error during read_adc_value: %s", e)
-            raise  # Re-raise the exception for the caller to handle
+            raise
 
     def get_temperatures(self, return_all: bool = False) -> tuple[float, float, float]:
         """
@@ -1186,12 +1188,6 @@ class MOTIONConsole:
             if r.packet_type == OW_ERROR:
                 raise ValueError("Device returned OW_ERROR for temperatures")
 
-            # --- Old firmware compatibility (3 floats only) ---
-            if r.data_len == 12:
-                mcu_temp, safety_temp, ta_temp = struct.unpack("<fff", r.data)
-                return (mcu_temp, safety_temp, ta_temp)
-
-            # --- New telemetry format ---
             if r.data_len == 0 or r.data_len % SAMPLE_SIZE != 0:
                 raise ValueError(
                     f"Unexpected telemetry payload length: {r.data_len} "
@@ -1386,46 +1382,7 @@ class MOTIONConsole:
             TEC_STATS_FMT = "<I4f?"
             TEC_STATS_SIZE = struct.calcsize(TEC_STATS_FMT)  # 21 bytes
 
-            # Backward compatibility: older firmware returns a single status byte
-            if r.data_len == 1:
-                tec_good = bool(r.data[0])
-                
-                # Fetch the four TEC ADC floats                
-                s = self.uart.send_packet(
-                    id=None,
-                    packetType=OW_CONTROLLER,
-                    command=OW_CTRL_TECADC,
-                    reserved=4,
-                    data=None,
-                )
-                
-                if s.packet_type == OW_ERROR:
-                    logger.error("Device returned OW_ERROR for OW_CTRL_TECADC(all)")
-                    raise Exception("Error executing tec_adc(all) command")
-                if s.data_len != 16:
-                    raise ValueError(
-                        f"Unexpected data length for TEC ADC (all): {s.data_len}, expected 16"
-                    )
-
-                vout, temp_set, tec_curr, tec_volt = struct.unpack("<4f", s.data)    
-                
-                logger.debug(
-                    "Legacy TEC Status - V: %.6f V, SET: %.6f V, TEC_C: %.6f V, TEC_V: %.6f V, GOOD: %s",
-                    vout,
-                    temp_set,
-                    tec_curr,
-                    tec_volt,
-                    tec_good,
-                )
-
-                return (
-                    f"{vout:.6f}",
-                    f"{temp_set:.6f}",
-                    f"{tec_curr:.6f}",
-                    f"{tec_volt:.6f}",
-                    tec_good,
-                )
-            elif r.data_len < TEC_STATS_SIZE:
+            if r.data_len < TEC_STATS_SIZE:
                 raise ValueError(
                     f"TecStats response too short: {r.data_len} bytes, expected {TEC_STATS_SIZE}"
                 )
@@ -1704,15 +1661,22 @@ class MOTIONConsole:
                 logger.error("Error writing config to device")
                 return None
 
-            # Response contains updated header (with new seq/crc)
+            # The firmware write ACK returns only the updated 16-byte header
+            # (with the new seq/crc stamped by the device) — it does NOT echo
+            # back the full JSON payload.  Parse just the header and reattach
+            # the json_data we sent so the caller gets a fully-populated object.
             try:
-                updated_config = MotionConfig.from_wire_bytes(r.data)
+                updated_header = MotionConfigHeader.from_bytes(bytes(r.data[:16]))
+                updated_config = MotionConfig(
+                    header=updated_header,
+                    json_data=config.json_data.copy(),
+                )
                 logger.info(
-                    f"Config written successfully: new seq={updated_config.header.seq}"
+                    "Config written successfully: new seq=%d", updated_config.header.seq
                 )
                 return updated_config
             except Exception as e:
-                logger.error(f"Failed to parse write response: {e}")
+                logger.error("Failed to parse write ACK header: %s", e)
                 return None
 
         except ValueError as v:
@@ -2466,6 +2430,15 @@ class MOTIONConsole:
         except Exception as e:
             logger.error("Unexpected error FPGA close: %s", e)
             raise
+
+    def log_device_info(self) -> None:
+        """Log console firmware version and hardware ID to the SDK logger."""
+        try:
+            fw_version = self.get_version()
+            hw_id      = self.get_hardware_id()
+            logger.info("Console: firmware=%s  hw_id=%s", fw_version, hw_id)
+        except Exception as e:
+            logger.warning("Console: failed to read device info: %s", e)
 
     def disconnect(self):
         """
