@@ -112,7 +112,7 @@ Send an echo command with data and receive the same data in response.
 
 **Notes:**
 - Useful for testing communication integrity
-- In demo mode returns `(b"Hello LIFU!", 11)`
+- In demo mode returns `(b"Hello Motion!!", 11)`
 
 ---
 

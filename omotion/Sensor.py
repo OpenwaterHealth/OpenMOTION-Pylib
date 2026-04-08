@@ -143,7 +143,7 @@ class MOTIONSensor:
     def echo(self, echo_data=None) -> tuple[bytes, int]:
         """Send echo_data and return (echoed_bytes, length), or (None, None)."""
         if self.uart.demo_mode:
-            data = b"Hello LIFU!"
+            data = b"Hello Motion!!"
             return data, len(data)
         if echo_data is not None and not isinstance(echo_data, (bytes, bytearray)):
             raise TypeError("echo_data must be a byte array")

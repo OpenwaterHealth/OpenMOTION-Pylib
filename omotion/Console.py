@@ -240,7 +240,7 @@ class MOTIONConsole:
         """
         try:
             if self.uart.demo_mode:
-                data = b"Hello LIFU!"
+                data = b"Hello Motion!!"
                 return data, len(data)
 
             if not self.uart.is_connected():
