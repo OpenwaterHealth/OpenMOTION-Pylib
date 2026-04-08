@@ -14,7 +14,7 @@ A library called `omotion` is imported in many of the python scripts listed here
 # from repo root rebuild and install
 python -m pip install --upgrade build twine
 python -m build          # creates wheel + sdist under dist/
-python -m pip install --force-reinstall dist/openmotion_pylib-1.3.3-py3-none-any.whl
+python -m pip install --force-reinstall dist/openmotion_sdk-1.3.3-py3-none-any.whl
 
 # quick runtime check (on Windows box with your device bound to WinUSB/libusbK)
 python -c "import usb, omotion.usb_backend as ub; print(ub.get_libusb1_backend())"
