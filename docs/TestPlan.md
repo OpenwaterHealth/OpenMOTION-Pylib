@@ -350,10 +350,10 @@ Calls `enable_camera(0)`. Asserts `True`. Calls `disable_camera(0)`. Asserts `Tr
 ### 3.9 Single-frame histogram capture
 
 **`test_single_histogram_raw_bytes`**
-Sets up camera (power on → FPGA enable → configure). Calls `camera_capture_histogram(0)`. Calls `camera_get_histogram(0)`. Asserts the returned `bytearray` has the expected histogram packet length (4105 bytes).
+Sets up camera (power on → FPGA enable → configure). Calls `camera_capture_histogram(0)`. Calls `camera_get_histogram(0)`. Asserts the returned `bytearray` has the expected histogram packet length (4100 bytes: 4096 histogram bytes + 4-byte temperature).
 
 **`test_single_histogram_parsed`**
-Calls `get_camera_histogram(camera_position=0)`. Asserts the returned list of `HistogramSample` is non-empty. Asserts each sample has `data_len == 1024` bins.
+Calls `get_camera_histogram(camera_id=0)`. Asserts the returned list of `HistogramSample` is non-empty. Asserts each sample has `data_len == 1024` bins.
 
 **`test_single_histogram_bin_sum`**
 Gets a histogram from a camera illuminated by the laser at known intensity. Asserts the total photon count (sum of bins) is within an expected range. This test requires a stable optical target; it is gated by a fixture that checks for the `OPTICAL_TARGET` environment variable.
