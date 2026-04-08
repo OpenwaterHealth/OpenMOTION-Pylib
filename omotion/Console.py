@@ -619,8 +619,8 @@ class MOTIONConsole:
         Drive the console fan PWM.
 
         Sends OW_CTRL_SET_FAN with the requested duty cycle. Use
-        :meth:`get_fan_speed` (with ``fan_index=1..3``) to read per-fan
-        PWM feedback.
+        :meth:`get_fan_rpm` (with ``fan_index=1..3``) to read per-fan
+        tachometer RPM.
 
         Args:
             fan_speed (int): Desired fan duty cycle, 0..100. Default 50.
@@ -666,20 +666,20 @@ class MOTIONConsole:
             logger.error("Unexpected error during set_fan_speed: %s", e)
             raise
 
-    def get_fan_speed(self, fan_index: int) -> Optional[int]:
+    def get_fan_rpm(self, fan_index: int) -> Optional[int]:
         """
-        Read measured PWM-feedback duty cycle for a console fan.
+        Read measured tachometer RPM for a console fan.
 
-        The console fan lines are read-only feedback inputs (not commanded
-        setpoints). For each call, the firmware polls the GPIO over a sample
-        window and blocks for ~50 ms before responding.
+        The console fan lines are read-only tach inputs. For each call, the
+        firmware samples the GPIO over a measurement window and blocks for
+        ~50 ms before responding.
 
         Args:
             fan_index (int): Fan to read, 1, 2, or 3.
 
         Returns:
-            Optional[int]: Measured duty cycle in 0..100, or None if the
-            firmware reports an error.
+            Optional[int]: Measured RPM as a 16-bit unsigned value, or None
+            if the firmware reports an error.
 
         Raises:
             ValueError: If the controller is not connected, or fan_index is
@@ -693,7 +693,7 @@ class MOTIONConsole:
 
         try:
             if self.uart.demo_mode:
-                return 40
+                return 2400
 
             r = self.uart.send_packet(
                 id=None,
@@ -705,21 +705,21 @@ class MOTIONConsole:
             self.uart.clear_buffer()
 
             if r.packet_type == OW_ERROR:
-                logger.error("Error reading fan %d feedback", fan_index)
+                logger.error("Error reading fan %d RPM", fan_index)
                 return None
 
-            if r.data_len == 1:
-                fan_value = r.data[0]
-                logger.info("Fan %d PWM feedback: %d%%", fan_index, fan_value)
-                return fan_value
+            if r.data_len == 2:
+                rpm = r.data[0] | (r.data[1] << 8)
+                logger.info("Fan %d RPM: %d", fan_index, rpm)
+                return rpm
 
-            logger.error("Unexpected fan feedback payload length: %d", r.data_len)
+            logger.error("Unexpected fan RPM payload length: %d", r.data_len)
             return None
 
         except ValueError:
             raise
         except Exception as e:
-            logger.error("Unexpected error during get_fan_speed: %s", e)
+            logger.error("Unexpected error during get_fan_rpm: %s", e)
             raise
 
     def set_rgb_led(self, rgb_state: int) -> int:
