@@ -4,11 +4,107 @@ import usb.core
 import usb.util
 import threading
 from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP
 from omotion import _log_root
 
 logger = logging.getLogger(
     f"{_log_root}.StreamInterface" if _log_root else "StreamInterface"
 )
+
+
+def _rle_decompress(data: bytes) -> bytes:
+    """Decompress PackBits-style byte-level RLE data."""
+    result = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        ctrl = data[i]
+        i += 1
+        if ctrl < 0x80:
+            # Literal run: (ctrl + 1) bytes follow
+            count = ctrl + 1
+            result.extend(data[i : i + count])
+            i += count
+        else:
+            # Repeat run: next byte repeated (ctrl - 0x80 + 3) times
+            count = ctrl - 0x80 + 3
+            result.extend(bytes([data[i]]) * count)
+            i += 1
+    return bytes(result)
+
+
+_HEADER_SIZE = 6      # SOF(1) + type(1) + size(4)
+_FOOTER_SIZE = 3      # CRC(2) + EOF(1)
+# TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the *uncompressed*
+# payload inserted immediately before the normal footer.
+_UNCMP_CRC_SIZE = 2
+
+
+try:
+    from omotion.utils import util_crc16 as _util_crc16
+except ImportError:
+    import binascii
+
+    def _util_crc16(buf):
+        return binascii.crc_hqx(buf, 0xFFFF)
+
+
+def _decompress_histo_cmp(raw: bytes) -> bytes:
+    """
+    Given a raw TYPE_HISTO_CMP packet, decompress the payload and return
+    a reconstructed TYPE_HISTO packet (so downstream consumers are unaffected).
+
+    Packet layout (TYPE_HISTO_CMP):
+      [Header 6B][Compressed payload N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
+
+    Two CRCs are checked:
+      1. PKT_CRC16  – covers header + compressed payload + UNCMP_CRC16 (transport integrity)
+      2. UNCMP_CRC16 – covers the *decompressed* payload (decompressor correctness)
+
+    Raises ValueError on any integrity failure.
+    """
+    if len(raw) < _HEADER_SIZE + _UNCMP_CRC_SIZE + _FOOTER_SIZE:
+        raise ValueError("Compressed packet too small")
+
+    # ── 1. Verify transport CRC (covers everything before PKT_CRC) ──
+    footer_off = len(raw) - _FOOTER_SIZE        # offset of PKT_CRC16
+    pkt_crc_expected = struct.unpack_from("<H", raw, footer_off)[0]
+    if raw[footer_off + 2] != 0xDD:
+        raise ValueError("Compressed packet missing EOF marker")
+    pkt_crc_actual = _util_crc16(raw[: footer_off - 1])   # matches firmware range
+    if pkt_crc_actual != pkt_crc_expected:
+        raise ValueError(
+            f"Compressed packet CRC mismatch "
+            f"(got 0x{pkt_crc_actual:04X}, expected 0x{pkt_crc_expected:04X})"
+        )
+
+    # ── 2. Extract UNCMP_CRC16 (sits just before the footer) ──
+    uncmp_crc_off = footer_off - _UNCMP_CRC_SIZE
+    uncmp_crc_expected = struct.unpack_from("<H", raw, uncmp_crc_off)[0]
+
+    # ── 3. Decompress (compressed payload is between header and UNCMP_CRC) ──
+    compressed_payload = raw[_HEADER_SIZE : uncmp_crc_off]
+    decompressed = _rle_decompress(compressed_payload)
+
+    # ── 4. Verify decompressed payload CRC ──
+    uncmp_crc_actual = _util_crc16(decompressed[:-1])   # same off-by-one as firmware
+    if uncmp_crc_actual != uncmp_crc_expected:
+        raise ValueError(
+            f"Decompressed payload CRC mismatch "
+            f"(got 0x{uncmp_crc_actual:04X}, expected 0x{uncmp_crc_expected:04X}) "
+            f"— decompressor produced wrong output"
+        )
+
+    # ── 5. Rebuild as a TYPE_HISTO packet ──
+    new_total = _HEADER_SIZE + len(decompressed) + _FOOTER_SIZE
+    header = struct.pack("<BBI", raw[0], TYPE_HISTO, new_total)
+
+    # Recompute CRC for the reconstructed packet (excluding last byte, matching firmware)
+    crc_data = header + decompressed
+    crc = _util_crc16(crc_data[: len(crc_data) - 1])
+    footer = struct.pack("<HB", crc, 0xDD)
+
+    return header + decompressed + footer
 
 
 # =========================================
@@ -199,6 +295,41 @@ class StreamInterface(USBInterfaceBase):
                 f"({sum(len(c) for c in chunks)} bytes total)"
             )
         return chunks
+
+    def _process_packet(self, raw, pkt_count, cmp_count, cmp_errors):
+        """Process a single framed packet: decompress if needed, queue it.
+        Returns (cmp_count, cmp_errors)."""
+        pkt_type = raw[1] if len(raw) > 1 else -1
+
+        if pkt_type == TYPE_HISTO_CMP:
+            cmp_count += 1
+            compressed_size = len(raw)
+            try:
+                raw = _decompress_histo_cmp(raw)
+                decompressed_size = len(raw)
+                if cmp_count <= 3 or cmp_count % 100 == 0:
+                    logger.info(
+                        f"{self.desc}: [CMP] pkt#{pkt_count} decompressed "
+                        f"{compressed_size} -> {decompressed_size} bytes "
+                        f"({cmp_count} compressed so far)"
+                    )
+            except Exception as exc:
+                cmp_errors += 1
+                logger.error(
+                    f"{self.desc}: [CMP] decompression FAILED pkt#{pkt_count}, "
+                    f"compressed_size={compressed_size}, "
+                    f"error={exc} (errors: {cmp_errors}/{cmp_count})"
+                )
+                return cmp_count, cmp_errors  # drop corrupted packet
+        elif pkt_type not in (TYPE_HISTO, TYPE_HISTO_CMP) and pkt_count <= 5:
+            logger.warning(
+                f"{self.desc}: unexpected pkt_type=0x{pkt_type:02X}, "
+                f"len={len(raw)}, pkt#{pkt_count}"
+            )
+
+        if self.data_queue:
+            self.data_queue.put(raw)
+        return cmp_count, cmp_errors
 
     def _stream_loop(self):
         # Read timeout must exceed the worst-case USB transfer latency for the
