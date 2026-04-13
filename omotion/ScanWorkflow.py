@@ -84,6 +84,11 @@ class ScanRequest:
     # None (default) means write for the full scan duration.
     # Has no effect when write_raw_csv is False.
     raw_csv_duration_sec: float | None = None
+    # When True, the pipeline averages all active cameras per side into
+    # single left/right BFI/BVI values.  The corrected CSV contains only
+    # bfi_left, bfi_right, bvi_left, bvi_right columns.  Uncorrected
+    # samples emitted to the UI are also averaged per-side per-frame.
+    reduced_mode: bool = False
 
 
 @dataclass
@@ -229,19 +234,32 @@ class ScanWorkflow:
             _corr_csv = None
             _corr_lock = threading.Lock()
             _corr_base_ts: float | None = None
-            corrected_columns = (
-                [f"bfi_l{i}" for i in range(1, 9)]
-                + [f"bfi_r{i}" for i in range(1, 9)]
-                + [f"bvi_l{i}" for i in range(1, 9)]
-                + [f"bvi_r{i}" for i in range(1, 9)]
-                + [f"mean_l{i}" for i in range(1, 9)]
-                + [f"mean_r{i}" for i in range(1, 9)]
-                + [f"contrast_l{i}" for i in range(1, 9)]
-                + [f"contrast_r{i}" for i in range(1, 9)]
-                + [f"temp_l{i}" for i in range(1, 9)]
-                + [f"temp_r{i}" for i in range(1, 9)]
-            )
+            if request.reduced_mode:
+                corrected_columns = [
+                    "bfi_left", "bfi_right",
+                    "bvi_left", "bvi_right",
+                ]
+            else:
+                corrected_columns = (
+                    [f"bfi_l{i}" for i in range(1, 9)]
+                    + [f"bfi_r{i}" for i in range(1, 9)]
+                    + [f"bvi_l{i}" for i in range(1, 9)]
+                    + [f"bvi_r{i}" for i in range(1, 9)]
+                    + [f"mean_l{i}" for i in range(1, 9)]
+                    + [f"mean_r{i}" for i in range(1, 9)]
+                    + [f"contrast_l{i}" for i in range(1, 9)]
+                    + [f"contrast_r{i}" for i in range(1, 9)]
+                    + [f"temp_l{i}" for i in range(1, 9)]
+                    + [f"temp_r{i}" for i in range(1, 9)]
+                )
             expected_col_suffixes: set[str] = set()
+
+            # Reduced-mode uncorrected sample accumulator: buffers per-camera
+            # samples and emits a single averaged sample per side per frame.
+            _reduced_uncorr_buf: dict[tuple[str, int], dict] = {}
+            # Number of active cameras per side (computed after active_sides
+            # is resolved; filled in below).
+            _reduced_cam_counts: dict[str, int] = {}
 
             try:
                 os.makedirs(request.data_dir, exist_ok=True)
@@ -291,9 +309,12 @@ class ScanWorkflow:
                 # Compute expected column suffixes from the active camera masks.
                 for _s, _m, _ in active_sides:
                     _letter = _s[0]
+                    _cam_count = 0
                     for _i in range(8):
                         if _m & (1 << _i):
                             expected_col_suffixes.add(f"{_letter}{_i + 1}")
+                            _cam_count += 1
+                    _reduced_cam_counts[_s] = _cam_count
 
                 # Open corrected CSV immediately and write the header so data is
                 # on disk continuously rather than all-at-once after the scan.
@@ -346,6 +367,55 @@ class ScanWorkflow:
                     def _on_uncorrected_sample(sample):
                         # Per-sample real-time callback (fires immediately for
                         # GUI with uncorrected BFI/BVI).
+                        if request.reduced_mode:
+                            # Buffer samples per (side, frame_id), emit averaged
+                            # result once all active cameras for that side report.
+                            key = (sample.side, int(sample.absolute_frame_id))
+                            entry = _reduced_uncorr_buf.get(key)
+                            if entry is None:
+                                entry = {
+                                    "bfi_sum": 0.0, "bvi_sum": 0.0,
+                                    "count": 0,
+                                    "timestamp_s": float(sample.timestamp_s),
+                                    "frame_id": int(sample.frame_id),
+                                    "abs_frame_id": int(sample.absolute_frame_id),
+                                    "side": sample.side,
+                                }
+                                _reduced_uncorr_buf[key] = entry
+                            entry["bfi_sum"] += float(sample.bfi)
+                            entry["bvi_sum"] += float(sample.bvi)
+                            entry["count"] += 1
+
+                            expected = _reduced_cam_counts.get(sample.side, 1)
+                            if entry["count"] >= expected:
+                                from omotion.MotionProcessing import Sample
+                                avg_sample = Sample(
+                                    side=entry["side"],
+                                    cam_id=0,
+                                    frame_id=entry["frame_id"],
+                                    absolute_frame_id=entry["abs_frame_id"],
+                                    timestamp_s=entry["timestamp_s"],
+                                    row_sum=0,
+                                    temperature_c=0.0,
+                                    mean=0.0,
+                                    std_dev=0.0,
+                                    contrast=0.0,
+                                    bfi=entry["bfi_sum"] / entry["count"],
+                                    bvi=entry["bvi_sum"] / entry["count"],
+                                    is_corrected=False,
+                                )
+                                del _reduced_uncorr_buf[key]
+                                # Evict stale entries (>5 frames behind)
+                                stale = [
+                                    k for k in _reduced_uncorr_buf
+                                    if k[0] == sample.side
+                                    and k[1] < entry["abs_frame_id"] - 5
+                                ]
+                                for sk in stale:
+                                    del _reduced_uncorr_buf[sk]
+                                if on_uncorrected_fn:
+                                    on_uncorrected_fn(avg_sample)
+                            return
                         if on_uncorrected_fn:
                             on_uncorrected_fn(sample)
 
@@ -353,6 +423,115 @@ class ScanWorkflow:
                         # Fires once per (side, cam_id) per dark-frame interval
                         # with properly corrected BFI/BVI for that interval.
                         nonlocal _corr_base_ts
+
+                        if request.reduced_mode:
+                            # In reduced mode, average all cameras per side per
+                            # frame and write only bfi_left/right, bvi_left/right.
+                            try:
+                                with _corr_lock:
+                                    for sample in batch.samples:
+                                        frame_key = int(sample.absolute_frame_id)
+                                        side = sample.side
+                                        frame_entry = corrected_by_frame.get(frame_key)
+                                        if frame_entry is None:
+                                            frame_entry = {
+                                                "timestamp_s": float(sample.timestamp_s),
+                                                "values": {},
+                                                "_accum": {},
+                                            }
+                                            corrected_by_frame[frame_key] = frame_entry
+                                        else:
+                                            frame_entry["timestamp_s"] = min(
+                                                float(frame_entry["timestamp_s"]),
+                                                float(sample.timestamp_s),
+                                            )
+                                        accum = frame_entry.setdefault("_accum", {})
+                                        side_acc = accum.get(side)
+                                        if side_acc is None:
+                                            side_acc = {"bfi_sum": 0.0, "bvi_sum": 0.0, "count": 0}
+                                            accum[side] = side_acc
+                                        side_acc["bfi_sum"] += float(sample.bfi)
+                                        side_acc["bvi_sum"] += float(sample.bvi)
+                                        side_acc["count"] += 1
+
+                                    # Flush frames where all expected sides are complete.
+                                    expected_sides = set(
+                                        _s for _s, _m, _ in active_sides
+                                    )
+                                    complete = []
+                                    for fid, entry in corrected_by_frame.items():
+                                        accum = entry.get("_accum", {})
+                                        if all(
+                                            accum.get(sd, {}).get("count", 0)
+                                            >= _reduced_cam_counts.get(sd, 1)
+                                            for sd in expected_sides
+                                        ):
+                                            complete.append(fid)
+
+                                    if complete and _corr_csv is not None:
+                                        if _corr_base_ts is None:
+                                            _corr_base_ts = min(
+                                                float(corrected_by_frame[fid]["timestamp_s"])
+                                                for fid in complete
+                                            )
+                                        for fid in sorted(complete):
+                                            entry = corrected_by_frame.pop(fid)
+                                            rel_ts = float(entry["timestamp_s"]) - _corr_base_ts
+                                            accum = entry.get("_accum", {})
+                                            left_acc = accum.get("left", {"bfi_sum": 0, "bvi_sum": 0, "count": 1})
+                                            right_acc = accum.get("right", {"bfi_sum": 0, "bvi_sum": 0, "count": 1})
+                                            vals = {
+                                                "bfi_left": round(left_acc["bfi_sum"] / max(1, left_acc["count"]), 6),
+                                                "bfi_right": round(right_acc["bfi_sum"] / max(1, right_acc["count"]), 6),
+                                                "bvi_left": round(left_acc["bvi_sum"] / max(1, left_acc["count"]), 6),
+                                                "bvi_right": round(right_acc["bvi_sum"] / max(1, right_acc["count"]), 6),
+                                            }
+                                            row = [fid, rel_ts]
+                                            row.extend(vals.get(col, "") for col in corrected_columns)
+                                            _corr_csv.writerow(row)
+                                        _corr_fh.flush()
+                            except Exception as agg_err:
+                                _emit_log(f"Corrected batch aggregation error: {agg_err}")
+
+                            # Emit averaged batch to UI
+                            if on_corrected_batch_fn:
+                                from omotion.MotionProcessing import Sample
+                                # Group samples by (side, frame_id) and average
+                                _batch_buf: dict[tuple[str, int], dict] = {}
+                                for s in batch.samples:
+                                    bk = (s.side, int(s.absolute_frame_id))
+                                    be = _batch_buf.get(bk)
+                                    if be is None:
+                                        be = {"bfi_sum": 0.0, "bvi_sum": 0.0, "count": 0,
+                                              "ts": float(s.timestamp_s),
+                                              "frame_id": int(s.frame_id),
+                                              "abs_frame_id": int(s.absolute_frame_id),
+                                              "side": s.side}
+                                        _batch_buf[bk] = be
+                                    be["bfi_sum"] += float(s.bfi)
+                                    be["bvi_sum"] += float(s.bvi)
+                                    be["count"] += 1
+                                avg_samples = []
+                                for be in _batch_buf.values():
+                                    cnt = max(1, be["count"])
+                                    avg_samples.append(Sample(
+                                        side=be["side"], cam_id=0,
+                                        frame_id=be["frame_id"],
+                                        absolute_frame_id=be["abs_frame_id"],
+                                        timestamp_s=be["ts"],
+                                        row_sum=0, temperature_c=0.0,
+                                        mean=0.0, std_dev=0.0, contrast=0.0,
+                                        bfi=be["bfi_sum"] / cnt,
+                                        bvi=be["bvi_sum"] / cnt,
+                                        is_corrected=True,
+                                    ))
+                                on_corrected_batch_fn(CorrectedBatch(
+                                    dark_frame_start=batch.dark_frame_start,
+                                    dark_frame_end=batch.dark_frame_end,
+                                    samples=avg_samples,
+                                ))
+                            return
+
                         try:
                             with _corr_lock:
                                 for sample in batch.samples:

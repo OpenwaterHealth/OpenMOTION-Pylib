@@ -352,7 +352,7 @@ The `ScanWorkflow` opens the corrected CSV file at the **start** of the scan (no
 
 This means the corrected CSV grows incrementally during the scan rather than being written all-at-once post-scan.  Data up to the last completed interval is on disk even if the scan is interrupted.
 
-**Corrected CSV columns:**
+**Corrected CSV columns (normal mode):**
 
 ```
 frame_id, timestamp_s,
@@ -361,6 +361,14 @@ bvi_l1..bvi_l8, bvi_r1..bvi_r8,
 mean_l1..mean_l8, mean_r1..mean_r8,
 contrast_l1..contrast_l8, contrast_r1..contrast_r8,
 temp_l1..temp_l8, temp_r1..temp_r8
+```
+
+**Corrected CSV columns (reduced mode — see §16):**
+
+```
+frame_id, timestamp_s,
+bfi_left, bfi_right,
+bvi_left, bvi_right
 ```
 
 `timestamp_s` is relative to the first corrected frame written (i.e. normalised to zero at the start of the corrected output).
@@ -508,3 +516,142 @@ class CorrectedBatch:
     samples: list[Sample]   # chronological, is_corrected=True
                             # includes D_prev, excludes D_next
 ```
+
+---
+
+## 16. Reduced mode (per-side averaging)
+
+**Implementation:** `omotion/ScanWorkflow.py` — activated by setting `ScanRequest.reduced_mode = True`.
+
+**Purpose:** In the clinical "reduced mode", the application displays only two aggregated traces — left and right — rather than individual per-camera plots.  When reduced mode is enabled, the SDK averages all active cameras on each side into single left/right BFI and BVI values at the scan workflow level.  This ensures that both the live display and the corrected CSV contain only the averaged data, so the data files a clinician reviews match what was shown on screen during the scan.
+
+### 16.1 What changes vs. normal mode
+
+| Aspect | Normal mode | Reduced mode |
+|---|---|---|
+| Uncorrected samples emitted | One `Sample` per camera per frame (up to 16 at 40 Hz) | One `Sample` per **side** per frame (up to 2 at 40 Hz) |
+| Corrected batches emitted | One `Sample` per camera per dark-frame interval | One `Sample` per **side** per dark-frame interval |
+| Corrected CSV columns | `bfi_l1..l8, bfi_r1..r8, bvi_l1..l8, bvi_r1..r8, mean_*, contrast_*, temp_*` (80 data columns) | `bfi_left, bfi_right, bvi_left, bvi_right` (4 data columns) |
+| Raw histogram CSV | Unchanged (per-camera histograms written normally) | Unchanged |
+| Science pipeline internals | Unchanged (per-camera BFI/BVI computed normally) | Unchanged — averaging happens **after** the science pipeline, in `ScanWorkflow` |
+
+### 16.2 Architecture — where averaging occurs
+
+The science pipeline (§1–§9) is completely unmodified in reduced mode.  It continues to compute per-camera BFI/BVI from histograms as described in the preceding sections.  The averaging is performed in two interception points inside `ScanWorkflow.start_scan()._worker()`:
+
+```
+SciencePipeline (per-camera BFI/BVI)
+         │
+         ├── on_uncorrected_fn ──► Reduced uncorrected accumulator (§16.3)
+         │                             └── emits 1 averaged Sample per side per frame
+         │
+         └── on_corrected_batch_fn ──► Reduced corrected handler (§16.4)
+                                          ├── averages per side, writes reduced CSV row
+                                          └── emits averaged CorrectedBatch to UI
+```
+
+This design keeps the science pipeline generic and testable.  The averaging logic is isolated in `ScanWorkflow` and only activates when `reduced_mode=True`.
+
+### 16.3 Uncorrected sample averaging (live display path)
+
+Each uncorrected `Sample` emitted by the science pipeline is intercepted by `_on_uncorrected_sample()`.  Instead of forwarding it immediately to the UI, the workflow buffers it in a per-frame, per-side accumulator:
+
+**Accumulator key:** `(side, absolute_frame_id)` — e.g. `("left", 1542)`.
+
+**Accumulator entry:**
+```python
+{
+    "bfi_sum": float,       # running sum of BFI values
+    "bvi_sum": float,       # running sum of BVI values
+    "count": int,           # number of cameras that have contributed
+    "timestamp_s": float,   # timestamp from the first contributing sample
+    "frame_id": int,        # raw firmware frame counter
+    "abs_frame_id": int,    # unwrapped monotonic frame counter
+    "side": str,            # "left" or "right"
+}
+```
+
+**Flush condition:** The entry is flushed (averaged and emitted) when `count` reaches the number of active cameras for that side.  The active camera count is derived from the camera bitmask at scan start — e.g. mask `0x66` (binary `01100110`) has 4 bits set, so `expected_count = 4`.
+
+**Averaged sample:** When flushed, a synthetic `Sample` is constructed:
+
+```python
+Sample(
+    side    = entry["side"],
+    cam_id  = 0,                                    # sentinel — not a real camera
+    bfi     = entry["bfi_sum"] / entry["count"],    # arithmetic mean of all cameras
+    bvi     = entry["bvi_sum"] / entry["count"],    # arithmetic mean of all cameras
+    mean    = 0.0,                                  # not meaningful in reduced mode
+    std_dev = 0.0,
+    contrast = 0.0,
+    temperature_c = 0.0,
+    is_corrected = False,
+    ...
+)
+```
+
+This sample is then forwarded to the UI via `on_uncorrected_fn`.
+
+**Stale entry eviction:** After flushing, any accumulator entries for the same side whose `absolute_frame_id` is more than 5 frames behind the current frame are deleted.  This prevents unbounded memory growth if a camera drops frames and an entry never reaches its expected count.
+
+**Effect on the UI:** The QML `ReducedPlotView` component previously performed its own JavaScript-level averaging of individual camera samples.  With reduced mode enabled at the SDK level, it now receives pre-averaged samples (one per side, `cam_id=0`) and can display them directly.
+
+### 16.4 Corrected batch averaging (CSV + corrected display path)
+
+Each `CorrectedBatch` emitted by the science pipeline is intercepted by `_on_corrected_batch()`.  Two things happen:
+
+#### 16.4.1 Corrected CSV writing
+
+Samples in the batch are accumulated into `corrected_by_frame` (the same dict used in normal mode, but with a different structure).  Each frame entry carries an `_accum` dict keyed by side:
+
+```python
+corrected_by_frame[frame_key] = {
+    "timestamp_s": float,
+    "_accum": {
+        "left":  {"bfi_sum": float, "bvi_sum": float, "count": int},
+        "right": {"bfi_sum": float, "bvi_sum": float, "count": int},
+    },
+}
+```
+
+A frame row is flushed to the CSV when **all expected sides** have their full camera count.  For example, if both left and right sensors are active with 4 cameras each, the row is written when `left.count >= 4` and `right.count >= 4`.
+
+The CSV row contains:
+```
+frame_id, timestamp_s, bfi_left, bfi_right, bvi_left, bvi_right
+```
+
+where each value is the arithmetic mean of all contributing cameras for that side:
+```
+bfi_left = left.bfi_sum / left.count
+```
+
+**No mean, contrast, or temperature columns are written** — these per-camera metrics are not meaningful after side-level averaging.
+
+#### 16.4.2 Averaged CorrectedBatch to UI
+
+After CSV writing, the batch samples are grouped by `(side, absolute_frame_id)` and averaged the same way.  A new `CorrectedBatch` is constructed with one averaged `Sample` per side per frame (`cam_id=0`, `is_corrected=True`) and emitted to the UI via `on_corrected_batch_fn`.
+
+### 16.5 What is NOT changed in reduced mode
+
+- **Raw histogram CSVs** — per-camera histogram data continues to be written to `*_left_mask*.csv` and `*_right_mask*.csv` files at full resolution.  These files are the ground-truth record and can be reprocessed offline if needed.
+- **Science pipeline** — all per-camera computations (frame classification, dark subtraction, shot-noise correction, BFI/BVI calibration) run identically.
+- **Telemetry CSV** — console temperature, PDC, and safety data are unaffected.
+
+### 16.6 Activation
+
+Reduced mode is activated by the application through the `ScanRequest` dataclass:
+
+```python
+req = ScanRequest(
+    subject_id="...",
+    duration_sec=43200,
+    left_camera_mask=0x66,
+    right_camera_mask=0x66,
+    data_dir="...",
+    disable_laser=False,
+    reduced_mode=True,          # ← enables per-side averaging
+)
+```
+
+The bloodflow application sets `reduced_mode=True` when its `appConfig.reducedMode` flag is enabled (clinical mode).  The flag is read from `config/app_config.json` and passed through `motion_connector.py` to the SDK at scan start.
