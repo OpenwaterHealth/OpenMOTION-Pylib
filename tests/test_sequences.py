@@ -46,21 +46,15 @@ def _decode_raw_histogram(raw):
 
 
 def _camera_up(sensor, mask=0x01, configure=True):
-    """Full bring-up matching the production ScanWorkflow sequence:
-      1. enable_camera_power  →  500 ms settle (rails + FPGA supply)
-      2. program_fpga          →  loads bitstream into SRAM  (blocks up to ~16 s)
-                               →  100 ms settle after completion
-      3. camera_configure_registers  →  writes camera sensor registers
+    """Power on → FPGA program → optional register configure.
 
     NOTE: program_fpga can take up to 16 seconds; tests using this helper
     should be marked @pytest.mark.slow.
-    Power cycling wipes both the FPGA bitstream and camera register state,
-    so all three steps are required before any camera-level operation.
     """
     ok = sensor.enable_camera_power(mask)
     if ok is False:
         pytest.fail(f"enable_camera_power(0x{mask:02X}) returned False")
-    time.sleep(0.5)  # match ScanWorkflow settle time
+    time.sleep(0.5)  # rail settle
 
     ok = sensor.program_fpga(camera_position=mask, manual_process=False)
     if ok is False:
@@ -73,67 +67,37 @@ def _camera_up(sensor, mask=0x01, configure=True):
             pytest.fail(f"camera_configure_registers(0x{mask:02X}) returned False")
 
 
-def _camera_down(sensor, cam=0, mask=0x01):
-    sensor.disable_camera_power(mask)
-
-
 # ===========================================================================
 # 5.1 Camera bring-up and single frame
 # ===========================================================================
 
 def test_camera_full_bringup_single_frame(any_sensor):
-    """Power on → FPGA program → configure → status check → capture → parse histogram."""
+    """FPGA program → configure → status check → capture → parse histogram."""
     _camera_up(any_sensor)
-    try:
-        # Mirror what the high-level get_camera_histogram() does: verify the camera
-        # reports READY + FPGA-loaded + registers-configured (bits 0, 1, 2) before
-        # firing the capture command.  Without this the returned packet is too short.
-        status_map = any_sensor.get_camera_status(0x01)
-        assert status_map is not None, "get_camera_status returned None"
-        status = status_map.get(0)  # camera_id 0, index not bitmask
-        assert status is not None, "No status for camera 0 in status_map"
-        ready     = bool(status & (1 << 0))
-        fpga_done = bool(status & (1 << 1))
-        regs_done = bool(status & (1 << 2))
-        assert ready,     f"Camera 0 not READY (status=0x{status:02X})"
-        assert fpga_done, f"Camera 0 FPGA not loaded (status=0x{status:02X})"
-        assert regs_done, f"Camera 0 registers not configured (status=0x{status:02X})"
 
-        assert any_sensor.camera_capture_histogram(0x01) is True
-        raw = any_sensor.camera_get_histogram(0x01)
-        assert isinstance(raw, (bytes, bytearray)) and len(raw) == 4100, (
-            f"camera_get_histogram returned {len(raw) if raw else 0} bytes (expected 4100)"
-        )
+    # Mirror what the high-level get_camera_histogram() does: verify the camera
+    # reports READY + FPGA-loaded + registers-configured (bits 0, 1, 2) before
+    # firing the capture command.  Without this the returned packet is too short.
+    status_map = any_sensor.get_camera_status(0x01)
+    assert status_map is not None, "get_camera_status returned None"
+    status = status_map.get(0)  # camera_id 0, index not bitmask
+    assert status is not None, "No status for camera 0 in status_map"
+    ready     = bool(status & (1 << 0))
+    fpga_done = bool(status & (1 << 1))
+    regs_done = bool(status & (1 << 2))
+    assert ready,     f"Camera 0 not READY (status=0x{status:02X})"
+    assert fpga_done, f"Camera 0 FPGA not loaded (status=0x{status:02X})"
+    assert regs_done, f"Camera 0 registers not configured (status=0x{status:02X})"
 
-        histogram, temperature_c = _decode_raw_histogram(raw)
-        assert len(histogram) == 1024
-        assert isinstance(temperature_c, float)
-    finally:
-        _camera_down(any_sensor)
+    assert any_sensor.camera_capture_histogram(0x01) is True
+    raw = any_sensor.camera_get_histogram(0x01)
+    assert isinstance(raw, (bytes, bytearray)) and len(raw) == 4100, (
+        f"camera_get_histogram returned {len(raw) if raw else 0} bytes (expected 4100)"
+    )
 
-
-# ===========================================================================
-# 5.2 Camera power cycle
-# ===========================================================================
-
-def test_camera_power_cycle(any_sensor):
-    """On → status on → off → status off → on → off."""
-    assert any_sensor.enable_camera_power(0x01) is not False
-    try:
-        status = any_sensor.get_camera_power_status()
-        assert status[0], "Camera 0 should be on after enable"
-
-        any_sensor.disable_camera_power(0x01)
-        time.sleep(0.1)
-        status = any_sensor.get_camera_power_status()
-        assert not status[0], "Camera 0 should be off after disable"
-
-        assert any_sensor.enable_camera_power(0x01) is not False
-        time.sleep(0.1)
-        status = any_sensor.get_camera_power_status()
-        assert status[0], "Camera 0 should be on after second enable"
-    finally:
-        any_sensor.disable_camera_power(0x01)
+    histogram, temperature_c = _decode_raw_histogram(raw)
+    assert len(histogram) == 1024
+    assert isinstance(temperature_c, float)
 
 
 # ===========================================================================
@@ -142,16 +106,12 @@ def test_camera_power_cycle(any_sensor):
 
 @pytest.mark.fpga
 def test_fpga_enable_histogram_disable(any_sensor):
-    """Full bring-up → capture one histogram → tear down."""
-    _camera_up(any_sensor)  # power → program_fpga → configure_registers
-    try:
-        any_sensor.camera_capture_histogram(0x01)
-        raw = any_sensor.camera_get_histogram(0x01)
-        histogram, _ = _decode_raw_histogram(raw)
-        assert len(histogram) == 1024
-
-    finally:
-        any_sensor.disable_camera_power(0x01)
+    """FPGA program → configure → capture one histogram."""
+    _camera_up(any_sensor)  # program_fpga → configure_registers
+    any_sensor.camera_capture_histogram(0x01)
+    raw = any_sensor.camera_get_histogram(0x01)
+    histogram, _ = _decode_raw_histogram(raw)
+    assert len(histogram) == 1024
 
 
 # ===========================================================================
@@ -194,7 +154,6 @@ def test_streaming_acquisition(any_sensor):
         any_sensor.disable_camera(0x01)
         any_sensor.disable_aggregator_fsin()
         pipeline.stop()
-        _camera_down(any_sensor)
 
     assert len(frames) >= N, f"Expected {N} frames, got {len(frames)}"
 
@@ -210,15 +169,14 @@ def test_streaming_acquisition(any_sensor):
 def test_external_fsin_sequence(any_sensor):
     """Enable FSIN ext → capture one frame → disable FSIN ext."""
     _camera_up(any_sensor)
+    assert any_sensor.enable_camera_fsin_ext() is True
     try:
-        assert any_sensor.enable_camera_fsin_ext() is True
         time.sleep(0.2)
         any_sensor.camera_capture_histogram(0x01)
         raw = any_sensor.camera_get_histogram(0x01)
         assert isinstance(raw, (bytes, bytearray)) and len(raw) > 0
-        assert any_sensor.disable_camera_fsin_ext() is True
     finally:
-        _camera_down(any_sensor)
+        any_sensor.disable_camera_fsin_ext()
 
 
 # ===========================================================================
@@ -228,14 +186,11 @@ def test_external_fsin_sequence(any_sensor):
 def test_test_pattern_histogram(any_sensor):
     """Normal configure → overlay test pattern → capture histogram → assert non-zero bins."""
     _camera_up(any_sensor, configure=True)  # normal register init required first
-    try:
-        any_sensor.camera_configure_test_pattern(camera_position=0x01, test_pattern=1)
-        any_sensor.camera_capture_histogram(0x01)
-        raw = any_sensor.camera_get_histogram(0x01)
-        histogram, _ = _decode_raw_histogram(raw)
-        assert int(histogram.sum()) > 0, "Test pattern histogram has no counts"
-    finally:
-        _camera_down(any_sensor)
+    any_sensor.camera_configure_test_pattern(camera_position=0x01, test_pattern=1)
+    any_sensor.camera_capture_histogram(0x01)
+    raw = any_sensor.camera_get_histogram(0x01)
+    histogram, _ = _decode_raw_histogram(raw)
+    assert int(histogram.sum()) > 0, "Test pattern histogram has no counts"
 
 
 # ===========================================================================
@@ -301,8 +256,6 @@ def test_dual_sensor_frame_alignment(sensor_left, sensor_right):
             sensor.disable_camera(0x01)
             sensor.disable_aggregator_fsin()
         pipeline.stop()
-        for sensor in (sensor_left, sensor_right):
-            _camera_down(sensor)
 
     assert len(aligned_frames) >= N, (
         f"Expected {N} aligned frames, got {len(aligned_frames)}"
@@ -360,3 +313,73 @@ def test_scan_workflow_end_to_end(motion, tmp_path):
                 rows = list(csv_module.reader(f))
             data_rows = [r for r in rows if r and not r[0].startswith("#")]
             assert len(data_rows) > 1, f"CSV at {path} has no data rows"
+
+
+# ===========================================================================
+# 5.10 Camera power cycle
+#
+# These tests deliberately power-cycle the cameras, which can leave the
+# TCA9548 I2C mux in a bad state (known firmware bug).  They are placed
+# last so that the off/on transitions do not poison earlier tests.
+# ===========================================================================
+
+def test_camera_power_cycle(any_sensor):
+    """On → status on → off → status off → on → off."""
+    assert any_sensor.enable_camera_power(0x01) is not False
+    try:
+        status = any_sensor.get_camera_power_status()
+        assert status[0], "Camera 0 should be on after enable"
+
+        any_sensor.disable_camera_power(0x01)
+        time.sleep(0.1)
+        status = any_sensor.get_camera_power_status()
+        assert not status[0], "Camera 0 should be off after disable"
+
+        assert any_sensor.enable_camera_power(0x01) is not False
+        time.sleep(0.1)
+        status = any_sensor.get_camera_power_status()
+        assert status[0], "Camera 0 should be on after second enable"
+    finally:
+        any_sensor.disable_camera_power(0x01)
+
+
+# ===========================================================================
+# 5.11 TCA I2C switch recovery after power cycle (regression)
+#
+# Known firmware bug: after a camera power cycle the TCA9548 I2C mux on the
+# sensor module is not properly reset, causing subsequent
+# enable_camera_power() calls to fail.  These tests isolate the failure so
+# that when the firmware is patched, the suite turns green automatically.
+# ===========================================================================
+
+def test_tca_recovery_after_power_off_on(any_sensor):
+    """Power off → on should succeed (TCA must be re-initialised)."""
+    assert any_sensor.enable_camera_power(0x01) is not False
+    any_sensor.disable_camera_power(0x01)
+    time.sleep(0.2)
+    ok = any_sensor.enable_camera_power(0x01)
+    try:
+        assert ok is not False, (
+            "enable_camera_power failed after power cycle — "
+            "TCA I2C mux likely not reset by firmware"
+        )
+    finally:
+        any_sensor.disable_camera_power(0x01)
+
+
+def test_tca_recovery_after_full_power_cycle(any_sensor):
+    """Full on → off → on → off → on cycle — last enable must succeed."""
+    for _ in range(2):
+        assert any_sensor.enable_camera_power(0x01) is not False
+        time.sleep(0.1)
+        any_sensor.disable_camera_power(0x01)
+        time.sleep(0.2)
+
+    ok = any_sensor.enable_camera_power(0x01)
+    try:
+        assert ok is not False, (
+            "enable_camera_power failed after repeated power cycles — "
+            "TCA I2C mux not recovered"
+        )
+    finally:
+        any_sensor.disable_camera_power(0x01)
