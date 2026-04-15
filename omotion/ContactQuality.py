@@ -45,7 +45,7 @@ def _label(side: str, camera_id: int) -> str:
 # Background-subtracted thresholds in raw DN. Add the current pedestal at
 # comparison time to obtain the absolute DN threshold.
 DARK_MEAN_THRESHOLD_DN: float = 10.0   # ambient-light warning cutoff
-LIGHT_MEAN_THRESHOLD_DN: float = 30.0  # poor-contact warning cutoff
+LIGHT_MEAN_THRESHOLD_DN: float = 20.0  # poor-contact warning cutoff
 LOW_LIGHT_CONSEC_FRAMES: int = 6       # retained for legacy callers/tests
 LIVE_LIGHT_WINDOW_FRAMES: int = 10     # rolling window size for live poor-contact detection
 
