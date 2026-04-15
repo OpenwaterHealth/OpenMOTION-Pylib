@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from omotion.ContactQuality import (
     ContactQualityMonitor,
+    ContactQualityResult,
     ContactQualityWarning,
     ContactQualityWarningType,
     DARK_MEAN_THRESHOLD_DN,
@@ -121,6 +122,18 @@ def test_monitor_emits_distinct_warnings_per_camera():
     types = sorted({w.warning_type.value for w in [*a, *out_b]})
     assert cams == [0, 1]
     assert types == ["ambient_light", "poor_contact"]
+
+
+def test_result_has_error_field():
+    """``ContactQualityResult`` carries an optional human-readable error
+    string; defaults to empty when not provided."""
+    r_ok = ContactQualityResult(ok=True)
+    assert r_ok.error == ""
+
+    r_fail = ContactQualityResult(ok=False, error="x")
+    assert r_fail.error == "x"
+    assert r_fail.ok is False
+    assert r_fail.warnings == []
 
 
 def test_side_is_propagated_into_warning():

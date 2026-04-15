@@ -347,7 +347,7 @@ class MOTIONInterface(SignalWrapper):
 
     def run_contact_quality_check(
         self,
-        duration_s: float = 1.0,
+        duration_s: float = 3.0,
         subject_id: str = "_contact_quality_check",
         data_dir: str | None = None,
     ) -> "ContactQualityResult":
@@ -370,9 +370,15 @@ class MOTIONInterface(SignalWrapper):
             with warnings_lock:
                 warnings.append(w)
 
+        # Scan teardown overhead + camera enable + warmup-discard means
+        # anything under ~3 s is unlikely to produce usable data. Enforce a
+        # floor so callers requesting very short durations still get a
+        # meaningful acquisition window.
+        duration_sec = max(3, int(round(duration_s)))
+
         request = ScanRequest(
             subject_id=subject_id,
-            duration_sec=max(1, int(round(duration_s))),
+            duration_sec=duration_sec,
             left_camera_mask=0xFF,
             right_camera_mask=0xFF,
             data_dir=data_dir or tempfile.gettempdir(),
@@ -384,7 +390,11 @@ class MOTIONInterface(SignalWrapper):
 
         ok = self.start_scan(request, contact_quality_callback=_on_warning)
         if not ok:
-            return ContactQualityResult(ok=False, warnings=[])
+            return ContactQualityResult(
+                ok=False,
+                warnings=[],
+                error="Failed to start scan",
+            )
 
         # Block until the scan worker completes. ScanWorkflow exposes no
         # public wait()/join(); reading _thread is acceptable within the
@@ -392,8 +402,43 @@ class MOTIONInterface(SignalWrapper):
         if self.scan_workflow is not None and self.scan_workflow._thread is not None:
             self.scan_workflow._thread.join()
 
+        # Inspect per-side USB chunk counts to detect silent acquisition
+        # failures (e.g. enable_camera timeout, FPGA not programmed, cable
+        # unplugged). Mirrors the pattern used by ScanWorkflow._worker around
+        # the per-side summary log.
+        per_side_chunks: dict[str, int] = {}
+        for side, sensor in (self.sensors or {}).items():
+            if sensor is None or not sensor.is_connected():
+                continue
+            try:
+                per_side_chunks[side] = int(sensor.uart.histo.packets_received)
+            except Exception:
+                # If histo interface isn't available, skip — we can't diagnose.
+                continue
+
         with warnings_lock:
-            return ContactQualityResult(ok=True, warnings=list(warnings))
+            warnings_snapshot = list(warnings)
+
+        if per_side_chunks:
+            zero_sides = [s for s, n in per_side_chunks.items() if n == 0]
+            if len(zero_sides) == len(per_side_chunks):
+                # All connected sides got nothing — hard failure.
+                return ContactQualityResult(
+                    ok=False,
+                    warnings=warnings_snapshot,
+                    error="No data received from sensors — check cabling and FPGA programming",
+                )
+            if zero_sides:
+                # Partial failure: one side is dark but the other is fine.
+                # Still report ok (single-side scenarios are valid) but note it.
+                note = ", ".join(f"{s.capitalize()} sensor received no data" for s in zero_sides)
+                return ContactQualityResult(
+                    ok=True,
+                    warnings=warnings_snapshot,
+                    error=note,
+                )
+
+        return ContactQualityResult(ok=True, warnings=warnings_snapshot)
 
     def cancel_scan(self, **kwargs) -> None:
         if self.scan_workflow:

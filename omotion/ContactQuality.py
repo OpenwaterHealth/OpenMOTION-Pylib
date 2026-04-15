@@ -47,6 +47,9 @@ class ContactQualityResult:
     """Aggregated result returned by ``run_contact_quality_check``."""
     ok: bool
     warnings: List[ContactQualityWarning] = field(default_factory=list)
+    # Human-readable description of any failure or notable condition. Empty
+    # string when the check completed normally.
+    error: str = ""
 
 
 @dataclass
