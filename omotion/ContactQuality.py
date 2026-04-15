@@ -30,9 +30,13 @@ logger = logging.getLogger(
 
 
 def _label(side: str, camera_id: int) -> str:
-    """Human-readable camera label like 'L4' or 'R2' (falls back to '?<id>')."""
+    """Human-readable 1-indexed camera label like 'L4' or 'R2' (falls back to '?<id>').
+
+    The raw ``camera_id`` remains 0-indexed everywhere it is reported on
+    warning objects; only the user-facing string label is shifted to 1..8.
+    """
     prefix = side.upper()[0] if side else "?"
-    return f"{prefix}{camera_id}"
+    return f"{prefix}{int(camera_id) + 1}"
 
 # Background-subtracted thresholds in raw DN. Add the current pedestal at
 # comparison time to obtain the absolute DN threshold.
