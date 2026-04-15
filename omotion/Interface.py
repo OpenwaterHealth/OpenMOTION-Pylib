@@ -361,7 +361,7 @@ class MOTIONInterface(SignalWrapper):
         import threading
         import tempfile
         from omotion.ContactQuality import ContactQualityResult, ContactQualityWarning
-        from omotion.ScanWorkflow import ScanRequest
+        from omotion.ScanWorkflow import ConfigureRequest, ConfigureResult, ScanRequest
 
         warnings: list[ContactQualityWarning] = []
         warnings_lock = threading.Lock()
@@ -369,6 +369,50 @@ class MOTIONInterface(SignalWrapper):
         def _on_warning(w: ContactQualityWarning) -> None:
             with warnings_lock:
                 warnings.append(w)
+
+        # Always configure cameras before the scan. The play-button path does
+        # this via startConfigureCameraSensors; skipping it here (as quick-check
+        # did previously) produced flaky enable_camera timeouts when the
+        # cameras had not been freshly programmed.
+        config_request = ConfigureRequest(
+            left_camera_mask=0xFF,
+            right_camera_mask=0xFF,
+            power_off_unused_cameras=False,
+        )
+
+        config_result_holder: dict[str, ConfigureResult] = {}
+        config_done_evt = threading.Event()
+
+        def _on_config_complete(res: ConfigureResult) -> None:
+            config_result_holder["result"] = res
+            config_done_evt.set()
+
+        started = self.start_configure_camera_sensors(
+            config_request, on_complete_fn=_on_config_complete
+        )
+        if not started:
+            return ContactQualityResult(
+                ok=False,
+                warnings=[],
+                error="Camera configuration already in progress",
+            )
+
+        # Block until the configure worker signals completion. ScanWorkflow
+        # exposes no public wait(); joining _config_thread is acceptable
+        # within the same package, and we also wait on the event in case the
+        # worker clears _config_thread before we observe it.
+        config_done_evt.wait()
+        if self.scan_workflow is not None and self.scan_workflow._config_thread is not None:
+            self.scan_workflow._config_thread.join()
+
+        config_result = config_result_holder.get("result")
+        if config_result is None or not config_result.ok:
+            err = (config_result.error if config_result else "") or "unknown"
+            return ContactQualityResult(
+                ok=False,
+                warnings=[],
+                error=f"Camera configuration failed: {err}",
+            )
 
         # Scan teardown overhead + camera enable + warmup-discard means
         # anything under ~3 s is unlikely to produce usable data. Enforce a
