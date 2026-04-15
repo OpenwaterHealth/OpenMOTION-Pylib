@@ -345,6 +345,56 @@ class MOTIONInterface(SignalWrapper):
             self.scan_workflow = ScanWorkflow(self)
         return self.scan_workflow.start_scan(request, **kwargs)
 
+    def run_contact_quality_check(
+        self,
+        duration_s: float = 1.0,
+        subject_id: str = "_contact_quality_check",
+        data_dir: str | None = None,
+    ) -> "ContactQualityResult":
+        """Run a brief acquisition and return contact-quality warnings.
+
+        Always uses camera mask 0xFF on both sensor modules. Histograms are
+        consumed only by the contact-quality monitor; no CSV files are written
+        and no live-data callbacks are fired. Blocks until the scan completes
+        or fails.
+        """
+        import threading
+        import tempfile
+        from omotion.ContactQuality import ContactQualityResult, ContactQualityWarning
+        from omotion.ScanWorkflow import ScanRequest
+
+        warnings: list[ContactQualityWarning] = []
+        warnings_lock = threading.Lock()
+
+        def _on_warning(w: ContactQualityWarning) -> None:
+            with warnings_lock:
+                warnings.append(w)
+
+        request = ScanRequest(
+            subject_id=subject_id,
+            duration_sec=max(1, int(round(duration_s))),
+            left_camera_mask=0xFF,
+            right_camera_mask=0xFF,
+            data_dir=data_dir or tempfile.gettempdir(),
+            disable_laser=False,
+            write_raw_csv=False,
+            write_corrected_csv=False,
+            write_telemetry_csv=False,
+        )
+
+        ok = self.start_scan(request, contact_quality_callback=_on_warning)
+        if not ok:
+            return ContactQualityResult(ok=False, warnings=[])
+
+        # Block until the scan worker completes. ScanWorkflow exposes no
+        # public wait()/join(); reading _thread is acceptable within the
+        # same package.
+        if self.scan_workflow is not None and self.scan_workflow._thread is not None:
+            self.scan_workflow._thread.join()
+
+        with warnings_lock:
+            return ContactQualityResult(ok=True, warnings=list(warnings))
+
     def cancel_scan(self, **kwargs) -> None:
         if self.scan_workflow:
             self.scan_workflow.cancel_scan(**kwargs)

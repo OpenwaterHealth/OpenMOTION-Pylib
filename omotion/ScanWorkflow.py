@@ -188,6 +188,7 @@ class ScanWorkflow:
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
+        contact_quality_callback: Callable[[object], None] | None = None,
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
@@ -606,6 +607,7 @@ class ScanWorkflow:
                         bfi_i_min=self._bfi_i_min,
                         bfi_i_max=self._bfi_i_max,
                         on_uncorrected_fn=_on_uncorrected_sample,
+                        on_contact_quality_warning=contact_quality_callback,
                         on_corrected_batch_fn=_on_corrected_batch,
                     )
 
