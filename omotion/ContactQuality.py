@@ -14,9 +14,25 @@ Thresholds are stored as **background-subtracted** values and compared against
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List
+
+try:
+    from omotion import _log_root
+except Exception:  # pragma: no cover - avoid circular-import issues at load time
+    _log_root = "openmotion.sdk"
+
+logger = logging.getLogger(
+    f"{_log_root}.ContactQuality" if _log_root else "ContactQuality"
+)
+
+
+def _label(side: str, camera_id: int) -> str:
+    """Human-readable camera label like 'L4' or 'R2' (falls back to '?<id>')."""
+    prefix = side.upper()[0] if side else "?"
+    return f"{prefix}{camera_id}"
 
 # Background-subtracted thresholds in raw DN. Add the current pedestal at
 # comparison time to obtain the absolute DN threshold.
@@ -96,6 +112,16 @@ class ContactQualityMonitor:
             s.ambient_clear_streak = 0
             if not s.ambient_latched:
                 s.ambient_latched = True
+                logger.info(
+                    "ContactQuality: AMBIENT_LIGHT fired — %s raw_dark_mean=%.1f DN "
+                    "> threshold=%.1f DN (pedestal=%.1f + DARK_MEAN_THRESHOLD_DN=%.1f) "
+                    "immediate",
+                    _label(side, camera_id),
+                    float(raw_dark_mean),
+                    threshold_abs,
+                    self._pedestal,
+                    DARK_MEAN_THRESHOLD_DN,
+                )
                 out.append(ContactQualityWarning(
                     camera_id=camera_id,
                     warning_type=ContactQualityWarningType.AMBIENT_LIGHT,
@@ -107,6 +133,11 @@ class ContactQualityMonitor:
             if s.ambient_latched:
                 s.ambient_clear_streak += 1
                 if s.ambient_clear_streak >= LOW_LIGHT_CONSEC_FRAMES:
+                    logger.debug(
+                        "ContactQuality: AMBIENT_LIGHT cleared for %s after %d clear frames",
+                        _label(side, camera_id),
+                        s.ambient_clear_streak,
+                    )
                     s.ambient_latched = False
                     s.ambient_clear_streak = 0
         return out
@@ -130,6 +161,17 @@ class ContactQualityMonitor:
                 and s.low_light_streak >= LOW_LIGHT_CONSEC_FRAMES
             ):
                 s.contact_latched = True
+                logger.info(
+                    "ContactQuality: POOR_CONTACT fired — %s raw_light_mean=%.1f DN "
+                    "< threshold=%.1f DN (pedestal=%.1f + LIGHT_MEAN_THRESHOLD_DN=%.1f) "
+                    "after %d consecutive low-light frames",
+                    _label(side, camera_id),
+                    float(raw_light_mean),
+                    threshold_abs,
+                    self._pedestal,
+                    LIGHT_MEAN_THRESHOLD_DN,
+                    s.low_light_streak,
+                )
                 out.append(ContactQualityWarning(
                     camera_id=camera_id,
                     warning_type=ContactQualityWarningType.POOR_CONTACT,
@@ -142,6 +184,11 @@ class ContactQualityMonitor:
             if s.contact_latched:
                 s.contact_clear_streak += 1
                 if s.contact_clear_streak >= LOW_LIGHT_CONSEC_FRAMES:
+                    logger.debug(
+                        "ContactQuality: POOR_CONTACT cleared for %s after %d clear frames",
+                        _label(side, camera_id),
+                        s.contact_clear_streak,
+                    )
                     s.contact_latched = False
                     s.contact_clear_streak = 0
         return out

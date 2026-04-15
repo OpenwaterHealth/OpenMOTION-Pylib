@@ -360,7 +360,13 @@ class MOTIONInterface(SignalWrapper):
         """
         import threading
         import tempfile
-        from omotion.ContactQuality import ContactQualityResult, ContactQualityWarning
+        import time
+        from omotion.ContactQuality import (
+            ContactQualityResult,
+            ContactQualityWarning,
+            DARK_MEAN_THRESHOLD_DN,
+            LIGHT_MEAN_THRESHOLD_DN,
+        )
         from omotion.ScanWorkflow import ScanRequest
 
         warnings: list[ContactQualityWarning] = []
@@ -388,6 +394,7 @@ class MOTIONInterface(SignalWrapper):
             write_telemetry_csv=False,
         )
 
+        _t_start = time.monotonic()
         ok = self.start_scan(request, contact_quality_callback=_on_warning)
         if not ok:
             return ContactQualityResult(
@@ -401,6 +408,7 @@ class MOTIONInterface(SignalWrapper):
         # same package.
         if self.scan_workflow is not None and self.scan_workflow._thread is not None:
             self.scan_workflow._thread.join()
+        _elapsed = time.monotonic() - _t_start
 
         # Inspect per-side USB chunk counts to detect silent acquisition
         # failures (e.g. enable_camera timeout, FPGA not programmed, cable
@@ -419,29 +427,53 @@ class MOTIONInterface(SignalWrapper):
         with warnings_lock:
             warnings_snapshot = list(warnings)
 
+        # Determine final result, then log a summary block covering the
+        # whole quick-check before returning.
+        from omotion.MotionProcessing import PEDESTAL_HEIGHT as _pedestal
+
+        error = ""
+        ok_result = True
         if per_side_chunks:
             zero_sides = [s for s, n in per_side_chunks.items() if n == 0]
             if len(zero_sides) == len(per_side_chunks):
-                # All connected sides got nothing — hard failure.
-                return ContactQualityResult(
-                    ok=False,
-                    warnings=warnings_snapshot,
-                    error="No data received from sensors — check cabling and FPGA programming",
+                ok_result = False
+                error = (
+                    "No data received from sensors — check cabling and FPGA programming"
                 )
-            if zero_sides:
-                # Any connected side with zero data is a failure — the scan
-                # did not deliver what the caller configured.
+            elif zero_sides:
                 labels = [s.capitalize() for s in zero_sides]
-                if len(labels) == 1:
-                    who = labels[0]
-                else:
-                    who = " and ".join(labels)
-                return ContactQualityResult(
-                    ok=False,
-                    warnings=warnings_snapshot,
-                    error=f"{who} sensor received no data — check cabling",
-                )
+                who = labels[0] if len(labels) == 1 else " and ".join(labels)
+                ok_result = False
+                error = f"{who} sensor received no data — check cabling"
 
+        left_chunks = per_side_chunks.get("left", 0)
+        right_chunks = per_side_chunks.get("right", 0)
+        summary_lines = [
+            f"ContactQuality: quick-check complete in {_elapsed:.2f}s",
+            f"  Duration requested: {duration_sec}s",
+            (
+                f"  Thresholds: DARK>{_pedestal + DARK_MEAN_THRESHOLD_DN} DN, "
+                f"LIGHT<{_pedestal + LIGHT_MEAN_THRESHOLD_DN} DN "
+                f"(pedestal={_pedestal})"
+            ),
+            f"  Chunks received: left={left_chunks}, right={right_chunks}",
+            f"  Warnings: {len(warnings_snapshot)} total",
+        ]
+        for w in warnings_snapshot:
+            side_label = (w.side.upper()[0] if w.side else "?")
+            summary_lines.append(
+                f"    - {side_label} cam {w.camera_id}: {w.warning_type.value} "
+                f"value={w.value:.1f} DN"
+            )
+        summary_lines.append(f"  Result: ok={ok_result}, error={error!r}")
+        logger.info("\n".join(summary_lines))
+
+        if not ok_result:
+            return ContactQualityResult(
+                ok=False,
+                warnings=warnings_snapshot,
+                error=error,
+            )
         return ContactQualityResult(ok=True, warnings=warnings_snapshot)
 
     def cancel_scan(self, **kwargs) -> None:
