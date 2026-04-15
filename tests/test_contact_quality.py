@@ -220,7 +220,7 @@ def test_live_rolling_window_clears_when_avg_rises():
     # Latch.
     for i in range(LIVE_LIGHT_WINDOW_FRAMES):
         mon.update_light(0, 80.0, i, side="left")
-    assert mon._state_for(0).contact_latched is True
+    assert mon._state_for("left", 0).contact_latched is True
 
     # Feed high values until the window average recovers and the latch
     # clears. 110 DN is well above the 94 DN threshold.
@@ -228,9 +228,9 @@ def test_live_rolling_window_clears_when_avg_rises():
     for _ in range(LIVE_LIGHT_WINDOW_FRAMES * 2):
         mon.update_light(0, 110.0, i, side="left")
         i += 1
-        if not mon._state_for(0).contact_latched:
+        if not mon._state_for("left", 0).contact_latched:
             break
-    assert mon._state_for(0).contact_latched is False
+    assert mon._state_for("left", 0).contact_latched is False
 
     # A subsequent dip should re-fire once the window refills with lows.
     fired = None
@@ -267,3 +267,41 @@ def test_per_camera_summary_includes_rolling_and_contact_latched():
     r = rows[0]
     assert r["contact_latched"] is True
     assert r["rolling_avg_light_mean"] == 80.0
+
+
+# --- Side-keyed state isolation (regression: left/right shared state) ------
+
+
+def test_left_and_right_sides_have_independent_state():
+    """cam_id 0 on the left module and cam_id 0 on the right module must
+    maintain independent ambient-latch state. Before the (side, cam_id)
+    keying fix, the second side's warning was suppressed by the first
+    side's latch."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    raw = _bg_dark_above()
+    left_out = mon.update_dark(0, raw, 0, side="left")
+    right_out = mon.update_dark(0, raw, 0, side="right")
+    assert len(left_out) == 1
+    assert left_out[0].side == "left"
+    assert len(right_out) == 1
+    assert right_out[0].side == "right"
+
+
+def test_per_camera_summary_includes_both_sides_for_same_cam_id():
+    """Feeding light frames for left cam 0 and right cam 0 should yield
+    two distinct summary rows with labels ``L1`` and ``R1``."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i in range(5):
+        mon.update_light(0, 90.0, i, side="left")
+    for i in range(5):
+        mon.update_light(0, 90.0, i, side="right")
+    rows = mon.per_camera_summary()
+    assert len(rows) == 2
+    labels = sorted(r["label"] for r in rows)
+    assert labels == ["L1", "R1"]
+    sides = sorted(r["side"] for r in rows)
+    assert sides == ["left", "right"]
+    for r in rows:
+        assert r["cam_id"] == 0
+        assert r["light_frames"] == 5
+        assert r["light_mean_avg"] == 90.0

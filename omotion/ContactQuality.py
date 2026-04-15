@@ -103,19 +103,28 @@ class ContactQualityMonitor:
 
     def __init__(self, pedestal: float) -> None:
         self._pedestal = float(pedestal)
-        self._state: Dict[int, _CameraState] = {}
+        self._state: Dict[tuple[str, int], _CameraState] = {}
 
-    def reset(self, camera_id: int | None = None) -> None:
-        if camera_id is None:
+    def reset(self, side: str | None = None, camera_id: int | None = None) -> None:
+        if side is None and camera_id is None:
             self._state.clear()
-        else:
-            self._state.pop(camera_id, None)
+            return
+        if side is not None and camera_id is None:
+            # Clear all cameras on the given side.
+            keys = [k for k in self._state if k[0] == side]
+            for k in keys:
+                self._state.pop(k, None)
+            return
+        # Specific (side, cam_id). If side is None but camera_id provided,
+        # default to empty-string side for back-compat.
+        self._state.pop((side or "", int(camera_id)), None)
 
-    def _state_for(self, camera_id: int) -> _CameraState:
-        s = self._state.get(camera_id)
+    def _state_for(self, side: str, camera_id: int) -> _CameraState:
+        key = (str(side or ""), int(camera_id))
+        s = self._state.get(key)
         if s is None:
             s = _CameraState()
-            self._state[camera_id] = s
+            self._state[key] = s
         return s
 
     def update_dark(
@@ -125,7 +134,7 @@ class ContactQualityMonitor:
         frame_index: int,
         side: str = "",
     ) -> List[ContactQualityWarning]:
-        s = self._state_for(camera_id)
+        s = self._state_for(side, camera_id)
         if side and not s.side:
             s.side = str(side)
         out: List[ContactQualityWarning] = []
@@ -191,7 +200,7 @@ class ContactQualityMonitor:
         a live POOR_CONTACT can fire is frame ``LIVE_LIGHT_WINDOW_FRAMES``
         (1-indexed) / index ``LIVE_LIGHT_WINDOW_FRAMES - 1`` (0-indexed).
         """
-        s = self._state_for(camera_id)
+        s = self._state_for(side, camera_id)
         if side and not s.side:
             s.side = str(side)
         # Cumulative accumulation for finalize() — unchanged behavior.
@@ -245,7 +254,7 @@ class ContactQualityMonitor:
         """
         out: List[ContactQualityWarning] = []
         threshold_abs = self._pedestal + LIGHT_MEAN_THRESHOLD_DN
-        for cam_id, s in self._state.items():
+        for (_side_key, cam_id), s in self._state.items():
             if s.light_count <= 0:
                 continue
             avg = s.light_sum / s.light_count
@@ -279,7 +288,9 @@ class ContactQualityMonitor:
         for that camera.
         """
         rows: List[dict] = []
-        for cam_id, s in sorted(self._state.items(), key=lambda kv: (kv[1].side, kv[0])):
+        for (_side_key, cam_id), s in sorted(
+            self._state.items(), key=lambda kv: (kv[1].side, kv[0][1])
+        ):
             avg: Optional[float] = (
                 s.light_sum / s.light_count if s.light_count > 0 else None
             )
