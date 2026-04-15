@@ -821,18 +821,6 @@ def stream_queue_to_csv_file(
 # Pure science computation functions
 # ---------------------------------------------------------------------------
 
-def _raw_mean_from_hist(hist: np.ndarray, row_sum: int) -> float:
-    """Return the raw (pre-pedestal-subtraction) histogram mean in DN.
-
-    Used by the contact-quality monitor, which needs the absolute signal
-    level rather than the pedestal-subtracted mean exposed by
-    ``compute_realtime_metrics``.
-    """
-    if row_sum > 0:
-        return float(np.dot(hist, HISTO_BINS) / row_sum)
-    return 0.0
-
-
 def compute_realtime_metrics(
     *,
     side: str,
@@ -1224,12 +1212,14 @@ class SciencePipeline:
                         except Exception:
                             pass
 
-                # Feed the contact-quality monitor with the raw (pre-pedestal)
-                # dark-frame mean so it can flag ambient-light leakage.
+                # Feed the contact-quality monitor with the post-noise-floor,
+                # pre-pedestal dark-frame mean so it can flag ambient-light leakage.
+                # Noise-floor zeroing leaves ambient detection unaffected (ambient
+                # signal is well above floor); poor-contact threshold is calibrated
+                # against this same post-floor mean.
                 if self._cq_monitor is not None:
-                    raw = _raw_mean_from_hist(hist, row_sum)
                     for w in self._cq_monitor.update_dark(
-                        int(cam_id), raw, int(absolute_frame), side=side,
+                        int(cam_id), u1, int(absolute_frame), side=side,
                     ):
                         try:
                             self._on_contact_quality_warning(w)
@@ -1274,12 +1264,14 @@ class SciencePipeline:
                 except Exception:
                     pass
 
-            # Feed the contact-quality monitor with the raw (pre-pedestal)
-            # laser-on mean so it can flag sustained low-light / poor contact.
+            # Feed the contact-quality monitor with the post-noise-floor,
+            # pre-pedestal laser-on mean so it can flag sustained low-light / poor contact.
+            # Noise-floor zeroing leaves ambient detection unaffected (ambient signal
+            # is well above floor); poor-contact threshold is calibrated against this
+            # same post-floor mean.
             if self._cq_monitor is not None:
-                raw = _raw_mean_from_hist(hist, row_sum)
                 for w in self._cq_monitor.update_light(
-                    int(cam_id), raw, int(absolute_frame), side=side,
+                    int(cam_id), u1, int(absolute_frame), side=side,
                 ):
                     try:
                         self._on_contact_quality_warning(w)
