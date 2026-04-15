@@ -17,10 +17,11 @@ Thresholds are stored as **background-subtracted** values and compared against
 """
 from __future__ import annotations
 
+import collections
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 
 try:
     from omotion import _log_root
@@ -46,6 +47,7 @@ def _label(side: str, camera_id: int) -> str:
 DARK_MEAN_THRESHOLD_DN: float = 10.0   # ambient-light warning cutoff
 LIGHT_MEAN_THRESHOLD_DN: float = 30.0  # poor-contact warning cutoff
 LOW_LIGHT_CONSEC_FRAMES: int = 6       # retained for legacy callers/tests
+LIVE_LIGHT_WINDOW_FRAMES: int = 10     # rolling window size for live poor-contact detection
 
 
 class ContactQualityWarningType(str, Enum):
@@ -83,6 +85,15 @@ class _CameraState:
     # Light-frame accumulators for averaged poor-contact evaluation.
     light_sum: float = 0.0
     light_count: int = 0
+    # Rolling window of recent ``raw_light_mean`` values for live
+    # poor-contact detection (independent of the cumulative finalize path).
+    light_window: Deque[float] = field(
+        default_factory=lambda: collections.deque(maxlen=LIVE_LIGHT_WINDOW_FRAMES)
+    )
+    # Latch for live rolling-window poor-contact; once the rolling average
+    # dips below threshold we emit exactly one warning and wait for the
+    # average to recover before re-arming.
+    contact_latched: bool = False
     # Side stored on first update so ``finalize`` / summaries can label.
     side: str = ""
 
@@ -163,17 +174,65 @@ class ContactQualityMonitor:
     ) -> List[ContactQualityWarning]:
         """Accumulate a light-frame mean for this camera.
 
-        Poor-contact detection is no longer per-frame. We accumulate the
-        mean here and evaluate the average in :py:meth:`finalize`. Always
-        returns an empty list — the return type is preserved so existing
-        callers (e.g. ``SciencePipeline``) that iterate/dispatch the result
-        continue to work without code changes.
+        Two paths coexist here:
+
+        * **Cumulative (quick-check)**: ``light_sum``/``light_count`` are
+          updated on every call so :py:meth:`finalize` can compare the
+          average across *all* frames once at the end.
+        * **Rolling (live / continuous scan)**: ``raw_light_mean`` is
+          appended to a fixed-size ``light_window`` (``maxlen``
+          ``LIVE_LIGHT_WINDOW_FRAMES``). Once the window is full we
+          compare its mean to ``pedestal + LIGHT_MEAN_THRESHOLD_DN`` on
+          every subsequent frame and emit a single latching POOR_CONTACT
+          warning when it dips below; the latch clears when the rolling
+          average recovers.
+
+        Because the window starts emitting only when full, the earliest
+        a live POOR_CONTACT can fire is frame ``LIVE_LIGHT_WINDOW_FRAMES``
+        (1-indexed) / index ``LIVE_LIGHT_WINDOW_FRAMES - 1`` (0-indexed).
         """
         s = self._state_for(camera_id)
         if side and not s.side:
             s.side = str(side)
+        # Cumulative accumulation for finalize() — unchanged behavior.
         s.light_sum += float(raw_light_mean)
         s.light_count += 1
+        # Rolling-window update for live detection.
+        s.light_window.append(float(raw_light_mean))
+        if len(s.light_window) < LIVE_LIGHT_WINDOW_FRAMES:
+            return []
+
+        threshold_abs = self._pedestal + LIGHT_MEAN_THRESHOLD_DN
+        rolling_avg = sum(s.light_window) / len(s.light_window)
+        if rolling_avg < threshold_abs:
+            if not s.contact_latched:
+                s.contact_latched = True
+                logger.info(
+                    "ContactQuality: POOR_CONTACT fired (rolling) — %s "
+                    "rolling_avg_light_mean=%.1f DN over %d frames "
+                    "< threshold=%.1f DN",
+                    _label(s.side or side, camera_id),
+                    float(rolling_avg),
+                    len(s.light_window),
+                    threshold_abs,
+                )
+                return [ContactQualityWarning(
+                    camera_id=camera_id,
+                    warning_type=ContactQualityWarningType.POOR_CONTACT,
+                    value=float(rolling_avg),
+                    frame_index=int(frame_index),
+                    side=str(side) if side else s.side,
+                )]
+        else:
+            if s.contact_latched:
+                logger.debug(
+                    "ContactQuality: POOR_CONTACT cleared (rolling) — %s "
+                    "rolling_avg=%.1f DN >= %.1f DN",
+                    _label(s.side or side, camera_id),
+                    float(rolling_avg),
+                    threshold_abs,
+                )
+                s.contact_latched = False
         return []
 
     def finalize(self) -> List[ContactQualityWarning]:
@@ -213,13 +272,20 @@ class ContactQualityMonitor:
 
         Each entry: ``{"label": "L4", "side": "left", "cam_id": 4,
         "light_frames": int, "light_mean_avg": float | None,
-        "ambient_latched": bool}``. ``light_mean_avg`` is ``None`` when no
-        light frames were observed for that camera.
+        "rolling_avg_light_mean": float | None,
+        "ambient_latched": bool, "contact_latched": bool}``.
+        ``light_mean_avg`` / ``rolling_avg_light_mean`` are ``None`` when
+        no light frames (or no rolling samples yet) have been observed
+        for that camera.
         """
         rows: List[dict] = []
         for cam_id, s in sorted(self._state.items(), key=lambda kv: (kv[1].side, kv[0])):
             avg: Optional[float] = (
                 s.light_sum / s.light_count if s.light_count > 0 else None
+            )
+            rolling_avg: Optional[float] = (
+                sum(s.light_window) / len(s.light_window)
+                if len(s.light_window) > 0 else None
             )
             rows.append({
                 "label": _label(s.side, cam_id),
@@ -227,6 +293,8 @@ class ContactQualityMonitor:
                 "cam_id": int(cam_id),
                 "light_frames": int(s.light_count),
                 "light_mean_avg": avg,
+                "rolling_avg_light_mean": rolling_avg,
                 "ambient_latched": bool(s.ambient_latched),
+                "contact_latched": bool(s.contact_latched),
             })
         return rows

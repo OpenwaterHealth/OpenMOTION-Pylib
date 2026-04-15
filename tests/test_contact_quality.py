@@ -8,6 +8,7 @@ from omotion.ContactQuality import (
     ContactQualityWarningType,
     DARK_MEAN_THRESHOLD_DN,
     LIGHT_MEAN_THRESHOLD_DN,
+    LIVE_LIGHT_WINDOW_FRAMES,
     LOW_LIGHT_CONSEC_FRAMES,
 )
 
@@ -68,10 +69,12 @@ def test_ambient_warning_rearms_after_clear_streak():
 
 def test_finalize_emits_poor_contact_when_avg_below_threshold():
     """10 light frames averaging 80 DN (below pedestal+threshold=94 DN) →
-    finalize emits exactly one POOR_CONTACT warning."""
+    finalize emits exactly one POOR_CONTACT warning. (The live rolling
+    path may fire on the 10th frame; finalize path is independent and
+    still emits based on the cumulative average.)"""
     mon = ContactQualityMonitor(pedestal=PEDESTAL)
     for i in range(10):
-        assert mon.update_light(0, 80.0, i, side="left") == []
+        mon.update_light(0, 80.0, i, side="left")
     out = mon.finalize()
     assert len(out) == 1
     w = out[0]
@@ -178,3 +181,89 @@ def test_side_is_propagated_into_warning():
     assert len(light) == 1
     assert light[0].side == "right"
     assert light[0].camera_id == 5
+
+
+# --- Live rolling-window poor-contact detection ----------------------------
+
+
+def test_live_rolling_window_emits_after_full_window_below_threshold():
+    """Feed LIVE_LIGHT_WINDOW_FRAMES-1 below-threshold light frames — no
+    emission. The window-filling frame triggers exactly one POOR_CONTACT
+    warning with value equal to the rolling average."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    low = 80.0  # < 64 + 30 = 94
+    for i in range(LIVE_LIGHT_WINDOW_FRAMES - 1):
+        assert mon.update_light(0, low, i, side="left") == []
+    out = mon.update_light(0, low, LIVE_LIGHT_WINDOW_FRAMES - 1, side="left")
+    assert len(out) == 1
+    w = out[0]
+    assert w.warning_type is ContactQualityWarningType.POOR_CONTACT
+    assert w.camera_id == 0
+    assert w.side == "left"
+    assert w.value == low
+    assert w.frame_index == LIVE_LIGHT_WINDOW_FRAMES - 1
+
+
+def test_live_rolling_window_does_not_emit_with_partial_window():
+    """A partial window (< LIVE_LIGHT_WINDOW_FRAMES samples) never fires,
+    even if every sample is below threshold."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i in range(5):
+        assert mon.update_light(0, 80.0, i, side="left") == []
+
+
+def test_live_rolling_window_clears_when_avg_rises():
+    """After latching on 10 below-threshold frames, feeding high-value
+    frames eventually drops the rolling average back above threshold,
+    clears the latch, and a subsequent dip can re-fire."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    # Latch.
+    for i in range(LIVE_LIGHT_WINDOW_FRAMES):
+        mon.update_light(0, 80.0, i, side="left")
+    assert mon._state_for(0).contact_latched is True
+
+    # Feed high values until the window average recovers and the latch
+    # clears. 110 DN is well above the 94 DN threshold.
+    i = LIVE_LIGHT_WINDOW_FRAMES
+    for _ in range(LIVE_LIGHT_WINDOW_FRAMES * 2):
+        mon.update_light(0, 110.0, i, side="left")
+        i += 1
+        if not mon._state_for(0).contact_latched:
+            break
+    assert mon._state_for(0).contact_latched is False
+
+    # A subsequent dip should re-fire once the window refills with lows.
+    fired = None
+    for _ in range(LIVE_LIGHT_WINDOW_FRAMES):
+        out = mon.update_light(0, 80.0, i, side="left")
+        i += 1
+        if out:
+            fired = out
+            break
+    assert fired is not None
+    assert len(fired) == 1
+    assert fired[0].warning_type is ContactQualityWarningType.POOR_CONTACT
+
+
+def test_live_rolling_window_does_not_re_emit_while_latched():
+    """Once latched, additional below-threshold frames return [] until
+    the rolling average clears."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i in range(LIVE_LIGHT_WINDOW_FRAMES):
+        mon.update_light(0, 80.0, i, side="left")
+    # Latched now. Feed more lows; no re-emission.
+    for j in range(LIVE_LIGHT_WINDOW_FRAMES):
+        assert mon.update_light(
+            0, 80.0, LIVE_LIGHT_WINDOW_FRAMES + j, side="left",
+        ) == []
+
+
+def test_per_camera_summary_includes_rolling_and_contact_latched():
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i in range(LIVE_LIGHT_WINDOW_FRAMES):
+        mon.update_light(0, 80.0, i, side="left")
+    rows = mon.per_camera_summary()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["contact_latched"] is True
+    assert r["rolling_avg_light_mean"] == 80.0
