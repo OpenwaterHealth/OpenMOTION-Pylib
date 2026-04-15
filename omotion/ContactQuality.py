@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 # Background-subtracted thresholds in raw DN. Add the current pedestal at
 # comparison time to obtain the absolute DN threshold.
@@ -36,6 +36,10 @@ class ContactQualityWarning:
     warning_type: ContactQualityWarningType
     value: float        # the raw DN that triggered the warning
     frame_index: int
+    # Sensor side this camera belongs to ("left" / "right"). Default empty
+    # string keeps the warning usable in contexts where side is not known
+    # (e.g. bare unit tests of the monitor).
+    side: str = ""
 
 
 @dataclass
@@ -75,7 +79,11 @@ class ContactQualityMonitor:
         return s
 
     def update_dark(
-        self, camera_id: int, raw_dark_mean: float, frame_index: int
+        self,
+        camera_id: int,
+        raw_dark_mean: float,
+        frame_index: int,
+        side: str = "",
     ) -> List[ContactQualityWarning]:
         s = self._state_for(camera_id)
         out: List[ContactQualityWarning] = []
@@ -90,6 +98,7 @@ class ContactQualityMonitor:
                     warning_type=ContactQualityWarningType.AMBIENT_LIGHT,
                     value=float(raw_dark_mean),
                     frame_index=int(frame_index),
+                    side=str(side),
                 ))
         else:
             if s.ambient_latched:
@@ -100,7 +109,11 @@ class ContactQualityMonitor:
         return out
 
     def update_light(
-        self, camera_id: int, raw_light_mean: float, frame_index: int
+        self,
+        camera_id: int,
+        raw_light_mean: float,
+        frame_index: int,
+        side: str = "",
     ) -> List[ContactQualityWarning]:
         s = self._state_for(camera_id)
         out: List[ContactQualityWarning] = []
@@ -119,6 +132,7 @@ class ContactQualityMonitor:
                     warning_type=ContactQualityWarningType.POOR_CONTACT,
                     value=float(raw_light_mean),
                     frame_index=int(frame_index),
+                    side=str(side),
                 ))
         else:
             s.low_light_streak = 0

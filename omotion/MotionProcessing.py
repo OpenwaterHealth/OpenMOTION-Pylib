@@ -821,6 +821,18 @@ def stream_queue_to_csv_file(
 # Pure science computation functions
 # ---------------------------------------------------------------------------
 
+def _raw_mean_from_hist(hist: np.ndarray, row_sum: int) -> float:
+    """Return the raw (pre-pedestal-subtraction) histogram mean in DN.
+
+    Used by the contact-quality monitor, which needs the absolute signal
+    level rather than the pedestal-subtracted mean exposed by
+    ``compute_realtime_metrics``.
+    """
+    if row_sum > 0:
+        return float(np.dot(hist, HISTO_BINS) / row_sum)
+    return 0.0
+
+
 def compute_realtime_metrics(
     *,
     side: str,
@@ -1011,6 +1023,7 @@ class SciencePipeline:
         bfi_i_min,
         bfi_i_max,
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
+        on_contact_quality_warning: "Callable[[ 'ContactQualityWarning' ], None] | None" = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
         dark_interval: int = 600,
         discard_count: int = 9,
@@ -1022,6 +1035,17 @@ class SciencePipeline:
         self._bfi_i_min = bfi_i_min
         self._bfi_i_max = bfi_i_max
         self._on_uncorrected_fn = on_uncorrected_fn
+
+        # Contact-quality monitor wiring (optional). Local import to avoid
+        # an import cycle between MotionProcessing and ContactQuality.
+        from omotion.ContactQuality import ContactQualityMonitor  # noqa: WPS433
+        self._on_contact_quality_warning = on_contact_quality_warning
+        self._cq_monitor: ContactQualityMonitor | None = (
+            ContactQualityMonitor(pedestal=PEDESTAL_HEIGHT)
+            if on_contact_quality_warning is not None
+            else None
+        )
+
         self._on_corrected_batch_fn = on_corrected_batch_fn
         self._dark_interval = dark_interval
         self._discard_count = discard_count
@@ -1199,6 +1223,18 @@ class SciencePipeline:
                             self._on_uncorrected_fn(dark_uncorrected)
                         except Exception:
                             pass
+
+                # Feed the contact-quality monitor with the raw (pre-pedestal)
+                # dark-frame mean so it can flag ambient-light leakage.
+                if self._cq_monitor is not None:
+                    raw = _raw_mean_from_hist(hist, row_sum)
+                    for w in self._cq_monitor.update_dark(
+                        int(cam_id), raw, int(absolute_frame), side=side,
+                    ):
+                        try:
+                            self._on_contact_quality_warning(w)
+                        except Exception:
+                            logger.exception("contact-quality callback failed")
                 continue
 
             # --- 5. Store moments for later dark-frame correction --------------
@@ -1237,6 +1273,18 @@ class SciencePipeline:
                     self._on_uncorrected_fn(uncorrected)
                 except Exception:
                     pass
+
+            # Feed the contact-quality monitor with the raw (pre-pedestal)
+            # laser-on mean so it can flag sustained low-light / poor contact.
+            if self._cq_monitor is not None:
+                raw = _raw_mean_from_hist(hist, row_sum)
+                for w in self._cq_monitor.update_light(
+                    int(cam_id), raw, int(absolute_frame), side=side,
+                ):
+                    try:
+                        self._on_contact_quality_warning(w)
+                    except Exception:
+                        logger.exception("contact-quality callback failed")
 
             self._last_uncorrected[key] = uncorrected
 
@@ -1504,6 +1552,7 @@ def create_science_pipeline(
     bfi_i_min,
     bfi_i_max,
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
+    on_contact_quality_warning: "Callable[[ 'ContactQualityWarning' ], None] | None" = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
     dark_interval: int = 600,
     discard_count: int = 9,
@@ -1539,6 +1588,7 @@ def create_science_pipeline(
         bfi_i_min=bfi_i_min,
         bfi_i_max=bfi_i_max,
         on_uncorrected_fn=on_uncorrected_fn,
+        on_contact_quality_warning=on_contact_quality_warning,
         on_corrected_batch_fn=on_corrected_batch_fn,
         dark_interval=dark_interval,
         discard_count=discard_count,

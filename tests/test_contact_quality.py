@@ -1,8 +1,6 @@
 """Unit tests for the contact quality monitor."""
 from __future__ import annotations
 
-import pytest
-
 from omotion.ContactQuality import (
     ContactQualityMonitor,
     ContactQualityWarning,
@@ -107,3 +105,37 @@ def test_pedestal_change_shifts_comparison():
     raw = 64.0 + DARK_MEAN_THRESHOLD_DN + 1.0  # above for pedestal=64
     assert mon_low.update_dark(0, raw, 0)              # fires
     assert mon_high.update_dark(0, raw, 0) == []       # below for pedestal=100
+
+
+def test_monitor_emits_distinct_warnings_per_camera():
+    """Smoke-level integration: feed a sequence representing two cameras
+    and verify aggregated warnings."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    # Camera 0: ambient on first dark frame.
+    a = mon.update_dark(0, _bg_dark_above(), 0)
+    # Camera 1: contact warning after streak.
+    out_b = []
+    for i in range(LOW_LIGHT_CONSEC_FRAMES):
+        out_b.extend(mon.update_light(1, _bg_light_below(), i))
+    cams = sorted({w.camera_id for w in [*a, *out_b]})
+    types = sorted({w.warning_type.value for w in [*a, *out_b]})
+    assert cams == [0, 1]
+    assert types == ["ambient_light", "poor_contact"]
+
+
+def test_side_is_propagated_into_warning():
+    """The optional ``side`` kwarg on ``update_dark``/``update_light`` is
+    stamped into the emitted ``ContactQualityWarning``."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    dark = mon.update_dark(3, _bg_dark_above(), 0, side="left")
+    assert len(dark) == 1
+    assert dark[0].side == "left"
+    assert dark[0].camera_id == 3
+
+    # Drive camera 5 on the right module to a poor-contact latch.
+    light: list = []
+    for i in range(LOW_LIGHT_CONSEC_FRAMES):
+        light.extend(mon.update_light(5, _bg_light_below(), i, side="right"))
+    assert len(light) == 1
+    assert light[0].side == "right"
+    assert light[0].camera_id == 5
