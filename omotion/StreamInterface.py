@@ -138,8 +138,19 @@ class StreamInterface(USBInterfaceBase):
         if self.thread:
             self.thread.join(timeout=2.0)
         self.isStreaming = False
-        self.data_queue = None
-        self.expected_size = None
+        if self.thread is not None and self.thread.is_alive():
+            # Thread is still blocked inside dev.read(); nulling expected_size
+            # or data_queue now would race with the loop's next iteration and
+            # cause a TypeError in pyusb. Leave the buffers intact — the
+            # (leaked) thread will exit once the USB read errors out, and
+            # reading a stale-but-valid expected_size is harmless.
+            logger.warning(
+                f"{self.desc}: stream thread did not exit within 2s; "
+                f"leaving stream buffers intact to avoid teardown race"
+            )
+        else:
+            self.data_queue = None
+            self.expected_size = None
         logger.info(
             f"{self.desc}: Streaming stopped — "
             f"{self.packets_received} USB read chunk(s) received"
@@ -345,6 +356,10 @@ class StreamInterface(USBInterfaceBase):
         _READ_TIMEOUT_MS = 500
 
         while True:
+            # Check stop before each read so teardown is deterministic and
+            # does not depend on a dev.read timeout firing.
+            if self.stop_event.is_set():
+                break
             try:
                 data = self.dev.read(
                     self.ep_in.bEndpointAddress, self.expected_size,
