@@ -3,10 +3,13 @@
 Two warnings are emitted from raw (uncorrected) histogram means:
 
 * AMBIENT_LIGHT -- laser-off ("dark") frame mean exceeds an ambient-light
-  threshold, suggesting stray light is leaking into the sensor.
-* POOR_CONTACT -- laser-on ("light") frame mean stays below a contact threshold
-  for ``LOW_LIGHT_CONSEC_FRAMES`` consecutive frames, suggesting the laser or
-  sensor is not coupled to the patient.
+  threshold, suggesting stray light is leaking into the sensor. This warning
+  still fires **per-frame** (latching) as dark frames arrive.
+* POOR_CONTACT -- the **average** of all laser-on ("light") frame means
+  collected during a check falls below a contact threshold, suggesting the
+  laser or sensor is not coupled to the patient. This warning is emitted
+  once per camera by :py:meth:`ContactQualityMonitor.finalize`, which the
+  caller is expected to invoke after acquisition completes.
 
 Thresholds are stored as **background-subtracted** values and compared against
 ``raw_mean - pedestal`` at evaluation time. This way, future changes to
@@ -17,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 try:
     from omotion import _log_root
@@ -42,7 +45,7 @@ def _label(side: str, camera_id: int) -> str:
 # comparison time to obtain the absolute DN threshold.
 DARK_MEAN_THRESHOLD_DN: float = 10.0   # ambient-light warning cutoff
 LIGHT_MEAN_THRESHOLD_DN: float = 30.0  # poor-contact warning cutoff
-LOW_LIGHT_CONSEC_FRAMES: int = 6       # consecutive low-light frames to fire
+LOW_LIGHT_CONSEC_FRAMES: int = 6       # retained for legacy callers/tests
 
 
 class ContactQualityWarningType(str, Enum):
@@ -74,11 +77,14 @@ class ContactQualityResult:
 
 @dataclass
 class _CameraState:
+    # Ambient-light state (per-frame latching, unchanged behavior).
     ambient_latched: bool = False
     ambient_clear_streak: int = 0
-    low_light_streak: int = 0
-    contact_latched: bool = False
-    contact_clear_streak: int = 0
+    # Light-frame accumulators for averaged poor-contact evaluation.
+    light_sum: float = 0.0
+    light_count: int = 0
+    # Side stored on first update so ``finalize`` / summaries can label.
+    side: str = ""
 
 
 class ContactQualityMonitor:
@@ -109,6 +115,8 @@ class ContactQualityMonitor:
         side: str = "",
     ) -> List[ContactQualityWarning]:
         s = self._state_for(camera_id)
+        if side and not s.side:
+            s.side = str(side)
         out: List[ContactQualityWarning] = []
         threshold_abs = self._pedestal + DARK_MEAN_THRESHOLD_DN
         above = raw_dark_mean > threshold_abs
@@ -153,46 +161,72 @@ class ContactQualityMonitor:
         frame_index: int,
         side: str = "",
     ) -> List[ContactQualityWarning]:
+        """Accumulate a light-frame mean for this camera.
+
+        Poor-contact detection is no longer per-frame. We accumulate the
+        mean here and evaluate the average in :py:meth:`finalize`. Always
+        returns an empty list — the return type is preserved so existing
+        callers (e.g. ``SciencePipeline``) that iterate/dispatch the result
+        continue to work without code changes.
+        """
         s = self._state_for(camera_id)
+        if side and not s.side:
+            s.side = str(side)
+        s.light_sum += float(raw_light_mean)
+        s.light_count += 1
+        return []
+
+    def finalize(self) -> List[ContactQualityWarning]:
+        """Emit averaged poor-contact warnings for each camera observed.
+
+        For each camera with at least one light-frame sample, computes the
+        mean of ``raw_light_mean`` values and compares to
+        ``pedestal + LIGHT_MEAN_THRESHOLD_DN``. Emits one POOR_CONTACT
+        warning per camera whose average falls below the threshold.
+        """
         out: List[ContactQualityWarning] = []
         threshold_abs = self._pedestal + LIGHT_MEAN_THRESHOLD_DN
-        below = raw_light_mean < threshold_abs
-        if below:
-            s.low_light_streak += 1
-            s.contact_clear_streak = 0
-            if (
-                not s.contact_latched
-                and s.low_light_streak >= LOW_LIGHT_CONSEC_FRAMES
-            ):
-                s.contact_latched = True
+        for cam_id, s in self._state.items():
+            if s.light_count <= 0:
+                continue
+            avg = s.light_sum / s.light_count
+            if avg < threshold_abs:
                 logger.info(
-                    "ContactQuality: POOR_CONTACT fired — %s raw_light_mean=%.1f DN "
-                    "< threshold=%.1f DN (pedestal=%.1f + LIGHT_MEAN_THRESHOLD_DN=%.1f) "
-                    "after %d consecutive low-light frames",
-                    _label(side, camera_id),
-                    float(raw_light_mean),
+                    "ContactQuality: POOR_CONTACT fired (averaged) — %s "
+                    "avg_light_mean=%.1f DN over %d frames < threshold=%.1f DN",
+                    _label(s.side, cam_id),
+                    float(avg),
+                    int(s.light_count),
                     threshold_abs,
-                    self._pedestal,
-                    LIGHT_MEAN_THRESHOLD_DN,
-                    s.low_light_streak,
                 )
                 out.append(ContactQualityWarning(
-                    camera_id=camera_id,
+                    camera_id=cam_id,
                     warning_type=ContactQualityWarningType.POOR_CONTACT,
-                    value=float(raw_light_mean),
-                    frame_index=int(frame_index),
-                    side=str(side),
+                    value=float(avg),
+                    frame_index=int(s.light_count),
+                    side=s.side,
                 ))
-        else:
-            s.low_light_streak = 0
-            if s.contact_latched:
-                s.contact_clear_streak += 1
-                if s.contact_clear_streak >= LOW_LIGHT_CONSEC_FRAMES:
-                    logger.debug(
-                        "ContactQuality: POOR_CONTACT cleared for %s after %d clear frames",
-                        _label(side, camera_id),
-                        s.contact_clear_streak,
-                    )
-                    s.contact_latched = False
-                    s.contact_clear_streak = 0
         return out
+
+    def per_camera_summary(self) -> List[dict]:
+        """Return per-camera statistics for end-of-check logging.
+
+        Each entry: ``{"label": "L4", "side": "left", "cam_id": 4,
+        "light_frames": int, "light_mean_avg": float | None,
+        "ambient_latched": bool}``. ``light_mean_avg`` is ``None`` when no
+        light frames were observed for that camera.
+        """
+        rows: List[dict] = []
+        for cam_id, s in sorted(self._state.items(), key=lambda kv: (kv[1].side, kv[0])):
+            avg: Optional[float] = (
+                s.light_sum / s.light_count if s.light_count > 0 else None
+            )
+            rows.append({
+                "label": _label(s.side, cam_id),
+                "side": s.side,
+                "cam_id": int(cam_id),
+                "light_frames": int(s.light_count),
+                "light_mean_avg": avg,
+                "ambient_latched": bool(s.ambient_latched),
+            })
+        return rows

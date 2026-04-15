@@ -347,7 +347,7 @@ class MOTIONInterface(SignalWrapper):
 
     def run_contact_quality_check(
         self,
-        duration_s: float = 3.0,
+        duration_s: float = 1.0,
         subject_id: str = "_contact_quality_check",
         data_dir: str | None = None,
     ) -> "ContactQualityResult":
@@ -362,11 +362,14 @@ class MOTIONInterface(SignalWrapper):
         import tempfile
         import time
         from omotion.ContactQuality import (
+            ContactQualityMonitor,
             ContactQualityResult,
             ContactQualityWarning,
+            ContactQualityWarningType,
             DARK_MEAN_THRESHOLD_DN,
             LIGHT_MEAN_THRESHOLD_DN,
         )
+        from omotion.MotionProcessing import PEDESTAL_HEIGHT as _pedestal
         from omotion.ScanWorkflow import ScanRequest
 
         warnings: list[ContactQualityWarning] = []
@@ -376,11 +379,17 @@ class MOTIONInterface(SignalWrapper):
             with warnings_lock:
                 warnings.append(w)
 
-        # Scan teardown overhead + camera enable + warmup-discard means
-        # anything under ~3 s is unlikely to produce usable data. Enforce a
-        # floor so callers requesting very short durations still get a
-        # meaningful acquisition window.
-        duration_sec = max(3, int(round(duration_s)))
+        # 1 s is the minimum viable acquisition window: the app now pushes
+        # trigger config before invoking the check, so camera enable /
+        # warmup-discard overhead is already absorbed. Enforce a 1 s floor
+        # to protect against sub-second requests.
+        duration_sec = max(1, int(round(duration_s)))
+
+        # Construct the contact-quality monitor explicitly so we can call
+        # ``finalize()`` and ``per_camera_summary()`` after the scan thread
+        # joins. It is plumbed through ScanWorkflow.start_scan into
+        # SciencePipeline via the ``contact_quality_monitor`` kwarg.
+        cq_monitor = ContactQualityMonitor(pedestal=_pedestal)
 
         request = ScanRequest(
             subject_id=subject_id,
@@ -395,7 +404,11 @@ class MOTIONInterface(SignalWrapper):
         )
 
         _t_start = time.monotonic()
-        ok = self.start_scan(request, contact_quality_callback=_on_warning)
+        ok = self.start_scan(
+            request,
+            contact_quality_callback=_on_warning,
+            contact_quality_monitor=cq_monitor,
+        )
         if not ok:
             return ContactQualityResult(
                 ok=False,
@@ -424,12 +437,28 @@ class MOTIONInterface(SignalWrapper):
                 # If histo interface isn't available, skip — we can't diagnose.
                 continue
 
+        # Finalize the averaged poor-contact evaluation now that the
+        # pipeline has stopped feeding frames. Merge any emitted warnings
+        # into the list collected from the live callback path, de-duping
+        # on (camera_id, warning_type) to defend against accidental
+        # double-emission.
+        finalize_warnings: list[ContactQualityWarning] = []
+        try:
+            finalize_warnings = list(cq_monitor.finalize())
+        except Exception:
+            logger.exception("ContactQuality: finalize() raised")
+
         with warnings_lock:
             warnings_snapshot = list(warnings)
-
-        # Determine final result, then log a summary block covering the
-        # whole quick-check before returning.
-        from omotion.MotionProcessing import PEDESTAL_HEIGHT as _pedestal
+        seen: set[tuple[int, ContactQualityWarningType]] = {
+            (w.camera_id, w.warning_type) for w in warnings_snapshot
+        }
+        for w in finalize_warnings:
+            key = (w.camera_id, w.warning_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings_snapshot.append(w)
 
         error = ""
         ok_result = True
@@ -467,6 +496,48 @@ class MOTIONInterface(SignalWrapper):
             )
         summary_lines.append(f"  Result: ok={ok_result}, error={error!r}")
         logger.info("\n".join(summary_lines))
+
+        # Per-camera end-of-check status log. Build a per-(cam_id) set of
+        # fired warning types from the merged snapshot so status reflects
+        # everything that fired for that camera across both paths.
+        try:
+            summary_rows = cq_monitor.per_camera_summary()
+        except Exception:
+            summary_rows = []
+            logger.exception("ContactQuality: per_camera_summary() raised")
+
+        per_cam_types: dict[int, set[ContactQualityWarningType]] = {}
+        for w in warnings_snapshot:
+            per_cam_types.setdefault(w.camera_id, set()).add(w.warning_type)
+
+        for row in summary_rows:
+            cam_id = int(row["cam_id"])
+            label = row["label"]
+            light_frames = int(row["light_frames"])
+            avg = row["light_mean_avg"]
+            ambient_latched = bool(row["ambient_latched"])
+            types = per_cam_types.get(cam_id, set())
+
+            if light_frames == 0 and not types:
+                status = "NO DATA"
+            else:
+                parts: list[str] = []
+                if ContactQualityWarningType.AMBIENT_LIGHT in types:
+                    parts.append("AMBIENT_LIGHT")
+                if ContactQualityWarningType.POOR_CONTACT in types:
+                    parts.append("POOR_CONTACT")
+                status = ", ".join(parts) if parts else "OK"
+
+            avg_str = "n/a" if avg is None else f"{float(avg):.1f} DN"
+            logger.info(
+                "ContactQuality: %s — light_frames=%d, avg_light_mean=%s, "
+                "ambient_latched=%s — %s",
+                label,
+                light_frames,
+                avg_str,
+                ambient_latched,
+                status,
+            )
 
         if not ok_result:
             return ContactQualityResult(

@@ -66,26 +66,48 @@ def test_ambient_warning_rearms_after_clear_streak():
     assert out[0].warning_type is ContactQualityWarningType.AMBIENT_LIGHT
 
 
-def test_low_light_streak_emits_after_n_consecutive():
+def test_finalize_emits_poor_contact_when_avg_below_threshold():
+    """10 light frames averaging 80 DN (below pedestal+threshold=94 DN) →
+    finalize emits exactly one POOR_CONTACT warning."""
     mon = ContactQualityMonitor(pedestal=PEDESTAL)
-    for i in range(LOW_LIGHT_CONSEC_FRAMES - 1):
-        assert mon.update_light(0, _bg_light_below(), i) == []
-    out = mon.update_light(0, _bg_light_below(), LOW_LIGHT_CONSEC_FRAMES - 1)
+    for i in range(10):
+        assert mon.update_light(0, 80.0, i, side="left") == []
+    out = mon.finalize()
     assert len(out) == 1
-    assert out[0].warning_type is ContactQualityWarningType.POOR_CONTACT
+    w = out[0]
+    assert w.warning_type is ContactQualityWarningType.POOR_CONTACT
+    assert w.camera_id == 0
+    assert w.side == "left"
+    assert w.value == 80.0
+    assert w.frame_index == 10
 
 
-def test_low_light_streak_resets_on_good_frame():
+def test_finalize_emits_nothing_when_avg_above_threshold():
+    """10 light frames averaging 100 DN (above pedestal+threshold=94 DN) →
+    finalize emits no warnings."""
     mon = ContactQualityMonitor(pedestal=PEDESTAL)
-    for i in range(LOW_LIGHT_CONSEC_FRAMES - 1):
-        mon.update_light(0, _bg_light_below(), i)
-    # Single good frame resets the counter.
-    assert mon.update_light(0, _bg_light_above(), LOW_LIGHT_CONSEC_FRAMES - 1) == []
-    # Now we need another full streak to fire.
-    for i in range(LOW_LIGHT_CONSEC_FRAMES - 1):
-        assert mon.update_light(0, _bg_light_below(), 100 + i) == []
-    out = mon.update_light(0, _bg_light_below(), 200)
-    assert len(out) == 1
+    for i in range(10):
+        assert mon.update_light(0, 100.0, i, side="left") == []
+    assert mon.finalize() == []
+
+
+def test_per_camera_summary_returns_stats_per_camera():
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i in range(5):
+        mon.update_light(0, 90.0, i, side="left")
+    for i in range(3):
+        mon.update_light(1, 110.0, i, side="left")
+    mon.finalize()
+    rows = mon.per_camera_summary()
+    assert len(rows) == 2
+    by_cam = {r["cam_id"]: r for r in rows}
+    assert by_cam[0]["light_frames"] == 5
+    assert by_cam[0]["light_mean_avg"] == 90.0
+    assert by_cam[0]["label"] == "L1"
+    assert by_cam[0]["ambient_latched"] is False
+    assert by_cam[1]["light_frames"] == 3
+    assert by_cam[1]["light_mean_avg"] == 110.0
+    assert by_cam[1]["label"] == "L2"
 
 
 def test_per_camera_state_is_independent():
@@ -114,10 +136,10 @@ def test_monitor_emits_distinct_warnings_per_camera():
     mon = ContactQualityMonitor(pedestal=PEDESTAL)
     # Camera 0: ambient on first dark frame.
     a = mon.update_dark(0, _bg_dark_above(), 0)
-    # Camera 1: contact warning after streak.
-    out_b = []
+    # Camera 1: averaged poor-contact warning emitted on finalize.
     for i in range(LOW_LIGHT_CONSEC_FRAMES):
-        out_b.extend(mon.update_light(1, _bg_light_below(), i))
+        assert mon.update_light(1, _bg_light_below(), i) == []
+    out_b = mon.finalize()
     cams = sorted({w.camera_id for w in [*a, *out_b]})
     types = sorted({w.warning_type.value for w in [*a, *out_b]})
     assert cams == [0, 1]
@@ -145,10 +167,14 @@ def test_side_is_propagated_into_warning():
     assert dark[0].side == "left"
     assert dark[0].camera_id == 3
 
-    # Drive camera 5 on the right module to a poor-contact latch.
-    light: list = []
+    # Drive camera 5 on the right module to a poor-contact emission via
+    # the averaged ``finalize`` path. Per-frame updates return [] now.
     for i in range(LOW_LIGHT_CONSEC_FRAMES):
-        light.extend(mon.update_light(5, _bg_light_below(), i, side="right"))
+        assert mon.update_light(5, _bg_light_below(), i, side="right") == []
+    light = [
+        w for w in mon.finalize()
+        if w.warning_type is ContactQualityWarningType.POOR_CONTACT and w.camera_id == 5
+    ]
     assert len(light) == 1
     assert light[0].side == "right"
     assert light[0].camera_id == 5

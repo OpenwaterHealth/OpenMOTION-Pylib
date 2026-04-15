@@ -1017,6 +1017,7 @@ class SciencePipeline:
         discard_count: int = 9,
         expected_row_sum: int | None = None,
         noise_floor: int = 10,
+        contact_quality_monitor: "ContactQualityMonitor | None" = None,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -1028,11 +1029,16 @@ class SciencePipeline:
         # an import cycle between MotionProcessing and ContactQuality.
         from omotion.ContactQuality import ContactQualityMonitor  # noqa: WPS433
         self._on_contact_quality_warning = on_contact_quality_warning
-        self._cq_monitor: ContactQualityMonitor | None = (
-            ContactQualityMonitor(pedestal=PEDESTAL_HEIGHT)
-            if on_contact_quality_warning is not None
-            else None
-        )
+        # Callers (e.g. ``run_contact_quality_check``) may inject an
+        # explicit monitor so they can call ``finalize()`` / inspect state
+        # after the pipeline has stopped. Otherwise, if a warning callback
+        # was provided, create a monitor internally for live-scan use.
+        if contact_quality_monitor is not None:
+            self._cq_monitor = contact_quality_monitor
+        elif on_contact_quality_warning is not None:
+            self._cq_monitor = ContactQualityMonitor(pedestal=PEDESTAL_HEIGHT)
+        else:
+            self._cq_monitor = None
 
         self._on_corrected_batch_fn = on_corrected_batch_fn
         self._dark_interval = dark_interval
@@ -1550,6 +1556,7 @@ def create_science_pipeline(
     discard_count: int = 9,
     expected_row_sum: int | None = None,
     noise_floor: int = 10,
+    contact_quality_monitor: "ContactQualityMonitor | None" = None,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
@@ -1586,6 +1593,7 @@ def create_science_pipeline(
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
         noise_floor=noise_floor,
+        contact_quality_monitor=contact_quality_monitor,
     )
     pipeline.start()
     return pipeline
