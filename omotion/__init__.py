@@ -23,8 +23,27 @@ from .MotionSignal import MOTIONSignal
 from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
+from omotion.ContactQuality import (
+    ContactQualityMonitor,
+    ContactQualityWarning,
+    ContactQualityWarningType,
+    ContactQualityResult,
+    DARK_MEAN_THRESHOLD_DN,
+    LIGHT_MEAN_THRESHOLD_DN,
+    LOW_LIGHT_CONSEC_FRAMES,
+)
 
-__all__ = ["__version__", "set_log_root"]
+__all__ = [
+    "__version__",
+    "set_log_root",
+    "ContactQualityMonitor",
+    "ContactQualityWarning",
+    "ContactQualityWarningType",
+    "ContactQualityResult",
+    "DARK_MEAN_THRESHOLD_DN",
+    "LIGHT_MEAN_THRESHOLD_DN",
+    "LOW_LIGHT_CONSEC_FRAMES",
+]
 
 try:
     # works when installed (wheel/sdist) — uses dist-info METADATA
