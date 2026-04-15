@@ -429,13 +429,17 @@ class MOTIONInterface(SignalWrapper):
                     error="No data received from sensors — check cabling and FPGA programming",
                 )
             if zero_sides:
-                # Partial failure: one side is dark but the other is fine.
-                # Still report ok (single-side scenarios are valid) but note it.
-                note = ", ".join(f"{s.capitalize()} sensor received no data" for s in zero_sides)
+                # Any connected side with zero data is a failure — the scan
+                # did not deliver what the caller configured.
+                labels = [s.capitalize() for s in zero_sides]
+                if len(labels) == 1:
+                    who = labels[0]
+                else:
+                    who = " and ".join(labels)
                 return ContactQualityResult(
-                    ok=True,
+                    ok=False,
                     warnings=warnings_snapshot,
-                    error=note,
+                    error=f"{who} sensor received no data — check cabling",
                 )
 
         return ContactQualityResult(ok=True, warnings=warnings_snapshot)
