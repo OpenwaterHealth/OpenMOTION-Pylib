@@ -305,3 +305,33 @@ def test_per_camera_summary_includes_both_sides_for_same_cam_id():
         assert r["cam_id"] == 0
         assert r["light_frames"] == 5
         assert r["light_mean_avg"] == 90.0
+
+
+def test_per_camera_summary_includes_dark_stats():
+    """Dark-frame counts and means should appear alongside light stats."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    for i, dv in enumerate((60.0, 64.0, 68.0)):
+        mon.update_dark(0, dv, i, side="left")
+    for i in range(5):
+        mon.update_light(0, 100.0, i, side="left")
+    rows = mon.per_camera_summary()
+    by_key = {(r["side"], r["cam_id"]): r for r in rows}
+    r = by_key[("left", 0)]
+    assert r["dark_frames"] == 3
+    assert r["dark_mean_avg"] == 64.0
+    assert r["light_frames"] == 5
+    assert r["light_mean_avg"] == 100.0
+
+
+def test_per_camera_summary_includes_camera_with_only_dark_frames():
+    """A camera that has only seen dark frames should still get a summary row."""
+    mon = ContactQualityMonitor(pedestal=PEDESTAL)
+    mon.update_dark(1, 62.0, 0, side="right")
+    mon.update_dark(1, 66.0, 1, side="right")
+    rows = mon.per_camera_summary()
+    by_key = {(r["side"], r["cam_id"]): r for r in rows}
+    assert ("right", 1) in by_key
+    r = by_key[("right", 1)]
+    assert r["dark_frames"] == 2
+    assert r["light_frames"] == 0
+    assert r["light_mean_avg"] is None

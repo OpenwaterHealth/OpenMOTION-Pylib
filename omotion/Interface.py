@@ -515,10 +515,12 @@ class MOTIONInterface(SignalWrapper):
             label = row["label"]
             light_frames = int(row["light_frames"])
             avg = row["light_mean_avg"]
+            dark_frames = int(row.get("dark_frames", 0))
+            dark_avg = row.get("dark_mean_avg")
             ambient_latched = bool(row["ambient_latched"])
             types = per_cam_types.get(cam_id, set())
 
-            if light_frames == 0 and not types:
+            if light_frames == 0 and dark_frames == 0 and not types:
                 status = "NO DATA"
             else:
                 parts: list[str] = []
@@ -529,12 +531,16 @@ class MOTIONInterface(SignalWrapper):
                 status = ", ".join(parts) if parts else "OK"
 
             avg_str = "n/a" if avg is None else f"{float(avg):.1f} DN"
+            dark_avg_str = "n/a" if dark_avg is None else f"{float(dark_avg):.1f} DN"
             logger.info(
                 "ContactQuality: %s — light_frames=%d, avg_light_mean=%s, "
+                "dark_frames=%d, avg_dark_mean=%s, "
                 "ambient_latched=%s — %s",
                 label,
                 light_frames,
                 avg_str,
+                dark_frames,
+                dark_avg_str,
                 ambient_latched,
                 status,
             )

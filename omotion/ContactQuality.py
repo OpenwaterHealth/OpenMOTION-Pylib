@@ -85,6 +85,9 @@ class _CameraState:
     # Light-frame accumulators for averaged poor-contact evaluation.
     light_sum: float = 0.0
     light_count: int = 0
+    # Dark-frame accumulators (informational; surfaced in per-camera summary).
+    dark_sum: float = 0.0
+    dark_count: int = 0
     # Rolling window of recent ``raw_light_mean`` values for live
     # poor-contact detection (independent of the cumulative finalize path).
     light_window: Deque[float] = field(
@@ -137,6 +140,8 @@ class ContactQualityMonitor:
         s = self._state_for(side, camera_id)
         if side and not s.side:
             s.side = str(side)
+        s.dark_sum += float(raw_dark_mean)
+        s.dark_count += 1
         out: List[ContactQualityWarning] = []
         threshold_abs = self._pedestal + DARK_MEAN_THRESHOLD_DN
         above = raw_dark_mean > threshold_abs
@@ -281,11 +286,13 @@ class ContactQualityMonitor:
 
         Each entry: ``{"label": "L4", "side": "left", "cam_id": 4,
         "light_frames": int, "light_mean_avg": float | None,
+        "dark_frames": int, "dark_mean_avg": float | None,
         "rolling_avg_light_mean": float | None,
         "ambient_latched": bool, "contact_latched": bool}``.
-        ``light_mean_avg`` / ``rolling_avg_light_mean`` are ``None`` when
-        no light frames (or no rolling samples yet) have been observed
-        for that camera.
+        ``light_mean_avg`` / ``dark_mean_avg`` / ``rolling_avg_light_mean``
+        are ``None`` when no light frames, no dark frames, or no rolling
+        samples yet have been observed for that camera. An entry is
+        emitted for any camera that has seen either light or dark frames.
         """
         rows: List[dict] = []
         for (_side_key, cam_id), s in sorted(
@@ -293,6 +300,9 @@ class ContactQualityMonitor:
         ):
             avg: Optional[float] = (
                 s.light_sum / s.light_count if s.light_count > 0 else None
+            )
+            dark_avg: Optional[float] = (
+                s.dark_sum / s.dark_count if s.dark_count > 0 else None
             )
             rolling_avg: Optional[float] = (
                 sum(s.light_window) / len(s.light_window)
@@ -304,6 +314,8 @@ class ContactQualityMonitor:
                 "cam_id": int(cam_id),
                 "light_frames": int(s.light_count),
                 "light_mean_avg": avg,
+                "dark_frames": int(s.dark_count),
+                "dark_mean_avg": dark_avg,
                 "rolling_avg_light_mean": rolling_avg,
                 "ambient_latched": bool(s.ambient_latched),
                 "contact_latched": bool(s.contact_latched),
