@@ -448,8 +448,17 @@ class MOTIONInterface(SignalWrapper):
         except Exception:
             logger.exception("ContactQuality: finalize() raised")
 
+        # The live callback path produces rolling-window POOR_CONTACT
+        # warnings that fire on transient dips. For the quick-check verdict
+        # we want the cumulative-average POOR_CONTACT from finalize() instead,
+        # so the warning value matches the per-camera summary log. Drop live
+        # POOR_CONTACT warnings here; AMBIENT_LIGHT warnings (which fire
+        # per-frame on dark frames) are kept.
         with warnings_lock:
-            warnings_snapshot = list(warnings)
+            warnings_snapshot = [
+                w for w in warnings
+                if w.warning_type is not ContactQualityWarningType.POOR_CONTACT
+            ]
         seen: set[tuple[int, ContactQualityWarningType]] = {
             (w.camera_id, w.warning_type) for w in warnings_snapshot
         }
