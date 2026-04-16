@@ -766,16 +766,12 @@ class MOTIONSensor:
         self._check_camera_mask(camera_position)
         if self.uart.demo_mode:
             return True
-        # 1.5 s accommodates stream-armed IF0 contention: when streaming on
-        # IF1 has just been armed, the MCU can take ~1 s to service the
-        # enable request. A tighter timeout causes the SDK to discard the
-        # eventual (stale) response and poison the next packet ID.
         r = self._send(
             packetType=OW_CAMERA,
             command=OW_CAMERA_STREAM,
             reserved=1,
             addr=camera_position,
-            timeout=1.5,
+            timeout=0.3,
         )
         return r.packet_type not in _ERROR_TYPES
 
