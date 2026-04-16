@@ -1053,14 +1053,22 @@ class ScanWorkflow:
 
                         status_map = sensor.get_camera_status(cam_mask_single)
                         if not status_map or pos not in status_map:
-                            raise RuntimeError(
-                                f"Failed to read camera status for {side} camera {pos1}."
+                            _emit_log(
+                                f"{side} camera {pos1}: unable to read status, skipping."
                             )
+                            with done_lock:
+                                done[0] += 2
+                            _emit_progress(int(done[0] / total * 100))
+                            continue
                         status = status_map[pos]
                         if not status & (1 << 0):
-                            raise RuntimeError(
-                                f"{side} camera {pos1} not READY for FPGA/config."
+                            _emit_log(
+                                f"{side} camera {pos1}: not READY, skipping."
                             )
+                            with done_lock:
+                                done[0] += 2
+                            _emit_progress(int(done[0] / total * 100))
+                            continue
 
                         _emit_log(
                             f"Programming {side} camera FPGA at position {pos1} "
