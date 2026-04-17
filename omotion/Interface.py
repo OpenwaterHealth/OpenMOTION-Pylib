@@ -350,6 +350,8 @@ class MOTIONInterface(SignalWrapper):
         duration_s: float = 1.0,
         subject_id: str = "_contact_quality_check",
         data_dir: str | None = None,
+        dark_thresholds: list[float] | None = None,
+        light_thresholds: list[float] | None = None,
     ) -> "ContactQualityResult":
         """Run a brief acquisition and return contact-quality warnings.
 
@@ -389,7 +391,11 @@ class MOTIONInterface(SignalWrapper):
         # ``finalize()`` and ``per_camera_summary()`` after the scan thread
         # joins. It is plumbed through ScanWorkflow.start_scan into
         # SciencePipeline via the ``contact_quality_monitor`` kwarg.
-        cq_monitor = ContactQualityMonitor(pedestal=_pedestal)
+        cq_monitor = ContactQualityMonitor(
+            pedestal=_pedestal,
+            dark_thresholds=dark_thresholds,
+            light_thresholds=light_thresholds,
+        )
 
         request = ScanRequest(
             subject_id=subject_id,
@@ -408,6 +414,8 @@ class MOTIONInterface(SignalWrapper):
             request,
             contact_quality_callback=_on_warning,
             contact_quality_monitor=cq_monitor,
+            cq_dark_thresholds=dark_thresholds,
+            cq_light_thresholds=light_thresholds,
         )
         if not ok:
             return ContactQualityResult(

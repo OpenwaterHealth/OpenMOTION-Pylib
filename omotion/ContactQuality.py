@@ -102,11 +102,33 @@ class _CameraState:
 
 
 class ContactQualityMonitor:
-    """Stateful per-camera contact-quality monitor."""
+    """Stateful per-camera contact-quality monitor.
 
-    def __init__(self, pedestal: float) -> None:
+    Per-camera thresholds (background-subtracted DN) can be supplied as
+    8-element lists indexed by camera position 0..7.  When omitted the
+    module-level constants are used as a uniform default for all cameras.
+    """
+
+    def __init__(
+        self,
+        pedestal: float,
+        dark_thresholds: Optional[List[float]] = None,
+        light_thresholds: Optional[List[float]] = None,
+    ) -> None:
         self._pedestal = float(pedestal)
+        self._dark_thresholds = list(dark_thresholds) if dark_thresholds else None
+        self._light_thresholds = list(light_thresholds) if light_thresholds else None
         self._state: Dict[tuple[str, int], _CameraState] = {}
+
+    def _dark_threshold(self, camera_id: int) -> float:
+        if self._dark_thresholds and 0 <= camera_id < len(self._dark_thresholds):
+            return float(self._dark_thresholds[camera_id])
+        return DARK_MEAN_THRESHOLD_DN
+
+    def _light_threshold(self, camera_id: int) -> float:
+        if self._light_thresholds and 0 <= camera_id < len(self._light_thresholds):
+            return float(self._light_thresholds[camera_id])
+        return LIGHT_MEAN_THRESHOLD_DN
 
     def reset(self, side: str | None = None, camera_id: int | None = None) -> None:
         if side is None and camera_id is None:
@@ -143,26 +165,25 @@ class ContactQualityMonitor:
         s.dark_sum += float(raw_dark_mean)
         s.dark_count += 1
         out: List[ContactQualityWarning] = []
-        threshold_abs = self._pedestal + DARK_MEAN_THRESHOLD_DN
+        dark_thresh = self._dark_threshold(camera_id)
+        threshold_abs = self._pedestal + dark_thresh
         above = raw_dark_mean > threshold_abs
         if above:
             s.ambient_clear_streak = 0
             if not s.ambient_latched:
                 s.ambient_latched = True
+                bg_sub = float(raw_dark_mean) - self._pedestal
                 logger.info(
-                    "ContactQuality: AMBIENT_LIGHT fired — %s raw_dark_mean=%.1f DN "
-                    "> threshold=%.1f DN (pedestal=%.1f + DARK_MEAN_THRESHOLD_DN=%.1f) "
-                    "immediate",
+                    "ContactQuality: AMBIENT_LIGHT fired — %s dark_mean=%.1f DN "
+                    "(bg-sub) > threshold=%.1f DN",
                     _label(side, camera_id),
-                    float(raw_dark_mean),
-                    threshold_abs,
-                    self._pedestal,
-                    DARK_MEAN_THRESHOLD_DN,
+                    bg_sub,
+                    dark_thresh,
                 )
                 out.append(ContactQualityWarning(
                     camera_id=camera_id,
                     warning_type=ContactQualityWarningType.AMBIENT_LIGHT,
-                    value=float(raw_dark_mean),
+                    value=bg_sub,
                     frame_index=int(frame_index),
                     side=str(side),
                 ))
@@ -216,24 +237,26 @@ class ContactQualityMonitor:
         if len(s.light_window) < LIVE_LIGHT_WINDOW_FRAMES:
             return []
 
-        threshold_abs = self._pedestal + LIGHT_MEAN_THRESHOLD_DN
+        light_thresh = self._light_threshold(camera_id)
+        threshold_abs = self._pedestal + light_thresh
         rolling_avg = sum(s.light_window) / len(s.light_window)
         if rolling_avg < threshold_abs:
             if not s.contact_latched:
                 s.contact_latched = True
+                bg_sub = float(rolling_avg) - self._pedestal
                 logger.info(
                     "ContactQuality: POOR_CONTACT fired (rolling) — %s "
-                    "rolling_avg_light_mean=%.1f DN over %d frames "
+                    "light_mean=%.1f DN (bg-sub) over %d frames "
                     "< threshold=%.1f DN",
                     _label(s.side or side, camera_id),
-                    float(rolling_avg),
+                    bg_sub,
                     len(s.light_window),
-                    threshold_abs,
+                    light_thresh,
                 )
                 return [ContactQualityWarning(
                     camera_id=camera_id,
                     warning_type=ContactQualityWarningType.POOR_CONTACT,
-                    value=float(rolling_avg),
+                    value=bg_sub,
                     frame_index=int(frame_index),
                     side=str(side) if side else s.side,
                 )]
@@ -241,10 +264,10 @@ class ContactQualityMonitor:
             if s.contact_latched:
                 logger.debug(
                     "ContactQuality: POOR_CONTACT cleared (rolling) — %s "
-                    "rolling_avg=%.1f DN >= %.1f DN",
+                    "light_mean=%.1f DN (bg-sub) >= %.1f DN",
                     _label(s.side or side, camera_id),
-                    float(rolling_avg),
-                    threshold_abs,
+                    float(rolling_avg) - self._pedestal,
+                    light_thresh,
                 )
                 s.contact_latched = False
         return []
@@ -258,24 +281,25 @@ class ContactQualityMonitor:
         warning per camera whose average falls below the threshold.
         """
         out: List[ContactQualityWarning] = []
-        threshold_abs = self._pedestal + LIGHT_MEAN_THRESHOLD_DN
         for (_side_key, cam_id), s in self._state.items():
             if s.light_count <= 0:
                 continue
             avg = s.light_sum / s.light_count
+            threshold_abs = self._pedestal + self._light_threshold(cam_id)
             if avg < threshold_abs:
+                bg_sub = float(avg) - self._pedestal
                 logger.info(
                     "ContactQuality: POOR_CONTACT fired (averaged) — %s "
-                    "avg_light_mean=%.1f DN over %d frames < threshold=%.1f DN",
+                    "light_mean=%.1f DN (bg-sub) over %d frames < threshold=%.1f DN",
                     _label(s.side, cam_id),
-                    float(avg),
+                    bg_sub,
                     int(s.light_count),
-                    threshold_abs,
+                    self._light_threshold(cam_id),
                 )
                 out.append(ContactQualityWarning(
                     camera_id=cam_id,
                     warning_type=ContactQualityWarningType.POOR_CONTACT,
-                    value=float(avg),
+                    value=bg_sub,
                     frame_index=int(s.light_count),
                     side=s.side,
                 ))
@@ -299,13 +323,13 @@ class ContactQualityMonitor:
             self._state.items(), key=lambda kv: (kv[1].side, kv[0][1])
         ):
             avg: Optional[float] = (
-                s.light_sum / s.light_count if s.light_count > 0 else None
+                s.light_sum / s.light_count - self._pedestal if s.light_count > 0 else None
             )
             dark_avg: Optional[float] = (
-                s.dark_sum / s.dark_count if s.dark_count > 0 else None
+                s.dark_sum / s.dark_count - self._pedestal if s.dark_count > 0 else None
             )
             rolling_avg: Optional[float] = (
-                sum(s.light_window) / len(s.light_window)
+                sum(s.light_window) / len(s.light_window) - self._pedestal
                 if len(s.light_window) > 0 else None
             )
             rows.append({

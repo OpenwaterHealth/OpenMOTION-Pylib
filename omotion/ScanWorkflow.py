@@ -190,6 +190,8 @@ class ScanWorkflow:
         on_complete_fn: Callable[[ScanResult], None] | None = None,
         contact_quality_callback: Callable[[object], None] | None = None,
         contact_quality_monitor: object | None = None,
+        cq_dark_thresholds: list[float] | None = None,
+        cq_light_thresholds: list[float] | None = None,
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
@@ -611,6 +613,8 @@ class ScanWorkflow:
                         on_contact_quality_warning=contact_quality_callback,
                         on_corrected_batch_fn=_on_corrected_batch,
                         contact_quality_monitor=contact_quality_monitor,
+                        cq_dark_thresholds=cq_dark_thresholds,
+                        cq_light_thresholds=cq_light_thresholds,
                     )
 
                 def _make_row_handler(current_side: str, p):

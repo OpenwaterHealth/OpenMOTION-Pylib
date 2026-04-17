@@ -1018,6 +1018,8 @@ class SciencePipeline:
         expected_row_sum: int | None = None,
         noise_floor: int = 10,
         contact_quality_monitor: "ContactQualityMonitor | None" = None,
+        cq_dark_thresholds: "list[float] | None" = None,
+        cq_light_thresholds: "list[float] | None" = None,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -1036,7 +1038,11 @@ class SciencePipeline:
         if contact_quality_monitor is not None:
             self._cq_monitor = contact_quality_monitor
         elif on_contact_quality_warning is not None:
-            self._cq_monitor = ContactQualityMonitor(pedestal=PEDESTAL_HEIGHT)
+            self._cq_monitor = ContactQualityMonitor(
+                pedestal=PEDESTAL_HEIGHT,
+                dark_thresholds=cq_dark_thresholds,
+                light_thresholds=cq_light_thresholds,
+            )
         else:
             self._cq_monitor = None
 
@@ -1557,6 +1563,8 @@ def create_science_pipeline(
     expected_row_sum: int | None = None,
     noise_floor: int = 10,
     contact_quality_monitor: "ContactQualityMonitor | None" = None,
+    cq_dark_thresholds: "list[float] | None" = None,
+    cq_light_thresholds: "list[float] | None" = None,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
@@ -1594,6 +1602,8 @@ def create_science_pipeline(
         expected_row_sum=expected_row_sum,
         noise_floor=noise_floor,
         contact_quality_monitor=contact_quality_monitor,
+        cq_dark_thresholds=cq_dark_thresholds,
+        cq_light_thresholds=cq_light_thresholds,
     )
     pipeline.start()
     return pipeline
