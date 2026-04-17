@@ -345,6 +345,231 @@ class MOTIONInterface(SignalWrapper):
             self.scan_workflow = ScanWorkflow(self)
         return self.scan_workflow.start_scan(request, **kwargs)
 
+    def run_contact_quality_check(
+        self,
+        duration_s: float = 1.0,
+        subject_id: str = "_contact_quality_check",
+        data_dir: str | None = None,
+        dark_thresholds: list[float] | None = None,
+        light_thresholds: list[float] | None = None,
+    ) -> "ContactQualityResult":
+        """Run a brief acquisition and return contact-quality warnings.
+
+        Always uses camera mask 0xFF on both sensor modules. Histograms are
+        consumed only by the contact-quality monitor; no CSV files are written
+        and no live-data callbacks are fired. Blocks until the scan completes
+        or fails.
+        """
+        import threading
+        import tempfile
+        import time
+        from omotion.ContactQuality import (
+            ContactQualityMonitor,
+            ContactQualityResult,
+            ContactQualityWarning,
+            ContactQualityWarningType,
+            DARK_MEAN_THRESHOLD_DN,
+            LIGHT_MEAN_THRESHOLD_DN,
+        )
+        from omotion.MotionProcessing import PEDESTAL_HEIGHT as _pedestal
+        from omotion.ScanWorkflow import ScanRequest
+
+        warnings: list[ContactQualityWarning] = []
+        warnings_lock = threading.Lock()
+
+        def _on_warning(w: ContactQualityWarning) -> None:
+            with warnings_lock:
+                warnings.append(w)
+
+        # 1 s is the minimum viable acquisition window: the app now pushes
+        # trigger config before invoking the check, so camera enable /
+        # warmup-discard overhead is already absorbed. Enforce a 1 s floor
+        # to protect against sub-second requests.
+        duration_sec = max(1, int(round(duration_s)))
+
+        # Construct the contact-quality monitor explicitly so we can call
+        # ``finalize()`` and ``per_camera_summary()`` after the scan thread
+        # joins. It is plumbed through ScanWorkflow.start_scan into
+        # SciencePipeline via the ``contact_quality_monitor`` kwarg.
+        cq_monitor = ContactQualityMonitor(
+            pedestal=_pedestal,
+            dark_thresholds=dark_thresholds,
+            light_thresholds=light_thresholds,
+        )
+
+        request = ScanRequest(
+            subject_id=subject_id,
+            duration_sec=duration_sec,
+            left_camera_mask=0xFF,
+            right_camera_mask=0xFF,
+            data_dir=data_dir or tempfile.gettempdir(),
+            disable_laser=False,
+            write_raw_csv=False,
+            write_corrected_csv=False,
+            write_telemetry_csv=False,
+        )
+
+        _t_start = time.monotonic()
+        ok = self.start_scan(
+            request,
+            contact_quality_callback=_on_warning,
+            contact_quality_monitor=cq_monitor,
+            cq_dark_thresholds=dark_thresholds,
+            cq_light_thresholds=light_thresholds,
+        )
+        if not ok:
+            return ContactQualityResult(
+                ok=False,
+                warnings=[],
+                error="Failed to start scan",
+            )
+
+        # Block until the scan worker completes. ScanWorkflow exposes no
+        # public wait()/join(); reading _thread is acceptable within the
+        # same package.
+        if self.scan_workflow is not None and self.scan_workflow._thread is not None:
+            self.scan_workflow._thread.join()
+        _elapsed = time.monotonic() - _t_start
+
+        # Inspect per-side USB chunk counts to detect silent acquisition
+        # failures (e.g. enable_camera timeout, FPGA not programmed, cable
+        # unplugged). Mirrors the pattern used by ScanWorkflow._worker around
+        # the per-side summary log.
+        per_side_chunks: dict[str, int] = {}
+        for side, sensor in (self.sensors or {}).items():
+            if sensor is None or not sensor.is_connected():
+                continue
+            try:
+                per_side_chunks[side] = int(sensor.uart.histo.packets_received)
+            except Exception:
+                # If histo interface isn't available, skip — we can't diagnose.
+                continue
+
+        # Finalize the averaged poor-contact evaluation now that the
+        # pipeline has stopped feeding frames. Merge any emitted warnings
+        # into the list collected from the live callback path, de-duping
+        # on (camera_id, warning_type) to defend against accidental
+        # double-emission.
+        finalize_warnings: list[ContactQualityWarning] = []
+        try:
+            finalize_warnings = list(cq_monitor.finalize())
+        except Exception:
+            logger.exception("ContactQuality: finalize() raised")
+
+        # The live callback path produces rolling-window POOR_CONTACT
+        # warnings that fire on transient dips. For the quick-check verdict
+        # we want the cumulative-average POOR_CONTACT from finalize() instead,
+        # so the warning value matches the per-camera summary log. Drop live
+        # POOR_CONTACT warnings here; AMBIENT_LIGHT warnings (which fire
+        # per-frame on dark frames) are kept.
+        with warnings_lock:
+            warnings_snapshot = [
+                w for w in warnings
+                if w.warning_type is not ContactQualityWarningType.POOR_CONTACT
+            ]
+        seen: set[tuple[int, ContactQualityWarningType]] = {
+            (w.camera_id, w.warning_type) for w in warnings_snapshot
+        }
+        for w in finalize_warnings:
+            key = (w.camera_id, w.warning_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings_snapshot.append(w)
+
+        error = ""
+        ok_result = True
+        if per_side_chunks:
+            zero_sides = [s for s, n in per_side_chunks.items() if n == 0]
+            if len(zero_sides) == len(per_side_chunks):
+                ok_result = False
+                error = (
+                    "No data received from sensors — check cabling and FPGA programming"
+                )
+            elif zero_sides:
+                labels = [s.capitalize() for s in zero_sides]
+                who = labels[0] if len(labels) == 1 else " and ".join(labels)
+                ok_result = False
+                error = f"{who} sensor received no data — check cabling"
+
+        left_chunks = per_side_chunks.get("left", 0)
+        right_chunks = per_side_chunks.get("right", 0)
+        summary_lines = [
+            f"ContactQuality: quick-check complete in {_elapsed:.2f}s",
+            f"  Duration requested: {duration_sec}s",
+            (
+                f"  Thresholds: DARK>{_pedestal + DARK_MEAN_THRESHOLD_DN} DN, "
+                f"LIGHT<{_pedestal + LIGHT_MEAN_THRESHOLD_DN} DN "
+                f"(pedestal={_pedestal})"
+            ),
+            f"  Chunks received: left={left_chunks}, right={right_chunks}",
+            f"  Warnings: {len(warnings_snapshot)} total",
+        ]
+        for w in warnings_snapshot:
+            side_label = (w.side.upper()[0] if w.side else "?")
+            summary_lines.append(
+                f"    - {side_label} cam {w.camera_id}: {w.warning_type.value} "
+                f"value={w.value:.1f} DN"
+            )
+        summary_lines.append(f"  Result: ok={ok_result}, error={error!r}")
+        logger.info("\n".join(summary_lines))
+
+        # Per-camera end-of-check status log. Build a per-(cam_id) set of
+        # fired warning types from the merged snapshot so status reflects
+        # everything that fired for that camera across both paths.
+        try:
+            summary_rows = cq_monitor.per_camera_summary()
+        except Exception:
+            summary_rows = []
+            logger.exception("ContactQuality: per_camera_summary() raised")
+
+        per_cam_types: dict[int, set[ContactQualityWarningType]] = {}
+        for w in warnings_snapshot:
+            per_cam_types.setdefault(w.camera_id, set()).add(w.warning_type)
+
+        for row in summary_rows:
+            cam_id = int(row["cam_id"])
+            label = row["label"]
+            light_frames = int(row["light_frames"])
+            avg = row["light_mean_avg"]
+            dark_frames = int(row.get("dark_frames", 0))
+            dark_avg = row.get("dark_mean_avg")
+            ambient_latched = bool(row["ambient_latched"])
+            types = per_cam_types.get(cam_id, set())
+
+            if light_frames == 0 and dark_frames == 0 and not types:
+                status = "NO DATA"
+            else:
+                parts: list[str] = []
+                if ContactQualityWarningType.AMBIENT_LIGHT in types:
+                    parts.append("AMBIENT_LIGHT")
+                if ContactQualityWarningType.POOR_CONTACT in types:
+                    parts.append("POOR_CONTACT")
+                status = ", ".join(parts) if parts else "OK"
+
+            avg_str = "n/a" if avg is None else f"{float(avg):.1f} DN"
+            dark_avg_str = "n/a" if dark_avg is None else f"{float(dark_avg):.1f} DN"
+            logger.info(
+                "ContactQuality: %s — light_frames=%d, avg_light_mean=%s, "
+                "dark_frames=%d, avg_dark_mean=%s, "
+                "ambient_latched=%s — %s",
+                label,
+                light_frames,
+                avg_str,
+                dark_frames,
+                dark_avg_str,
+                ambient_latched,
+                status,
+            )
+
+        if not ok_result:
+            return ContactQualityResult(
+                ok=False,
+                warnings=warnings_snapshot,
+                error=error,
+            )
+        return ContactQualityResult(ok=True, warnings=warnings_snapshot)
+
     def cancel_scan(self, **kwargs) -> None:
         if self.scan_workflow:
             self.scan_workflow.cancel_scan(**kwargs)

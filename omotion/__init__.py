@@ -23,8 +23,21 @@ from .MotionSignal import MOTIONSignal
 from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
+from .ContactQuality import (
+    ContactQualityMonitor,
+    ContactQualityWarning,
+    ContactQualityWarningType,
+    ContactQualityResult,
+)
 
-__all__ = ["__version__", "set_log_root"]
+__all__ = [
+    "__version__",
+    "set_log_root",
+    "ContactQualityMonitor",
+    "ContactQualityWarning",
+    "ContactQualityWarningType",
+    "ContactQualityResult",
+]
 
 try:
     # works when installed (wheel/sdist) — uses dist-info METADATA

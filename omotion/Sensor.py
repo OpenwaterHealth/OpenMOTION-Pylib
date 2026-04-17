@@ -766,12 +766,14 @@ class MOTIONSensor:
         self._check_camera_mask(camera_position)
         if self.uart.demo_mode:
             return True
+        # 1.5s accommodates IF0 contention when IF1 streaming has just been
+        # armed — the MCU can take ~1s to service the enable request.
         r = self._send(
             packetType=OW_CAMERA,
             command=OW_CAMERA_STREAM,
             reserved=1,
             addr=camera_position,
-            timeout=0.3,
+            timeout=1.5,
         )
         return r.packet_type not in _ERROR_TYPES
 
