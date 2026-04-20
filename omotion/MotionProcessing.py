@@ -1209,7 +1209,8 @@ class SciencePipeline:
 
                 # Rule 1: emit an uncorrected sample for the dark frame that
                 # repeats the last known good (non-dark) values so the live
-                # plot sees no blip at the dark-frame position.
+                # plot sees no blip at the dark-frame position.  The sample
+                # carries is_dark=True so consumers can filter it out.
                 prev = self._last_uncorrected.get(key)
                 if prev is not None:
                     dark_uncorrected = Sample(
@@ -1226,6 +1227,7 @@ class SciencePipeline:
                         bfi=prev.bfi,
                         bvi=prev.bvi,
                         is_corrected=False,
+                        is_dark=True,
                     )
                     if self._on_uncorrected_fn:
                         try:

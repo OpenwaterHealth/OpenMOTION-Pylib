@@ -182,3 +182,42 @@ class TestOnDarkFrameCallback:
         pipeline.stop(timeout=5.0)
         # At least one corrected batch proves the pipeline processed frames.
         assert len(batches) >= 1
+
+
+class TestDarkRepeatUncorrectedIsMarked:
+    """The on_uncorrected_fn also fires at dark-frame slots with a
+    repeat-previous-value Sample so live plots see no gap.  That sample
+    should now be tagged is_dark=True."""
+
+    def setup_method(self):
+        self.pipeline, self.uncorrected, self.batches, self.darks = \
+            _make_pipeline_with_dark(left_mask=0x01)
+        feed_pipeline_from_csv(
+            _fixture("single_cam_basic_left.csv"), "left", self.pipeline
+        )
+        self.pipeline.stop(timeout=5.0)
+
+    def test_light_uncorrected_samples_are_not_marked_dark(self):
+        # Frame 3 is the first dark — no prev exists yet, so no repeat sample.
+        # Frames 6 and 11 ARE dark-repeat slots.  All other emitted
+        # uncorrected samples (4, 5, 7, 8, 9, 10, 12) are genuine light.
+        dark_repeat_slots = {6, 11}
+        for s in self.uncorrected:
+            if s.absolute_frame_id in dark_repeat_slots:
+                assert s.is_dark is True, (
+                    f"Dark-repeat uncorrected sample at frame "
+                    f"{s.absolute_frame_id} must have is_dark=True"
+                )
+            else:
+                assert s.is_dark is False, (
+                    f"Light uncorrected sample at frame "
+                    f"{s.absolute_frame_id} must have is_dark=False"
+                )
+
+    def test_dark_repeat_sample_actually_emitted(self):
+        # Confirm the fixture produces the expected dark-repeat emissions.
+        abs_ids = {s.absolute_frame_id for s in self.uncorrected
+                   if s.is_dark}
+        assert abs_ids == {6, 11}, (
+            f"Expected dark-repeat uncorrected samples at {{6, 11}}, got {abs_ids}"
+        )
