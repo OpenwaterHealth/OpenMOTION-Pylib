@@ -2,6 +2,7 @@ import csv
 import logging
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1014,6 +1015,9 @@ class SciencePipeline:
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
         on_dark_frame_fn: Callable[[Sample], None] | None = None,
+        on_rolling_avg_fn: Callable[[Sample], None] | None = None,
+        rolling_avg_enabled: bool = False,
+        rolling_avg_window: int = 10,
         dark_interval: int = 600,
         discard_count: int = 9,
         expected_row_sum: int | None = None,
@@ -1026,6 +1030,13 @@ class SciencePipeline:
         self._on_uncorrected_fn = on_uncorrected_fn
         self._on_corrected_batch_fn = on_corrected_batch_fn
         self._on_dark_frame_fn = on_dark_frame_fn
+        self._on_rolling_avg_fn = on_rolling_avg_fn
+        self._rolling_avg_enabled = bool(rolling_avg_enabled)
+        self._rolling_avg_window = int(rolling_avg_window)
+        # Per (side, cam_id): deque of the last N uncorrected light Samples.
+        # Populated lazily on first light sample for that key; empty when
+        # rolling_avg_enabled is False so disabled mode has zero overhead.
+        self._rolling_buffers: dict[tuple[str, int], "deque[Sample]"] = {}
         self._dark_interval = dark_interval
         self._discard_count = discard_count
         self._expected_row_sum = expected_row_sum
@@ -1274,6 +1285,42 @@ class SciencePipeline:
                     pass
 
             self._last_uncorrected[key] = uncorrected
+
+            # --- 7. Rolling-average over the last N uncorrected light samples ---
+            # Placed in the light branch only, so dark-frame repeat samples
+            # never enter the window (the dark branch above continues before
+            # reaching this code path).
+            if self._rolling_avg_enabled and self._on_rolling_avg_fn is not None:
+                buf = self._rolling_buffers.get(key)
+                if buf is None:
+                    buf = deque(maxlen=self._rolling_avg_window)
+                    self._rolling_buffers[key] = buf
+                buf.append(uncorrected)
+
+                n = len(buf)
+                mean_avg = sum(s.mean for s in buf) / n
+                contrast_avg = sum(s.contrast for s in buf) / n
+
+                rolling_sample = Sample(
+                    side=uncorrected.side,
+                    cam_id=uncorrected.cam_id,
+                    frame_id=uncorrected.frame_id,
+                    absolute_frame_id=uncorrected.absolute_frame_id,
+                    timestamp_s=uncorrected.timestamp_s,
+                    row_sum=0,
+                    temperature_c=0.0,
+                    mean=mean_avg,
+                    std_dev=0.0,
+                    contrast=contrast_avg,
+                    bfi=0.0,
+                    bvi=0.0,
+                    is_corrected=False,
+                    is_dark=False,
+                )
+                try:
+                    self._on_rolling_avg_fn(rolling_sample)
+                except Exception:
+                    logger.exception("Error in on_rolling_avg_fn callback")
 
         # After the main loop the queue is fully drained.  The firmware
         # guarantees the very last frame of every scan is a dark (laser-off)
@@ -1541,6 +1588,9 @@ def create_science_pipeline(
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
     on_dark_frame_fn: Callable[[Sample], None] | None = None,
+    on_rolling_avg_fn: Callable[[Sample], None] | None = None,
+    rolling_avg_enabled: bool = False,
+    rolling_avg_window: int = 10,
     dark_interval: int = 600,
     discard_count: int = 9,
     expected_row_sum: int | None = None,
@@ -1563,6 +1613,19 @@ def create_science_pipeline(
         ``contrast = std_dev / mean``; ``bfi`` and ``bvi`` are 0 (not
         meaningful on a dark frame).  Registration-gated — pass None to
         disable (default).
+    on_rolling_avg_fn
+        When ``rolling_avg_enabled`` is True, fires once per uncorrected
+        light frame per camera with a ``Sample`` whose ``mean`` and
+        ``contrast`` are the arithmetic means over the last
+        ``rolling_avg_window`` light samples for that (side, cam_id).
+        Other numeric fields are zeroed.  Dark frames never enter the
+        window.  Partial windows emit (no wait for N samples to fill).
+    rolling_avg_enabled
+        When True, activates the rolling-average stage.  Default False —
+        no buffer is allocated and ``on_rolling_avg_fn`` is never invoked.
+    rolling_avg_window
+        Window size N (default 10).  Ignored when
+        ``rolling_avg_enabled`` is False.
     dark_interval
         Frames between dark frames (default 600 = 15 s at 40 Hz).
     discard_count
@@ -1584,6 +1647,9 @@ def create_science_pipeline(
         on_uncorrected_fn=on_uncorrected_fn,
         on_corrected_batch_fn=on_corrected_batch_fn,
         on_dark_frame_fn=on_dark_frame_fn,
+        on_rolling_avg_fn=on_rolling_avg_fn,
+        rolling_avg_enabled=rolling_avg_enabled,
+        rolling_avg_window=rolling_avg_window,
         dark_interval=dark_interval,
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
