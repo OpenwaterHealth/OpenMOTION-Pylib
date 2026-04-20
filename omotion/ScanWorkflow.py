@@ -185,6 +185,7 @@ class ScanWorkflow:
         on_trigger_state_fn: Callable[[str], None] | None = None,
         on_uncorrected_fn: Callable[[object], None] | None = None,
         on_corrected_batch_fn: Callable[[object], None] | None = None,
+        on_dark_frame_fn: Callable[[object], None] | None = None,
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
@@ -607,6 +608,7 @@ class ScanWorkflow:
                         bfi_i_max=self._bfi_i_max,
                         on_uncorrected_fn=_on_uncorrected_sample,
                         on_corrected_batch_fn=_on_corrected_batch,
+                        on_dark_frame_fn=on_dark_frame_fn,
                     )
 
                 def _make_row_handler(current_side: str, p):
