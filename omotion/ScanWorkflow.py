@@ -89,6 +89,12 @@ class ScanRequest:
     # bfi_left, bfi_right, bvi_left, bvi_right columns.  Uncorrected
     # samples emitted to the UI are also averaged per-side per-frame.
     reduced_mode: bool = False
+    # When True, the pipeline emits a rolling-mean Sample (mean + contrast
+    # only) via on_rolling_avg_fn once per uncorrected light frame per
+    # camera.  Window size is rolling_avg_window.  Dark frames are
+    # excluded from the window.
+    rolling_avg_enabled: bool = False
+    rolling_avg_window: int = 10
 
 
 @dataclass
@@ -186,6 +192,7 @@ class ScanWorkflow:
         on_uncorrected_fn: Callable[[object], None] | None = None,
         on_corrected_batch_fn: Callable[[object], None] | None = None,
         on_dark_frame_fn: Callable[[object], None] | None = None,
+        on_rolling_avg_fn: Callable[[object], None] | None = None,
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
@@ -609,6 +616,9 @@ class ScanWorkflow:
                         on_uncorrected_fn=_on_uncorrected_sample,
                         on_corrected_batch_fn=_on_corrected_batch,
                         on_dark_frame_fn=on_dark_frame_fn,
+                        on_rolling_avg_fn=on_rolling_avg_fn,
+                        rolling_avg_enabled=request.rolling_avg_enabled,
+                        rolling_avg_window=request.rolling_avg_window,
                     )
 
                 def _make_row_handler(current_side: str, p):
