@@ -209,6 +209,7 @@ class Sample:
     bfi: float
     bvi: float
     is_corrected: bool = False  # True when dark-frame interpolation has been applied
+    is_dark: bool = False       # True when this sample represents a laser-off (dark) frame
 
 
 @dataclass
