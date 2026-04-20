@@ -1176,14 +1176,15 @@ class SciencePipeline:
             if self._is_dark_frame(absolute_frame):
                 variance = max(0.0, u2 - u1 * u1)
 
-                # Fire on_dark_frame_fn with raw dark-baseline statistics so
-                # consumers (e.g. contact-quality logic) can observe per-camera
-                # dark levels in real time.  BFI/BVI are 0 — not meaningful on
-                # a dark frame.  mean is the raw u1 (NOT pedestal-subtracted);
-                # std_dev = sqrt(var); contrast = std_dev / mean.
+                # Fire on_dark_frame_fn with pedestal-subtracted dark-baseline
+                # statistics so callback consumers can follow the same
+                # zero-referenced mean convention used by uncorrected light
+                # samples. Internal correction state remains raw (u1/u2).
+                # BFI/BVI are 0 — not meaningful on a dark frame.
                 if self._on_dark_frame_fn is not None:
                     dark_std = float(np.sqrt(variance))
-                    dark_contrast = (dark_std / u1) if u1 > 0 else 0.0
+                    dark_mean = float(u1 - PEDESTAL_HEIGHT)
+                    dark_contrast = (dark_std / dark_mean) if dark_mean > 0 else 0.0
                     dark_sample = Sample(
                         side=side,
                         cam_id=cam_id,
@@ -1192,7 +1193,7 @@ class SciencePipeline:
                         timestamp_s=ts,
                         row_sum=row_sum,
                         temperature_c=temp,
-                        mean=u1,
+                        mean=dark_mean,
                         std_dev=dark_std,
                         contrast=dark_contrast,
                         bfi=0.0,
@@ -1608,11 +1609,11 @@ def create_science_pipeline(
         containing dark-frame-corrected samples for the entire interval.
     on_dark_frame_fn
         Fires once per scheduled dark frame with a ``Sample`` whose
-        ``is_dark=True``.  ``mean`` is the raw histogram mean (u1, not
-        pedestal-subtracted); ``std_dev = sqrt(variance)``;
-        ``contrast = std_dev / mean``; ``bfi`` and ``bvi`` are 0 (not
-        meaningful on a dark frame).  Registration-gated — pass None to
-        disable (default).
+        ``is_dark=True``.  ``mean`` is pedestal-subtracted using
+        ``PEDESTAL_HEIGHT``; ``std_dev = sqrt(variance)`` from raw moments;
+        ``contrast = std_dev / mean`` when ``mean > 0`` else ``0``;
+        ``bfi`` and ``bvi`` are 0 (not meaningful on a dark frame).
+        Registration-gated — pass None to disable (default).
     on_rolling_avg_fn
         When ``rolling_avg_enabled`` is True, fires once per uncorrected
         light frame per camera with a ``Sample`` whose ``mean`` and

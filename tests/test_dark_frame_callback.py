@@ -131,14 +131,14 @@ class TestOnDarkFrameCallback:
         for s in self.darks:
             assert s.is_corrected is False
 
-    def test_dark_sample_mean_matches_raw_u1(self):
+    def test_dark_sample_mean_is_pedestal_subtracted(self):
         # Fixture dark bins are [10, 20) -> raw u1 ~= 14.5.
-        # Dark samples are NOT pedestal-subtracted - the callback reports
-        # the raw histogram mean so consumers see the true dark baseline.
+        # on_dark_frame_fn emits pedestal-subtracted means, so expected
+        # value is roughly 14.5 - 64.0 = -49.5.
         for s in self.darks:
-            assert 10.0 < s.mean < 20.0, (
+            assert -60.0 < s.mean < -40.0, (
                 f"Dark frame {s.absolute_frame_id} mean {s.mean:.2f} "
-                f"not in expected raw-u1 range (10, 20)"
+                f"not in expected pedestal-subtracted range (-60, -40)"
             )
 
     def test_dark_sample_std_dev_nonnegative_and_finite(self):
@@ -158,6 +158,11 @@ class TestOnDarkFrameCallback:
                 assert abs(s.contrast - expected_contrast) < 1e-9, (
                     f"Dark frame {s.absolute_frame_id} contrast {s.contrast:.6f} "
                     f"does not match std/mean = {expected_contrast:.6f}"
+                )
+            else:
+                assert s.contrast == 0.0, (
+                    f"Dark frame {s.absolute_frame_id} contrast should be 0 "
+                    f"when mean <= 0, got {s.contrast:.6f}"
                 )
 
     def test_missing_dark_callback_is_a_noop(self):
