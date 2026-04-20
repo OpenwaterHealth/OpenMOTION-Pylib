@@ -66,3 +66,119 @@ class TestSampleIsDarkField:
             is_dark=True,
         )
         assert s.is_dark is True
+
+
+def _make_pipeline_with_dark(
+    left_mask: int = 0x01,
+    right_mask: int = 0x00,
+    dark_interval: int = DARK_INTERVAL,
+):
+    """Build a pipeline that collects uncorrected, corrected batches, and dark samples."""
+    uncorrected: list[Sample] = []
+    batches: list[CorrectedBatch] = []
+    dark_samples: list[Sample] = []
+
+    pipeline = create_science_pipeline(
+        left_camera_mask=left_mask,
+        right_camera_mask=right_mask,
+        bfi_c_min=BFI_C_MIN,
+        bfi_c_max=BFI_C_MAX,
+        bfi_i_min=BFI_I_MIN,
+        bfi_i_max=BFI_I_MAX,
+        on_uncorrected_fn=uncorrected.append,
+        on_corrected_batch_fn=batches.append,
+        on_dark_frame_fn=dark_samples.append,
+        dark_interval=dark_interval,
+        discard_count=DISCARD_COUNT,
+        expected_row_sum=None,
+    )
+    return pipeline, uncorrected, batches, dark_samples
+
+
+class TestOnDarkFrameCallback:
+    """on_dark_frame_fn fires once per scheduled dark frame with a Sample
+    whose is_dark=True and whose mean/std_dev come from the raw dark
+    histogram statistics."""
+
+    def setup_method(self):
+        self.pipeline, self.uncorrected, self.batches, self.darks = \
+            _make_pipeline_with_dark(left_mask=0x01)
+        feed_pipeline_from_csv(
+            _fixture("single_cam_basic_left.csv"), "left", self.pipeline
+        )
+        self.pipeline.stop(timeout=5.0)
+
+    def test_dark_callback_fires_at_every_dark_position(self):
+        abs_ids = sorted(s.absolute_frame_id for s in self.darks)
+        # DISCARD_COUNT=2, DARK_INTERVAL=5 -> darks at 3, 6, 11
+        assert abs_ids == [3, 6, 11], (
+            f"Expected dark callback at frames [3, 6, 11], got {abs_ids}"
+        )
+
+    def test_dark_callback_does_not_fire_on_light_frames(self):
+        for s in self.darks:
+            assert s.absolute_frame_id in DARK_FRAMES_5, (
+                f"Frame {s.absolute_frame_id} is not a scheduled dark position"
+            )
+
+    def test_dark_samples_have_is_dark_true(self):
+        for s in self.darks:
+            assert s.is_dark is True, (
+                f"Dark sample at frame {s.absolute_frame_id} must have is_dark=True"
+            )
+
+    def test_dark_samples_have_is_corrected_false(self):
+        for s in self.darks:
+            assert s.is_corrected is False
+
+    def test_dark_sample_mean_matches_raw_u1(self):
+        # Fixture dark bins are [10, 20) -> raw u1 ~= 14.5.
+        # Dark samples are NOT pedestal-subtracted - the callback reports
+        # the raw histogram mean so consumers see the true dark baseline.
+        for s in self.darks:
+            assert 10.0 < s.mean < 20.0, (
+                f"Dark frame {s.absolute_frame_id} mean {s.mean:.2f} "
+                f"not in expected raw-u1 range (10, 20)"
+            )
+
+    def test_dark_sample_std_dev_nonnegative_and_finite(self):
+        for s in self.darks:
+            assert s.std_dev >= 0.0 and np.isfinite(s.std_dev)
+
+    def test_dark_sample_bfi_bvi_are_zero(self):
+        # BFI/BVI are not meaningful on dark frames - the callback leaves them 0.
+        for s in self.darks:
+            assert s.bfi == 0.0
+            assert s.bvi == 0.0
+
+    def test_dark_sample_contrast_is_std_over_mean(self):
+        for s in self.darks:
+            if s.mean > 0:
+                expected_contrast = s.std_dev / s.mean
+                assert abs(s.contrast - expected_contrast) < 1e-9, (
+                    f"Dark frame {s.absolute_frame_id} contrast {s.contrast:.6f} "
+                    f"does not match std/mean = {expected_contrast:.6f}"
+                )
+
+    def test_missing_dark_callback_is_a_noop(self):
+        """Pipeline must still run correctly when on_dark_frame_fn is None."""
+        uncorrected: list[Sample] = []
+        batches: list[CorrectedBatch] = []
+        pipeline = create_science_pipeline(
+            left_camera_mask=0x01,
+            right_camera_mask=0x00,
+            bfi_c_min=BFI_C_MIN, bfi_c_max=BFI_C_MAX,
+            bfi_i_min=BFI_I_MIN, bfi_i_max=BFI_I_MAX,
+            on_uncorrected_fn=uncorrected.append,
+            on_corrected_batch_fn=batches.append,
+            on_dark_frame_fn=None,          # explicit None
+            dark_interval=DARK_INTERVAL,
+            discard_count=DISCARD_COUNT,
+            expected_row_sum=None,
+        )
+        feed_pipeline_from_csv(
+            _fixture("single_cam_basic_left.csv"), "left", pipeline
+        )
+        pipeline.stop(timeout=5.0)
+        # At least one corrected batch proves the pipeline processed frames.
+        assert len(batches) >= 1

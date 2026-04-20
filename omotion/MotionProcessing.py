@@ -1013,6 +1013,7 @@ class SciencePipeline:
         bfi_i_max,
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
+        on_dark_frame_fn: Callable[[Sample], None] | None = None,
         dark_interval: int = 600,
         discard_count: int = 9,
         expected_row_sum: int | None = None,
@@ -1024,6 +1025,7 @@ class SciencePipeline:
         self._bfi_i_max = bfi_i_max
         self._on_uncorrected_fn = on_uncorrected_fn
         self._on_corrected_batch_fn = on_corrected_batch_fn
+        self._on_dark_frame_fn = on_dark_frame_fn
         self._dark_interval = dark_interval
         self._discard_count = discard_count
         self._expected_row_sum = expected_row_sum
@@ -1162,6 +1164,36 @@ class SciencePipeline:
             # --- 5. Dark frame handling ----------------------------------------
             if self._is_dark_frame(absolute_frame):
                 variance = max(0.0, u2 - u1 * u1)
+
+                # Fire on_dark_frame_fn with raw dark-baseline statistics so
+                # consumers (e.g. contact-quality logic) can observe per-camera
+                # dark levels in real time.  BFI/BVI are 0 — not meaningful on
+                # a dark frame.  mean is the raw u1 (NOT pedestal-subtracted);
+                # std_dev = sqrt(var); contrast = std_dev / mean.
+                if self._on_dark_frame_fn is not None:
+                    dark_std = float(np.sqrt(variance))
+                    dark_contrast = (dark_std / u1) if u1 > 0 else 0.0
+                    dark_sample = Sample(
+                        side=side,
+                        cam_id=cam_id,
+                        frame_id=raw_frame_id,
+                        absolute_frame_id=absolute_frame,
+                        timestamp_s=ts,
+                        row_sum=row_sum,
+                        temperature_c=temp,
+                        mean=u1,
+                        std_dev=dark_std,
+                        contrast=dark_contrast,
+                        bfi=0.0,
+                        bvi=0.0,
+                        is_corrected=False,
+                        is_dark=True,
+                    )
+                    try:
+                        self._on_dark_frame_fn(dark_sample)
+                    except Exception:
+                        logger.exception("Error in on_dark_frame_fn callback")
+
                 dark_list = self._dark_history.setdefault(key, [])
                 dark_list.append((absolute_frame, raw_frame_id, ts, u1, variance))
                 logger.debug(
@@ -1506,6 +1538,7 @@ def create_science_pipeline(
     bfi_i_max,
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
+    on_dark_frame_fn: Callable[[Sample], None] | None = None,
     dark_interval: int = 600,
     discard_count: int = 9,
     expected_row_sum: int | None = None,
@@ -1521,6 +1554,13 @@ def create_science_pipeline(
     on_corrected_batch_fn
         Fires once per dark-frame interval with a ``CorrectedBatch``
         containing dark-frame-corrected samples for the entire interval.
+    on_dark_frame_fn
+        Fires once per scheduled dark frame with a ``Sample`` whose
+        ``is_dark=True``.  ``mean`` is the raw histogram mean (u1, not
+        pedestal-subtracted); ``std_dev = sqrt(variance)``;
+        ``contrast = std_dev / mean``; ``bfi`` and ``bvi`` are 0 (not
+        meaningful on a dark frame).  Registration-gated — pass None to
+        disable (default).
     dark_interval
         Frames between dark frames (default 600 = 15 s at 40 Hz).
     discard_count
@@ -1541,6 +1581,7 @@ def create_science_pipeline(
         bfi_i_max=bfi_i_max,
         on_uncorrected_fn=on_uncorrected_fn,
         on_corrected_batch_fn=on_corrected_batch_fn,
+        on_dark_frame_fn=on_dark_frame_fn,
         dark_interval=dark_interval,
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
