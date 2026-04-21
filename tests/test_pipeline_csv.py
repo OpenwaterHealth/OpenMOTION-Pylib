@@ -189,9 +189,12 @@ class TestDarkCorrectionMath:
     """
     Verify the dark-correction arithmetic produces plausible values.
 
-    Regular frames use bins [400, 500)  → mean ≈ 449.5
-    Dark    frames use bins  [10,  20)  → mean ≈  14.5
-    After correction: corrected_mean ≈ 449.5 − 14.5 = 435
+    Regular frames use bins [400, 500)  → raw mean ≈ 449.5
+    Dark    frames use bins  [10,  20)  → raw mean ≈  14.5
+
+    Uncorrected Sample.mean = raw_mean − PEDESTAL(64) ≈ 385.5
+    Corrected   Sample.mean = raw_u1 − dark_u1 ≈ 449.5 − 14.5 = 435
+    (pedestal cancels in the dark-subtraction path)
     """
 
     def setup_method(self):
@@ -223,13 +226,13 @@ class TestDarkCorrectionMath:
                     )
 
     def test_uncorrected_mean_approx(self):
-        """Uncorrected mean (from regular histogram) should be close to 449.5."""
+        """Uncorrected mean should be close to 449.5 − PEDESTAL(64) = 385.5."""
         regular = [s for s in self.uncorrected
                    if s.absolute_frame_id not in DARK_FRAMES_5]
         for s in regular:
-            assert 440 < s.mean < 460, (
+            assert 375 < s.mean < 396, (
                 f"Frame {s.absolute_frame_id}: uncorrected mean {s.mean:.2f} "
-                f"not close to expected ~449.5"
+                f"not close to expected ~385.5 (449.5 − 64 pedestal)"
             )
 
     def test_bfi_bvi_in_range(self):

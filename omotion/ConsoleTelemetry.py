@@ -43,6 +43,18 @@ _SAFETY_SE_CHANNEL: int = 6
 _SAFETY_SO_CHANNEL: int = 7
 _SAFETY_REG: int = 0x24
 _SAFETY_LEN: int = 1
+_SAFETY_FAULT_MASK: int = 0x07
+_SAFETY_RESERVED_MASK: int = 0xF8
+_SAFETY_FAULTS = {
+    0x01: "POWER_PEAK_CURRENT_LIMIT_FAIL",
+    0x02: "PULSE_UPPER_LIMIT_FAIL_OR_PULSE_LOWER_LIMIT_FAIL",
+    0x04: "RATE_LOWER_LIMIT_FAIL",
+}
+
+
+def _decode_safety_faults(raw_byte: int) -> List[str]:
+    """Decode safety interlock fault bits [2:0] into readable labels."""
+    return [label for bit, label in _SAFETY_FAULTS.items() if (raw_byte & bit) != 0]
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +300,34 @@ class ConsoleTelemetryPoller:
             return
         snap.safety_se = se_raw[0]
         snap.safety_so = so_raw[0]
-        snap.safety_ok = (snap.safety_se & 0x0F) == 0 and (snap.safety_so & 0x0F) == 0
+        se_faults = _decode_safety_faults(snap.safety_se & _SAFETY_FAULT_MASK)
+        so_faults = _decode_safety_faults(snap.safety_so & _SAFETY_FAULT_MASK)
+        snap.safety_ok = not se_faults and not so_faults
+
+        if se_faults:
+            logger.error(
+                "Safety interlock SE faults: %s (raw=0x%02X)",
+                ", ".join(se_faults),
+                snap.safety_se,
+            )
+        if so_faults:
+            logger.error(
+                "Safety interlock SO faults: %s (raw=0x%02X)",
+                ", ".join(so_faults),
+                snap.safety_so,
+            )
+
+        # Bits [7:3] are reserved and expected to be zero.
+        if (snap.safety_se & _SAFETY_RESERVED_MASK) != 0:
+            logger.warning(
+                "Safety interlock SE has unexpected reserved bits set: raw=0x%02X",
+                snap.safety_se,
+            )
+        if (snap.safety_so & _SAFETY_RESERVED_MASK) != 0:
+            logger.warning(
+                "Safety interlock SO has unexpected reserved bits set: raw=0x%02X",
+                snap.safety_so,
+            )
 
     def _read_analog(self, snap: ConsoleTelemetry) -> None:
         snap.tcm = int(self._console.get_lsync_pulsecount())
