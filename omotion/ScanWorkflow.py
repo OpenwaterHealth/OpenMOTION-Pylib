@@ -188,6 +188,10 @@ class ScanWorkflow:
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
+        contact_quality_callback: Callable[[object], None] | None = None,
+        contact_quality_monitor: object | None = None,
+        cq_dark_thresholds: list[float] | None = None,
+        cq_light_thresholds: list[float] | None = None,
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
@@ -606,7 +610,11 @@ class ScanWorkflow:
                         bfi_i_min=self._bfi_i_min,
                         bfi_i_max=self._bfi_i_max,
                         on_uncorrected_fn=_on_uncorrected_sample,
+                        on_contact_quality_warning=contact_quality_callback,
                         on_corrected_batch_fn=_on_corrected_batch,
+                        contact_quality_monitor=contact_quality_monitor,
+                        cq_dark_thresholds=cq_dark_thresholds,
+                        cq_light_thresholds=cq_light_thresholds,
                     )
 
                 def _make_row_handler(current_side: str, p):
@@ -1049,14 +1057,22 @@ class ScanWorkflow:
 
                         status_map = sensor.get_camera_status(cam_mask_single)
                         if not status_map or pos not in status_map:
-                            raise RuntimeError(
-                                f"Failed to read camera status for {side} camera {pos1}."
+                            _emit_log(
+                                f"{side} camera {pos1}: unable to read status, skipping."
                             )
+                            with done_lock:
+                                done[0] += 2
+                            _emit_progress(int(done[0] / total * 100))
+                            continue
                         status = status_map[pos]
                         if not status & (1 << 0):
-                            raise RuntimeError(
-                                f"{side} camera {pos1} not READY for FPGA/config."
+                            _emit_log(
+                                f"{side} camera {pos1}: not READY, skipping."
                             )
+                            with done_lock:
+                                done[0] += 2
+                            _emit_progress(int(done[0] / total * 100))
+                            continue
 
                         _emit_log(
                             f"Programming {side} camera FPGA at position {pos1} "

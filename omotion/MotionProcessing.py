@@ -1011,17 +1011,41 @@ class SciencePipeline:
         bfi_i_min,
         bfi_i_max,
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
+        on_contact_quality_warning: "Callable[[ 'ContactQualityWarning' ], None] | None" = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
         dark_interval: int = 600,
         discard_count: int = 9,
         expected_row_sum: int | None = None,
         noise_floor: int = 10,
+        contact_quality_monitor: "ContactQualityMonitor | None" = None,
+        cq_dark_thresholds: "list[float] | None" = None,
+        cq_light_thresholds: "list[float] | None" = None,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
         self._bfi_i_min = bfi_i_min
         self._bfi_i_max = bfi_i_max
         self._on_uncorrected_fn = on_uncorrected_fn
+
+        # Contact-quality monitor wiring (optional). Local import to avoid
+        # an import cycle between MotionProcessing and ContactQuality.
+        from omotion.ContactQuality import ContactQualityMonitor  # noqa: WPS433
+        self._on_contact_quality_warning = on_contact_quality_warning
+        # Callers (e.g. ``run_contact_quality_check``) may inject an
+        # explicit monitor so they can call ``finalize()`` / inspect state
+        # after the pipeline has stopped. Otherwise, if a warning callback
+        # was provided, create a monitor internally for live-scan use.
+        if contact_quality_monitor is not None:
+            self._cq_monitor = contact_quality_monitor
+        elif on_contact_quality_warning is not None:
+            self._cq_monitor = ContactQualityMonitor(
+                pedestal=PEDESTAL_HEIGHT,
+                dark_thresholds=cq_dark_thresholds,
+                light_thresholds=cq_light_thresholds,
+            )
+        else:
+            self._cq_monitor = None
+
         self._on_corrected_batch_fn = on_corrected_batch_fn
         self._dark_interval = dark_interval
         self._discard_count = discard_count
@@ -1199,6 +1223,20 @@ class SciencePipeline:
                             self._on_uncorrected_fn(dark_uncorrected)
                         except Exception:
                             pass
+
+                # Feed the contact-quality monitor with the post-noise-floor,
+                # pre-pedestal dark-frame mean so it can flag ambient-light leakage.
+                # Noise-floor zeroing leaves ambient detection unaffected (ambient
+                # signal is well above floor); poor-contact threshold is calibrated
+                # against this same post-floor mean.
+                if self._cq_monitor is not None:
+                    for w in self._cq_monitor.update_dark(
+                        int(cam_id), u1, int(absolute_frame), side=side,
+                    ):
+                        try:
+                            self._on_contact_quality_warning(w)
+                        except Exception:
+                            logger.exception("contact-quality callback failed")
                 continue
 
             # --- 5. Store moments for later dark-frame correction --------------
@@ -1237,6 +1275,20 @@ class SciencePipeline:
                     self._on_uncorrected_fn(uncorrected)
                 except Exception:
                     pass
+
+            # Feed the contact-quality monitor with the post-noise-floor,
+            # pre-pedestal laser-on mean so it can flag sustained low-light / poor contact.
+            # Noise-floor zeroing leaves ambient detection unaffected (ambient signal
+            # is well above floor); poor-contact threshold is calibrated against this
+            # same post-floor mean.
+            if self._cq_monitor is not None:
+                for w in self._cq_monitor.update_light(
+                    int(cam_id), u1, int(absolute_frame), side=side,
+                ):
+                    try:
+                        self._on_contact_quality_warning(w)
+                    except Exception:
+                        logger.exception("contact-quality callback failed")
 
             self._last_uncorrected[key] = uncorrected
 
@@ -1504,11 +1556,15 @@ def create_science_pipeline(
     bfi_i_min,
     bfi_i_max,
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
+    on_contact_quality_warning: "Callable[[ 'ContactQualityWarning' ], None] | None" = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
     dark_interval: int = 600,
     discard_count: int = 9,
     expected_row_sum: int | None = None,
     noise_floor: int = 10,
+    contact_quality_monitor: "ContactQualityMonitor | None" = None,
+    cq_dark_thresholds: "list[float] | None" = None,
+    cq_light_thresholds: "list[float] | None" = None,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
@@ -1539,11 +1595,15 @@ def create_science_pipeline(
         bfi_i_min=bfi_i_min,
         bfi_i_max=bfi_i_max,
         on_uncorrected_fn=on_uncorrected_fn,
+        on_contact_quality_warning=on_contact_quality_warning,
         on_corrected_batch_fn=on_corrected_batch_fn,
         dark_interval=dark_interval,
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
         noise_floor=noise_floor,
+        contact_quality_monitor=contact_quality_monitor,
+        cq_dark_thresholds=cq_dark_thresholds,
+        cq_light_thresholds=cq_light_thresholds,
     )
     pipeline.start()
     return pipeline
