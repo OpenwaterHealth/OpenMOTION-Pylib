@@ -94,106 +94,49 @@ once or twice in a row.
 **Fail signals:** handle ends in any state other than CONNECTED with
 the cable plugged in. Repeated retry-exhausted entries.
 
-## Test 4 — Hot replug during scan, **under 5 s** (recovery)
+## Test 4 — Mid-scan disconnect aborts immediately
 
-**Goal:** confirm the 5 s grace window restores streaming without
-aborting the scan.
+**Goal:** any device dropping mid-scan aborts the scan cleanly with a
+specific reason. There is no grace window.
 
 1. Start a scan with both sensors enabled.
-2. Wait until you see the scan plotting data normally (~5 s in).
-3. Unplug the LEFT sensor cable.
-4. Count "one-mississippi, two-mississippi, three-mississippi"
-   (about 3 s).
-5. Plug the LEFT sensor back in.
-6. Let the scan run for another 10 s.
-7. Stop the scan normally.
+2. Wait ~5 s into the scan.
+3. Unplug any one of: LEFT sensor / RIGHT sensor / CONSOLE.
+4. Replug it (or don't — replug timing doesn't change scan behavior;
+   it's just to get the device back for the next test).
 
 **Expect in log:**
 
 - At scan start: three `scan: subscribed to <name> state changes`
   INFO lines (one per participating handle).
-- On unplug: `scan: left disconnected mid-scan
-  (usb_io_error:errno=32); 5.0 s grace started` (WARNING).
-- `… left state CONNECTED → DISCONNECTING → DISCONNECTED`.
-- After replug (~3 s gap): `… left state DISCONNECTED → CONNECTING →
-  CONNECTED`.
-- `scan: left recovered after 3.X s; resuming streaming` (INFO).
-- Scan continues, completes normally (`Scan stopped`, not "Capture
-  canceled").
-- The right sensor's plot and CSV row count are unaffected (no gap in
-  its data).
-- The left sensor's CSV/plot has a temporal gap visible in the
-  timestamps (~3 s).
-
-**Fail signals:** scan aborts ("Capture canceled"); no `scan: left
-recovered` line; left plot stops permanently; AttributeError on
-`sensor.uart.histo` from the post-scan summary.
-
-## Test 5 — Hot replug during scan, **over 5 s** (clean abort)
-
-**Goal:** confirm the scan aborts cleanly when the grace window expires.
-
-1. Start a scan with both sensors enabled.
-2. Wait ~5 s into the scan.
-3. Unplug the LEFT sensor cable.
-4. Wait 8 seconds (past the 5 s grace).
-5. Plug it back in (not strictly necessary but proves the late return
-   is handled).
-
-**Expect in log:**
-
-- `scan: left disconnected mid-scan ...; 5.0 s grace started` (WARNING).
-- 5 s later: `scan: left did not return within 5.0 s grace; aborting`
+- On unplug: `scan: <name> disconnected mid-scan (...); aborting`
   (ERROR).
-- Scan completes with reason `left did not return within 5 s grace
-  window`.
+- `… <name> state CONNECTED → DISCONNECTING → DISCONNECTED`.
+- Scan completes with reason `<name> disconnected mid-scan (...)`.
 - A *single* clean abort, not a flurry of retries or "release failed"
   warnings.
-- After the late replug, normal CONNECTING → CONNECTED on left, with
-  no scan-recovery messages (scan already aborted).
+- After replug, normal CONNECTING → CONNECTED with no scan-related
+  messages (scan already finished).
 
-**Fail signals:** flurry of errors; scan hangs instead of aborting;
-multiple grace-expired log entries.
+Repeat the test for each of LEFT, RIGHT, CONSOLE to confirm the abort
+behavior is symmetric across handle types.
 
-## Test 6 — Console drop during scan
-
-**Goal:** console drop kills the trigger but each sensor's grace window
-applies independently. Console recovery within the grace window must
-restart the trigger.
-
-1. Start a scan with both sensors enabled.
-2. Wait ~5 s.
-3. Briefly unplug-replug the CONSOLE cable (under 5 s).
-
-**Expect:**
-
-- `scan: console disconnected mid-scan ...; 5.0 s grace started`
-  (WARNING).
-- Both sensor plots stop (no FSYNC trigger).
-- Console reconnects within a few seconds.
-- `scan: console recovered after X s; resuming streaming` (INFO).
-- Console trigger is restarted automatically; sensor plots resume.
-- Scan completes normally.
-
-**Fail signals:** scan aborts on console drop alone; sensor plots don't
-resume after console returns; trigger doesn't restart.
+**Fail signals:** scan hangs instead of aborting; multiple abort log
+entries; AttributeError or other exception in the worker.
 
 ## What success looks like overall
 
-After running all six tests, the log should contain:
+After running all four tests, the log should contain:
 
 - WARNING lines only for the read-thread `USB read error errno=32` on
-  unplug, and for the `scan: <name> disconnected mid-scan ...; grace
-  started` notices.
-- ERROR lines only for the genuinely-aborted Test 5 case
-  (`did not return within 5.0 s grace`).
+  unplug.
+- ERROR lines only for Test 4's `scan: <name> disconnected mid-scan
+  (...); aborting`.
 - No `Unexpected error during X`, no `Serial error in send_packet`, no
   `Error getting fan control status`, no `release failed`, no
   `object deleted`, no AttributeErrors.
 - Reconnect detection latency under ~250 ms in every case (poll
   fallback) or under ~50 ms (Win32 hotplug path).
-- Mid-scan recovery within 5 s shows only as a timestamp gap in the
-  output histogram CSV — no scan abort, no missing rows after the gap.
 
 If anything fails, capture the relevant log section (with the filter
 above) and the rough wall-clock timing of the physical action you

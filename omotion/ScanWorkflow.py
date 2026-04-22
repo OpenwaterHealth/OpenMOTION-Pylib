@@ -124,11 +124,6 @@ class ConfigureResult:
 
 
 class ScanWorkflow:
-    # Mid-scan recovery: how long a participating handle may stay in
-    # DISCONNECTING before the scan aborts. Within this window the scan
-    # pauses for that handle and resumes if it returns to CONNECTED.
-    GRACE_WINDOW_S = 5.0
-
     def __init__(self, interface: "MotionInterface"):
         self._interface = interface
         self._thread: threading.Thread | None = None
@@ -144,13 +139,10 @@ class ScanWorkflow:
         self._bfi_i_min = None
         self._bfi_i_max = None
 
-        # Mid-scan recovery state (reset on each scan start)
-        self._recovery_lock = threading.Lock()
+        # Per-scan state for the disconnect-abort subscription. Reset at
+        # each scan start by _scan_subscribe_state.
         self._scan_subs: list[tuple] = []  # (signal, handler) pairs
-        self._scan_recovery: dict[str, dict] = {}  # handle.name -> {loss_t, timer}
         self._scan_active_handles: list = []
-        self._scan_active_queues: dict[str, "queue.Queue"] = {}
-        self._scan_request = None
         self._scan_abort_reason: str | None = None
 
     @property
@@ -789,16 +781,11 @@ class ScanWorkflow:
                         on_side_stream_fn(side, filepath)
 
                 # Subscribe to state changes on the participating handles so
-                # mid-scan disconnects can be handled (5 s grace window:
-                # recover if the device returns within 5 s, abort otherwise).
+                # any mid-scan disconnect aborts the scan immediately.
                 # Subscribed handles include the console (whose loss stops
                 # the FSYNC trigger) and every active sensor.
                 _scan_handles = [self._interface.console] + [s for _, _, s in active_sides]
-                self._scan_subscribe_state(
-                    handles=_scan_handles,
-                    writer_queues=writer_queues,
-                    request=request,
-                )
+                self._scan_subscribe_state(handles=_scan_handles)
 
                 # Arm host-side streaming before enabling cameras so the first
                 # frame packet is not missed at scan start.
@@ -833,9 +820,8 @@ class ScanWorkflow:
 
                 ok = not self._stop_evt.is_set()
                 if not ok:
-                    # If the stop was triggered by a mid-scan disconnect
-                    # blowing past the grace window, prefer that specific
-                    # reason over the generic "Capture canceled".
+                    # If the stop was triggered by a mid-scan disconnect,
+                    # prefer that specific reason over "Capture canceled".
                     err = self._scan_abort_reason or "Capture canceled"
             except Exception as e:
                 ok = False
@@ -852,7 +838,7 @@ class ScanWorkflow:
 
                 # Stop reacting to handle state changes — the scan is
                 # done, so any further disconnects shouldn't influence
-                # this run. Cancels any pending grace timers.
+                # this run.
                 self._scan_unsubscribe_state()
 
                 time.sleep(0.5)
@@ -1218,32 +1204,24 @@ class ScanWorkflow:
         return bool(result)
 
     # ──────────────────────────────────────────────────────────────────
-    # Mid-scan recovery (5 s grace window per participating handle)
+    # Mid-scan disconnect handling: abort immediately
     # ──────────────────────────────────────────────────────────────────
     #
-    # The state machine on each handle is pure: DISCONNECTING -> DISCONNECTED
-    # happens as soon as the transport is released. Whether to abort the
-    # scan or wait for a possible reconnect is policy that lives here.
+    # ScanWorkflow subscribes to signal_state_changed on every handle the
+    # scan is using (always the console, plus the participating sensors).
+    # If any of them transitions to DISCONNECTING during the scan, we set
+    # _scan_abort_reason and trip _stop_evt — the main scan loop polls
+    # _stop_evt and unwinds via its existing finally cleanup. There is no
+    # recovery: a scan with a missing device is invalid, so the next scan
+    # starts cleanly from a known-good state.
     #
-    # When a participating handle drops, we start a 5 s timer. If the
-    # handle reaches CONNECTED again before the timer fires, we restart
-    # streaming and the scan continues — packet timestamps preserve the
-    # gap for downstream tools. If the timer fires first, we set
-    # `_scan_abort_reason` and trip `_stop_evt`, which the main scan
-    # loop already polls.
+    # The scan worker's exception handler picks up _scan_abort_reason
+    # in place of "Capture canceled" so the result message names the
+    # specific handle that dropped.
 
-    def _scan_subscribe_state(
-        self,
-        handles: list,
-        writer_queues: "dict[str, queue.Queue]",
-        request,
-    ) -> None:
-        with self._recovery_lock:
-            self._scan_active_handles = list(handles)
-            self._scan_active_queues = dict(writer_queues)
-            self._scan_request = request
-            self._scan_recovery.clear()
-            self._scan_abort_reason = None
+    def _scan_subscribe_state(self, handles: list) -> None:
+        self._scan_active_handles = list(handles)
+        self._scan_abort_reason = None
 
         # ScanWorkflow is not a QObject. Auto-connection sees that and
         # tries to deliver cross-thread emits via the receiver's event
@@ -1276,18 +1254,7 @@ class ScanWorkflow:
             except Exception:
                 pass
         self._scan_subs = []
-        with self._recovery_lock:
-            for rec in self._scan_recovery.values():
-                t = rec.get("timer")
-                if t is not None:
-                    try:
-                        t.cancel()
-                    except Exception:
-                        pass
-            self._scan_recovery.clear()
-            self._scan_active_handles = []
-            self._scan_active_queues = {}
-            self._scan_request = None
+        self._scan_active_handles = []
 
     def _make_state_handler(self, handle):
         # Bound closure so we can disconnect the same callable later.
@@ -1300,162 +1267,12 @@ class ScanWorkflow:
             return
         if handle not in self._scan_active_handles:
             return
-        if new == ConnectionState.DISCONNECTING:
-            with self._recovery_lock:
-                if handle.name in self._scan_recovery:
-                    return  # already tracking this loss
-                timer = threading.Timer(
-                    self.GRACE_WINDOW_S,
-                    self._on_grace_expired,
-                    args=[handle.name],
-                )
-                timer.daemon = True
-                self._scan_recovery[handle.name] = {
-                    "loss_t": time.monotonic(),
-                    "timer": timer,
-                }
-                timer.start()
-            logger.warning(
-                "scan: %s disconnected mid-scan (%s); %.1f s grace started",
-                handle.name, reason, self.GRACE_WINDOW_S,
+        if new == ConnectionState.DISCONNECTING and not self._stop_evt.is_set():
+            logger.error(
+                "scan: %s disconnected mid-scan (%s); aborting",
+                handle.name, reason,
             )
-        elif new == ConnectionState.CONNECTED:
-            with self._recovery_lock:
-                rec = self._scan_recovery.pop(handle.name, None)
-            if rec is None:
-                return  # not in recovery
-            t = rec.get("timer")
-            if t is not None:
-                t.cancel()
-            gap = time.monotonic() - rec["loss_t"]
-            if gap >= self.GRACE_WINDOW_S:
-                # Timer already fired and aborted the scan — late return,
-                # nothing to do.
-                return
-            logger.info(
-                "scan: %s recovered after %.1f s; resuming streaming",
-                handle.name, gap,
+            self._scan_abort_reason = (
+                f"{handle.name} disconnected mid-scan ({reason})"
             )
-            try:
-                self._resume_recovery(handle)
-            except Exception as e:
-                logger.error(
-                    "scan: _resume_recovery on %s failed: %s", handle.name, e
-                )
-                self._scan_abort_reason = (
-                    f"{handle.name} recovery failed: {e}"
-                )
-                self._stop_evt.set()
-
-    def _on_grace_expired(self, handle_name: str) -> None:
-        if not self.running:
-            return
-        with self._recovery_lock:
-            still_recovering = handle_name in self._scan_recovery
-        if not still_recovering:
-            return  # came back just before the timer fired
-        logger.error(
-            "scan: %s did not return within %.1f s grace; aborting",
-            handle_name, self.GRACE_WINDOW_S,
-        )
-        self._scan_abort_reason = (
-            f"{handle_name} did not return within "
-            f"{self.GRACE_WINDOW_S:.0f} s grace window"
-        )
-        self._stop_evt.set()
-
-    def _resume_recovery(self, handle) -> None:
-        """Restart streaming on the recovered handle's writer queue.
-
-        The writer thread for this side is parked on q.get(); restarting
-        the StreamInterface on the same queue resumes data flow without
-        the writer needing to know anything happened. Packet timestamps
-        carry the gap to downstream tools."""
-        side = handle.name  # "left" / "right"
-        q = self._scan_active_queues.get(side)
-        request = self._scan_request
-        logger.info(
-            "scan: _resume_recovery(%s) entered — queue=%s, request=%s, uart=%s",
-            side, q is not None, request is not None, handle.uart is not None,
-        )
-        if q is None or request is None:
-            logger.warning(
-                "scan: cannot resume %s — no queue or request on record", side
-            )
-            return
-        if handle.uart is None:
-            logger.warning(
-                "scan: cannot resume %s — handle.uart is None despite CONNECTED",
-                side,
-            )
-            return
-        # Drain anything that may have landed in the host-side endpoint
-        # buffer between disconnect and reconnect (or from the MCU's own
-        # FIFO right before the cable was yanked).
-        try:
-            flushed = handle.uart.histo.flush_stale_data(
-                expected_size=request.expected_size
-            )
-            logger.info("scan: flushed %d stale bytes from %s histo", flushed, side)
-        except Exception as e:
-            logger.warning(
-                "scan: flush_stale_data on %s during recovery failed: %s",
-                side, e,
-            )
-        # Re-enable the camera stream on the device. When the sensor
-        # disconnects mid-scan, the firmware may stop emitting (the host's
-        # USB IN endpoint goes idle); the host-side stream restart alone
-        # is not enough to coax fresh frames out of the MCU. Re-asserting
-        # OW_CAMERA_STREAM with the same camera mask gets the firmware
-        # producing histograms again.
-        try:
-            mask = next(
-                (m for s, m, h in self._scan_active_handles_with_masks() if h is handle),
-                None,
-            )
-            if mask is not None:
-                logger.info(
-                    "scan: re-asserting camera stream on %s with mask 0x%02X",
-                    side, mask,
-                )
-                self._interface.run_on_sensors(
-                    "enable_camera", mask, target=side
-                )
-        except Exception as e:
-            logger.warning(
-                "scan: re-enable camera stream on %s during recovery failed: %s",
-                side, e,
-            )
-        handle.uart.histo.start_streaming(
-            q, expected_size=request.expected_size
-        )
-        logger.info("scan: %s histo streaming restarted on writer queue", side)
-        # If the handle is the console, the FSYNC/LSYNC trigger lines have
-        # been silent during the gap — both sensors stopped getting frames
-        # but each independently tracks its own grace window. We restart
-        # the trigger so frames flow again.
-        if handle is getattr(self._interface, "console", None):
-            try:
-                handle.start_trigger()
-                logger.info("scan: console trigger restarted after recovery")
-            except Exception as e:
-                logger.error("scan: console.start_trigger after recovery failed: %s", e)
-                raise
-
-    def _scan_active_handles_with_masks(self):
-        """Yield (side, mask, handle) for the participating sensors.
-
-        Used by recovery to find which camera mask to re-arm on a
-        sensor that just came back. The console handle isn't included
-        here (it has no per-camera mask)."""
-        for side in ("left", "right"):
-            handle = getattr(self._interface, side, None)
-            if handle is None or handle not in self._scan_active_handles:
-                continue
-            mask = (
-                self._scan_request.left_camera_mask if side == "left"
-                else self._scan_request.right_camera_mask
-            ) if self._scan_request is not None else None
-            if mask is None:
-                continue
-            yield side, int(mask), handle
+            self._stop_evt.set()
