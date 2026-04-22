@@ -18,7 +18,7 @@ from omotion.MotionProcessing import (
 )
 
 if TYPE_CHECKING:
-    from omotion.Interface import MOTIONInterface
+    from omotion.MotionInterface import MotionInterface
 
 logger = logging.getLogger(f"{_log_root}.ScanWorkflow" if _log_root else "ScanWorkflow")
 
@@ -123,7 +123,7 @@ class ConfigureResult:
 
 
 class ScanWorkflow:
-    def __init__(self, interface: "MOTIONInterface"):
+    def __init__(self, interface: "MotionInterface"):
         self._interface = interface
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
@@ -171,8 +171,8 @@ class ScanWorkflow:
         if side_key not in ("left", "right"):
             logger.error("Invalid side for get_single_histogram: %s", side)
             return None
-        sensor = self._interface.sensors.get(side_key) if self._interface.sensors else None
-        if not sensor or not sensor.is_connected():
+        sensor = getattr(self._interface, side_key, None)
+        if sensor is None or not sensor.is_connected():
             logger.error("%s sensor not connected", side_key.capitalize())
             return None
         return sensor.get_camera_histogram(
@@ -275,7 +275,7 @@ class ScanWorkflow:
                 # Open the telemetry CSV and register a listener on the poller.
                 # The guard handles headless configs where there is no console module.
                 _telem_poller = getattr(
-                    getattr(self._interface, "console_module", None), "telemetry", None
+                    getattr(self._interface, "console", None), "telemetry", None
                 )
                 if _telem_poller is not None and request.write_telemetry_csv:
                     try:
@@ -773,7 +773,7 @@ class ScanWorkflow:
                         )
 
                 _emit_log("Starting trigger...")
-                if not self._interface.console_module.start_trigger():
+                if not self._interface.console.start_trigger():
                     raise RuntimeError("Failed to start trigger.")
                 if on_trigger_state_fn:
                     on_trigger_state_fn("ON")
@@ -803,7 +803,7 @@ class ScanWorkflow:
                     on_error_fn(e)
             finally:
                 try:
-                    self._interface.console_module.stop_trigger()
+                    self._interface.console.stop_trigger()
                 except Exception:
                     pass
                 if on_trigger_state_fn:
@@ -950,8 +950,8 @@ class ScanWorkflow:
     def cancel_scan(self, *, join_timeout: float = 5.0) -> None:
         self._stop_evt.set()
         try:
-            if self._interface and self._interface.console_module:
-                self._interface.console_module.stop_trigger()
+            if self._interface and self._interface.console:
+                self._interface.console.stop_trigger()
         except Exception:
             pass
         if self._thread and self._thread.is_alive():
@@ -1147,14 +1147,14 @@ class ScanWorkflow:
 
     def _resolve_active_sides(self, left_mask: int, right_mask: int):
         sides_info = [
-            ("left", left_mask, self._interface.sensors.get("left")),
-            ("right", right_mask, self._interface.sensors.get("right")),
+            ("left", left_mask, self._interface.left),
+            ("right", right_mask, self._interface.right),
         ]
         active = []
         for side, mask, sensor in sides_info:
             if int(mask) == 0x00:
                 continue
-            if not (sensor and sensor.is_connected()):
+            if not sensor.is_connected():
                 continue
             active.append((side, int(mask), sensor))
         return active

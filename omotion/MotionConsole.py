@@ -2,11 +2,16 @@ import logging
 import struct
 import json
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
-from omotion import MOTIONUart, _log_root
+from omotion import _log_root
+from omotion.MotionUart import MotionUart
 from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
+from omotion.connection_state import ConnectionState
+from omotion.signal_wrapper import SignalWrapper
 from omotion.config import (
     FPGA_PROG_CFG_READ_PAGE,
     FPGA_PROG_CFG_RESET,
@@ -111,33 +116,234 @@ def _parse_pdu_mon(payload: bytes) -> PDUMon:
     return PDUMon(raws=raws, volts=volts)
 
 
-class MOTIONConsole:
-    def __init__(self, uart: MOTIONUart):
-        """
-        Initialize the MOTIONConsole Module.
-        """
+class MotionConsole(SignalWrapper):
+    """Stable handle for the console device.
 
-        self.uart = uart
+    The handle is constructed once by ``MotionInterface`` and lives for its
+    entire lifetime — it is **never replaced**. Apps can cache the reference
+    and connect Qt slots to ``signal_state_changed`` once.
 
-        # Telemetry poller – started/stopped by MOTIONInterface on connect/disconnect
+    The connection lifecycle is owned by ``ConnectionMonitor``, which calls
+    ``_handle_event`` from its single worker thread. The on-entry sequence
+    for ``CONNECTING`` (open serial → ping → version) runs synchronously on
+    that thread with a 5-step retry backoff for the post-enumeration
+    "resource busy" window.
+    """
+
+    name: str = "console"
+
+    def __init__(
+        self,
+        vid: int,
+        pid: int,
+        baudrate: int = 921600,
+        timeout: int = 10,
+        demo_mode: bool = False,
+    ):
+        super().__init__()
+        self.uart = MotionUart(
+            vid=vid,
+            pid=pid,
+            baudrate=baudrate,
+            timeout=timeout,
+            desc="console",
+            demo_mode=demo_mode,
+            on_io_error=self._on_uart_io_error,
+        )
         self.telemetry = ConsoleTelemetryPoller(self)
 
-        if self.uart and not self.uart.asyncMode:
-            self.uart.check_usb_status()
-            if self.uart.is_connected():
-                logger.info("MOTION MOTIONConsole connected.")
-            else:
-                logger.info("MOTION MOTIONConsole NOT Connected.")
+        self._state = ConnectionState.DISCONNECTED
+        self._state_cv = threading.Condition()
+        self._monitor = None  # set by MotionInterface.start()
+        self._version = "v0.0.0"
+
+    # ──────────────────────────────────────────────────────────────────
+    # State (read-only from outside)
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def state(self) -> ConnectionState:
+        return self._state
 
     def is_connected(self) -> bool:
-        """
-        Check if the MOTIONConsole is connected.
-        Returns True if connected, False otherwise.
-        """
-        if self.uart and self.uart.is_connected():
-            return True
-        else:
-            return False
+        return self._state == ConnectionState.CONNECTED
+
+    def wait_for(self, target: ConnectionState, timeout: float = 5.0) -> bool:
+        """Block until ``state == target`` or ``timeout`` elapses."""
+        with self._state_cv:
+            return self._state_cv.wait_for(
+                lambda: self._state == target, timeout=timeout
+            )
+
+    def request_disconnect(self) -> None:
+        """Ask the monitor to disconnect this handle. Idempotent."""
+        if self._monitor is None:
+            return
+        from omotion.connection_monitor import UserStop
+
+        self._monitor.submit(UserStop(handle_name=self.name))
+
+    # ──────────────────────────────────────────────────────────────────
+    # Wiring
+    # ──────────────────────────────────────────────────────────────────
+
+    def _attach_monitor(self, monitor) -> None:
+        """Called by MotionInterface when starting the monitor."""
+        self._monitor = monitor
+
+    def _on_uart_io_error(self, errno, message: str) -> None:
+        """Forwarded from MotionUart on serial errors. Submits an event so
+        the state machine can transition out of CONNECTED."""
+        if self._monitor is None:
+            return
+        from omotion.connection_monitor import IoError
+
+        self._monitor.submit(
+            IoError(handle_name=self.name, errno=errno, message=message)
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # State machine
+    # ──────────────────────────────────────────────────────────────────
+
+    def _set_state(self, new_state: ConnectionState, reason: str = "") -> None:
+        """Internal: transition state, notify waiters, emit signal."""
+        with self._state_cv:
+            if self._state == new_state:
+                return
+            old = self._state
+            self._state = new_state
+            self._state_cv.notify_all()
+        try:
+            self.signal_state_changed.emit(self, old, new_state, reason)
+        except Exception as e:
+            logger.debug("signal_state_changed emit suppressed: %s", e)
+        logger.info(
+            "console state %s -> %s (%s)",
+            old.name,
+            new_state.name,
+            reason or "",
+        )
+
+    def _handle_event(self, event) -> None:
+        """Entry point called by ConnectionMonitor on its thread.
+        Dispatches based on (current_state, event_type)."""
+        from omotion.connection_monitor import (
+            IoError,
+            PollArrived,
+            PollGone,
+            UserStop,
+        )
+
+        st = self._state
+        if isinstance(event, PollArrived):
+            if st == ConnectionState.DISCONNECTED:
+                self._drive_connecting(reason="poll_arrived")
+        elif isinstance(event, (PollGone, IoError)):
+            if st == ConnectionState.CONNECTED:
+                ev_name = type(event).__name__.lower()
+                reason = (
+                    f"usb_io_error:errno={event.errno}"
+                    if isinstance(event, IoError)
+                    else f"poll_gone"
+                )
+                self._drive_disconnecting(reason=reason)
+            # else: already DISCONNECTING/DISCONNECTED/CONNECTING — no-op.
+            #       This is the dedup that kills duplicate "release failed"
+            #       warnings: a second IoError after the first one started
+            #       us toward DISCONNECTING is silently absorbed.
+        elif isinstance(event, UserStop):
+            if st == ConnectionState.CONNECTED:
+                self._drive_disconnecting(reason="user_stop")
+            elif st == ConnectionState.CONNECTING:
+                # If we're mid-CONNECTING the call below is racing with
+                # _drive_connecting on the same thread, so it can't
+                # actually arrive while we're inside _drive_connecting —
+                # the queue serializes. So this branch only fires when
+                # _drive_connecting has already returned.
+                self._drive_disconnecting(reason="user_stop")
+            # DISCONNECTING/DISCONNECTED: nothing to do.
+
+    def _drive_connecting(self, reason: str) -> None:
+        if self.uart.demo_mode:
+            self._set_state(ConnectionState.CONNECTING, reason=reason)
+            self._set_state(ConnectionState.CONNECTED, reason="demo_mode")
+            try:
+                self.telemetry.start()
+            except Exception:
+                logger.exception("telemetry start (demo) failed")
+            return
+
+        self._set_state(ConnectionState.CONNECTING, reason=reason)
+
+        # Five-step backoff: 50, 100, 250, 500, 1000 ms. Covers the
+        # empirical Windows post-enumeration window where the device is
+        # visible to libusb/pyserial but `Serial(...)` still raises
+        # "Resource busy" or "Permission denied" for ~200–500 ms.
+        backoff = [0.05, 0.1, 0.25, 0.5, 1.0]
+        last_error: Optional[Exception] = None
+        for delay in backoff:
+            try:
+                port = self.uart.find_port()
+                if port is None:
+                    raise RuntimeError("console COM port not found")
+                self.uart.open(port)
+                # Ping to confirm the firmware is responsive.
+                r = self.uart.send_packet(
+                    id=None, packetType=OW_CMD, command=OW_CMD_PING
+                )
+                if r is None or r.packet_type == OW_ERROR:
+                    raise RuntimeError("console ping failed or returned error")
+                # Cache version (best-effort; failure here is non-fatal —
+                # an old firmware that doesn't support GET_VERSION should
+                # still be usable for everything else).
+                try:
+                    self._version = self.get_version()
+                except Exception as e:
+                    logger.debug("get_version during connect failed: %s", e)
+                self._set_state(ConnectionState.CONNECTED, reason="ping_ok")
+                try:
+                    self.telemetry.start()
+                except Exception:
+                    logger.exception("telemetry start failed")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "console connect attempt failed (%s); retrying in %.0f ms",
+                    e,
+                    delay * 1000,
+                )
+                # Roll back any partial open.
+                try:
+                    self.uart.close()
+                except Exception:
+                    pass
+                time.sleep(delay)
+
+        # All attempts failed — back to DISCONNECTED. Next poll/hotplug
+        # will retry from scratch.
+        self._set_state(
+            ConnectionState.DISCONNECTED,
+            reason=f"connect_retry_exhausted:{last_error}",
+        )
+
+    def _drive_disconnecting(self, reason: str) -> None:
+        self._set_state(ConnectionState.DISCONNECTING, reason=reason)
+        try:
+            self.telemetry.stop()
+        except Exception:
+            logger.exception("telemetry stop failed")
+        try:
+            self.uart.close()
+        except Exception:
+            logger.exception("uart close failed")
+        self._set_state(ConnectionState.DISCONNECTED, reason=reason)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Backwards-compat helper used by command bodies further below.
+    # ──────────────────────────────────────────────────────────────────
+    # (no-op; kept to make the diff to existing command methods minimal)
 
     def ping(self) -> bool:
         """
@@ -148,7 +354,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             logger.info("Send Ping to Device.")
@@ -186,7 +392,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return "v0.1.1"
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 logger.error("Console Module not connected")
                 return "v0.0.0"
 
@@ -243,7 +449,7 @@ class MOTIONConsole:
                 data = b"Hello Motion!!"
                 return data, len(data)
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 logger.error("Console Module not connected")
                 return None, None
 
@@ -285,7 +491,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 logger.error("Console Module not connected")
                 return False
 
@@ -317,7 +523,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return bytes.fromhex("deadbeefcafebabe1122334455667788")
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 logger.error("Console Module not connected")
                 return None
 
@@ -351,7 +557,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_DFU)
@@ -385,7 +591,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Module not connected")
 
             r = self.uart.send_packet(id=None, packetType=OW_CMD, command=OW_CMD_RESET)
@@ -419,7 +625,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return "Demo mode: messages not available"
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Module not connected")
 
             logger.info("Sending OW_CMD_MESSAGES command to Console.")
@@ -632,7 +838,7 @@ class MOTIONConsole:
             ValueError: If the controller is not connected, or fan_speed
                 is not in 0..100.
         """
-        if not self.uart.is_connected():
+        if not self.is_connected():
             raise ValueError("Console controller not connected")
 
         if fan_speed not in range(101):
@@ -688,7 +894,7 @@ class MOTIONConsole:
         if fan_index not in (1, 2, 3):
             raise ValueError("fan_index must be 1, 2, or 3")
 
-        if not self.uart.is_connected():
+        if not self.is_connected():
             raise ValueError("Console controller not connected")
 
         try:
@@ -735,7 +941,7 @@ class MOTIONConsole:
         Raises:
             ValueError: If the controller is not connected or the RGB state is invalid.
         """
-        if not self.uart.is_connected():
+        if not self.is_connected():
             raise ValueError("Console controller not connected")
 
         if rgb_state not in [0, 1, 2, 3]:
@@ -784,7 +990,7 @@ class MOTIONConsole:
         Raises:
             ValueError: If the controller is not connected.
         """
-        if not self.uart.is_connected():
+        if not self.is_connected():
             raise ValueError("Console controller not connected")
 
         try:
@@ -838,7 +1044,7 @@ class MOTIONConsole:
                 logger.error("Data cannot be None.")
                 return None
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             try:
@@ -890,7 +1096,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return None
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -926,7 +1132,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -962,7 +1168,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -998,7 +1204,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1041,7 +1247,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1083,7 +1289,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return 0
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1122,7 +1328,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return 0.0
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1177,7 +1383,7 @@ class MOTIONConsole:
                     return [TelemetrySample(0, 0, 35.0, 45.0, 25.0, (0, 0, 0, 0), True)]
                 return (35.0, 45.0, 25.0)
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1241,7 +1447,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Motion Console not connected")
 
             if voltage is not None and voltage >= -5.0 and voltage <= 5.0:
@@ -1305,7 +1511,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Motion Console not connected")
 
             if channel not in [0, 1, 2, 3, 4]:
@@ -1363,7 +1569,7 @@ class MOTIONConsole:
             if getattr(self.uart, "demo_mode", False):
                 return (1.0, 0.5, 0.5, 25.0, True)
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Motion Console not connected")
 
             logger.debug("Getting TEC Status")
@@ -1432,7 +1638,7 @@ class MOTIONConsole:
             if self.uart.demo_mode:
                 return True
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1476,7 +1682,7 @@ class MOTIONConsole:
                 # Return a fake structure in demo mode
                 return PDUMon(raws=[0] * 16, volts=[0.0] * 16)
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console controller not connected")
 
             r = self.uart.send_packet(
@@ -1580,7 +1786,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: returning empty config")
                 return MotionConfig()
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send read command (reserved=0 for READ)
@@ -1639,7 +1845,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating config write")
                 return config
 
-            if not self.uart.is_connected():
+            if not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Convert config to wire format bytes
@@ -1729,7 +1935,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating FPGA open")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -1776,7 +1982,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating FPGA erase")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -1811,7 +2017,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating FPGA reset page 0")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -1851,7 +2057,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating FPGA write page")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             if len(page) != XO2_FLASH_PAGE_SIZE:
@@ -1900,7 +2106,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating FPGA write pages")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             if len(pages) == 0 or len(pages) % XO2_FLASH_PAGE_SIZE != 0:
@@ -1947,7 +2153,7 @@ class MOTIONConsole:
                 # Return a randomized 16-byte page for demo/testing purposes
                 return os.urandom(16)
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -1983,7 +2189,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating ufm reset page 0")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2024,7 +2230,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating ufm write page")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             if len(page) != XO2_FLASH_PAGE_SIZE:
@@ -2073,7 +2279,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating ufm write pages")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             if len(pages) == 0 or len(pages) % XO2_FLASH_PAGE_SIZE != 0:
@@ -2119,7 +2325,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating ufm write pages")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2175,7 +2381,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga read status")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2234,7 +2440,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga read status")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             if len(feature) != 8:
@@ -2280,7 +2486,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga featrow read")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2322,7 +2528,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga done")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2364,7 +2570,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga refresh")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2403,7 +2609,7 @@ class MOTIONConsole:
                 logger.info("Demo mode: simulating fpga close")
                 return None
 
-            if not self.uart or not self.uart.is_connected():
+            if not self.uart or not self.is_connected():
                 raise ValueError("Console Device not connected")
 
             # Send command (reserved = channel index)
@@ -2440,20 +2646,7 @@ class MOTIONConsole:
         except Exception as e:
             logger.warning("Console: failed to read device info: %s", e)
 
-    def disconnect(self):
-        """
-        Disconnect the UART and clean up.
-        """
-        if self.uart:
-            logger.info("Disconnecting MOTIONConsole UART...")
-            self.uart.disconnect()
-            self.uart = None
-
-    def __del__(self):
-        """
-        Fallback cleanup when the object is garbage collected.
-        """
-        try:
-            self.disconnect()
-        except Exception as e:
-            logger.warning("Error in MOTIONConsole destructor: %s", e)
+# Note: graceful disconnect is now driven by ConnectionMonitor via
+# `request_disconnect()` (which submits an EVT_USER_STOP). The old
+# `disconnect()`/`__del__` pair has been removed — the monitor owns the
+# transport lifecycle.

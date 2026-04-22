@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, TYPE_CHECKING
 from omotion import _log_root
 
 if TYPE_CHECKING:
-    from omotion.Console import MOTIONConsole
+    from omotion.MotionConsole import MotionConsole
 
 logger = logging.getLogger(f"{_log_root}.ConsoleTelemetry" if _log_root else "ConsoleTelemetry")
 
@@ -114,7 +114,7 @@ class ConsoleTelemetryPoller:
     they run on the poller thread, so they should be fast / non-blocking.
     """
 
-    def __init__(self, console: "MOTIONConsole") -> None:
+    def __init__(self, console: "MotionConsole") -> None:
         self._console = console
         self._lock = threading.Lock()
         self._snapshot: Optional[ConsoleTelemetry] = None
