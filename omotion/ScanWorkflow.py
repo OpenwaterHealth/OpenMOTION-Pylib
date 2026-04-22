@@ -1363,6 +1363,10 @@ class ScanWorkflow:
         side = handle.name  # "left" / "right"
         q = self._scan_active_queues.get(side)
         request = self._scan_request
+        logger.info(
+            "scan: _resume_recovery(%s) entered — queue=%s, request=%s, uart=%s",
+            side, q is not None, request is not None, handle.uart is not None,
+        )
         if q is None or request is None:
             logger.warning(
                 "scan: cannot resume %s — no queue or request on record", side
@@ -1378,17 +1382,43 @@ class ScanWorkflow:
         # buffer between disconnect and reconnect (or from the MCU's own
         # FIFO right before the cable was yanked).
         try:
-            handle.uart.histo.flush_stale_data(
+            flushed = handle.uart.histo.flush_stale_data(
                 expected_size=request.expected_size
             )
+            logger.info("scan: flushed %d stale bytes from %s histo", flushed, side)
         except Exception as e:
             logger.warning(
                 "scan: flush_stale_data on %s during recovery failed: %s",
                 side, e,
             )
+        # Re-enable the camera stream on the device. When the sensor
+        # disconnects mid-scan, the firmware may stop emitting (the host's
+        # USB IN endpoint goes idle); the host-side stream restart alone
+        # is not enough to coax fresh frames out of the MCU. Re-asserting
+        # OW_CAMERA_STREAM with the same camera mask gets the firmware
+        # producing histograms again.
+        try:
+            mask = next(
+                (m for s, m, h in self._scan_active_handles_with_masks() if h is handle),
+                None,
+            )
+            if mask is not None:
+                logger.info(
+                    "scan: re-asserting camera stream on %s with mask 0x%02X",
+                    side, mask,
+                )
+                self._interface.run_on_sensors(
+                    "enable_camera", mask, target=side
+                )
+        except Exception as e:
+            logger.warning(
+                "scan: re-enable camera stream on %s during recovery failed: %s",
+                side, e,
+            )
         handle.uart.histo.start_streaming(
             q, expected_size=request.expected_size
         )
+        logger.info("scan: %s histo streaming restarted on writer queue", side)
         # If the handle is the console, the FSYNC/LSYNC trigger lines have
         # been silent during the gap — both sensors stopped getting frames
         # but each independently tracks its own grace window. We restart
@@ -1396,6 +1426,25 @@ class ScanWorkflow:
         if handle is getattr(self._interface, "console", None):
             try:
                 handle.start_trigger()
+                logger.info("scan: console trigger restarted after recovery")
             except Exception as e:
                 logger.error("scan: console.start_trigger after recovery failed: %s", e)
                 raise
+
+    def _scan_active_handles_with_masks(self):
+        """Yield (side, mask, handle) for the participating sensors.
+
+        Used by recovery to find which camera mask to re-arm on a
+        sensor that just came back. The console handle isn't included
+        here (it has no per-camera mask)."""
+        for side in ("left", "right"):
+            handle = getattr(self._interface, side, None)
+            if handle is None or handle not in self._scan_active_handles:
+                continue
+            mask = (
+                self._scan_request.left_camera_mask if side == "left"
+                else self._scan_request.right_camera_mask
+            ) if self._scan_request is not None else None
+            if mask is None:
+                continue
+            yield side, int(mask), handle
