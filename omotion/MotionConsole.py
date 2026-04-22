@@ -329,6 +329,25 @@ class MotionConsole(SignalWrapper):
             reason=f"connect_retry_exhausted:{last_error}",
         )
 
+    def _log_command_error(self, method_name: str, e: Exception) -> None:
+        """Log a command-method failure with severity that depends on
+        whether the device is mid-disconnect.
+
+        Transport errors that fire while the handle is already
+        DISCONNECTING/DISCONNECTED are expected (the device is going
+        away mid-call) — log at DEBUG. Errors that fire while CONNECTED
+        or CONNECTING are unexpected — log at ERROR.
+        """
+        if self._state in (
+            ConnectionState.DISCONNECTING,
+            ConnectionState.DISCONNECTED,
+        ):
+            logger.debug(
+                "Command %s failed during disconnect: %s", method_name, e
+            )
+        else:
+            logger.error("Unexpected error during %s: %s", method_name, e)
+
     def _drive_disconnecting(self, reason: str) -> None:
         self._set_state(ConnectionState.DISCONNECTING, reason=reason)
         try:
@@ -375,7 +394,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during ping: %s", e)
+            self._log_command_error("ping", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_version(self) -> str:
@@ -427,7 +446,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_version: %s", e)
+            self._log_command_error("get_version", e)
             raise  # Re-raise the exception for the caller to handle
 
     def echo(self, echo_data=None) -> tuple[bytes, int]:
@@ -477,7 +496,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during echo process: %s", e)
+            self._log_command_error("echo", e)
             raise  # Re-raise the exception for the caller to handle
 
     def toggle_led(self) -> bool:
@@ -506,7 +525,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during toggle_led: %s", e)
+            self._log_command_error("toggle_led", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_hardware_id(self) -> str:
@@ -540,7 +559,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_hardware_id: %s", e)
+            self._log_command_error("get_hardware_id", e)
             raise  # Re-raise the exception for the caller to handle
 
     def enter_dfu(self) -> bool:
@@ -574,7 +593,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during enter_dfu: %s", e)
+            self._log_command_error("enter_dfu", e)
             raise  # Re-raise the exception for the caller to handle
 
     def soft_reset(self) -> bool:
@@ -608,7 +627,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during soft_reset: %s", e)
+            self._log_command_error("soft_reset", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_messages(self) -> str:
@@ -662,7 +681,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_messages: %s", e)
+            self._log_command_error("get_messages", e)
             raise  # Re-raise the exception for the caller to handle
 
     def scan_i2c_mux_channel(self, mux_index: int, channel: int) -> list[int]:
@@ -870,7 +889,7 @@ class MotionConsole(SignalWrapper):
         except ValueError:
             raise
         except Exception as e:
-            logger.error("Unexpected error during set_fan_speed: %s", e)
+            self._log_command_error("set_fan_speed", e)
             raise
 
     def get_fan_rpm(self, fan_index: int) -> Optional[int]:
@@ -926,7 +945,7 @@ class MotionConsole(SignalWrapper):
         except ValueError:
             raise
         except Exception as e:
-            logger.error("Unexpected error during get_fan_rpm: %s", e)
+            self._log_command_error("get_fan_rpm", e)
             raise
 
     def set_rgb_led(self, rgb_state: int) -> int:
@@ -978,7 +997,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during set_rgb_led: %s", e)
+            self._log_command_error("set_rgb_led", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_rgb_led(self) -> int:
@@ -1019,7 +1038,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_rgb_led: %s", e)
+            self._log_command_error("get_rgb_led", e)
             raise  # Re-raise the exception for the caller to handle
 
     def set_trigger_json(self, data=None) -> dict:
@@ -1079,7 +1098,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during set_trigger_json: %s", e)
+            self._log_command_error("set_trigger_json", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_trigger_json(self) -> dict:
@@ -1115,7 +1134,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_trigger_json: %s", e)
+            self._log_command_error("get_trigger_json", e)
             raise  # Re-raise the exception for the caller to handle
 
     def start_trigger(self) -> bool:
@@ -1151,7 +1170,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during start_trigger: %s", e)
+            self._log_command_error("start_trigger", e)
             raise  # Re-raise the exception for the caller to handle
 
     def stop_trigger(self) -> bool:
@@ -1187,7 +1206,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during stop_trigger: %s", e)
+            self._log_command_error("stop_trigger", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_fsync_pulsecount(self) -> int:
@@ -1230,7 +1249,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_fsync_pulsecount: %s", e)
+            self._log_command_error("get_fsync_pulsecount", e)
             raise  # Re-raise the exception for the caller to handle
 
     def get_lsync_pulsecount(self) -> int:
@@ -1272,7 +1291,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during get_lsync_pulsecount: %s", e)
+            self._log_command_error("get_lsync_pulsecount", e)
 
     def read_gpio_value(self) -> int:
         """
@@ -1310,7 +1329,7 @@ class MotionConsole(SignalWrapper):
             raise
 
         except Exception as e:
-            logger.error("Unexpected error during read_gpio_value: %s", e)
+            self._log_command_error("read_gpio_value", e)
             raise
 
     def read_adc_value(self) -> float:
@@ -1349,7 +1368,7 @@ class MotionConsole(SignalWrapper):
             raise
 
         except Exception as e:
-            logger.error("Unexpected error during read_adc_value: %s", e)
+            self._log_command_error("read_adc_value", e)
             raise
 
     def get_temperatures(self, return_all: bool = False) -> tuple[float, float, float]:
@@ -1494,7 +1513,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during tec_voltage: %s", e)
+            self._log_command_error("tec_voltage", e)
             raise  # Re-raise the exception for the caller to handle
 
     def tec_adc(self, channel: int) -> float:
@@ -1551,7 +1570,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during tec_adc: %s", e)
+            self._log_command_error("tec_adc", e)
             raise  # Re-raise the exception for the caller to handle
 
     def tec_status(self) -> Tuple[str, str, str, str, bool]:
@@ -1621,7 +1640,7 @@ class MotionConsole(SignalWrapper):
                 tec_good,
             )
         except Exception as e:
-            logger.error("Unexpected error during tec_status: %s", e)
+            self._log_command_error("tec_status", e)
             raise  # Re-raise the exception for the caller to handle
 
     def read_board_id(self) -> int:
@@ -1663,7 +1682,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during read_board_id: %s", e)
+            self._log_command_error("read_board_id", e)
             raise  # Re-raise the exception for the caller to handle
 
     def read_pdu_mon(self) -> Optional[PDUMon]:
@@ -1710,7 +1729,7 @@ class MotionConsole(SignalWrapper):
             raise  # Re-raise the exception for the caller to handle
 
         except Exception as e:
-            logger.error("Unexpected error during read_pdu_mon: %s", e)
+            self._log_command_error("read_pdu_mon", e)
             raise  # Re-raise the exception for the caller to handle
 
     @staticmethod
