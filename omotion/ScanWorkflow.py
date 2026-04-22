@@ -214,8 +214,19 @@ class ScanWorkflow:
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
+                logger.warning(
+                    "start_scan refused: previous scan is still active "
+                    "(_running=%s, thread alive=%s, thread=%s). The previous "
+                    "worker has not reached its finally cleanup yet — most "
+                    "likely a writer or science-pipeline thread didn't exit "
+                    "within its join timeout.",
+                    self._running,
+                    self._thread.is_alive() if self._thread else None,
+                    self._thread,
+                )
                 return False
             self._running = True
+        logger.info("start_scan: spawning worker thread for new scan")
 
         self._stop_evt = threading.Event()
 
