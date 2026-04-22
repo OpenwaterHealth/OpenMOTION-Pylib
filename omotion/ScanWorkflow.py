@@ -901,9 +901,15 @@ class ScanWorkflow:
 
                 # Per-side summary: USB read chunks received vs rows written to CSV.
                 # Compare against the MCU's own frame-sent printout to locate
-                # exactly where any frame loss is occurring.
+                # exactly where any frame loss is occurring. The sensor.uart
+                # may be None here if the sensor disconnected mid-scan and
+                # never recovered — in that case we can only report the
+                # writer-side row count.
                 for side, _, sensor in active_sides:
-                    usb_pkts = sensor.uart.histo.packets_received
+                    if sensor.uart is not None:
+                        usb_pkts = sensor.uart.histo.packets_received
+                    else:
+                        usb_pkts = "n/a (disconnected)"
                     rows = writer_row_counts.get(side, 0)
                     side_path = left_path if side == "left" else right_path
                     _emit_log(
@@ -1228,11 +1234,27 @@ class ScanWorkflow:
             self._scan_recovery.clear()
             self._scan_abort_reason = None
 
+        # ScanWorkflow is not a QObject. Auto-connection sees that and
+        # tries to deliver cross-thread emits via the receiver's event
+        # loop — which doesn't exist for a plain Python callable, so the
+        # signal is silently dropped. Force DirectConnection so the slot
+        # runs synchronously on the emitter thread (the monitor thread,
+        # which is exactly where _on_scan_handle_state belongs).
+        try:
+            from PyQt6.QtCore import Qt
+            _conn_type = Qt.ConnectionType.DirectConnection
+        except ImportError:
+            _conn_type = None  # MotionSignal shim path; emit is direct anyway
+
         for h in handles:
             handler = self._make_state_handler(h)
             try:
-                h.signal_state_changed.connect(handler)
+                if _conn_type is not None:
+                    h.signal_state_changed.connect(handler, type=_conn_type)
+                else:
+                    h.signal_state_changed.connect(handler)
                 self._scan_subs.append((h.signal_state_changed, handler))
+                logger.info("scan: subscribed to %s state changes", h.name)
             except Exception as e:
                 logger.warning("scan: failed to subscribe to %s: %s", h.name, e)
 
