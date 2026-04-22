@@ -231,9 +231,12 @@ class MotionUart:
             logger.error("Validation error in send_packet: %s", ve)
             raise CommandError(str(ve)) from ve
         except serial.SerialException as se:
-            # Already notified on_io_error from _tx/read_packet. Re-raise so
-            # the handle's command method propagates the failure.
-            logger.error("Serial error in send_packet: %s", se)
+            # Already notified on_io_error from _tx/read_packet — the
+            # handle's state machine logs the disconnect at INFO. Logging
+            # here at DEBUG keeps in-flight commands from spamming ERROR
+            # during the disconnect window. The exception is still
+            # re-raised so callers can react.
+            logger.debug("Serial error in send_packet: %s", se)
             raise
 
     def clear_buffer(self) -> None:
