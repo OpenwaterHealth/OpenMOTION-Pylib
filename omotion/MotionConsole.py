@@ -294,13 +294,14 @@ class MotionConsole(SignalWrapper):
                 )
                 if r is None or r.packet_type == OW_ERROR:
                     raise RuntimeError("console ping failed or returned error")
-                # Cache version (best-effort; failure here is non-fatal —
-                # an old firmware that doesn't support GET_VERSION should
-                # still be usable for everything else).
-                try:
-                    self._version = self.get_version()
-                except Exception as e:
-                    logger.debug("get_version during connect failed: %s", e)
+                # `self._version` is no longer cached during CONNECTING:
+                # `get_version()` gates on `is_connected()` (which is
+                # state == CONNECTED), so calling it here logged a
+                # spurious "Console Module not connected" ERROR and
+                # returned "v0.0.0" anyway. Callers that want the
+                # version invoke `get_version()` from their own
+                # CONNECTED handler (e.g. `log_console_info`), which
+                # works correctly post-transition.
                 self._set_state(ConnectionState.CONNECTED, reason="ping_ok")
                 try:
                     self.telemetry.start()

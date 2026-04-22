@@ -251,9 +251,16 @@ class MotionSensor(SignalWrapper):
                 composite.open()
                 self.uart = composite
 
-                # Ping to confirm firmware is responsive.
+                # Ping to confirm firmware is responsive. Bound the wait so
+                # a non-responsive device falls into our retry/backoff
+                # loop instead of hanging on the default 10 s timeout
+                # inherited from CommInterface.send_packet (which is sized
+                # for normal in-scan command latency, not connect probes).
+                # 2 s per attempt × 5 attempts + backoffs ≈ 12 s worst case,
+                # which covers typical post-power-on firmware boot.
                 r = self.uart.comm.send_packet(
-                    id=None, packetType=OW_CMD, command=OW_CMD_PING
+                    id=None, packetType=OW_CMD, command=OW_CMD_PING,
+                    timeout=2.0,
                 )
                 if r is None or r.packet_type in _ERROR_TYPES:
                     raise RuntimeError("sensor ping failed or returned error")
