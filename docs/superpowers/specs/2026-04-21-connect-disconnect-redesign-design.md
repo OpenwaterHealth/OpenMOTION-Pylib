@@ -1,8 +1,33 @@
 # Connect/Disconnect Redesign — Design Spec
 
-**Date:** 2026-04-21
-**Status:** Approved for implementation planning
+**Date:** 2026-04-21 · **Amended:** 2026-04-22
+**Status:** Implemented and hardware-verified (see test plan
+`2026-04-22-connect-disconnect-redesign-test-plan.md`)
 **Scope:** `omotion` SDK (`openmotion-sdk`) and the two consuming apps (`openmotion-bloodflow-app`, `openmotion-test-app`)
+
+## 2026-04-22 amendment — mid-scan recovery dropped
+
+After hardware testing, the **5-second grace window for mid-scan
+recovery was removed**. The shipped behavior is: any device dropping
+mid-scan aborts the scan immediately with a specific reason. This
+spec was written assuming recovery would be supported; the sections
+below describe the original design but are annotated where reality
+differs. The current behavior is described in the "Mid-scan
+disconnect handling" section near the end.
+
+Why dropped:
+
+- The grace-window code added significant complexity (per-handle
+  timers, threading races between recovery and abort, re-asserting
+  camera streams + console trigger, resuming a writer queue mid-scan).
+- The clinical workflow already assumes the user retriggers a fresh
+  scan after any interruption, so silent recovery was a developer-
+  facing nicety rather than a real product requirement.
+- A scan with a gap is statistically suspect for downstream BFI/BVI
+  analysis anyway — a clean abort + restart is the safer default.
+
+The state machine and stable-handle parts of the design remain as
+described; only the `ScanWorkflow` recovery layer changed.
 
 ## Problem
 
@@ -16,7 +41,7 @@ Today, when the console and/or sensors are unplugged and reconnected, the SDK ta
 6. **No "ready" notion.** `signal_connect` fires the instant USB enumerates; firmware/FPGA may need 50–100 ms more before commands work, so apps that immediately ping/configure see noisy timeouts.
 7. **Asyncio coupling.** Reconnect only works if the app drives `start_monitoring` from an asyncio event loop.
 
-The fix touches three layers — the public API (handles + signals), the monitoring layer (thread + hotplug), and the wire layer (race fixes, retry/backoff). Mid-scan recovery semantics are also formalized.
+The fix touches three layers — the public API (handles + signals), the monitoring layer (thread + hotplug), and the wire layer (race fixes, retry/backoff). Mid-scan disconnect semantics are also formalized: any drop during a scan aborts the scan immediately.
 
 ## Goals
 
@@ -24,13 +49,16 @@ The fix touches three layers — the public API (handles + signals), the monitor
 - Zero duplicate disconnect emissions; zero "release failed" / "object deleted" warnings on a normal unplug/replug.
 - Stable handle objects that never get replaced — apps cache references safely.
 - A single, parameterized state-changed signal (no string descriptors to parse).
-- During a scan, brief sensor or console drops (under 5 s) are recovered transparently. Longer drops abort the scan with a clear error.
+- During a scan, any device drop aborts the scan with a clear error
+  naming the device that dropped. (Original design called for a 5 s
+  grace window with transparent recovery; that was dropped on
+  2026-04-22 — see amendment header.)
 - No asyncio requirement on the consuming app.
 
 ## Non-goals
 
 - Identity by hardware ID. Sensors remain identified by USB port (`port_numbers[-1] == 2 → left`, `== 3 → right`). The clinical workflow has fixed cabling.
-- Reprogramming camera config / re-arming cameras / re-loading FPGA state on mid-scan recovery. Recovery relies on the device having stayed alive through the brief USB hiccup. If it didn't (sanity check fails), the scan aborts.
+- Mid-scan recovery of any kind. The original design specified a 5 s grace window with transparent stream resume; that was dropped on 2026-04-22 in favor of immediate clean abort on any disconnect. See amendment header and the "Mid-scan disconnect handling" section.
 - Backwards-compatible `signal_connect` / `signal_disconnect` shims. Both apps are migrated in lockstep with the SDK.
 - An asyncio-friendly variant of the monitor. Can be added later if a non-Qt consumer needs it; YAGNI for now.
 
@@ -74,7 +102,7 @@ States:
 
 The intermediate `CONNECTING` state exists to make `CONNECTED` mean "safe to issue commands" — apps binding to `CONNECTED` no longer fire commands prematurely.
 
-`DISCONNECTING` is a brief state covering transport release. The state machine is pure — it does not know about scans. The 5-second mid-scan grace window is a `ScanWorkflow`-level policy (see Mid-scan recovery below), not a state-machine concept.
+`DISCONNECTING` is a brief state covering transport release. The state machine is pure — it does not know about scans. Mid-scan disconnect handling is `ScanWorkflow`-level policy (see "Mid-scan disconnect handling" below), not a state-machine concept.
 
 ### One signal, one source of truth
 
@@ -241,52 +269,50 @@ If a device is permanently wedged (firmware never ACKs PING), retry-exhausted is
 | `CommInterface.stop_read_thread` joins the read thread; `_handle_interface_disconnect` runs on a daemon thread spawned exactly to avoid join-self deadlock. | The dispatch-to-daemon-thread workaround in `_trigger_disconnect` is no longer needed — the read thread submits the event and exits. The monitor thread does the join. |
 | `signal_disconnect.emit` wrapped in try/except for "C++ object deleted" during shutdown.                                                              | Monitor thread is owned by `MotionInterface`; `interface.stop()` joins it before any Qt object can be deleted. Defensive try/except removed.       |
 
-## Mid-scan recovery & the 5 s grace window
+## Mid-scan disconnect handling (shipped)
 
-The state machine is pure: `DISCONNECTING → DISCONNECTED` happens as soon as transport release completes. **`ScanWorkflow` is the layer that cares about the grace window.** It subscribes to `signal_state_changed` on the handles the scan is using — always the console, plus whichever sensors were specified when the scan was started — before arming the scan, and unsubscribes after.
-
-Per-handle scan-recovery logic inside `ScanWorkflow`:
+The state machine is pure: `DISCONNECTING → DISCONNECTED` happens as soon as transport release completes. `ScanWorkflow` subscribes to `signal_state_changed` on the handles the scan is using — always the console, plus whichever sensors were specified when the scan was started — before arming the scan, and unsubscribes after.
 
 ```
 on DISCONNECTING(handle):
     if scan is active and handle is participating:
-        mark handle as in_recovery
-        record loss_t = now()
-        (consume from other handles' queues normally; the lost handle's
-         queue stops getting fed)
-
-on CONNECTED(handle):
-    if handle.in_recovery:
-        gap_duration = now() - loss_t
-        if gap_duration < 5.0:
-            ResumeRecovery(handle, gap_duration)
-        # else: 5 s timer already fired, scan was aborted; ignore late return
-
-on 5s timer fires for in_recovery handle:
-    AbortScan(reason=f"{handle.name} did not return within 5 s grace window")
+        set _scan_abort_reason = f"{handle.name} disconnected mid-scan ({reason})"
+        trip _stop_evt
+        # The main scan loop polls _stop_evt and unwinds via its
+        # existing finally cleanup. The scan result.error is set
+        # from _scan_abort_reason instead of the generic
+        # "Capture canceled".
 ```
 
-`ResumeRecovery` runs *after* the state machine has already brought the handle back to `CONNECTED` (USB interfaces re-claimed, ping/HWID/UIDs/version all confirmed). It is intentionally lightweight — relies on the device MCU having stayed alive through the brief USB hiccup:
+That's the entire policy. There is no recovery path, no grace timer, no late-return handling, no `ResumeRecovery`, no per-handle restart of streams or trigger. The next scan starts cleanly from a known-good state once the user retriggers it.
 
-1. `StreamInterface.flush_stale_data()` on the histo endpoint — discard anything in host-side or MCU-side buffer from before the gap.
-2. `StreamInterface.start_streaming()` for histo and IMU on that sensor.
-3. **Sanity check:** read one frame, confirm header is well-formed and frame counter monotonic. If garbage → MCU was actually power-cycled or firmware crashed; abort the scan.
-4. Resume normal queue consumption. **No gap markers are emitted into the data outputs.** The packet timestamps are preserved, so the gap is naturally visible to downstream tools.
+A user-initiated `cancel_scan()` works the same way: it trips `_stop_evt`, the worker unwinds, the result is recorded as canceled. If both `cancel_scan()` and a disconnect race, whichever sets `_scan_abort_reason` first wins; both ultimately set `_stop_evt`.
 
-### Per-handle, independent grace windows
+### Console drop ≠ sensor drop?
 
-Each handle (console, left, right) tracks its own 5-second window independently. A scan only aborts when a *specific* participating handle stays gone too long. Independent failure domains, simpler model.
+In the shipped design, no. Both are handled identically — any participating handle dropping aborts the scan. The original design called for a special console-recovery path that restarted the FSYNC trigger; that was removed alongside the grace window because the simpler "any drop aborts" rule covers both with one code path.
 
-### Console drop ≠ sensor drop
+### What the original design called for (not shipped)
 
-If the console drops mid-scan, the FSYNC/LSYNC trigger lines stop pulsing — both sensors stop getting frames. `ScanWorkflow` treats console-drop as:
+> ~~Per-handle scan-recovery logic inside `ScanWorkflow`:~~
+>
+> ```
+> on DISCONNECTING(handle):
+>     if scan is active and handle is participating:
+>         mark handle as in_recovery
+>         record loss_t = now()
+>
+> on CONNECTED(handle):
+>     if handle.in_recovery and gap_duration < 5.0:
+>         ResumeRecovery(handle, gap_duration)
+>
+> on 5s timer fires for in_recovery handle:
+>     AbortScan(reason=f"{handle.name} did not return within 5 s grace window")
+> ```
+>
+> ~~`ResumeRecovery` would have flushed stale data, restarted streaming on the same writer queue, and (for sensors) re-asserted `OW_CAMERA_STREAM` with the original mask; for console it would have restarted the FSYNC trigger.~~
 
-- `< 5 s`: when console returns, `ScanWorkflow` calls `console.start_trigger(...)` again with the same params. Both sensors resume.
-- `≥ 5 s`: abort.
-
-### Cancel always wins
-
-A user-initiated `cancel_scan()` always wins. If a sensor is `in_recovery` and the user cancels, the handle transitions straight to `DISCONNECTED` (or `CONNECTED` if it already came back) and the scan tears down immediately — no 5 s wait.
+That code was implemented (commits `2ca9624`, `ca13972`) and removed (commit `7455055`) after hardware testing showed the simpler abort policy was preferable.
 
 ## Public API summary
 
@@ -417,8 +443,8 @@ The user's dev machine has `openmotion-sdk` on PYTHONPATH; both apps import `omo
 
 1. Branch the SDK; make the changes; manual verification on real hardware against both apps still on `main`/`next`.
 2. Branch each app; update `motion_connector.py` and `main.py` for the new API. Verify all four reconnect scenarios in both apps:
-   - hot replug during a scan (recovery within 5 s)
-   - hot replug during a scan (longer than 5 s → clean abort)
+   - hot replug during a scan (any duration → clean abort with the
+     dropped handle's name in the result error message)
    - idle replug between scans
    - power-cycle of the whole console/sensor enclosure
 3. Merge SDK to `main`, tag, publish wheel.
