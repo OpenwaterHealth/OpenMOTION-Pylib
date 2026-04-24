@@ -878,7 +878,8 @@ class MOTIONSensor:
 
         Call after connection so :meth:`get_cached_camera_security_uid` and
         :meth:`get_cached_hardware_id` can return values without repeated
-        device reads.
+        device reads.  Also updates :data:`omotion.MotionProcessing.PEDESTAL_HEIGHT`
+        based on the sensor firmware version (64 for ≤ 1.5.2, 128 for ≥ 1.5.3).
         """
         self._cached_camera_uids = None
         self._cached_hwid = None
@@ -903,10 +904,37 @@ class MOTIONSensor:
             except Exception as e:
                 logger.debug("Could not read HWID: %s", e)
                 self._cached_hwid = ""
+            self._refresh_pedestal_height()
         except Exception as e:
             logger.warning("Failed to refresh sensor ID cache: %s", e)
             self._cached_camera_uids = None
             self._cached_hwid = None
+
+    def _refresh_pedestal_height(self) -> None:
+        """Set :data:`omotion.MotionProcessing.PEDESTAL_HEIGHT` from the firmware version.
+
+        Sensor firmware 1.5.2 and earlier use a pedestal of 64; firmware 1.5.3
+        and later use 128.  If the version cannot be parsed the existing value
+        is left unchanged and a warning is logged.
+        """
+        import omotion.MotionProcessing as _mp
+
+        try:
+            version_str = self.get_version().lstrip("v")
+            parts = tuple(int(x) for x in version_str.split("."))
+        except Exception as e:
+            logger.warning(
+                "Could not parse firmware version for pedestal selection: %s", e
+            )
+            return
+
+        pedestal = 64.0 if parts <= (1, 5, 2) else 128.0
+        _mp.PEDESTAL_HEIGHT = pedestal
+        logger.info(
+            "Pedestal height set to %g based on sensor firmware v%s",
+            pedestal,
+            version_str,
+        )
 
     def clear_id_cache(self) -> None:
         """Clear cached camera UIDs and hardware ID (e.g. on disconnect)."""

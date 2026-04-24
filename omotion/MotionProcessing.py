@@ -905,7 +905,7 @@ def compute_realtime_metrics(
     bfi_c_max,
     bfi_i_min,
     bfi_i_max,
-    pedestal: float = PEDESTAL_HEIGHT,
+    pedestal: float | None = None,
 ) -> Sample:
     """
     Pure metric computation for one histogram row (uncorrected stream).
@@ -919,6 +919,8 @@ def compute_realtime_metrics(
     pipeline, and the pedestal cancels automatically in the subtraction
     ``corrected_mean = fm.u1 − dark_u1`` because both terms carry it equally.
     """
+    if pedestal is None:
+        pedestal = PEDESTAL_HEIGHT
     if row_sum > 0:
         raw_mean = float(np.dot(hist, HISTO_BINS) / row_sum)
     else:
