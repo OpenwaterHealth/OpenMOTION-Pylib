@@ -40,13 +40,12 @@ _FOOTER_SIZE = 3      # CRC(2) + EOF(1)
 _UNCMP_CRC_SIZE = 2
 
 
-try:
-    from omotion.utils import util_crc16 as _util_crc16
-except ImportError:
-    import binascii
+import binascii as _binascii
 
-    def _util_crc16(buf):
-        return binascii.crc_hqx(buf, 0xFFFF)
+
+def _util_crc16(buf) -> int:
+    """CRC-CCITT (polynomial 0x1021, init 0xFFFF) via the C implementation in binascii."""
+    return _binascii.crc_hqx(buf, 0xFFFF)
 
 
 def _decompress_histo_cmp(raw: bytes) -> bytes:

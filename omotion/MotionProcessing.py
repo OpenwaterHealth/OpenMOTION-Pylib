@@ -13,14 +13,12 @@ from omotion import _log_root
 from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP, CMP_UNCMP_CRC_SIZE
 from omotion.utils import rle_decompress as _rle_decompress
 
-try:
-    # Accelerated CRC implementation if available.
-    from omotion.utils import util_crc16 as _crc16
-except ImportError:
-    import binascii
+import binascii as _binascii
 
-    def _crc16(buf: memoryview) -> int:
-        return binascii.crc_hqx(buf, 0xFFFF)
+
+def _crc16(buf) -> int:
+    """CRC-CCITT (polynomial 0x1021, init 0xFFFF) via the C implementation in binascii."""
+    return _binascii.crc_hqx(buf, 0xFFFF)
 
 
 # Histogram payload constants
@@ -104,6 +102,88 @@ _U32 = struct.Struct("<I")
 _F32 = struct.Struct("<f")
 _HDR = struct.Struct("<BBI")
 _BLK_HEAD = struct.Struct("<BB")
+
+
+def _parse_histo_payload(
+    payload: bytes,
+    expected_row_sum: int | None,
+    original_pkt_len: int,
+) -> "HistogramPacket":
+    """
+    Parse the raw (already-verified) decompressed payload bytes of a histogram
+    packet into a HistogramPacket.  No header, footer, or CRC processing is
+    performed — the caller is responsible for those checks before calling this.
+
+    Used by the TYPE_HISTO_CMP path to avoid rebuilding a fake TYPE_HISTO
+    packet and paying for a redundant CRC pass over the full decompressed data.
+    """
+    payload_len = len(payload)
+    if payload_len < HISTO_BLOCK_SIZE:
+        raise ValueError("Decompressed payload too small")
+
+    has_timestamp = (payload_len % HISTO_BLOCK_SIZE) == TIMESTAMP_SIZE
+    if not has_timestamp and (payload_len % HISTO_BLOCK_SIZE) != 0:
+        raise ValueError("Decompressed payload length mismatch")
+
+    mv = memoryview(payload)
+    off = 0
+    timestamp_sec: Optional[float] = None
+    samples: list[HistogramSample] = []
+
+    if has_timestamp:
+        timestamp_ms = _U32.unpack_from(mv, off)[0]
+        timestamp_sec = timestamp_ms / 1000.0
+        off += TIMESTAMP_SIZE
+
+    while off < payload_len:
+        soh, cam_id = _BLK_HEAD.unpack_from(mv, off)
+        if soh != SOH:
+            raise ValueError("Missing SOH")
+        off += _BLK_HEAD.size
+
+        hist = np.frombuffer(mv, dtype=np.uint32, count=HISTO_SIZE_WORDS, offset=off)
+        off += HISTOGRAM_BYTES
+
+        temp = _F32.unpack_from(mv, off)[0]
+        off += 4
+
+        if mv[off] != EOH:
+            raise ValueError("Missing EOH")
+        off += 1
+
+        last_word = hist[-1]
+        frame_id = (last_word >> 24) & 0xFF
+        hist = hist.copy()
+        hist[-1] = last_word & 0x00_FF_FF_FF
+
+        ts_val = timestamp_sec if timestamp_sec is not None else 0.0
+        row_sum = int(hist.sum(dtype=np.uint64))
+
+        _expected = expected_row_sum if expected_row_sum is not None else EXPECTED_HISTOGRAM_SUM
+        if _expected is not None and row_sum != _expected:
+            logger.warning(
+                "Histogram sum mismatch for cam %d frame %d: "
+                "got %d, expected %d — dropping sample",
+                int(cam_id), int(frame_id), row_sum, _expected,
+            )
+            continue
+
+        samples.append(
+            HistogramSample(
+                cam_id=int(cam_id),
+                frame_id=int(frame_id),
+                timestamp_s=float(ts_val),
+                histogram=hist,
+                temperature_c=float(temp),
+                row_sum=row_sum,
+            )
+        )
+
+    return HistogramPacket(
+        samples=samples,
+        bytes_consumed=original_pkt_len,
+        timestamp_s=timestamp_sec,
+    )
 
 
 def _candidate_packet_size_ok(pkt_type_byte: int, candidate_size: int) -> bool:
@@ -290,7 +370,7 @@ def parse_histogram_packet_structured(
     if pkt_len > len(pkt):
         raise ValueError("Truncated packet")
 
-    # If compressed, verify both CRCs, decompress, and rebuild as a standard packet.
+    # If compressed, verify both CRCs, decompress, and parse payload directly.
     # Packet layout: [Header 6B][Compressed N B][UNCMP_CRC16 2B][PKT_CRC16 2B][EOF 1B]
     if pkt_type == TYPE_HISTO_CMP:
         if pkt_len < MIN_HISTO_CMP_PACKET_SIZE:
@@ -321,22 +401,10 @@ def parse_histogram_packet_structured(
                 f"— decompressor produced wrong output"
             )
 
-        # 4. Rebuild as a TYPE_HISTO packet and recurse
-        new_total = PACKET_HEADER_SIZE + len(decompressed) + PACKET_FOOTER_SIZE
-        new_header = struct.pack("<BBI", SOF, TYPE_HISTO, new_total)
-        crc_data = new_header + decompressed
-        crc = _crc16(memoryview(crc_data[: len(crc_data) - 1]))
-        new_footer = struct.pack("<HB", crc, EOF)
-        rebuilt = new_header + decompressed + new_footer
-        packet = parse_histogram_packet_structured(
-            memoryview(rebuilt), expected_row_sum=expected_row_sum
-        )
-        # Preserve original bytes_consumed for offset tracking
-        return HistogramPacket(
-            samples=packet.samples,
-            timestamp_s=packet.timestamp_s,
-            bytes_consumed=pkt_len,
-        )
+        # 4. Parse the verified decompressed payload directly.
+        # Both CRCs have already passed so there is no need to rebuild a fake
+        # TYPE_HISTO packet and pay for a third CRC pass over the same data.
+        return _parse_histo_payload(decompressed, expected_row_sum, pkt_len)
 
     payload_len = pkt_len - PACKET_HEADER_SIZE - PACKET_FOOTER_SIZE
     if payload_len < HISTO_BLOCK_SIZE:
