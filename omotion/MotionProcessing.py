@@ -2,6 +2,7 @@ import csv
 import logging
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -209,6 +210,7 @@ class Sample:
     bfi: float
     bvi: float
     is_corrected: bool = False  # True when dark-frame interpolation has been applied
+    is_dark: bool = False       # True when this sample represents a laser-off (dark) frame
 
 
 @dataclass
@@ -1012,6 +1014,10 @@ class SciencePipeline:
         bfi_i_max,
         on_uncorrected_fn: Callable[[Sample], None] | None = None,
         on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
+        on_dark_frame_fn: Callable[[Sample], None] | None = None,
+        on_rolling_avg_fn: Callable[[Sample], None] | None = None,
+        rolling_avg_enabled: bool = False,
+        rolling_avg_window: int = 10,
         dark_interval: int = 600,
         discard_count: int = 9,
         expected_row_sum: int | None = None,
@@ -1023,6 +1029,14 @@ class SciencePipeline:
         self._bfi_i_max = bfi_i_max
         self._on_uncorrected_fn = on_uncorrected_fn
         self._on_corrected_batch_fn = on_corrected_batch_fn
+        self._on_dark_frame_fn = on_dark_frame_fn
+        self._on_rolling_avg_fn = on_rolling_avg_fn
+        self._rolling_avg_enabled = bool(rolling_avg_enabled)
+        self._rolling_avg_window = int(rolling_avg_window)
+        # Per (side, cam_id): deque of the last N uncorrected light Samples.
+        # Populated lazily on first light sample for that key; empty when
+        # rolling_avg_enabled is False so disabled mode has zero overhead.
+        self._rolling_buffers: dict[tuple[str, int], "deque[Sample]"] = {}
         self._dark_interval = dark_interval
         self._discard_count = discard_count
         self._expected_row_sum = expected_row_sum
@@ -1161,6 +1175,37 @@ class SciencePipeline:
             # --- 5. Dark frame handling ----------------------------------------
             if self._is_dark_frame(absolute_frame):
                 variance = max(0.0, u2 - u1 * u1)
+
+                # Fire on_dark_frame_fn with pedestal-subtracted dark-baseline
+                # statistics so callback consumers can follow the same
+                # zero-referenced mean convention used by uncorrected light
+                # samples. Internal correction state remains raw (u1/u2).
+                # BFI/BVI are 0 — not meaningful on a dark frame.
+                if self._on_dark_frame_fn is not None:
+                    dark_std = float(np.sqrt(variance))
+                    dark_mean = float(u1 - PEDESTAL_HEIGHT)
+                    dark_contrast = (dark_std / dark_mean) if dark_mean > 0 else 0.0
+                    dark_sample = Sample(
+                        side=side,
+                        cam_id=cam_id,
+                        frame_id=raw_frame_id,
+                        absolute_frame_id=absolute_frame,
+                        timestamp_s=ts,
+                        row_sum=row_sum,
+                        temperature_c=temp,
+                        mean=dark_mean,
+                        std_dev=dark_std,
+                        contrast=dark_contrast,
+                        bfi=0.0,
+                        bvi=0.0,
+                        is_corrected=False,
+                        is_dark=True,
+                    )
+                    try:
+                        self._on_dark_frame_fn(dark_sample)
+                    except Exception:
+                        logger.exception("Error in on_dark_frame_fn callback")
+
                 dark_list = self._dark_history.setdefault(key, [])
                 dark_list.append((absolute_frame, raw_frame_id, ts, u1, variance))
                 logger.debug(
@@ -1176,7 +1221,8 @@ class SciencePipeline:
 
                 # Rule 1: emit an uncorrected sample for the dark frame that
                 # repeats the last known good (non-dark) values so the live
-                # plot sees no blip at the dark-frame position.
+                # plot sees no blip at the dark-frame position.  The sample
+                # carries is_dark=True so consumers can filter it out.
                 prev = self._last_uncorrected.get(key)
                 if prev is not None:
                     dark_uncorrected = Sample(
@@ -1193,6 +1239,7 @@ class SciencePipeline:
                         bfi=prev.bfi,
                         bvi=prev.bvi,
                         is_corrected=False,
+                        is_dark=True,
                     )
                     if self._on_uncorrected_fn:
                         try:
@@ -1239,6 +1286,42 @@ class SciencePipeline:
                     pass
 
             self._last_uncorrected[key] = uncorrected
+
+            # --- 7. Rolling-average over the last N uncorrected light samples ---
+            # Placed in the light branch only, so dark-frame repeat samples
+            # never enter the window (the dark branch above continues before
+            # reaching this code path).
+            if self._rolling_avg_enabled and self._on_rolling_avg_fn is not None:
+                buf = self._rolling_buffers.get(key)
+                if buf is None:
+                    buf = deque(maxlen=self._rolling_avg_window)
+                    self._rolling_buffers[key] = buf
+                buf.append(uncorrected)
+
+                n = len(buf)
+                mean_avg = sum(s.mean for s in buf) / n
+                contrast_avg = sum(s.contrast for s in buf) / n
+
+                rolling_sample = Sample(
+                    side=uncorrected.side,
+                    cam_id=uncorrected.cam_id,
+                    frame_id=uncorrected.frame_id,
+                    absolute_frame_id=uncorrected.absolute_frame_id,
+                    timestamp_s=uncorrected.timestamp_s,
+                    row_sum=0,
+                    temperature_c=0.0,
+                    mean=mean_avg,
+                    std_dev=0.0,
+                    contrast=contrast_avg,
+                    bfi=0.0,
+                    bvi=0.0,
+                    is_corrected=False,
+                    is_dark=False,
+                )
+                try:
+                    self._on_rolling_avg_fn(rolling_sample)
+                except Exception:
+                    logger.exception("Error in on_rolling_avg_fn callback")
 
         # After the main loop the queue is fully drained.  The firmware
         # guarantees the very last frame of every scan is a dark (laser-off)
@@ -1505,6 +1588,10 @@ def create_science_pipeline(
     bfi_i_max,
     on_uncorrected_fn: Callable[[Sample], None] | None = None,
     on_corrected_batch_fn: Callable[[CorrectedBatch], None] | None = None,
+    on_dark_frame_fn: Callable[[Sample], None] | None = None,
+    on_rolling_avg_fn: Callable[[Sample], None] | None = None,
+    rolling_avg_enabled: bool = False,
+    rolling_avg_window: int = 10,
     dark_interval: int = 600,
     discard_count: int = 9,
     expected_row_sum: int | None = None,
@@ -1520,6 +1607,26 @@ def create_science_pipeline(
     on_corrected_batch_fn
         Fires once per dark-frame interval with a ``CorrectedBatch``
         containing dark-frame-corrected samples for the entire interval.
+    on_dark_frame_fn
+        Fires once per scheduled dark frame with a ``Sample`` whose
+        ``is_dark=True``.  ``mean`` is pedestal-subtracted using
+        ``PEDESTAL_HEIGHT``; ``std_dev = sqrt(variance)`` from raw moments;
+        ``contrast = std_dev / mean`` when ``mean > 0`` else ``0``;
+        ``bfi`` and ``bvi`` are 0 (not meaningful on a dark frame).
+        Registration-gated — pass None to disable (default).
+    on_rolling_avg_fn
+        When ``rolling_avg_enabled`` is True, fires once per uncorrected
+        light frame per camera with a ``Sample`` whose ``mean`` and
+        ``contrast`` are the arithmetic means over the last
+        ``rolling_avg_window`` light samples for that (side, cam_id).
+        Other numeric fields are zeroed.  Dark frames never enter the
+        window.  Partial windows emit (no wait for N samples to fill).
+    rolling_avg_enabled
+        When True, activates the rolling-average stage.  Default False —
+        no buffer is allocated and ``on_rolling_avg_fn`` is never invoked.
+    rolling_avg_window
+        Window size N (default 10).  Ignored when
+        ``rolling_avg_enabled`` is False.
     dark_interval
         Frames between dark frames (default 600 = 15 s at 40 Hz).
     discard_count
@@ -1540,6 +1647,10 @@ def create_science_pipeline(
         bfi_i_max=bfi_i_max,
         on_uncorrected_fn=on_uncorrected_fn,
         on_corrected_batch_fn=on_corrected_batch_fn,
+        on_dark_frame_fn=on_dark_frame_fn,
+        on_rolling_avg_fn=on_rolling_avg_fn,
+        rolling_avg_enabled=rolling_avg_enabled,
+        rolling_avg_window=rolling_avg_window,
         dark_interval=dark_interval,
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
