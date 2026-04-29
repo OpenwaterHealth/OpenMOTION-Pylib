@@ -39,8 +39,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib"
-Issues     = "https://github.com/OpenwaterHealth/OpenMOTION-Pylib/issues"
+Repository = "https://github.com/OpenwaterHealth/openmotion-sdk"
+Issues     = "https://github.com/OpenwaterHealth/openmotion-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

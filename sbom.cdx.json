@@ -13,10 +13,10 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:github/OpenwaterHealth/OpenMOTION-Pylib@0.0.0",
-      "name": "openmotion-pylib",
+      "bom-ref": "pkg:github/OpenwaterHealth/openmotion-sdk@0.0.0",
+      "name": "openmotion-sdk",
       "version": "0.0.0+local",
-      "purl": "pkg:github/OpenwaterHealth/OpenMOTION-Pylib@0.0.0",
+      "purl": "pkg:github/OpenwaterHealth/openmotion-sdk@0.0.0",
       "licenses": [
         {
           "license": {
