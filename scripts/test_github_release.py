@@ -3,9 +3,9 @@
 Simple CLI to exercise the `GitHubReleases` helper.
 
 Usage examples:
-  python scripts/test_github_release.py OpenwaterHealth OpenMOTION-Pylib
-  python scripts/test_github_release.py OpenwaterHealth OpenMOTION-Pylib --tag v1.0.0
-  python scripts/test_github_release.py OpenwaterHealth OpenMOTION-Pylib --asset testcustom_agg.bit
+  python scripts/test_github_release.py OpenwaterHealth openmotion-sdk
+  python scripts/test_github_release.py OpenwaterHealth openmotion-sdk --tag v1.0.0
+  python scripts/test_github_release.py OpenwaterHealth openmotion-sdk --asset testcustom_agg.bit
 
 This script prints release info, lists assets, and can download a chosen asset.
 """

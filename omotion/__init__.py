@@ -27,8 +27,10 @@ from .MotionConfig import MotionConfig
 __all__ = ["__version__", "set_log_root"]
 
 try:
-    # works when installed (wheel/sdist) — uses dist-info METADATA
-    __version__ = _pkg_version("openmotion-pylib")
+    # works when installed (wheel/sdist) — uses dist-info METADATA.
+    # Must match the [project] name in pyproject.toml (renamed from
+    # "openmotion-pylib" → "openmotion-sdk" in commit 0f7bb52).
+    __version__ = _pkg_version("openmotion-sdk")
 except PackageNotFoundError:
     # running from source (no dist-info)? try pyproject.toml first
     try:
