@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 from omotion import _log_root
+from omotion.connection_state import ConnectionState
 from omotion.MotionProcessing import (
     CorrectedBatch,
     HISTO_SIZE_WORDS,
@@ -18,7 +19,7 @@ from omotion.MotionProcessing import (
 )
 
 if TYPE_CHECKING:
-    from omotion.Interface import MOTIONInterface
+    from omotion.MotionInterface import MotionInterface
 
 logger = logging.getLogger(f"{_log_root}.ScanWorkflow" if _log_root else "ScanWorkflow")
 
@@ -123,7 +124,7 @@ class ConfigureResult:
 
 
 class ScanWorkflow:
-    def __init__(self, interface: "MOTIONInterface"):
+    def __init__(self, interface: "MotionInterface"):
         self._interface = interface
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
@@ -137,6 +138,12 @@ class ScanWorkflow:
         self._bfi_c_max = None
         self._bfi_i_min = None
         self._bfi_i_max = None
+
+        # Per-scan state for the disconnect-abort subscription. Reset at
+        # each scan start by _scan_subscribe_state.
+        self._scan_subs: list[tuple] = []  # (signal, handler) pairs
+        self._scan_active_handles: list = []
+        self._scan_abort_reason: str | None = None
 
     @property
     def running(self) -> bool:
@@ -171,8 +178,8 @@ class ScanWorkflow:
         if side_key not in ("left", "right"):
             logger.error("Invalid side for get_single_histogram: %s", side)
             return None
-        sensor = self._interface.sensors.get(side_key) if self._interface.sensors else None
-        if not sensor or not sensor.is_connected():
+        sensor = getattr(self._interface, side_key, None)
+        if sensor is None or not sensor.is_connected():
             logger.error("%s sensor not connected", side_key.capitalize())
             return None
         return sensor.get_camera_histogram(
@@ -199,8 +206,19 @@ class ScanWorkflow:
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
+                logger.warning(
+                    "start_scan refused: previous scan is still active "
+                    "(_running=%s, thread alive=%s, thread=%s). The previous "
+                    "worker has not reached its finally cleanup yet — most "
+                    "likely a writer or science-pipeline thread didn't exit "
+                    "within its join timeout.",
+                    self._running,
+                    self._thread.is_alive() if self._thread else None,
+                    self._thread,
+                )
                 return False
             self._running = True
+        logger.info("start_scan: spawning worker thread for new scan")
 
         self._stop_evt = threading.Event()
 
@@ -275,7 +293,7 @@ class ScanWorkflow:
                 # Open the telemetry CSV and register a listener on the poller.
                 # The guard handles headless configs where there is no console module.
                 _telem_poller = getattr(
-                    getattr(self._interface, "console_module", None), "telemetry", None
+                    getattr(self._interface, "console", None), "telemetry", None
                 )
                 if _telem_poller is not None and request.write_telemetry_csv:
                     try:
@@ -762,6 +780,13 @@ class ScanWorkflow:
                     if on_side_stream_fn:
                         on_side_stream_fn(side, filepath)
 
+                # Subscribe to state changes on the participating handles so
+                # any mid-scan disconnect aborts the scan immediately.
+                # Subscribed handles include the console (whose loss stops
+                # the FSYNC trigger) and every active sensor.
+                _scan_handles = [self._interface.console] + [s for _, _, s in active_sides]
+                self._scan_subscribe_state(handles=_scan_handles)
+
                 # Arm host-side streaming before enabling cameras so the first
                 # frame packet is not missed at scan start.
                 _emit_log("Enabling cameras...")
@@ -773,7 +798,7 @@ class ScanWorkflow:
                         )
 
                 _emit_log("Starting trigger...")
-                if not self._interface.console_module.start_trigger():
+                if not self._interface.console.start_trigger():
                     raise RuntimeError("Failed to start trigger.")
                 if on_trigger_state_fn:
                     on_trigger_state_fn("ON")
@@ -795,7 +820,9 @@ class ScanWorkflow:
 
                 ok = not self._stop_evt.is_set()
                 if not ok:
-                    err = "Capture canceled"
+                    # If the stop was triggered by a mid-scan disconnect,
+                    # prefer that specific reason over "Capture canceled".
+                    err = self._scan_abort_reason or "Capture canceled"
             except Exception as e:
                 ok = False
                 err = str(e)
@@ -803,11 +830,16 @@ class ScanWorkflow:
                     on_error_fn(e)
             finally:
                 try:
-                    self._interface.console_module.stop_trigger()
+                    self._interface.console.stop_trigger()
                 except Exception:
                     pass
                 if on_trigger_state_fn:
                     on_trigger_state_fn("OFF")
+
+                # Stop reacting to handle state changes — the scan is
+                # done, so any further disconnects shouldn't influence
+                # this run.
+                self._scan_unsubscribe_state()
 
                 time.sleep(0.5)
 
@@ -866,9 +898,15 @@ class ScanWorkflow:
 
                 # Per-side summary: USB read chunks received vs rows written to CSV.
                 # Compare against the MCU's own frame-sent printout to locate
-                # exactly where any frame loss is occurring.
+                # exactly where any frame loss is occurring. The sensor.uart
+                # may be None here if the sensor disconnected mid-scan and
+                # never recovered — in that case we can only report the
+                # writer-side row count.
                 for side, _, sensor in active_sides:
-                    usb_pkts = sensor.uart.histo.packets_received
+                    if sensor.uart is not None:
+                        usb_pkts = sensor.uart.histo.packets_received
+                    else:
+                        usb_pkts = "n/a (disconnected)"
                     rows = writer_row_counts.get(side, 0)
                     side_path = left_path if side == "left" else right_path
                     _emit_log(
@@ -950,8 +988,8 @@ class ScanWorkflow:
     def cancel_scan(self, *, join_timeout: float = 5.0) -> None:
         self._stop_evt.set()
         try:
-            if self._interface and self._interface.console_module:
-                self._interface.console_module.stop_trigger()
+            if self._interface and self._interface.console:
+                self._interface.console.stop_trigger()
         except Exception:
             pass
         if self._thread and self._thread.is_alive():
@@ -1147,14 +1185,14 @@ class ScanWorkflow:
 
     def _resolve_active_sides(self, left_mask: int, right_mask: int):
         sides_info = [
-            ("left", left_mask, self._interface.sensors.get("left")),
-            ("right", right_mask, self._interface.sensors.get("right")),
+            ("left", left_mask, self._interface.left),
+            ("right", right_mask, self._interface.right),
         ]
         active = []
         for side, mask, sensor in sides_info:
             if int(mask) == 0x00:
                 continue
-            if not (sensor and sensor.is_connected()):
+            if not sensor.is_connected():
                 continue
             active.append((side, int(mask), sensor))
         return active
@@ -1164,3 +1202,77 @@ class ScanWorkflow:
         if isinstance(result, dict):
             return bool(result.get(side))
         return bool(result)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Mid-scan disconnect handling: abort immediately
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # ScanWorkflow subscribes to signal_state_changed on every handle the
+    # scan is using (always the console, plus the participating sensors).
+    # If any of them transitions to DISCONNECTING during the scan, we set
+    # _scan_abort_reason and trip _stop_evt — the main scan loop polls
+    # _stop_evt and unwinds via its existing finally cleanup. There is no
+    # recovery: a scan with a missing device is invalid, so the next scan
+    # starts cleanly from a known-good state.
+    #
+    # The scan worker's exception handler picks up _scan_abort_reason
+    # in place of "Capture canceled" so the result message names the
+    # specific handle that dropped.
+
+    def _scan_subscribe_state(self, handles: list) -> None:
+        self._scan_active_handles = list(handles)
+        self._scan_abort_reason = None
+
+        # ScanWorkflow is not a QObject. Auto-connection sees that and
+        # tries to deliver cross-thread emits via the receiver's event
+        # loop — which doesn't exist for a plain Python callable, so the
+        # signal is silently dropped. Force DirectConnection so the slot
+        # runs synchronously on the emitter thread (the monitor thread,
+        # which is exactly where _on_scan_handle_state belongs).
+        try:
+            from PyQt6.QtCore import Qt
+            _conn_type = Qt.ConnectionType.DirectConnection
+        except ImportError:
+            _conn_type = None  # MotionSignal shim path; emit is direct anyway
+
+        for h in handles:
+            handler = self._make_state_handler(h)
+            try:
+                if _conn_type is not None:
+                    h.signal_state_changed.connect(handler, type=_conn_type)
+                else:
+                    h.signal_state_changed.connect(handler)
+                self._scan_subs.append((h.signal_state_changed, handler))
+                logger.info("scan: subscribed to %s state changes", h.name)
+            except Exception as e:
+                logger.warning("scan: failed to subscribe to %s: %s", h.name, e)
+
+    def _scan_unsubscribe_state(self) -> None:
+        for sig, handler in self._scan_subs:
+            try:
+                sig.disconnect(handler)
+            except Exception:
+                pass
+        self._scan_subs = []
+        self._scan_active_handles = []
+
+    def _make_state_handler(self, handle):
+        # Bound closure so we can disconnect the same callable later.
+        def _handler(h, old, new, reason):
+            self._on_scan_handle_state(h, old, new, reason)
+        return _handler
+
+    def _on_scan_handle_state(self, handle, old, new, reason: str) -> None:
+        if not self.running:
+            return
+        if handle not in self._scan_active_handles:
+            return
+        if new == ConnectionState.DISCONNECTING and not self._stop_evt.is_set():
+            logger.error(
+                "scan: %s disconnected mid-scan (%s); aborting",
+                handle.name, reason,
+            )
+            self._scan_abort_reason = (
+                f"{handle.name} disconnected mid-scan ({reason})"
+            )
+            self._stop_evt.set()

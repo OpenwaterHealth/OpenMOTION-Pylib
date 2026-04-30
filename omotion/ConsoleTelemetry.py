@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, TYPE_CHECKING
 from omotion import _log_root
 
 if TYPE_CHECKING:
-    from omotion.Console import MOTIONConsole
+    from omotion.MotionConsole import MotionConsole
 
 logger = logging.getLogger(f"{_log_root}.ConsoleTelemetry" if _log_root else "ConsoleTelemetry")
 
@@ -114,7 +114,7 @@ class ConsoleTelemetryPoller:
     they run on the poller thread, so they should be fast / non-blocking.
     """
 
-    def __init__(self, console: "MOTIONConsole") -> None:
+    def __init__(self, console: "MotionConsole") -> None:
         self._console = console
         self._lock = threading.Lock()
         self._snapshot: Optional[ConsoleTelemetry] = None
@@ -241,17 +241,20 @@ class ConsoleTelemetryPoller:
         except Exception as exc:
             snap.read_ok = False
             snap.error = str(exc)
-            logger.error("ConsoleTelemetryPoller _read_all error: %s", exc)
-            # If the underlying UART is no longer connected (e.g. the device
-            # rebooted or was unplugged), stop polling immediately instead of
-            # retrying every second until stop() is called externally.
+            # If the underlying UART is no longer connected, this poll
+            # tick caught the device on its way out — log at INFO not
+            # ERROR (the state machine will already log the disconnect),
+            # then stop the loop so we don't keep retrying.
             if not self._console.is_connected():
                 logger.info(
-                    "ConsoleTelemetryPoller: console disconnected, stopping poll loop"
+                    "ConsoleTelemetryPoller: console disconnected mid-poll (%s); stopping",
+                    exc,
                 )
                 with self._lock:
                     self._running = False
                 self._wake.set()
+            else:
+                logger.error("ConsoleTelemetryPoller _read_all error: %s", exc)
 
         snap.timestamp = time.time()
         return snap
@@ -330,7 +333,10 @@ class ConsoleTelemetryPoller:
             )
 
     def _read_analog(self, snap: ConsoleTelemetry) -> None:
-        snap.tcm = int(self._console.get_lsync_pulsecount())
+        # get_lsync_pulsecount swallows transient errors and returns None;
+        # default to 0 so a single bad poll doesn't raise TypeError.
+        lsync = self._console.get_lsync_pulsecount()
+        snap.tcm = int(lsync) if lsync is not None else 0
 
         tcl_raw, _ = self._console.read_i2c_packet(
             mux_index=_MUX_IDX,
