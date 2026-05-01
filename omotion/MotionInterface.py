@@ -21,6 +21,7 @@ from omotion.MotionConsole import MotionConsole
 from omotion.MotionSensor import MotionSensor
 from omotion.connection_monitor import ConnectionMonitor
 from omotion.connection_state import ConnectionState
+from omotion.Calibration import Calibration
 from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
 from omotion import __version__ as _SDK_VERSION, _log_root
 
@@ -325,6 +326,47 @@ class MotionInterface:
     def log_console_info(self) -> None:
         if self.console.is_connected():
             self.console.log_device_info()
+            self._load_calibration_from_console()
+
+    def _load_calibration_from_console(self) -> None:
+        """Read calibration from the console and install it into ScanWorkflow.
+
+        Best-effort: any failure is logged and the existing cache is kept.
+        Called automatically on console-connect via ``log_console_info``;
+        also exposed publicly via ``refresh_calibration``.
+        """
+        try:
+            cal = self.console.read_calibration()
+        except Exception as e:
+            logger.warning(
+                "Could not load calibration from console: %s. "
+                "Keeping existing cached calibration (source=%s).",
+                e, self.scan_workflow._calibration.source,
+            )
+            return
+        self.scan_workflow._install_calibration(cal)
+
+    def refresh_calibration(self) -> Calibration:
+        """Re-read calibration from the console and update the cache.
+
+        Returns the resulting :class:`Calibration` (the same value
+        accessible via :meth:`get_calibration`).
+        """
+        self._load_calibration_from_console()
+        return self.scan_workflow._calibration
+
+    def get_calibration(self) -> Calibration:
+        """Return the currently cached calibration."""
+        return self.scan_workflow._calibration
+
+    def write_calibration(
+        self, c_min, c_max, i_min, i_max
+    ) -> Calibration:
+        """Validate inputs, write the calibration to the console EEPROM,
+        then read it back into the cache. Returns the cached value.
+        """
+        self.console.write_calibration(c_min, c_max, i_min, i_max)
+        return self.refresh_calibration()
 
     def log_sensor_info(self, side: str) -> None:
         sensor = self.left if side == "left" else self.right if side == "right" else None
