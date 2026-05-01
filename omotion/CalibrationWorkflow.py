@@ -198,6 +198,82 @@ def _camera_active(mask: int, cam_id: int) -> bool:
     return bool(mask & (1 << cam_id))
 
 
+def _compute_calibration_from_samples(
+    samples: list[Sample],
+    *,
+    left_camera_mask: int,
+    right_camera_mask: int,
+) -> Calibration:
+    """Core calibration math: aggregate dark-corrected Samples into a
+    ``(MODULES, CAMS_PER_MODULE)`` Calibration.
+
+    Pure function — no I/O. Caller pre-filters ``samples`` to the
+    averaging window. Each input Sample should be from the science
+    pipeline's corrected stream (``is_corrected=True``): ``mean``
+    is dark-baseline-subtracted, ``std_dev`` has shot-noise removed,
+    ``contrast = std_dev / mean`` is physical speckle contrast.
+    """
+    defaults = Calibration.default()
+    c_max = defaults.c_max.copy()
+    i_max = defaults.i_max.copy()
+    c_min = np.zeros_like(c_max)
+    i_min = np.zeros_like(i_max)
+
+    masks = (left_camera_mask, right_camera_mask)
+
+    for module_idx, side in enumerate(("left", "right")):
+        mask = masks[module_idx]
+        for cam_id in range(CAMS_PER_MODULE):
+            if not _camera_active(mask, cam_id):
+                continue  # inactive — keep default value
+            cam_samples = [
+                s for s in samples
+                if s.side == side and s.cam_id == cam_id
+            ]
+            if not cam_samples:
+                raise DegenerateCalibrationError(
+                    f"active camera ({side}, cam={cam_id + 1}) produced "
+                    f"no corrected samples; calibration aborted."
+                )
+            # Ratio-of-means contrast, not mean-of-ratios.
+            # mean(std/mean) is statistically biased upward whenever
+            # per-frame mean varies; mean(std)/mean(mean) matches the
+            # live UI's "speckle contrast" and stays bounded by 1 for a
+            # well-conditioned signal.
+            mean_avg = float(np.mean([s.mean for s in cam_samples]))
+            std_avg = float(np.mean([s.std_dev for s in cam_samples]))
+            new_c_max = (std_avg / mean_avg) if mean_avg > 0.0 else 0.0
+            new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
+            # The biased per-frame average is logged for diagnosis: a
+            # large divergence between the two estimators is the smoking
+            # gun for a flaky / partially-occluded camera.
+            per_frame_contrast_avg = float(
+                np.mean([s.contrast for s in cam_samples])
+            )
+            logger.info(
+                "  cam (%s, cam=%d): n=%d  mean=%.2f  std=%.2f  "
+                "C_max(ratio-of-means)=%.4f  C_max(mean-of-ratios)=%.4f  "
+                "I_max=%.2f",
+                side, cam_id + 1, len(cam_samples),
+                mean_avg, std_avg, new_c_max, per_frame_contrast_avg,
+                new_i_max,
+            )
+            if new_c_max <= 0.0 or new_i_max <= 0.0:
+                raise DegenerateCalibrationError(
+                    f"active camera ({side}, cam={cam_id + 1}) produced "
+                    f"zero or negative aggregate (C_max={new_c_max:.4f}, "
+                    f"I_max={new_i_max:.4f}); calibration aborted."
+                )
+            c_max[module_idx, cam_id] = new_c_max
+            i_max[module_idx, cam_id] = new_i_max
+
+    return Calibration(
+        c_min=c_min, c_max=c_max,
+        i_min=i_min, i_max=i_max,
+        source="console",
+    )
+
+
 def compute_calibration_from_csvs(
     *,
     left_csv: Optional[str],
@@ -207,18 +283,12 @@ def compute_calibration_from_csvs(
     skip_leading_frames: int,
     frame_window_count: Optional[int] = None,
 ) -> Calibration:
-    """Compute (2, 8) C_max and I_max arrays from raw histogram CSVs.
+    """CSV-driven entry point — for tests and offline analysis only.
 
-    C_min and I_min are zero. ``C_max[m, c]`` is the average light-frame
-    contrast for camera ``(m, c)``; ``I_max[m, c]`` is
-    ``CALIBRATION_I_MAX_MULTIPLIER * average light-frame mean``.
-
-    Inactive cameras (mask bit clear) get ``Calibration.default()`` values
-    so monotonicity always holds. Active cameras with zero / negative
-    aggregates raise :class:`DegenerateCalibrationError`.
-
-    Returns ``Calibration(source="console")`` so callers can pass it
-    straight to :meth:`omotion.MotionInterface.write_calibration`.
+    Production calibration (run from the bloodflow app) goes through
+    :class:`CalibrationWorkflow`, which subscribes to the science
+    pipeline's corrected stream as the scan runs and never re-parses
+    the data from disk.
     """
     logger.info(
         "compute_calibration_from_csvs: left_csv=%s right_csv=%s "
@@ -240,74 +310,10 @@ def compute_calibration_from_csvs(
         "compute_calibration_from_csvs: collected %d dark-corrected samples.",
         len(samples),
     )
-
-    defaults = Calibration.default()
-    c_max = defaults.c_max.copy()
-    i_max = defaults.i_max.copy()
-    c_min = np.zeros_like(c_max)
-    i_min = np.zeros_like(i_max)
-
-    masks = (left_camera_mask, right_camera_mask)
-
-    for module_idx, side in enumerate(("left", "right")):
-        mask = masks[module_idx]
-        for cam_id in range(CAMS_PER_MODULE):
-            if not _camera_active(mask, cam_id):
-                continue  # inactive — keep default value
-            cam_samples = [
-                s for s in samples
-                if s.side == side and s.cam_id == cam_id
-            ]
-            # cam_samples are dark-frame-corrected (mean = u1 − dark_u1,
-            # variance = corrected_var with shot-noise removed). No
-            # is_dark filter needed — the corrected stream emits only
-            # light frames.
-            light_samples = cam_samples
-            if not light_samples:
-                raise DegenerateCalibrationError(
-                    f"active camera ({side}, cam={cam_id + 1}) produced "
-                    f"no corrected samples after skip_leading_frames="
-                    f"{skip_leading_frames}; calibration aborted."
-                )
-            # Use the ratio-of-means estimator for contrast, NOT the
-            # mean-of-ratios. mean(std/mean) is statistically biased
-            # upward whenever per-frame mean varies (laser jitter, low-
-            # light cameras whose mean is barely above the 64-DN
-            # pedestal can produce per-frame contrast > 1). The ratio of
-            # the population means matches the live UI's "speckle
-            # contrast" interpretation and is bounded by 1 for a
-            # well-conditioned signal.
-            mean_avg = float(np.mean([s.mean for s in light_samples]))
-            std_avg = float(np.mean([s.std_dev for s in light_samples]))
-            new_c_max = (std_avg / mean_avg) if mean_avg > 0.0 else 0.0
-            new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
-            # Keep the biased per-frame average around for the log so
-            # operators can spot when the two diverge — that divergence
-            # is the smoking gun for a flaky / partially-occluded camera.
-            per_frame_contrast_avg = float(
-                np.mean([s.contrast for s in light_samples])
-            )
-            logger.info(
-                "  cam (%s, cam=%d): n=%d  mean=%.2f  std=%.2f  "
-                "C_max(ratio-of-means)=%.4f  C_max(mean-of-ratios)=%.4f  "
-                "I_max=%.2f",
-                side, cam_id + 1, len(light_samples),
-                mean_avg, std_avg, new_c_max, per_frame_contrast_avg,
-                new_i_max,
-            )
-            if new_c_max <= 0.0 or new_i_max <= 0.0:
-                raise DegenerateCalibrationError(
-                    f"active camera ({side}, cam={cam_id + 1}) produced "
-                    f"zero or negative aggregate (C_max={new_c_max:.4f}, "
-                    f"I_max={new_i_max:.4f}); calibration aborted."
-                )
-            c_max[module_idx, cam_id] = new_c_max
-            i_max[module_idx, cam_id] = new_i_max
-
-    return Calibration(
-        c_min=c_min, c_max=c_max,
-        i_min=i_min, i_max=i_max,
-        source="console",
+    return _compute_calibration_from_samples(
+        samples,
+        left_camera_mask=left_camera_mask,
+        right_camera_mask=right_camera_mask,
     )
 
 
@@ -357,12 +363,14 @@ def build_result_rows(
     calibration: Optional[Calibration],
     frame_window_count: Optional[int] = None,
 ) -> list[CalibrationResultRow]:
-    """Aggregate per-camera mean/contrast/BFI/BVI from validation-scan
-    CSVs and apply pass/fail thresholds.
+    """CSV-driven entry point — for tests and offline analysis only.
 
-    See :func:`_collect_samples_from_csvs` for the meaning of
-    ``frame_window_count`` — bounding the trailing edge keeps the
-    firmware's terminal dark frame out of the per-camera averages.
+    Production validation (run from the bloodflow app) goes through
+    :class:`CalibrationWorkflow`, which subscribes to the corrected
+    stream as the scan runs.
+
+    See :func:`_collect_samples_from_csvs` for ``frame_window_count``
+    semantics.
     """
     samples = _collect_samples_from_csvs(
         left_csv=left_csv, right_csv=right_csv,
@@ -372,7 +380,28 @@ def build_result_rows(
         right_camera_mask=right_camera_mask,
         calibration=calibration,
     )
+    return _build_result_rows_from_samples(
+        samples,
+        left_camera_mask=left_camera_mask,
+        right_camera_mask=right_camera_mask,
+        thresholds=thresholds,
+        sensor_left=sensor_left,
+        sensor_right=sensor_right,
+    )
 
+
+def _build_result_rows_from_samples(
+    samples: list[Sample],
+    *,
+    left_camera_mask: int,
+    right_camera_mask: int,
+    thresholds: CalibrationThresholds,
+    sensor_left,
+    sensor_right,
+) -> list[CalibrationResultRow]:
+    """Core row aggregation: per-camera mean/contrast/BFI/BVI averages
+    and threshold pass/fail. Pure function — caller pre-filters.
+    """
     rows: list[CalibrationResultRow] = []
     masks = (left_camera_mask, right_camera_mask)
     sensors = (sensor_left, sensor_right)
@@ -486,17 +515,28 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
 from omotion.ScanWorkflow import ScanRequest, ScanResult
 
 
-def _run_subscan(
+def _run_subscan_capture(
     interface,
     request: CalibrationRequest,
     *,
     subject_id: str,
     duration_sec: int,
+    skip_leading_frames: int,
+    frame_window_count: int,
     stop_evt: threading.Event,
-) -> tuple[str, str]:
-    """Submit a ScanRequest and block until it completes, returning
-    (left_path, right_path). Raises RuntimeError on scan failure.
-    Honors stop_evt by calling cancel_scan and returning empty paths.
+) -> tuple[str, str, list[Sample]]:
+    """Submit a ScanRequest and capture corrected samples in-memory as
+    the science pipeline emits them.
+
+    The scan still writes its raw histogram CSV to disk (`write_raw_csv=True`)
+    so operators retain the artifact for later verification, but we
+    don't re-parse it — corrected samples are captured live via
+    ``on_corrected_batch_fn``. This avoids running the science pipeline
+    twice on the same data.
+
+    Returns ``(left_path, right_path, captured_samples)``. Raises
+    ``RuntimeError`` on scan failure. Honors ``stop_evt`` by calling
+    ``cancel_scan`` and returning empty paths + empty list.
     """
     scan_req = ScanRequest(
         subject_id=subject_id,
@@ -505,11 +545,23 @@ def _run_subscan(
         right_camera_mask=request.right_camera_mask,
         data_dir=request.output_dir,
         disable_laser=False,
-        write_raw_csv=True,
+        write_raw_csv=True,         # keep the raw artifact for audit
         write_corrected_csv=False,
         write_telemetry_csv=False,
         reduced_mode=False,
     )
+
+    upper_bound = skip_leading_frames + int(frame_window_count)
+    captured: list[Sample] = []
+
+    def _on_corrected_batch(batch: CorrectedBatch) -> None:
+        for s in batch.samples:
+            if s.absolute_frame_id < skip_leading_frames:
+                continue
+            if s.absolute_frame_id >= upper_bound:
+                continue
+            captured.append(s)
+
     evt = threading.Event()
     holder: dict[str, ScanResult] = {}
 
@@ -518,7 +570,9 @@ def _run_subscan(
         evt.set()
 
     started = interface.scan_workflow.start_scan(
-        scan_req, on_complete_fn=_on_complete,
+        scan_req,
+        on_corrected_batch_fn=_on_corrected_batch,
+        on_complete_fn=_on_complete,
     )
     if not started:
         raise RuntimeError("ScanWorkflow refused start_scan.")
@@ -530,15 +584,16 @@ def _run_subscan(
             except Exception:
                 pass
             evt.wait(timeout=5.0)
-            return "", ""
+            return "", "", []
     res = holder.get("r")
     if res is None or not res.ok:
         raise RuntimeError(
             f"sub-scan failed: {(res.error if res else 'no result')}"
         )
     if res.canceled:
-        return "", ""
-    return res.left_path or "", res.right_path or ""
+        return "", "", []
+    captured.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
+    return res.left_path or "", res.right_path or "", captured
 
 
 class CalibrationWorkflow:
@@ -614,6 +669,10 @@ class CalibrationWorkflow:
             wd.daemon = True
             wd.start()
 
+            skip_frames = int(round(request.scan_delay_sec * CAPTURE_HZ))
+            # Bound the trailing edge to keep the firmware's terminal
+            # dark frame (and any laser ramp-down) out of the average.
+            window_frames = int(round(request.duration_sec * CAPTURE_HZ))
             try:
                 _emit_progress("calibration_scan")
                 _emit_log("Calibration: starting calibration scan…")
@@ -623,14 +682,18 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
-                cal_left, cal_right = _run_subscan(
+                cal_left, cal_right, cal_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib1_{request.operator_id}",
                     duration_sec=request.duration_sec + request.scan_delay_sec,
+                    skip_leading_frames=skip_frames,
+                    frame_window_count=window_frames,
                     stop_evt=self._stop_evt,
                 )
                 logger.info(
-                    "Calibration phase 1 done: left_csv=%s  right_csv=%s",
+                    "Calibration phase 1 done: %d corrected samples captured "
+                    "live; raw CSVs: left=%s  right=%s",
+                    len(cal_samples),
                     cal_left or "(none)", cal_right or "(none)",
                 )
                 if self._stop_evt.is_set():
@@ -641,18 +704,11 @@ class CalibrationWorkflow:
                 _emit_progress("compute_calibration")
                 _emit_log("Calibration: computing arrays…")
                 logger.info("Calibration phase 2: computing (2, 8) arrays.")
-                skip_frames = int(round(request.scan_delay_sec * CAPTURE_HZ))
-                # Bound the trailing edge to keep the firmware's terminal
-                # dark frame (and any laser ramp-down) out of the average.
-                window_frames = int(round(request.duration_sec * CAPTURE_HZ))
                 try:
-                    cal_obj = compute_calibration_from_csvs(
-                        left_csv=cal_left or None,
-                        right_csv=cal_right or None,
+                    cal_obj = _compute_calibration_from_samples(
+                        cal_samples,
                         left_camera_mask=request.left_camera_mask,
                         right_camera_mask=request.right_camera_mask,
-                        skip_leading_frames=skip_frames,
-                        frame_window_count=window_frames,
                     )
                 except DegenerateCalibrationError as e:
                     error = str(e)
@@ -687,14 +743,18 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
-                val_left, val_right = _run_subscan(
+                val_left, val_right, val_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib2_{request.operator_id}",
                     duration_sec=request.duration_sec + request.scan_delay_sec,
+                    skip_leading_frames=skip_frames,
+                    frame_window_count=window_frames,
                     stop_evt=self._stop_evt,
                 )
                 logger.info(
-                    "Calibration phase 4 done: left_csv=%s  right_csv=%s",
+                    "Calibration phase 4 done: %d corrected samples captured "
+                    "live; raw CSVs: left=%s  right=%s",
+                    len(val_samples),
                     val_left or "(none)", val_right or "(none)",
                 )
                 if self._stop_evt.is_set():
@@ -705,17 +765,13 @@ class CalibrationWorkflow:
                 _emit_progress("evaluate")
                 _emit_log("Calibration: evaluating…")
                 logger.info("Calibration phase 5: aggregating per-camera rows + thresholds.")
-                rows = build_result_rows(
-                    left_csv=val_left or None,
-                    right_csv=val_right or None,
+                rows = _build_result_rows_from_samples(
+                    val_samples,
                     left_camera_mask=request.left_camera_mask,
                     right_camera_mask=request.right_camera_mask,
-                    skip_leading_frames=skip_frames,
-                    frame_window_count=window_frames,
                     thresholds=request.thresholds,
                     sensor_left=getattr(self._interface, "left", None),
                     sensor_right=getattr(self._interface, "right", None),
-                    calibration=cal_obj,
                 )
                 csv_path = os.path.join(
                     request.output_dir, f"calibration-{ts}.csv"

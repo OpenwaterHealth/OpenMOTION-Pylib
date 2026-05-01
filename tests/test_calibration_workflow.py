@@ -66,12 +66,42 @@ def interface():
 
 
 def _make_fake_scan(left, right):
-    """Return a function that mimics scan_workflow.start_scan: kicks off
-    a thread that invokes on_complete_fn with a ScanResult pointing at
-    the given paths."""
-    def _fake(req, *, on_complete_fn=None, on_log_fn=None, **kw):
+    """Return a function that mimics scan_workflow.start_scan.
+
+    Spawns a thread that:
+      1. Synthesises a corrected CorrectedBatch with one Sample per
+         (side, cam) and emits it via on_corrected_batch_fn (matching
+         the new live-capture flow used by CalibrationWorkflow).
+      2. Calls on_complete_fn with a ScanResult pointing at fixture
+         paths so the workflow has CSV artifacts.
+    """
+    from omotion.MotionProcessing import CorrectedBatch, Sample
+
+    def _make_batch():
+        samples = []
+        for side in ("left", "right"):
+            for cam_id in range(8):
+                # Multiple samples per camera so per-frame averaging
+                # has something to average.
+                for fid in range(50, 100):
+                    samples.append(Sample(
+                        side=side, cam_id=cam_id, frame_id=fid,
+                        absolute_frame_id=fid, timestamp_s=fid / 40.0,
+                        row_sum=1000, temperature_c=25.0,
+                        mean=200.0, std_dev=80.0, contrast=0.4,
+                        bfi=5.0, bvi=5.0,
+                        is_corrected=True, is_dark=False,
+                    ))
+        return CorrectedBatch(
+            dark_frame_start=10, dark_frame_end=240, samples=samples,
+        )
+
+    def _fake(req, *, on_complete_fn=None, on_log_fn=None,
+              on_corrected_batch_fn=None, **kw):
         def _run():
             time.sleep(0.05)
+            if on_corrected_batch_fn:
+                on_corrected_batch_fn(_make_batch())
             res = ScanResult(
                 ok=True, error="", left_path=left, right_path=right,
                 canceled=False, scan_timestamp="20260501_000000",
