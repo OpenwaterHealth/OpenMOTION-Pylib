@@ -138,3 +138,56 @@ def test_parse_non_monotonic_i_returns_none():
     blk = _valid_block()
     blk[CALIBRATION_JSON_KEY]["I_max"][0][0] = -1.0  # less than I_min
     assert parse_calibration(blk) is None
+
+
+# ----- serialize_calibration -----
+
+def test_serialize_round_trip():
+    c_min = np.zeros((2, 8))
+    c_max = np.full((2, 8), 0.5)
+    i_min = np.zeros((2, 8))
+    i_max = np.full((2, 8), 250.0)
+    blob = serialize_calibration(c_min, c_max, i_min, i_max)
+    assert CALIBRATION_JSON_KEY in blob
+    cal = parse_calibration(blob)
+    assert cal is not None
+    np.testing.assert_array_equal(cal.c_min, c_min)
+    np.testing.assert_array_equal(cal.c_max, c_max)
+    np.testing.assert_array_equal(cal.i_min, i_min)
+    np.testing.assert_array_equal(cal.i_max, i_max)
+
+
+def test_serialize_emits_lists_not_ndarrays():
+    blob = serialize_calibration(
+        np.zeros((2, 8)), np.full((2, 8), 0.5),
+        np.zeros((2, 8)), np.full((2, 8), 250.0),
+    )
+    inner = blob[CALIBRATION_JSON_KEY]
+    for key in ("C_min", "C_max", "I_min", "I_max"):
+        assert isinstance(inner[key], list)
+        assert isinstance(inner[key][0], list)
+        assert isinstance(inner[key][0][0], float)
+
+
+def test_serialize_rejects_wrong_shape():
+    with pytest.raises(ValueError, match="shape"):
+        serialize_calibration(
+            np.zeros((2, 7)), np.full((2, 7), 0.5),
+            np.zeros((2, 7)), np.full((2, 7), 250.0),
+        )
+
+
+def test_serialize_rejects_nan():
+    bad = np.zeros((2, 8))
+    bad[0, 0] = float("nan")
+    with pytest.raises(ValueError, match="finite"):
+        serialize_calibration(bad, np.full((2, 8), 0.5),
+                              np.zeros((2, 8)), np.full((2, 8), 250.0))
+
+
+def test_serialize_rejects_non_monotonic():
+    with pytest.raises(ValueError, match="monotonic|greater"):
+        serialize_calibration(
+            np.zeros((2, 8)), np.zeros((2, 8)),  # C_max == C_min
+            np.zeros((2, 8)), np.full((2, 8), 250.0),
+        )

@@ -167,4 +167,37 @@ def serialize_calibration(c_min, c_max, i_min, i_max) -> dict:
     """Return a ``{"calibration": {...}}`` dict ready to merge into the
     console JSON. Validates inputs and raises ``ValueError`` on bad data.
     """
-    raise NotImplementedError  # filled in Task 3
+    arrays = {
+        _C_MIN_KEY: c_min,
+        _C_MAX_KEY: c_max,
+        _I_MIN_KEY: i_min,
+        _I_MAX_KEY: i_max,
+    }
+    typed: dict[str, np.ndarray] = {}
+    for key, val in arrays.items():
+        try:
+            arr = np.asarray(val, dtype=float)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{key} is not numeric: {e}") from e
+        if arr.shape != _EXPECTED_SHAPE:
+            raise ValueError(
+                f"{key} has shape {arr.shape}; expected {_EXPECTED_SHAPE}"
+            )
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{key} contains non-finite values (NaN or inf)")
+        typed[key] = arr
+
+    if not np.all(typed[_C_MAX_KEY] > typed[_C_MIN_KEY]):
+        raise ValueError(
+            "C_max must be strictly greater than C_min element-wise (monotonic)"
+        )
+    if not np.all(typed[_I_MAX_KEY] > typed[_I_MIN_KEY]):
+        raise ValueError(
+            "I_max must be strictly greater than I_min element-wise (monotonic)"
+        )
+
+    return {
+        CALIBRATION_JSON_KEY: {
+            key: arr.tolist() for key, arr in typed.items()
+        }
+    }
