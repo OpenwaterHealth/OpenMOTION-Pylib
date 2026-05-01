@@ -96,3 +96,65 @@ class CalibrationResult:
     validation_scan_left_path: str
     validation_scan_right_path: str
     started_timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Pure compute helpers — no hardware, no UART. Tested in
+# tests/test_calibration_workflow_compute.py.
+# ---------------------------------------------------------------------------
+
+from omotion.MotionProcessing import (
+    Sample,
+    create_science_pipeline,
+    feed_pipeline_from_csv,
+)
+
+
+def _collect_samples_from_csvs(
+    *,
+    left_csv: Optional[str],
+    right_csv: Optional[str],
+    skip_leading_frames: int,
+    left_camera_mask: int = 0xFF,
+    right_camera_mask: int = 0xFF,
+    calibration: Optional[Calibration] = None,
+) -> list[Sample]:
+    """Run the science pipeline against raw histogram CSVs and return all
+    light-frame Samples whose absolute_frame_id is at or beyond
+    ``skip_leading_frames``.
+
+    Dark frames are skipped by construction: ``on_uncorrected_fn`` only
+    fires for non-dark frames.
+
+    Calibration defaults to ``Calibration.default()``. For the calibration
+    phase, the BFI/BVI fields on the returned Samples are not used —
+    only ``mean`` and ``contrast``, which are upstream of the calibration
+    math. For the validation phase, callers pass the freshly-written
+    console calibration so BFI/BVI reflect it.
+    """
+    cal = calibration or Calibration.default()
+    samples: list[Sample] = []
+
+    def _on_sample(s: Sample) -> None:
+        if s.absolute_frame_id >= skip_leading_frames:
+            samples.append(s)
+
+    pipeline = create_science_pipeline(
+        left_camera_mask=left_camera_mask,
+        right_camera_mask=right_camera_mask,
+        bfi_c_min=cal.c_min,
+        bfi_c_max=cal.c_max,
+        bfi_i_min=cal.i_min,
+        bfi_i_max=cal.i_max,
+        on_uncorrected_fn=_on_sample,
+    )
+    try:
+        if left_csv:
+            feed_pipeline_from_csv(left_csv, "left", pipeline)
+        if right_csv:
+            feed_pipeline_from_csv(right_csv, "right", pipeline)
+    finally:
+        # stop() drains the worker queue and joins the thread.
+        pipeline.stop(timeout=30.0)
+    samples.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
+    return samples

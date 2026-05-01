@@ -67,3 +67,43 @@ def test_result_default_state_is_failed():
     )
     assert r.ok is False
     assert r.passed is False
+
+
+# ----- _collect_samples_from_csvs -----
+
+from omotion.CalibrationWorkflow import _collect_samples_from_csvs
+
+
+_FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+_LEFT_FIXTURE  = os.path.join(_FIXTURE_DIR, "scan_owC18EHALL_20251217_160949_left_maskFF.csv")
+_RIGHT_FIXTURE = os.path.join(_FIXTURE_DIR, "scan_owC18EHALL_20251217_160949_right_maskFF.csv")
+
+
+def _have_fixtures() -> bool:
+    return os.path.exists(_LEFT_FIXTURE) and os.path.exists(_RIGHT_FIXTURE)
+
+
+def test_collect_samples_loads_left_csv():
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+    samples = _collect_samples_from_csvs(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        skip_leading_frames=0,
+    )
+    assert len(samples) > 0
+    assert all(s.side == "left" for s in samples)
+    assert all(0 <= s.cam_id < 8 for s in samples)
+
+
+def test_collect_samples_skips_leading_frames():
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+    full = _collect_samples_from_csvs(
+        left_csv=_LEFT_FIXTURE, right_csv=None, skip_leading_frames=0,
+    )
+    skipped = _collect_samples_from_csvs(
+        left_csv=_LEFT_FIXTURE, right_csv=None, skip_leading_frames=40,
+    )
+    skipped_min_frame = min(s.absolute_frame_id for s in skipped)
+    assert skipped_min_frame >= 40
+    assert len(skipped) < len(full)
