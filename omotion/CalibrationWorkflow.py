@@ -227,7 +227,7 @@ def compute_calibration_from_csvs(
             ]
             if not cam_samples:
                 raise DegenerateCalibrationError(
-                    f"active camera ({side}, cam_id={cam_id}) produced "
+                    f"active camera ({side}, cam={cam_id + 1}) produced "
                     f"no light-frame samples after skip_leading_frames="
                     f"{skip_leading_frames}; calibration aborted."
                 )
@@ -236,14 +236,14 @@ def compute_calibration_from_csvs(
             new_c_max = contrast_avg
             new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
             logger.info(
-                "  cam (%s, cam_id=%d): n=%d  mean=%.2f  contrast=%.4f  "
+                "  cam (%s, cam=%d): n=%d  mean=%.2f  contrast=%.4f  "
                 "→ C_max=%.4f  I_max=%.2f",
-                side, cam_id, len(cam_samples),
+                side, cam_id + 1, len(cam_samples),
                 mean_avg, contrast_avg, new_c_max, new_i_max,
             )
             if new_c_max <= 0.0 or new_i_max <= 0.0:
                 raise DegenerateCalibrationError(
-                    f"active camera ({side}, cam_id={cam_id}) produced "
+                    f"active camera ({side}, cam={cam_id + 1}) produced "
                     f"zero or negative aggregate (C_max={new_c_max:.4f}, "
                     f"I_max={new_i_max:.4f}); calibration aborted."
                 )
@@ -258,7 +258,10 @@ def compute_calibration_from_csvs(
 
 
 def _format_calibration(cal: Calibration) -> str:
-    """Return a multi-line human-readable dump of a Calibration's arrays."""
+    """Return a multi-line human-readable dump of a Calibration's arrays.
+    Cameras are labeled 1..8 (not 0..7)."""
+    header = "  " + " " * 21 + "  ".join(f"{cam:>8d}" for cam in range(1, CAMS_PER_MODULE + 1))
+
     def _row(label: str, arr: np.ndarray) -> str:
         rows = []
         for module_idx, side in enumerate(("left ", "right")):
@@ -268,6 +271,7 @@ def _format_calibration(cal: Calibration) -> str:
 
     return (
         f"Calibration(source={cal.source!r}):\n"
+        f"{header}    (cam #)\n"
         f"{_row('C_min', cal.c_min)}\n"
         f"{_row('C_max', cal.c_max)}\n"
         f"{_row('I_min', cal.i_min)}\n"
@@ -374,7 +378,7 @@ def evaluate_passed(rows: list[CalibrationResultRow]) -> bool:
 
 
 _CSV_FIELDS = [
-    "camera_index", "side", "cam_id",
+    "camera_index", "side", "cam",
     "mean", "avg_contrast", "bfi", "bvi",
     "mean_test", "contrast_test", "bfi_test", "bvi_test",
     "security_id", "hwid",
@@ -383,7 +387,13 @@ _CSV_FIELDS = [
 
 def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
     """Write CalibrationResultRow list to ``path`` in the canonical
-    column order. Creates parent directories if needed."""
+    column order. Creates parent directories if needed.
+
+    The ``cam`` column is 1-indexed (1..8), matching how cameras are
+    physically labeled. Internally ``CalibrationResultRow.cam_id`` is
+    still 0-indexed (so it can be used to lookup into the per-camera
+    threshold arrays).
+    """
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -394,7 +404,7 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
             w.writerow({
                 "camera_index": r.camera_index,
                 "side": r.side,
-                "cam_id": r.cam_id,
+                "cam": r.cam_id + 1,
                 "mean": f"{r.mean:.4f}",
                 "avg_contrast": f"{r.avg_contrast:.6f}",
                 "bfi": f"{r.bfi:.4f}",

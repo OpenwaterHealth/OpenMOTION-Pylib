@@ -266,10 +266,13 @@ def test_write_result_csv_round_trip(tmp_path):
     assert len(content) == 2
     header = content[0].split(",")
     assert header == [
-        "camera_index", "side", "cam_id",
+        "camera_index", "side", "cam",
         "mean", "avg_contrast", "bfi", "bvi",
         "mean_test", "contrast_test", "bfi_test", "bvi_test",
         "security_id", "hwid",
     ]
+    fields = content[1].split(",")
+    # cam column should be 1-indexed (cam_id 0 → cam 1)
+    assert fields[2] == "1"
     assert "left" in content[1]
     assert "FAIL" in content[1]
