@@ -104,6 +104,7 @@ class CalibrationResult:
 # ---------------------------------------------------------------------------
 
 from omotion.MotionProcessing import (
+    CorrectedBatch,
     Sample,
     create_science_pipeline,
     feed_pipeline_from_csv,
@@ -121,25 +122,33 @@ def _collect_samples_from_csvs(
     calibration: Optional[Calibration] = None,
 ) -> list[Sample]:
     """Run the science pipeline against raw histogram CSVs and return
-    light-frame Samples whose ``absolute_frame_id`` falls in the
-    half-open window
+    *dark-frame-corrected* Samples whose ``absolute_frame_id`` falls in
+    the half-open window
     ``[skip_leading_frames, skip_leading_frames + frame_window_count)``.
 
-    When ``frame_window_count`` is ``None`` the trailing edge is
-    unbounded (legacy behavior). Bounding the trailing edge is critical
-    for calibration: the firmware guarantees the very last frame of
-    every scan is a *terminal dark* frame, which the science pipeline
-    does NOT flag as ``is_dark=True`` (only scheduled darks at frame 10
-    and every dark_interval after are flagged). The terminal dark's
-    histogram is laser-off noise, which produces a wildly inflated
-    ``Sample.contrast`` that contaminates the average.
+    Each returned Sample has:
+        - ``mean``     = ``u1 − dark_u1`` (laser-on mean minus the linearly
+          interpolated dark baseline, no pedestal artifact)
+        - ``std_dev``  = sqrt(corrected variance with shot-noise removed)
+        - ``contrast`` = ``std_dev / mean`` (physically bounded speckle
+          contrast)
+        - ``is_corrected = True``
 
-    Calibration defaults to ``Calibration.default()``. For the
-    calibration phase the BFI/BVI fields on the returned Samples are
-    not used — only ``mean``, ``std_dev``, and ``contrast``, which are
-    upstream of the calibration math. For the validation phase,
-    callers pass the freshly-written console calibration so BFI/BVI
-    reflect it.
+    The dark baseline at every light frame is interpolated linearly
+    between the two bounding dark frames the firmware emits at the
+    start and end of every scan: frame 10 (the first scheduled dark)
+    and the terminal dark (last frame). For short calibration scans
+    this gives a clean, scan-local dark reference without waiting for
+    the next 600-frame interval.
+
+    When ``frame_window_count`` is ``None`` the trailing edge is
+    unbounded.
+
+    Calibration defaults to ``Calibration.default()``. The BFI/BVI
+    fields on the returned Samples reflect that calibration; for the
+    validation phase callers pass the freshly-written console
+    calibration so the values match what scans will produce in real
+    use.
     """
     cal = calibration or Calibration.default()
     samples: list[Sample] = []
@@ -149,12 +158,13 @@ def _collect_samples_from_csvs(
     else:
         upper_bound = skip_leading_frames + int(frame_window_count)
 
-    def _on_sample(s: Sample) -> None:
-        if s.absolute_frame_id < skip_leading_frames:
-            return
-        if upper_bound is not None and s.absolute_frame_id >= upper_bound:
-            return
-        samples.append(s)
+    def _on_corrected(batch: CorrectedBatch) -> None:
+        for s in batch.samples:
+            if s.absolute_frame_id < skip_leading_frames:
+                continue
+            if upper_bound is not None and s.absolute_frame_id >= upper_bound:
+                continue
+            samples.append(s)
 
     pipeline = create_science_pipeline(
         left_camera_mask=left_camera_mask,
@@ -163,7 +173,7 @@ def _collect_samples_from_csvs(
         bfi_c_max=cal.c_max,
         bfi_i_min=cal.i_min,
         bfi_i_max=cal.i_max,
-        on_uncorrected_fn=_on_sample,
+        on_corrected_batch_fn=_on_corrected,
     )
     try:
         if left_csv:
@@ -171,7 +181,9 @@ def _collect_samples_from_csvs(
         if right_csv:
             feed_pipeline_from_csv(right_csv, "right", pipeline)
     finally:
-        # stop() drains the worker queue and joins the thread.
+        # stop() drains the worker queue and triggers _flush_terminal_dark,
+        # which promotes the firmware's terminal dark frame to the dark
+        # history and emits the corrected batch even for short scans.
         pipeline.stop(timeout=30.0)
     samples.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
     return samples
@@ -225,7 +237,7 @@ def compute_calibration_from_csvs(
         right_camera_mask=right_camera_mask,
     )
     logger.info(
-        "compute_calibration_from_csvs: collected %d light-frame samples.",
+        "compute_calibration_from_csvs: collected %d dark-corrected samples.",
         len(samples),
     )
 
@@ -246,15 +258,15 @@ def compute_calibration_from_csvs(
                 s for s in samples
                 if s.side == side and s.cam_id == cam_id
             ]
-            # Filter out the duplicated dark-frame samples the science
-            # pipeline emits (they repeat the previous light frame's
-            # contrast and would just bias toward whatever the prior
-            # reading was).
-            light_samples = [s for s in cam_samples if not s.is_dark]
+            # cam_samples are dark-frame-corrected (mean = u1 − dark_u1,
+            # variance = corrected_var with shot-noise removed). No
+            # is_dark filter needed — the corrected stream emits only
+            # light frames.
+            light_samples = cam_samples
             if not light_samples:
                 raise DegenerateCalibrationError(
                     f"active camera ({side}, cam={cam_id + 1}) produced "
-                    f"no light-frame samples after skip_leading_frames="
+                    f"no corrected samples after skip_leading_frames="
                     f"{skip_leading_frames}; calibration aborted."
                 )
             # Use the ratio-of-means estimator for contrast, NOT the
