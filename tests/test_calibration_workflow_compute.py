@@ -242,3 +242,34 @@ def test_build_result_rows_short_threshold_list_treated_as_pass():
 
 def test_evaluate_passed_empty_rows_returns_false():
     assert evaluate_passed([]) is False
+
+
+# ----- write_result_csv -----
+
+from omotion.CalibrationWorkflow import write_result_csv
+
+
+def test_write_result_csv_round_trip(tmp_path):
+    rows = [
+        CalibrationResultRow(
+            camera_index=0, side="left", cam_id=0,
+            mean=200.0, avg_contrast=0.4, bfi=5.0, bvi=5.5,
+            mean_test="PASS", contrast_test="PASS",
+            bfi_test="PASS", bvi_test="FAIL",
+            security_id="sec-0", hwid="hw-x",
+        ),
+    ]
+    out = tmp_path / "calibration-test.csv"
+    write_result_csv(str(out), rows)
+    assert out.exists()
+    content = out.read_text(encoding="utf-8").splitlines()
+    assert len(content) == 2
+    header = content[0].split(",")
+    assert header == [
+        "camera_index", "side", "cam_id",
+        "mean", "avg_contrast", "bfi", "bvi",
+        "mean_test", "contrast_test", "bfi_test", "bvi_test",
+        "security_id", "hwid",
+    ]
+    assert "left" in content[1]
+    assert "FAIL" in content[1]

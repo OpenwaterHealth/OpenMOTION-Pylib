@@ -336,3 +336,38 @@ def evaluate_passed(rows: list[CalibrationResultRow]) -> bool:
         and r.bvi_test == "PASS"
         for r in rows
     )
+
+
+_CSV_FIELDS = [
+    "camera_index", "side", "cam_id",
+    "mean", "avg_contrast", "bfi", "bvi",
+    "mean_test", "contrast_test", "bfi_test", "bvi_test",
+    "security_id", "hwid",
+]
+
+
+def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
+    """Write CalibrationResultRow list to ``path`` in the canonical
+    column order. Creates parent directories if needed."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=_CSV_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({
+                "camera_index": r.camera_index,
+                "side": r.side,
+                "cam_id": r.cam_id,
+                "mean": f"{r.mean:.4f}",
+                "avg_contrast": f"{r.avg_contrast:.6f}",
+                "bfi": f"{r.bfi:.4f}",
+                "bvi": f"{r.bvi:.4f}",
+                "mean_test": r.mean_test,
+                "contrast_test": r.contrast_test,
+                "bfi_test": r.bfi_test,
+                "bvi_test": r.bvi_test,
+                "security_id": r.security_id,
+                "hwid": r.hwid,
+            })
