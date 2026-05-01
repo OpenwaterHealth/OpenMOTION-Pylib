@@ -198,6 +198,31 @@ COMMAND_MAX_SIZE: int = 4096
 MAX_DATA_PER_FRAME: int = COMMAND_MAX_SIZE - 12
 """Max payload bytes per frame (total - framing overhead)."""
 
+# ---------------------------------------------------------------------------
+# Hardware geometry — shared by Calibration, ScanWorkflow, CalibrationWorkflow.
+# ---------------------------------------------------------------------------
+MODULES: int = 2
+"""Number of sensor modules per device (left + right)."""
+
+CAMS_PER_MODULE: int = 8
+"""Cameras per sensor module (OV2312 array)."""
+
+CAPTURE_HZ: float = 40.0
+"""Histogram capture rate per camera, in Hz."""
+
+# ---------------------------------------------------------------------------
+# CalibrationWorkflow defaults.
+# ---------------------------------------------------------------------------
+CALIBRATION_I_MAX_MULTIPLIER: float = 2.0
+"""Multiplier applied to the average light-frame mean to derive I_max."""
+
+CALIBRATION_DEFAULT_SCAN_DELAY_SEC: int = 1
+"""Default lead-in skip per sub-scan, in seconds."""
+
+CALIBRATION_DEFAULT_MAX_DURATION_SEC: int = 600
+"""Default watchdog timeout for the whole calibration procedure, in seconds."""
+
+
 XO2_FLASH_PAGE_SIZE: int = 16
 """Bytes per page in the MachXO2 Configuration and UFM flash sectors."""
 

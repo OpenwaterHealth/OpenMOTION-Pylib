@@ -18,6 +18,7 @@ from typing import Any, Literal, Optional
 import numpy as np
 
 from omotion import _log_root
+from omotion.config import CAMS_PER_MODULE, MODULES
 
 logger = logging.getLogger(
     f"{_log_root}.Calibration" if _log_root else "Calibration"
@@ -32,7 +33,7 @@ _I_MAX_KEY = "I_max"
 _ALL_ARRAY_KEYS = (_C_MIN_KEY, _C_MAX_KEY, _I_MIN_KEY, _I_MAX_KEY)
 
 # Required shape — (modules, cams_per_module).
-_EXPECTED_SHAPE = (2, 8)
+_EXPECTED_SHAPE = (MODULES, CAMS_PER_MODULE)
 
 # Defaults — copied verbatim from
 # openmotion-bloodflow-app/processing/visualize_bloodflow.py.
