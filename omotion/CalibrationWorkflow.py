@@ -122,33 +122,36 @@ def _collect_samples_from_csvs(
     calibration: Optional[Calibration] = None,
 ) -> list[Sample]:
     """Run the science pipeline against raw histogram CSVs and return
-    *dark-frame-corrected* Samples whose ``absolute_frame_id`` falls in
-    the half-open window
+    UNcorrected (live-UI-equivalent) Samples whose ``absolute_frame_id``
+    falls in the half-open window
     ``[skip_leading_frames, skip_leading_frames + frame_window_count)``.
 
     Each returned Sample has:
-        - ``mean``     = ``u1 − dark_u1`` (laser-on mean minus the linearly
-          interpolated dark baseline, no pedestal artifact)
-        - ``std_dev``  = sqrt(corrected variance with shot-noise removed)
-        - ``contrast`` = ``std_dev / mean`` (physically bounded speckle
-          contrast)
-        - ``is_corrected = True``
+        - ``mean``     = ``raw_mean − PEDESTAL_HEIGHT`` (the same
+          pedestal-subtracted mean the live UI plots — `PEDESTAL_HEIGHT`
+          is set dynamically per sensor firmware version at sensor
+          connect time)
+        - ``std_dev``  = histogram std (raw, no shot-noise correction)
+        - ``contrast`` = ``std_dev / mean``
 
-    The dark baseline at every light frame is interpolated linearly
-    between the two bounding dark frames the firmware emits at the
-    start and end of every scan: frame 10 (the first scheduled dark)
-    and the terminal dark (last frame). For short calibration scans
-    this gives a clean, scan-local dark reference without waiting for
-    the next 600-frame interval.
+    Calibrating against THIS stream is what the operator wants because
+    it's the same metric the live BFI/BVI plot uses to evaluate the
+    written calibration ranges. Calibrating against the corrected
+    stream produces ranges in a different scale (``raw_mean − dark_u1``
+    instead of ``raw_mean − PEDESTAL_HEIGHT``) which leaves the live
+    plot mis-scaled.
+
+    Two filters are applied:
+      1. ``is_dark`` samples are dropped — the science pipeline emits a
+         duplicate of the previous light frame's metrics on every
+         scheduled dark frame; that's a repeated value, not new data.
+      2. ``frame_window_count`` bounds the trailing edge so the
+         firmware's terminal dark frame (which is NOT flagged
+         ``is_dark`` because it's not at a scheduled position) is
+         excluded from the average.
 
     When ``frame_window_count`` is ``None`` the trailing edge is
-    unbounded.
-
-    Calibration defaults to ``Calibration.default()``. The BFI/BVI
-    fields on the returned Samples reflect that calibration; for the
-    validation phase callers pass the freshly-written console
-    calibration so the values match what scans will produce in real
-    use.
+    unbounded — only safe for offline analysis with known-good data.
     """
     cal = calibration or Calibration.default()
     samples: list[Sample] = []
@@ -158,13 +161,14 @@ def _collect_samples_from_csvs(
     else:
         upper_bound = skip_leading_frames + int(frame_window_count)
 
-    def _on_corrected(batch: CorrectedBatch) -> None:
-        for s in batch.samples:
-            if s.absolute_frame_id < skip_leading_frames:
-                continue
-            if upper_bound is not None and s.absolute_frame_id >= upper_bound:
-                continue
-            samples.append(s)
+    def _on_sample(s: Sample) -> None:
+        if s.is_dark:
+            return
+        if s.absolute_frame_id < skip_leading_frames:
+            return
+        if upper_bound is not None and s.absolute_frame_id >= upper_bound:
+            return
+        samples.append(s)
 
     pipeline = create_science_pipeline(
         left_camera_mask=left_camera_mask,
@@ -173,7 +177,7 @@ def _collect_samples_from_csvs(
         bfi_c_max=cal.c_max,
         bfi_i_min=cal.i_min,
         bfi_i_max=cal.i_max,
-        on_corrected_batch_fn=_on_corrected,
+        on_uncorrected_fn=_on_sample,
     )
     try:
         if left_csv:
@@ -181,9 +185,7 @@ def _collect_samples_from_csvs(
         if right_csv:
             feed_pipeline_from_csv(right_csv, "right", pipeline)
     finally:
-        # stop() drains the worker queue and triggers _flush_terminal_dark,
-        # which promotes the firmware's terminal dark frame to the dark
-        # history and emits the corrected batch even for short scans.
+        # stop() drains the worker queue and joins the thread.
         pipeline.stop(timeout=30.0)
     samples.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
     return samples
@@ -208,10 +210,10 @@ def _compute_calibration_from_samples(
     ``(MODULES, CAMS_PER_MODULE)`` Calibration.
 
     Pure function — no I/O. Caller pre-filters ``samples`` to the
-    averaging window. Each input Sample should be from the science
-    pipeline's corrected stream (``is_corrected=True``): ``mean``
-    is dark-baseline-subtracted, ``std_dev`` has shot-noise removed,
-    ``contrast = std_dev / mean`` is physical speckle contrast.
+    averaging window and excludes dark frames. Each input Sample
+    should be from the uncorrected stream (matching the live UI):
+    ``mean = raw_mean − PEDESTAL_HEIGHT``, ``std_dev`` is the raw
+    histogram std, ``contrast = std_dev / mean``.
     """
     defaults = Calibration.default()
     c_max = defaults.c_max.copy()
@@ -233,7 +235,7 @@ def _compute_calibration_from_samples(
             if not cam_samples:
                 raise DegenerateCalibrationError(
                     f"active camera ({side}, cam={cam_id + 1}) produced "
-                    f"no corrected samples; calibration aborted."
+                    f"no light-frame samples; calibration aborted."
                 )
             # Ratio-of-means contrast, not mean-of-ratios.
             # mean(std/mean) is statistically biased upward whenever
@@ -307,7 +309,7 @@ def compute_calibration_from_csvs(
         right_camera_mask=right_camera_mask,
     )
     logger.info(
-        "compute_calibration_from_csvs: collected %d dark-corrected samples.",
+        "compute_calibration_from_csvs: collected %d light-frame samples.",
         len(samples),
     )
     return _compute_calibration_from_samples(
@@ -525,14 +527,28 @@ def _run_subscan_capture(
     frame_window_count: int,
     stop_evt: threading.Event,
 ) -> tuple[str, str, list[Sample]]:
-    """Submit a ScanRequest and capture corrected samples in-memory as
-    the science pipeline emits them.
+    """Submit a ScanRequest and capture UNcorrected Samples in-memory
+    as the science pipeline emits them.
 
-    The scan still writes its raw histogram CSV to disk (`write_raw_csv=True`)
-    so operators retain the artifact for later verification, but we
-    don't re-parse it — corrected samples are captured live via
-    ``on_corrected_batch_fn``. This avoids running the science pipeline
-    twice on the same data.
+    Why uncorrected: the live BFI/BVI plot computes BFI/BVI from
+    uncorrected ``Sample.contrast = std / (raw_mean − PEDESTAL_HEIGHT)``,
+    so the calibration ranges we write must be on that same scale.
+    Calibrating against the corrected stream (``raw_mean − dark_u1``)
+    leaves the live plot mis-scaled because the actual measured dark
+    ``u1`` is normally a few DN above the canonical
+    ``PEDESTAL_HEIGHT`` — a real device offset that the live UI does
+    not subtract.
+
+    The scan still writes its raw histogram CSV to disk
+    (``write_raw_csv=True``) so operators retain the artifact for
+    later verification, but we don't re-parse it — samples are
+    captured live via ``on_uncorrected_fn``.
+
+    Two filters are applied during capture:
+      1. ``is_dark`` samples are dropped (duplicated prior-frame
+         metrics emitted at scheduled darks).
+      2. ``frame_window_count`` bounds the trailing edge so the
+         terminal dark frame is excluded.
 
     Returns ``(left_path, right_path, captured_samples)``. Raises
     ``RuntimeError`` on scan failure. Honors ``stop_evt`` by calling
@@ -554,13 +570,14 @@ def _run_subscan_capture(
     upper_bound = skip_leading_frames + int(frame_window_count)
     captured: list[Sample] = []
 
-    def _on_corrected_batch(batch: CorrectedBatch) -> None:
-        for s in batch.samples:
-            if s.absolute_frame_id < skip_leading_frames:
-                continue
-            if s.absolute_frame_id >= upper_bound:
-                continue
-            captured.append(s)
+    def _on_uncorrected(s: Sample) -> None:
+        if s.is_dark:
+            return
+        if s.absolute_frame_id < skip_leading_frames:
+            return
+        if s.absolute_frame_id >= upper_bound:
+            return
+        captured.append(s)
 
     evt = threading.Event()
     holder: dict[str, ScanResult] = {}
@@ -571,7 +588,7 @@ def _run_subscan_capture(
 
     started = interface.scan_workflow.start_scan(
         scan_req,
-        on_corrected_batch_fn=_on_corrected_batch,
+        on_uncorrected_fn=_on_uncorrected,
         on_complete_fn=_on_complete,
     )
     if not started:
@@ -691,7 +708,7 @@ class CalibrationWorkflow:
                     stop_evt=self._stop_evt,
                 )
                 logger.info(
-                    "Calibration phase 1 done: %d corrected samples captured "
+                    "Calibration phase 1 done: %d light-frame samples captured "
                     "live; raw CSVs: left=%s  right=%s",
                     len(cal_samples),
                     cal_left or "(none)", cal_right or "(none)",
@@ -752,7 +769,7 @@ class CalibrationWorkflow:
                     stop_evt=self._stop_evt,
                 )
                 logger.info(
-                    "Calibration phase 4 done: %d corrected samples captured "
+                    "Calibration phase 4 done: %d light-frame samples captured "
                     "live; raw CSVs: left=%s  right=%s",
                     len(val_samples),
                     val_left or "(none)", val_right or "(none)",
