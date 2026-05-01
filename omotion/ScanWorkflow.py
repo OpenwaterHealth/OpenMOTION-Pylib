@@ -6,7 +6,7 @@ import os
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, TYPE_CHECKING
 
 from omotion import _log_root
@@ -109,6 +109,12 @@ class ScanResult:
     scan_timestamp: str
     corrected_path: str = ""
     telemetry_path: str = ""
+    # Populated when the science pipeline detected schedule/measurement
+    # disagreement on dark frames (firmware off-by-one, unwrapper
+    # alignment quirk, etc.). Empty on a clean scan. Calibration callers
+    # should fail loudly when this is non-empty since dark-frame
+    # interpolation will be polluted.
+    dark_integrity_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -990,6 +996,15 @@ class ScanWorkflow:
                 if telemetry_path:
                     _emit_log(f"Telemetry CSV created: {os.path.basename(telemetry_path)}")
 
+                # Surface any dark-integrity warnings the science
+                # pipeline collected so calibration callers can fail.
+                integrity_warnings: list[str] = []
+                if science_pipeline is not None:
+                    try:
+                        integrity_warnings = science_pipeline.dark_integrity_warnings
+                    except Exception:
+                        pass
+
                 result = ScanResult(
                     ok=ok,
                     error=err,
@@ -999,6 +1014,7 @@ class ScanWorkflow:
                     telemetry_path=telemetry_path,
                     canceled=self._stop_evt.is_set(),
                     scan_timestamp=ts,
+                    dark_integrity_warnings=integrity_warnings,
                 )
                 if on_complete_fn:
                     on_complete_fn(result)
