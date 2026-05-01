@@ -238,3 +238,101 @@ def compute_calibration_from_csvs(
         i_min=i_min, i_max=i_max,
         source="console",
     )
+
+
+def _threshold_test(value: float, thresholds: list[float], cam_id: int) -> str:
+    """PASS if the threshold list doesn't cover this cam_id, or value
+    >= threshold."""
+    if cam_id >= len(thresholds):
+        return "PASS"
+    t = thresholds[cam_id]
+    if t is None or not isinstance(t, (int, float)):
+        return "PASS"
+    return "PASS" if value >= float(t) else "FAIL"
+
+
+def build_result_rows(
+    *,
+    left_csv: Optional[str],
+    right_csv: Optional[str],
+    left_camera_mask: int,
+    right_camera_mask: int,
+    skip_leading_frames: int,
+    thresholds: CalibrationThresholds,
+    sensor_left,            # MotionSensor or None — for cached IDs
+    sensor_right,           # MotionSensor or None
+    calibration: Optional[Calibration],
+) -> list[CalibrationResultRow]:
+    """Aggregate per-camera mean/contrast/BFI/BVI from validation-scan
+    CSVs and apply pass/fail thresholds."""
+    samples = _collect_samples_from_csvs(
+        left_csv=left_csv, right_csv=right_csv,
+        skip_leading_frames=skip_leading_frames,
+        left_camera_mask=left_camera_mask,
+        right_camera_mask=right_camera_mask,
+        calibration=calibration,
+    )
+
+    rows: list[CalibrationResultRow] = []
+    masks = (left_camera_mask, right_camera_mask)
+    sensors = (sensor_left, sensor_right)
+
+    for module_idx, side in enumerate(("left", "right")):
+        mask = masks[module_idx]
+        sensor = sensors[module_idx]
+        for cam_id in range(CAMS_PER_MODULE):
+            if not _camera_active(mask, cam_id):
+                continue
+            cam_samples = [
+                s for s in samples
+                if s.side == side and s.cam_id == cam_id
+            ]
+            if not cam_samples:
+                continue   # silently drop — no data for this active cam
+
+            mean_val = float(np.mean([s.mean for s in cam_samples]))
+            contrast_val = float(np.mean([s.contrast for s in cam_samples]))
+            bfi_val = float(np.mean([s.bfi for s in cam_samples]))
+            bvi_val = float(np.mean([s.bvi for s in cam_samples]))
+
+            security_id = ""
+            hwid = ""
+            if sensor is not None and hasattr(sensor, "get_cached_camera_security_uid"):
+                try:
+                    security_id = str(sensor.get_cached_camera_security_uid(cam_id) or "")
+                except Exception:
+                    security_id = ""
+                try:
+                    hwid = str(sensor.get_cached_hardware_id() or "")
+                except Exception:
+                    hwid = ""
+
+            rows.append(CalibrationResultRow(
+                camera_index=len(rows),
+                side=side,
+                cam_id=cam_id,
+                mean=mean_val,
+                avg_contrast=contrast_val,
+                bfi=bfi_val,
+                bvi=bvi_val,
+                mean_test=_threshold_test(mean_val, thresholds.min_mean_per_camera, cam_id),
+                contrast_test=_threshold_test(contrast_val, thresholds.min_contrast_per_camera, cam_id),
+                bfi_test=_threshold_test(bfi_val, thresholds.min_bfi_per_camera, cam_id),
+                bvi_test=_threshold_test(bvi_val, thresholds.min_bvi_per_camera, cam_id),
+                security_id=security_id,
+                hwid=hwid,
+            ))
+
+    return rows
+
+
+def evaluate_passed(rows: list[CalibrationResultRow]) -> bool:
+    if not rows:
+        return False
+    return all(
+        r.mean_test == "PASS"
+        and r.contrast_test == "PASS"
+        and r.bfi_test == "PASS"
+        and r.bvi_test == "PASS"
+        for r in rows
+    )

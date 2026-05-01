@@ -161,3 +161,84 @@ def test_compute_calibration_degenerate_active_cam_raises():
             right_camera_mask=0x00,
             skip_leading_frames=0,
         )
+
+
+# ----- build_result_rows + evaluate_passed -----
+
+from omotion.CalibrationWorkflow import (
+    build_result_rows,
+    evaluate_passed,
+)
+
+
+def test_build_result_rows_pass_when_all_metrics_above_threshold():
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+    thr = CalibrationThresholds(
+        min_mean_per_camera=[1.0]*8,
+        min_contrast_per_camera=[0.0]*8,
+        min_bfi_per_camera=[-100.0]*8,
+        min_bvi_per_camera=[-100.0]*8,
+    )
+    rows = build_result_rows(
+        left_csv=_LEFT_FIXTURE, right_csv=_RIGHT_FIXTURE,
+        left_camera_mask=0xFF, right_camera_mask=0xFF,
+        skip_leading_frames=0,
+        thresholds=thr,
+        sensor_left=None, sensor_right=None,
+        calibration=None,
+    )
+    assert len(rows) == 16
+    assert all(r.mean_test == "PASS" for r in rows)
+    assert all(r.contrast_test == "PASS" for r in rows)
+    assert evaluate_passed(rows) is True
+
+
+def test_build_result_rows_fail_when_mean_below_threshold():
+    if not _have_fixtures():
+        pytest.skip("fixture CSV missing")
+    thr = CalibrationThresholds(
+        min_mean_per_camera=[1e9]*8,
+        min_contrast_per_camera=[0.0]*8,
+        min_bfi_per_camera=[-100.0]*8,
+        min_bvi_per_camera=[-100.0]*8,
+    )
+    rows = build_result_rows(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        skip_leading_frames=0,
+        thresholds=thr,
+        sensor_left=None, sensor_right=None,
+        calibration=None,
+    )
+    assert len(rows) == 8
+    assert all(r.mean_test == "FAIL" for r in rows)
+    assert evaluate_passed(rows) is False
+
+
+def test_build_result_rows_short_threshold_list_treated_as_pass():
+    if not _have_fixtures():
+        pytest.skip("fixture CSV missing")
+    thr = CalibrationThresholds(
+        min_mean_per_camera=[1e9, 1e9],   # only first two cams have a real bound
+        min_contrast_per_camera=[],
+        min_bfi_per_camera=[],
+        min_bvi_per_camera=[],
+    )
+    rows = build_result_rows(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        skip_leading_frames=0,
+        thresholds=thr,
+        sensor_left=None, sensor_right=None,
+        calibration=None,
+    )
+    rows_by_cam = {r.cam_id: r for r in rows}
+    assert rows_by_cam[0].mean_test == "FAIL"
+    assert rows_by_cam[1].mean_test == "FAIL"
+    for cam in range(2, 8):
+        assert rows_by_cam[cam].mean_test == "PASS"
+
+
+def test_evaluate_passed_empty_rows_returns_false():
+    assert evaluate_passed([]) is False
