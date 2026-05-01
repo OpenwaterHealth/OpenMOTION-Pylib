@@ -225,21 +225,42 @@ def compute_calibration_from_csvs(
                 s for s in samples
                 if s.side == side and s.cam_id == cam_id
             ]
-            if not cam_samples:
+            # Filter out the duplicated dark-frame samples the science
+            # pipeline emits (they repeat the previous light frame's
+            # contrast and would just bias toward whatever the prior
+            # reading was).
+            light_samples = [s for s in cam_samples if not s.is_dark]
+            if not light_samples:
                 raise DegenerateCalibrationError(
                     f"active camera ({side}, cam={cam_id + 1}) produced "
                     f"no light-frame samples after skip_leading_frames="
                     f"{skip_leading_frames}; calibration aborted."
                 )
-            mean_avg = float(np.mean([s.mean for s in cam_samples]))
-            contrast_avg = float(np.mean([s.contrast for s in cam_samples]))
-            new_c_max = contrast_avg
+            # Use the ratio-of-means estimator for contrast, NOT the
+            # mean-of-ratios. mean(std/mean) is statistically biased
+            # upward whenever per-frame mean varies (laser jitter, low-
+            # light cameras whose mean is barely above the 64-DN
+            # pedestal can produce per-frame contrast > 1). The ratio of
+            # the population means matches the live UI's "speckle
+            # contrast" interpretation and is bounded by 1 for a
+            # well-conditioned signal.
+            mean_avg = float(np.mean([s.mean for s in light_samples]))
+            std_avg = float(np.mean([s.std_dev for s in light_samples]))
+            new_c_max = (std_avg / mean_avg) if mean_avg > 0.0 else 0.0
             new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
+            # Keep the biased per-frame average around for the log so
+            # operators can spot when the two diverge — that divergence
+            # is the smoking gun for a flaky / partially-occluded camera.
+            per_frame_contrast_avg = float(
+                np.mean([s.contrast for s in light_samples])
+            )
             logger.info(
-                "  cam (%s, cam=%d): n=%d  mean=%.2f  contrast=%.4f  "
-                "→ C_max=%.4f  I_max=%.2f",
-                side, cam_id + 1, len(cam_samples),
-                mean_avg, contrast_avg, new_c_max, new_i_max,
+                "  cam (%s, cam=%d): n=%d  mean=%.2f  std=%.2f  "
+                "C_max(ratio-of-means)=%.4f  C_max(mean-of-ratios)=%.4f  "
+                "I_max=%.2f",
+                side, cam_id + 1, len(light_samples),
+                mean_avg, std_avg, new_c_max, per_frame_contrast_avg,
+                new_i_max,
             )
             if new_c_max <= 0.0 or new_i_max <= 0.0:
                 raise DegenerateCalibrationError(
