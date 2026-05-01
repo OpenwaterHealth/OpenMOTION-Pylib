@@ -190,11 +190,22 @@ def compute_calibration_from_csvs(
     Returns ``Calibration(source="console")`` so callers can pass it
     straight to :meth:`omotion.MotionInterface.write_calibration`.
     """
+    logger.info(
+        "compute_calibration_from_csvs: left_csv=%s right_csv=%s "
+        "masks=(0x%02X, 0x%02X) skip_leading_frames=%d",
+        os.path.basename(left_csv) if left_csv else None,
+        os.path.basename(right_csv) if right_csv else None,
+        left_camera_mask, right_camera_mask, skip_leading_frames,
+    )
     samples = _collect_samples_from_csvs(
         left_csv=left_csv, right_csv=right_csv,
         skip_leading_frames=skip_leading_frames,
         left_camera_mask=left_camera_mask,
         right_camera_mask=right_camera_mask,
+    )
+    logger.info(
+        "compute_calibration_from_csvs: collected %d light-frame samples.",
+        len(samples),
     )
 
     defaults = Calibration.default()
@@ -224,6 +235,12 @@ def compute_calibration_from_csvs(
             contrast_avg = float(np.mean([s.contrast for s in cam_samples]))
             new_c_max = contrast_avg
             new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
+            logger.info(
+                "  cam (%s, cam_id=%d): n=%d  mean=%.2f  contrast=%.4f  "
+                "→ C_max=%.4f  I_max=%.2f",
+                side, cam_id, len(cam_samples),
+                mean_avg, contrast_avg, new_c_max, new_i_max,
+            )
             if new_c_max <= 0.0 or new_i_max <= 0.0:
                 raise DegenerateCalibrationError(
                     f"active camera ({side}, cam_id={cam_id}) produced "
@@ -237,6 +254,24 @@ def compute_calibration_from_csvs(
         c_min=c_min, c_max=c_max,
         i_min=i_min, i_max=i_max,
         source="console",
+    )
+
+
+def _format_calibration(cal: Calibration) -> str:
+    """Return a multi-line human-readable dump of a Calibration's arrays."""
+    def _row(label: str, arr: np.ndarray) -> str:
+        rows = []
+        for module_idx, side in enumerate(("left ", "right")):
+            vals = "  ".join(f"{v:>8.4f}" for v in arr[module_idx])
+            rows.append(f"  {label} {side} (m={module_idx}): {vals}")
+        return "\n".join(rows)
+
+    return (
+        f"Calibration(source={cal.source!r}):\n"
+        f"{_row('C_min', cal.c_min)}\n"
+        f"{_row('C_max', cal.c_max)}\n"
+        f"{_row('I_min', cal.i_min)}\n"
+        f"{_row('I_max', cal.i_max)}"
     )
 
 
@@ -484,6 +519,16 @@ class CalibrationWorkflow:
             error = ""
             canceled = False
 
+            logger.info(
+                "Calibration: starting procedure (operator=%s, output_dir=%s, "
+                "masks=(0x%02X, 0x%02X), duration_sec=%d, scan_delay_sec=%d, "
+                "max_duration_sec=%d, ts=%s)",
+                request.operator_id, request.output_dir,
+                request.left_camera_mask, request.right_camera_mask,
+                request.duration_sec, request.scan_delay_sec,
+                request.max_duration_sec, ts,
+            )
+
             def _watchdog() -> None:
                 self._stop_evt.set()
                 logger.warning(
@@ -501,11 +546,21 @@ class CalibrationWorkflow:
             try:
                 _emit_progress("calibration_scan")
                 _emit_log("Calibration: starting calibration scan…")
+                logger.info(
+                    "Calibration phase 1: calibration scan, "
+                    "duration=%d sec (= %d duration + %d delay)",
+                    request.duration_sec + request.scan_delay_sec,
+                    request.duration_sec, request.scan_delay_sec,
+                )
                 cal_left, cal_right = _run_subscan(
                     self._interface, request,
                     subject_id=f"calib1_{request.operator_id}",
                     duration_sec=request.duration_sec + request.scan_delay_sec,
                     stop_evt=self._stop_evt,
+                )
+                logger.info(
+                    "Calibration phase 1 done: left_csv=%s  right_csv=%s",
+                    cal_left or "(none)", cal_right or "(none)",
                 )
                 if self._stop_evt.is_set():
                     canceled = True
@@ -514,6 +569,7 @@ class CalibrationWorkflow:
 
                 _emit_progress("compute_calibration")
                 _emit_log("Calibration: computing arrays…")
+                logger.info("Calibration phase 2: computing (2, 8) arrays.")
                 skip_frames = int(round(request.scan_delay_sec * CAPTURE_HZ))
                 try:
                     cal_obj = compute_calibration_from_csvs(
@@ -526,12 +582,21 @@ class CalibrationWorkflow:
                 except DegenerateCalibrationError as e:
                     error = str(e)
                     return
+                logger.info(
+                    "Calibration phase 2 done — proposed calibration:\n%s",
+                    _format_calibration(cal_obj),
+                )
 
                 _emit_progress("write_calibration")
                 _emit_log("Calibration: writing to console…")
+                logger.info("Calibration phase 3: writing to console EEPROM.")
                 cal_obj = self._interface.write_calibration(
                     cal_obj.c_min, cal_obj.c_max,
                     cal_obj.i_min, cal_obj.i_max,
+                )
+                logger.info(
+                    "Calibration phase 3 done — calibration written and "
+                    "cached (source=%s).", cal_obj.source,
                 )
 
                 if self._stop_evt.is_set():
@@ -541,11 +606,21 @@ class CalibrationWorkflow:
 
                 _emit_progress("validation_scan")
                 _emit_log("Calibration: starting validation scan…")
+                logger.info(
+                    "Calibration phase 4: validation scan, "
+                    "duration=%d sec (= %d duration + %d delay)",
+                    request.duration_sec + request.scan_delay_sec,
+                    request.duration_sec, request.scan_delay_sec,
+                )
                 val_left, val_right = _run_subscan(
                     self._interface, request,
                     subject_id=f"calib2_{request.operator_id}",
                     duration_sec=request.duration_sec + request.scan_delay_sec,
                     stop_evt=self._stop_evt,
+                )
+                logger.info(
+                    "Calibration phase 4 done: left_csv=%s  right_csv=%s",
+                    val_left or "(none)", val_right or "(none)",
                 )
                 if self._stop_evt.is_set():
                     canceled = True
@@ -554,6 +629,7 @@ class CalibrationWorkflow:
 
                 _emit_progress("evaluate")
                 _emit_log("Calibration: evaluating…")
+                logger.info("Calibration phase 5: aggregating per-camera rows + thresholds.")
                 rows = build_result_rows(
                     left_csv=val_left or None,
                     right_csv=val_right or None,
@@ -570,6 +646,17 @@ class CalibrationWorkflow:
                 )
                 write_result_csv(csv_path, rows)
                 passed = evaluate_passed(rows)
+                pass_count = sum(
+                    1 for r in rows
+                    if r.mean_test == "PASS" and r.contrast_test == "PASS"
+                    and r.bfi_test == "PASS" and r.bvi_test == "PASS"
+                )
+                logger.info(
+                    "Calibration phase 5 done: %d/%d cameras PASS, "
+                    "overall=%s. CSV: %s",
+                    pass_count, len(rows), "PASS" if passed else "FAIL",
+                    csv_path,
+                )
                 ok = True
             except Exception as e:
                 logger.exception("Calibration worker failed.")
@@ -584,6 +671,17 @@ class CalibrationWorkflow:
                             f"calibration exceeded max_duration_sec="
                             f"{request.max_duration_sec}"
                         )
+
+                if cal_obj is not None:
+                    logger.info(
+                        "Calibration: final calibration on console:\n%s",
+                        _format_calibration(cal_obj),
+                    )
+                logger.info(
+                    "Calibration: procedure complete (ok=%s, passed=%s, "
+                    "canceled=%s, error=%r)",
+                    ok, passed, canceled, error,
+                )
 
                 result = CalibrationResult(
                     ok=ok, passed=passed, canceled=canceled, error=error,
