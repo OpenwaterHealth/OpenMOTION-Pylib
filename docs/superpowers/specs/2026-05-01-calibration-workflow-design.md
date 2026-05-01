@@ -516,3 +516,86 @@ appears at the expected path, pass/fail status renders, and
   pipeline already does this internally; if the simplest path is "feed
   CSV through `VisualizeBloodflow.compute()` and read its filtered
   arrays," we go that way. Verify during implementation.
+
+## Scale trade-off: corrected calibration vs. uncorrected live display
+
+The bloodflow app's live BFI/BVI plot is driven by
+`compute_realtime_metrics`, which fires once per non-dark frame and
+computes
+```
+mean    = raw_mean − PEDESTAL_HEIGHT          (PEDESTAL_HEIGHT is dynamic per
+                                               sensor firmware version: 64 for
+                                               FW ≤ 1.5.2, 128 for FW ≥ 1.5.3,
+                                               set at sensor connect)
+contrast = std / mean
+BFI     = (1 − (contrast − C_min) / (C_max − C_min)) × 10
+BVI     = (1 − (mean     − I_min) / (I_max − I_min)) × 10
+```
+
+The `CalibrationWorkflow` derives `C_max` / `I_max` from the science
+pipeline's *corrected* stream (`_emit_corrected_for_camera`), which uses
+```
+mean    = u1 − dark_u1                         (actual measured dark baseline,
+                                               linearly interpolated between
+                                               the two bounding dark frames
+                                               of the scan — typically a few
+                                               DN above PEDESTAL_HEIGHT)
+std     = sqrt(var − shot_noise_var)           (shot noise removed)
+contrast = std / mean
+```
+
+**The two streams use different denominators**, so the calibration
+ranges `C_max` / `I_max` we write are on the corrected scale but the
+live UI reads them through the uncorrected formula. The live BFI/BVI
+will land in `[0, 10]` but typically clustered near one end of the
+range rather than spanning it. As blood flow varies the values still
+move, but the dynamic range an operator sees live is compressed
+relative to what a corrected-stream consumer would see.
+
+**Why we accept this:**
+
+- Calibrating against the corrected stream produces physically
+  meaningful values (proper dark subtraction, shot-noise removal, no
+  pedestal-height assumption) that survive sensor-to-sensor variation
+  in dark current.
+- The bloodflow app's primary downstream consumer is the *corrected
+  CSV*, not the live plot — calibration accuracy matters most where
+  the corrected values are persisted and analyzed.
+- Switching the live plot to the corrected stream is feasible
+  (set `uncorrectedOnly: false` in `app_config.json`) but the
+  corrected batch only emits once per `dark_interval` (15 s by
+  default), so the plot would update once every 15 s instead of
+  every frame. Not acceptable for a "live" view today.
+
+**Future work — real-time partial correction:** see "Future work"
+below.
+
+## Future work
+
+- **Frame-rate dark correction in the uncorrected path.** The most
+  promising approach: maintain a per-camera "most recent dark `u1`
+  / `var`" cache, updated each time the science pipeline processes a
+  scheduled dark. `compute_realtime_metrics` then subtracts that
+  cached dark instead of the static `PEDESTAL_HEIGHT`. Mean and
+  variance both correct. Latency is at most one `dark_interval`. No
+  firmware change required. This brings the live stream onto the
+  same scale as the corrected batch (modulo shot-noise correction,
+  which can be added trivially since `corrected_mean` is computed
+  per frame in the new path).
+
+  Trade-off: between a fresh dark and the next, the dark estimate is
+  stale and can drift slightly; a Kalman/exponential filter over the
+  dark history smooths this if needed.
+
+- **Reduce `dark_interval`.** If firmware allows, dropping the dark
+  schedule from every 600 frames to every 40 (once per second)
+  collapses the corrected-batch latency to ~1 s. Then both the live
+  plot and the calibration can run on the corrected stream with no
+  scale mismatch and no need for a partial-correction approximation.
+  Requires firmware support and accepts a small duty-cycle hit on
+  light frames.
+
+- **Two-tier display.** Plot the uncorrected stream at full frame
+  rate as the *primary* trace and overlay the corrected batch values
+  (one point per 15 s) as a *reference* trace. Operators get both
+  the smooth live view and the absolute truth.
