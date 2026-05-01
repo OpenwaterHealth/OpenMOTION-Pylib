@@ -573,6 +573,7 @@ def _run_subscan_capture(
         scan_req,
         on_corrected_batch_fn=_on_corrected_batch,
         on_complete_fn=_on_complete,
+        log_dark_endpoints=True,
     )
     if not started:
         raise RuntimeError("ScanWorkflow refused start_scan.")

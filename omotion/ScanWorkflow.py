@@ -231,6 +231,7 @@ class ScanWorkflow:
         on_error_fn: Callable[[Exception], None] | None = None,
         on_side_stream_fn: Callable[[str, str], None] | None = None,
         on_complete_fn: Callable[[ScanResult], None] | None = None,
+        log_dark_endpoints: bool = False,
     ) -> bool:
         with self._lock:
             if self._running or (self._thread and self._thread.is_alive()):
@@ -660,6 +661,7 @@ class ScanWorkflow:
                         on_rolling_avg_fn=on_rolling_avg_fn,
                         rolling_avg_enabled=request.rolling_avg_enabled,
                         rolling_avg_window=request.rolling_avg_window,
+                        log_dark_endpoints=log_dark_endpoints,
                     )
 
                 def _make_row_handler(current_side: str, p):

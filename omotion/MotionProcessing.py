@@ -1092,6 +1092,7 @@ class SciencePipeline:
         discard_count: int = 9,
         expected_row_sum: int | None = None,
         noise_floor: int = 10,
+        log_dark_endpoints: bool = False,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -1103,6 +1104,7 @@ class SciencePipeline:
         self._on_rolling_avg_fn = on_rolling_avg_fn
         self._rolling_avg_enabled = bool(rolling_avg_enabled)
         self._rolling_avg_window = int(rolling_avg_window)
+        self._log_dark_endpoints = bool(log_dark_endpoints)
         # Per (side, cam_id): deque of the last N uncorrected light Samples.
         # Populated lazily on first light sample for that key; empty when
         # rolling_avg_enabled is False so disabled mode has zero overhead.
@@ -1518,6 +1520,17 @@ class SciencePipeline:
         if not pending:
             return
 
+        if self._log_dark_endpoints:
+            side, cam_id = key
+            logger.info(
+                "dark endpoints for %s cam %d: "
+                "frame %d  u1=%.2f  std=%.2f  ->  "
+                "frame %d  u1=%.2f  std=%.2f",
+                side, cam_id,
+                prev_abs, prev_u1, float(np.sqrt(max(0.0, prev_var))),
+                curr_abs, curr_u1, float(np.sqrt(max(0.0, curr_var))),
+            )
+
         interval = curr_abs - prev_abs
         corrected_samples: list[Sample] = []
 
@@ -1666,6 +1679,7 @@ def create_science_pipeline(
     discard_count: int = 9,
     expected_row_sum: int | None = None,
     noise_floor: int = 10,
+    log_dark_endpoints: bool = False,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
@@ -1725,6 +1739,7 @@ def create_science_pipeline(
         discard_count=discard_count,
         expected_row_sum=expected_row_sum,
         noise_floor=noise_floor,
+        log_dark_endpoints=log_dark_endpoints,
     )
     pipeline.start()
     return pipeline
