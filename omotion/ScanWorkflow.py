@@ -17,6 +17,7 @@ from omotion.MotionProcessing import (
     create_science_pipeline,
     parse_histogram_stream,
 )
+from omotion.Calibration import Calibration
 
 if TYPE_CHECKING:
     from omotion.MotionInterface import MotionInterface
@@ -134,10 +135,7 @@ class ScanWorkflow:
         self._config_stop_evt = threading.Event()
         self._config_running = False
 
-        self._bfi_c_min = None
-        self._bfi_c_max = None
-        self._bfi_i_min = None
-        self._bfi_i_max = None
+        self._calibration: Calibration = Calibration.default()
 
         # Per-scan state for the disconnect-abort subscription. Reset at
         # each scan start by _scan_subscribe_state.
@@ -162,10 +160,40 @@ class ScanWorkflow:
         bfi_i_min,
         bfi_i_max,
     ) -> None:
-        self._bfi_c_min = bfi_c_min
-        self._bfi_c_max = bfi_c_max
-        self._bfi_i_min = bfi_i_min
-        self._bfi_i_max = bfi_i_max
+        """Override the cached calibration. Marks source as ``override``.
+
+        Validates shapes — historically this method silently stored
+        ``None``s if shapes were wrong; that is now a ``ValueError``.
+        """
+        import numpy as np
+        arrs = []
+        for name, val in (
+            ("bfi_c_min", bfi_c_min), ("bfi_c_max", bfi_c_max),
+            ("bfi_i_min", bfi_i_min), ("bfi_i_max", bfi_i_max),
+        ):
+            arr = np.asarray(val, dtype=float)
+            if arr.shape != (2, 8):
+                raise ValueError(
+                    f"set_realtime_calibration: {name} has shape "
+                    f"{arr.shape}; expected (2, 8)"
+                )
+            arrs.append(arr)
+        self._install_calibration(
+            Calibration(
+                c_min=arrs[0],
+                c_max=arrs[1],
+                i_min=arrs[2],
+                i_max=arrs[3],
+                source="override",
+            )
+        )
+
+    def _install_calibration(self, cal: Calibration) -> None:
+        """Replace the cached calibration. Used by the connect-time loader
+        and by ``set_realtime_calibration``.
+        """
+        self._calibration = cal
+        logger.info("Calibration installed (source=%s).", cal.source)
 
     def get_single_histogram(
         self,
@@ -377,12 +405,7 @@ class ScanWorkflow:
 
                 # Build one unified SciencePipeline that handles both sides
                 # before starting any per-side writer threads.
-                if (
-                    self._bfi_c_min is not None
-                    and self._bfi_c_max is not None
-                    and self._bfi_i_min is not None
-                    and self._bfi_i_max is not None
-                ):
+                if self._calibration is not None:
                     left_mask_active = next(
                         (m for s, m, _ in active_sides if s == "left"), 0x00
                     )
@@ -627,10 +650,10 @@ class ScanWorkflow:
                     science_pipeline = create_science_pipeline(
                         left_camera_mask=left_mask_active,
                         right_camera_mask=right_mask_active,
-                        bfi_c_min=self._bfi_c_min,
-                        bfi_c_max=self._bfi_c_max,
-                        bfi_i_min=self._bfi_i_min,
-                        bfi_i_max=self._bfi_i_max,
+                        bfi_c_min=self._calibration.c_min,
+                        bfi_c_max=self._calibration.c_max,
+                        bfi_i_min=self._calibration.i_min,
+                        bfi_i_max=self._calibration.i_max,
                         on_uncorrected_fn=_on_uncorrected_sample,
                         on_corrected_batch_fn=_on_corrected_batch,
                         on_dark_frame_fn=on_dark_frame_fn,
