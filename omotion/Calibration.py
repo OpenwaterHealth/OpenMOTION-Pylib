@@ -93,7 +93,74 @@ def parse_calibration(json_data: dict) -> Optional[Calibration]:
     Returns ``None`` (not raises) when the calibration block is absent or
     invalid. Callers fall back to ``Calibration.default()``.
     """
-    raise NotImplementedError  # filled in Task 2
+    if not isinstance(json_data, dict):
+        return None
+
+    block = json_data.get(CALIBRATION_JSON_KEY)
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        logger.warning(
+            "Console calibration invalid (calibration block is %s, not a dict); "
+            "falling back to SDK defaults.",
+            type(block).__name__,
+        )
+        return None
+
+    arrays: dict[str, np.ndarray] = {}
+    for key in _ALL_ARRAY_KEYS:
+        if key not in block:
+            logger.warning(
+                "Console calibration invalid (missing key %s); "
+                "falling back to SDK defaults.",
+                key,
+            )
+            return None
+        try:
+            arr = np.asarray(block[key], dtype=float)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Console calibration invalid (%s is non-numeric); "
+                "falling back to SDK defaults.",
+                key,
+            )
+            return None
+        if arr.shape != _EXPECTED_SHAPE:
+            logger.warning(
+                "Console calibration invalid (%s has shape %s, expected %s); "
+                "falling back to SDK defaults.",
+                key, arr.shape, _EXPECTED_SHAPE,
+            )
+            return None
+        if not np.all(np.isfinite(arr)):
+            logger.warning(
+                "Console calibration invalid (%s contains NaN or inf); "
+                "falling back to SDK defaults.",
+                key,
+            )
+            return None
+        arrays[key] = arr
+
+    if not np.all(arrays[_C_MAX_KEY] > arrays[_C_MIN_KEY]):
+        logger.warning(
+            "Console calibration invalid (C_max not strictly greater than "
+            "C_min element-wise); falling back to SDK defaults."
+        )
+        return None
+    if not np.all(arrays[_I_MAX_KEY] > arrays[_I_MIN_KEY]):
+        logger.warning(
+            "Console calibration invalid (I_max not strictly greater than "
+            "I_min element-wise); falling back to SDK defaults."
+        )
+        return None
+
+    return Calibration(
+        c_min=arrays[_C_MIN_KEY],
+        c_max=arrays[_C_MAX_KEY],
+        i_min=arrays[_I_MIN_KEY],
+        i_max=arrays[_I_MAX_KEY],
+        source="console",
+    )
 
 
 def serialize_calibration(c_min, c_max, i_min, i_max) -> dict:

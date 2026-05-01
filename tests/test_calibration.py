@@ -55,3 +55,86 @@ def test_default_arrays_have_correct_shape_and_dtype():
     for arr in (cal.c_min, cal.c_max, cal.i_min, cal.i_max):
         assert arr.shape == (2, 8)
         assert arr.dtype == np.float64
+
+
+# ----- parse_calibration -----
+
+def _valid_block():
+    return {
+        CALIBRATION_JSON_KEY: {
+            "C_min": [[0.0]*8, [0.0]*8],
+            "C_max": [[0.4]*8, [0.4]*8],
+            "I_min": [[0.0]*8, [0.0]*8],
+            "I_max": [[200.0]*8, [200.0]*8],
+        }
+    }
+
+
+def test_parse_valid_returns_console_source():
+    cal = parse_calibration(_valid_block())
+    assert cal is not None
+    assert cal.source == "console"
+    np.testing.assert_array_equal(cal.c_max, np.full((2, 8), 0.4))
+    np.testing.assert_array_equal(cal.i_max, np.full((2, 8), 200.0))
+
+
+def test_parse_missing_block_returns_none():
+    assert parse_calibration({}) is None
+    assert parse_calibration({"some_other_key": 1}) is None
+
+
+def test_parse_block_not_a_dict_returns_none():
+    assert parse_calibration({CALIBRATION_JSON_KEY: "not-a-dict"}) is None
+    assert parse_calibration({CALIBRATION_JSON_KEY: [1, 2, 3]}) is None
+
+
+def test_parse_missing_one_subkey_returns_none(caplog):
+    blk = _valid_block()
+    del blk[CALIBRATION_JSON_KEY]["I_max"]
+    with caplog.at_level("WARNING"):
+        assert parse_calibration(blk) is None
+    assert any("I_max" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.parametrize("bad_shape", [
+    [[0.0]*8],                                # (1, 8)
+    [[0.0]*7, [0.0]*7],                       # (2, 7)
+    [[0.0]*8, [0.0]*8, [0.0]*8],              # (3, 8)
+    0.0,                                       # scalar
+    [0.0, 0.0],                                # 1-D
+])
+def test_parse_wrong_shape_returns_none(bad_shape):
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["C_min"] = bad_shape
+    assert parse_calibration(blk) is None
+
+
+def test_parse_non_numeric_returns_none():
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["C_min"] = [["abc"]*8, ["abc"]*8]
+    assert parse_calibration(blk) is None
+
+
+def test_parse_nan_returns_none():
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["C_min"][0][0] = float("nan")
+    assert parse_calibration(blk) is None
+
+
+def test_parse_inf_returns_none():
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["C_max"][0][0] = float("inf")
+    assert parse_calibration(blk) is None
+
+
+def test_parse_non_monotonic_c_returns_none():
+    # C_max must be > C_min element-wise
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["C_max"][1][3] = 0.0  # equal to C_min there
+    assert parse_calibration(blk) is None
+
+
+def test_parse_non_monotonic_i_returns_none():
+    blk = _valid_block()
+    blk[CALIBRATION_JSON_KEY]["I_max"][0][0] = -1.0  # less than I_min
+    assert parse_calibration(blk) is None
