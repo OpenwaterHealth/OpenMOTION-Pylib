@@ -371,3 +371,250 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
                 "security_id": r.security_id,
                 "hwid": r.hwid,
             })
+
+
+# ---------------------------------------------------------------------------
+# Orchestration class
+# ---------------------------------------------------------------------------
+
+from omotion.ScanWorkflow import ScanRequest, ScanResult
+
+
+def _run_subscan(
+    interface,
+    request: CalibrationRequest,
+    *,
+    subject_id: str,
+    duration_sec: int,
+    stop_evt: threading.Event,
+) -> tuple[str, str]:
+    """Submit a ScanRequest and block until it completes, returning
+    (left_path, right_path). Raises RuntimeError on scan failure.
+    Honors stop_evt by calling cancel_scan and returning empty paths.
+    """
+    scan_req = ScanRequest(
+        subject_id=subject_id,
+        duration_sec=duration_sec,
+        left_camera_mask=request.left_camera_mask,
+        right_camera_mask=request.right_camera_mask,
+        data_dir=request.output_dir,
+        disable_laser=False,
+        write_raw_csv=True,
+        write_corrected_csv=False,
+        write_telemetry_csv=False,
+        reduced_mode=False,
+    )
+    evt = threading.Event()
+    holder: dict[str, ScanResult] = {}
+
+    def _on_complete(r: ScanResult) -> None:
+        holder["r"] = r
+        evt.set()
+
+    started = interface.scan_workflow.start_scan(
+        scan_req, on_complete_fn=_on_complete,
+    )
+    if not started:
+        raise RuntimeError("ScanWorkflow refused start_scan.")
+
+    while not evt.wait(timeout=0.1):
+        if stop_evt.is_set():
+            try:
+                interface.scan_workflow.cancel_scan()
+            except Exception:
+                pass
+            evt.wait(timeout=5.0)
+            return "", ""
+    res = holder.get("r")
+    if res is None or not res.ok:
+        raise RuntimeError(
+            f"sub-scan failed: {(res.error if res else 'no result')}"
+        )
+    if res.canceled:
+        return "", ""
+    return res.left_path or "", res.right_path or ""
+
+
+class CalibrationWorkflow:
+    def __init__(self, interface: "MotionInterface"):
+        self._interface = interface
+        self._thread: Optional[threading.Thread] = None
+        self._stop_evt = threading.Event()
+        self._lock = threading.Lock()
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def start_calibration(
+        self,
+        request: CalibrationRequest,
+        *,
+        on_log_fn: Optional[Callable[[str], None]] = None,
+        on_progress_fn: Optional[Callable[[str], None]] = None,
+        on_complete_fn: Optional[Callable[[CalibrationResult], None]] = None,
+    ) -> bool:
+        with self._lock:
+            if self._running:
+                logger.warning("start_calibration refused: already running.")
+                return False
+            self._running = True
+        self._stop_evt = threading.Event()
+
+        def _emit_log(msg: str) -> None:
+            logger.info(msg)
+            if on_log_fn:
+                on_log_fn(msg)
+
+        def _emit_progress(stage: str) -> None:
+            if on_progress_fn:
+                on_progress_fn(stage)
+
+        def _worker() -> None:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            cal_left = cal_right = ""
+            val_left = val_right = ""
+            cal_obj: Optional[Calibration] = None
+            csv_path = ""
+            rows: list[CalibrationResultRow] = []
+            ok = False
+            passed = False
+            error = ""
+            canceled = False
+
+            def _watchdog() -> None:
+                self._stop_evt.set()
+                logger.warning(
+                    "Calibration watchdog fired after %d sec; aborting.",
+                    request.max_duration_sec,
+                )
+                try:
+                    self._interface.scan_workflow.cancel_scan()
+                except Exception:
+                    pass
+            wd = threading.Timer(request.max_duration_sec, _watchdog)
+            wd.daemon = True
+            wd.start()
+
+            try:
+                _emit_progress("calibration_scan")
+                _emit_log("Calibration: starting calibration scan…")
+                cal_left, cal_right = _run_subscan(
+                    self._interface, request,
+                    subject_id=f"calib1_{request.operator_id}",
+                    duration_sec=request.duration_sec + request.scan_delay_sec,
+                    stop_evt=self._stop_evt,
+                )
+                if self._stop_evt.is_set():
+                    canceled = True
+                    error = "canceled during calibration scan"
+                    return
+
+                _emit_progress("compute_calibration")
+                _emit_log("Calibration: computing arrays…")
+                skip_frames = int(round(request.scan_delay_sec * CAPTURE_HZ))
+                try:
+                    cal_obj = compute_calibration_from_csvs(
+                        left_csv=cal_left or None,
+                        right_csv=cal_right or None,
+                        left_camera_mask=request.left_camera_mask,
+                        right_camera_mask=request.right_camera_mask,
+                        skip_leading_frames=skip_frames,
+                    )
+                except DegenerateCalibrationError as e:
+                    error = str(e)
+                    return
+
+                _emit_progress("write_calibration")
+                _emit_log("Calibration: writing to console…")
+                cal_obj = self._interface.write_calibration(
+                    cal_obj.c_min, cal_obj.c_max,
+                    cal_obj.i_min, cal_obj.i_max,
+                )
+
+                if self._stop_evt.is_set():
+                    canceled = True
+                    error = "canceled after calibration write"
+                    return
+
+                _emit_progress("validation_scan")
+                _emit_log("Calibration: starting validation scan…")
+                val_left, val_right = _run_subscan(
+                    self._interface, request,
+                    subject_id=f"calib2_{request.operator_id}",
+                    duration_sec=request.duration_sec + request.scan_delay_sec,
+                    stop_evt=self._stop_evt,
+                )
+                if self._stop_evt.is_set():
+                    canceled = True
+                    error = "canceled during validation scan"
+                    return
+
+                _emit_progress("evaluate")
+                _emit_log("Calibration: evaluating…")
+                rows = build_result_rows(
+                    left_csv=val_left or None,
+                    right_csv=val_right or None,
+                    left_camera_mask=request.left_camera_mask,
+                    right_camera_mask=request.right_camera_mask,
+                    skip_leading_frames=skip_frames,
+                    thresholds=request.thresholds,
+                    sensor_left=getattr(self._interface, "left", None),
+                    sensor_right=getattr(self._interface, "right", None),
+                    calibration=cal_obj,
+                )
+                csv_path = os.path.join(
+                    request.output_dir, f"calibration-{ts}.csv"
+                )
+                write_result_csv(csv_path, rows)
+                passed = evaluate_passed(rows)
+                ok = True
+            except Exception as e:
+                logger.exception("Calibration worker failed.")
+                if not error:
+                    error = f"{type(e).__name__}: {e}"
+            finally:
+                wd.cancel()
+                if self._stop_evt.is_set() and not canceled:
+                    canceled = True
+                    if not error:
+                        error = (
+                            f"calibration exceeded max_duration_sec="
+                            f"{request.max_duration_sec}"
+                        )
+
+                result = CalibrationResult(
+                    ok=ok, passed=passed, canceled=canceled, error=error,
+                    csv_path=csv_path, calibration=cal_obj, rows=rows,
+                    calibration_scan_left_path=cal_left,
+                    calibration_scan_right_path=cal_right,
+                    validation_scan_left_path=val_left,
+                    validation_scan_right_path=val_right,
+                    started_timestamp=ts,
+                )
+                with self._lock:
+                    self._running = False
+                if on_complete_fn:
+                    try:
+                        on_complete_fn(result)
+                    except Exception:
+                        logger.exception("on_complete_fn raised.")
+
+        self._thread = threading.Thread(
+            target=_worker, name="CalibrationWorker", daemon=True,
+        )
+        self._thread.start()
+        return True
+
+    def cancel_calibration(self, *, join_timeout: float = 10.0) -> None:
+        if not self.running:
+            return
+        self._stop_evt.set()
+        try:
+            self._interface.scan_workflow.cancel_scan()
+        except Exception:
+            logger.warning("cancel_calibration: cancel_scan raised; ignoring.")
+        if self._thread is not None:
+            self._thread.join(timeout=join_timeout)

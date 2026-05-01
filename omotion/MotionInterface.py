@@ -62,6 +62,7 @@ class MotionInterface:
         # ScanWorkflow is constructed lazily so we don't pull in Qt-heavy
         # dependencies at import time for users who only want device control.
         self._scan_workflow = None
+        self._calibration_workflow = None
         self._monitor: Optional[ConnectionMonitor] = None
         self._started = False
 
@@ -251,11 +252,33 @@ class MotionInterface:
             self._scan_workflow = ScanWorkflow(self)
         return self._scan_workflow
 
+    @property
+    def calibration_workflow(self):
+        if self._calibration_workflow is None:
+            from omotion.CalibrationWorkflow import CalibrationWorkflow
+
+            self._calibration_workflow = CalibrationWorkflow(self)
+        return self._calibration_workflow
+
+    @property
+    def calibration_running(self) -> bool:
+        return (
+            self._calibration_workflow is not None
+            and self._calibration_workflow.running
+        )
+
     def start_scan(self, request, **kwargs) -> bool:
         return self.scan_workflow.start_scan(request, **kwargs)
 
     def cancel_scan(self, **kwargs) -> None:
         self.scan_workflow.cancel_scan(**kwargs)
+
+    def start_calibration(self, request, **kwargs) -> bool:
+        return self.calibration_workflow.start_calibration(request, **kwargs)
+
+    def cancel_calibration(self, **kwargs) -> None:
+        if self._calibration_workflow is not None:
+            self._calibration_workflow.cancel_calibration(**kwargs)
 
     def get_single_histogram(
         self,

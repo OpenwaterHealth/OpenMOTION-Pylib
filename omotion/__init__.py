@@ -50,6 +50,12 @@ from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
 from .Calibration import Calibration
+from .CalibrationWorkflow import (
+    CalibrationRequest,
+    CalibrationResult,
+    CalibrationResultRow,
+    CalibrationThresholds,
+)
 from .connection_state import ConnectionState
 # Top-level handles + interface (deferred until after the leaf modules above
 # so MotionConsole/MotionSensor can do `from omotion import _log_root` during
@@ -70,5 +76,9 @@ __all__ = [
     "USBInterfaceBase",
     "MotionConfig",
     "Calibration",
+    "CalibrationRequest",
+    "CalibrationResult",
+    "CalibrationResultRow",
+    "CalibrationThresholds",
     "ConnectionState",
 ]
