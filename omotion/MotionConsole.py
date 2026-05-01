@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
+import numpy as np
+
 from omotion import _log_root
 from omotion.MotionUart import MotionUart
 from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
@@ -69,6 +71,12 @@ from omotion.config import (
 
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionConfig import MotionConfig, MotionConfigHeader
+from omotion.Calibration import (
+    Calibration,
+    parse_calibration,
+    serialize_calibration,
+    CALIBRATION_JSON_KEY,
+)
 from omotion.CommandError import CommandError
 
 logger = logging.getLogger(f"{_log_root}.Console" if _log_root else "Console")
@@ -1937,6 +1945,92 @@ class MotionConsole(SignalWrapper):
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON: {e}")
             raise ValueError(f"Invalid JSON: {e}")
+
+    def read_calibration(self) -> Calibration:
+        """Read the BFI/BVI calibration from the console EEPROM JSON.
+
+        Returns a :class:`omotion.Calibration` with ``source="console"`` if
+        the JSON contains a valid ``calibration`` block, otherwise a fresh
+        :meth:`Calibration.default` (``source="default"``). Never raises on
+        bad data — invalid blocks are logged and replaced with defaults.
+
+        Raises:
+            ValueError: if the UART is not connected (propagates from
+                ``read_config``).
+        """
+        try:
+            cfg = self.read_config()
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "read_calibration: read_config raised %s; using SDK defaults.",
+                e,
+            )
+            return Calibration.default()
+
+        if cfg is None:
+            logger.info(
+                "read_calibration: no config returned from device; "
+                "using SDK defaults."
+            )
+            return Calibration.default()
+
+        parsed = parse_calibration(cfg.json_data or {})
+        if parsed is None:
+            logger.info(
+                "read_calibration: no calibration on device or invalid; "
+                "using SDK defaults."
+            )
+            return Calibration.default()
+
+        logger.info("read_calibration: loaded calibration from console.")
+        return parsed
+
+    def write_calibration(
+        self, c_min, c_max, i_min, i_max
+    ) -> Calibration:
+        """Write a new BFI/BVI calibration to the console EEPROM.
+
+        Validates inputs (shape ``(2, 8)``, finite, monotonic) before
+        touching the wire. Performs a read-modify-write so other JSON
+        keys (``EE_THRESH``, etc.) are preserved.
+
+        Returns the :class:`Calibration` (``source="console"``) that was
+        written. The caller is responsible for refreshing any cached copy
+        — :meth:`omotion.MotionInterface.write_calibration` chains a
+        refresh automatically.
+
+        Raises:
+            ValueError: invalid input or UART not connected.
+            RuntimeError: existing config could not be read for the
+                read-modify-write.
+        """
+        new_block = serialize_calibration(c_min, c_max, i_min, i_max)
+
+        cfg = self.read_config()
+        if cfg is None:
+            raise RuntimeError(
+                "write_calibration: could not read existing config for "
+                "read-modify-write."
+            )
+
+        if cfg.json_data is None:
+            cfg.json_data = {}
+        cfg.json_data[CALIBRATION_JSON_KEY] = new_block[CALIBRATION_JSON_KEY]
+
+        result = self.write_config(cfg)
+        if result is None:
+            raise RuntimeError("write_calibration: write_config returned None.")
+
+        logger.info("write_calibration: calibration written to console.")
+        return Calibration(
+            c_min=np.asarray(c_min, dtype=float),
+            c_max=np.asarray(c_max, dtype=float),
+            i_min=np.asarray(i_min, dtype=float),
+            i_max=np.asarray(i_max, dtype=float),
+            source="console",
+        )
 
     # ------------------------------------------------------------------ #
     # Page-by-page direct FPGA programming commands (0x30–0x3C)
