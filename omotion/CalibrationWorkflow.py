@@ -158,3 +158,83 @@ def _collect_samples_from_csvs(
         pipeline.stop(timeout=30.0)
     samples.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
     return samples
+
+
+class DegenerateCalibrationError(RuntimeError):
+    """Raised when an active camera's calibration scan produces unusable
+    data (zero / negative aggregates), making BFI/BVI math impossible."""
+
+
+def _camera_active(mask: int, cam_id: int) -> bool:
+    return bool(mask & (1 << cam_id))
+
+
+def compute_calibration_from_csvs(
+    *,
+    left_csv: Optional[str],
+    right_csv: Optional[str],
+    left_camera_mask: int,
+    right_camera_mask: int,
+    skip_leading_frames: int,
+) -> Calibration:
+    """Compute (2, 8) C_max and I_max arrays from raw histogram CSVs.
+
+    C_min and I_min are zero. ``C_max[m, c]`` is the average light-frame
+    contrast for camera ``(m, c)``; ``I_max[m, c]`` is
+    ``CALIBRATION_I_MAX_MULTIPLIER * average light-frame mean``.
+
+    Inactive cameras (mask bit clear) get ``Calibration.default()`` values
+    so monotonicity always holds. Active cameras with zero / negative
+    aggregates raise :class:`DegenerateCalibrationError`.
+
+    Returns ``Calibration(source="console")`` so callers can pass it
+    straight to :meth:`omotion.MotionInterface.write_calibration`.
+    """
+    samples = _collect_samples_from_csvs(
+        left_csv=left_csv, right_csv=right_csv,
+        skip_leading_frames=skip_leading_frames,
+        left_camera_mask=left_camera_mask,
+        right_camera_mask=right_camera_mask,
+    )
+
+    defaults = Calibration.default()
+    c_max = defaults.c_max.copy()
+    i_max = defaults.i_max.copy()
+    c_min = np.zeros_like(c_max)
+    i_min = np.zeros_like(i_max)
+
+    masks = (left_camera_mask, right_camera_mask)
+
+    for module_idx, side in enumerate(("left", "right")):
+        mask = masks[module_idx]
+        for cam_id in range(CAMS_PER_MODULE):
+            if not _camera_active(mask, cam_id):
+                continue  # inactive — keep default value
+            cam_samples = [
+                s for s in samples
+                if s.side == side and s.cam_id == cam_id
+            ]
+            if not cam_samples:
+                raise DegenerateCalibrationError(
+                    f"active camera ({side}, cam_id={cam_id}) produced "
+                    f"no light-frame samples after skip_leading_frames="
+                    f"{skip_leading_frames}; calibration aborted."
+                )
+            mean_avg = float(np.mean([s.mean for s in cam_samples]))
+            contrast_avg = float(np.mean([s.contrast for s in cam_samples]))
+            new_c_max = contrast_avg
+            new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
+            if new_c_max <= 0.0 or new_i_max <= 0.0:
+                raise DegenerateCalibrationError(
+                    f"active camera ({side}, cam_id={cam_id}) produced "
+                    f"zero or negative aggregate (C_max={new_c_max:.4f}, "
+                    f"I_max={new_i_max:.4f}); calibration aborted."
+                )
+            c_max[module_idx, cam_id] = new_c_max
+            i_max[module_idx, cam_id] = new_i_max
+
+    return Calibration(
+        c_min=c_min, c_max=c_max,
+        i_min=i_min, i_max=i_max,
+        source="console",
+    )

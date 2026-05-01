@@ -107,3 +107,57 @@ def test_collect_samples_skips_leading_frames():
     skipped_min_frame = min(s.absolute_frame_id for s in skipped)
     assert skipped_min_frame >= 40
     assert len(skipped) < len(full)
+
+
+# ----- compute_calibration_from_csvs -----
+
+from omotion.CalibrationWorkflow import (
+    DegenerateCalibrationError,
+    compute_calibration_from_csvs,
+)
+
+
+def test_compute_calibration_against_fixture():
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+    cal = compute_calibration_from_csvs(
+        left_csv=_LEFT_FIXTURE, right_csv=_RIGHT_FIXTURE,
+        left_camera_mask=0xFF, right_camera_mask=0xFF,
+        skip_leading_frames=0,
+    )
+    assert cal.c_min.shape == (2, 8)
+    assert cal.c_max.shape == (2, 8)
+    assert np.all(cal.c_min == 0.0)
+    assert np.all(cal.i_min == 0.0)
+    assert np.all(cal.c_max > 0)
+    assert np.all(cal.i_max > 0)
+    assert cal.source == "console"
+
+
+def test_compute_calibration_inactive_cameras_use_defaults():
+    """Inactive cameras (mask bit clear) fall back to defaults so the
+    (2, 8) array always satisfies monotonicity."""
+    if not _have_fixtures():
+        pytest.skip("fixture CSV missing")
+    cal = compute_calibration_from_csvs(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        left_camera_mask=0x0F,        # only cams 0..3 active on left
+        right_camera_mask=0x00,       # right entirely inactive
+        skip_leading_frames=0,
+    )
+    defaults = Calibration.default()
+    np.testing.assert_array_equal(cal.c_max[1], defaults.c_max[1])
+    np.testing.assert_array_equal(cal.i_max[1], defaults.i_max[1])
+    np.testing.assert_array_equal(cal.c_max[0, 4:], defaults.c_max[0, 4:])
+    np.testing.assert_array_equal(cal.i_max[0, 4:], defaults.i_max[0, 4:])
+
+
+def test_compute_calibration_degenerate_active_cam_raises():
+    """Active cam with no samples → DegenerateCalibrationError."""
+    with pytest.raises(DegenerateCalibrationError):
+        compute_calibration_from_csvs(
+            left_csv=None, right_csv=None,
+            left_camera_mask=0x01,        # cam 0 active, no CSV
+            right_camera_mask=0x00,
+            skip_leading_frames=0,
+        )
