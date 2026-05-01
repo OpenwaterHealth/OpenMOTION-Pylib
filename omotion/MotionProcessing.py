@@ -1130,7 +1130,7 @@ class SciencePipeline:
         noise_floor: int = 10,
         log_dark_endpoints: bool = False,
         dark_integrity_max_u1_above_pedestal: float = 30.0,
-        dark_integrity_max_std: float = 15.0,
+        dark_integrity_max_std: float = 20.0,
     ):
         self._bfi_c_min = bfi_c_min
         self._bfi_c_max = bfi_c_max
@@ -1783,7 +1783,7 @@ def create_science_pipeline(
     noise_floor: int = 10,
     log_dark_endpoints: bool = False,
     dark_integrity_max_u1_above_pedestal: float = 30.0,
-    dark_integrity_max_std: float = 15.0,
+    dark_integrity_max_std: float = 20.0,
 ) -> SciencePipeline:
     """
     Factory for a ready-to-run unified science pipeline.
