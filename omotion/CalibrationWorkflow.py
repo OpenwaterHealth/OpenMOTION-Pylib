@@ -115,29 +115,46 @@ def _collect_samples_from_csvs(
     left_csv: Optional[str],
     right_csv: Optional[str],
     skip_leading_frames: int,
+    frame_window_count: Optional[int] = None,
     left_camera_mask: int = 0xFF,
     right_camera_mask: int = 0xFF,
     calibration: Optional[Calibration] = None,
 ) -> list[Sample]:
-    """Run the science pipeline against raw histogram CSVs and return all
-    light-frame Samples whose absolute_frame_id is at or beyond
-    ``skip_leading_frames``.
+    """Run the science pipeline against raw histogram CSVs and return
+    light-frame Samples whose ``absolute_frame_id`` falls in the
+    half-open window
+    ``[skip_leading_frames, skip_leading_frames + frame_window_count)``.
 
-    Dark frames are skipped by construction: ``on_uncorrected_fn`` only
-    fires for non-dark frames.
+    When ``frame_window_count`` is ``None`` the trailing edge is
+    unbounded (legacy behavior). Bounding the trailing edge is critical
+    for calibration: the firmware guarantees the very last frame of
+    every scan is a *terminal dark* frame, which the science pipeline
+    does NOT flag as ``is_dark=True`` (only scheduled darks at frame 10
+    and every dark_interval after are flagged). The terminal dark's
+    histogram is laser-off noise, which produces a wildly inflated
+    ``Sample.contrast`` that contaminates the average.
 
-    Calibration defaults to ``Calibration.default()``. For the calibration
-    phase, the BFI/BVI fields on the returned Samples are not used —
-    only ``mean`` and ``contrast``, which are upstream of the calibration
-    math. For the validation phase, callers pass the freshly-written
-    console calibration so BFI/BVI reflect it.
+    Calibration defaults to ``Calibration.default()``. For the
+    calibration phase the BFI/BVI fields on the returned Samples are
+    not used — only ``mean``, ``std_dev``, and ``contrast``, which are
+    upstream of the calibration math. For the validation phase,
+    callers pass the freshly-written console calibration so BFI/BVI
+    reflect it.
     """
     cal = calibration or Calibration.default()
     samples: list[Sample] = []
 
+    if frame_window_count is None:
+        upper_bound = None
+    else:
+        upper_bound = skip_leading_frames + int(frame_window_count)
+
     def _on_sample(s: Sample) -> None:
-        if s.absolute_frame_id >= skip_leading_frames:
-            samples.append(s)
+        if s.absolute_frame_id < skip_leading_frames:
+            return
+        if upper_bound is not None and s.absolute_frame_id >= upper_bound:
+            return
+        samples.append(s)
 
     pipeline = create_science_pipeline(
         left_camera_mask=left_camera_mask,
@@ -176,6 +193,7 @@ def compute_calibration_from_csvs(
     left_camera_mask: int,
     right_camera_mask: int,
     skip_leading_frames: int,
+    frame_window_count: Optional[int] = None,
 ) -> Calibration:
     """Compute (2, 8) C_max and I_max arrays from raw histogram CSVs.
 
@@ -192,14 +210,17 @@ def compute_calibration_from_csvs(
     """
     logger.info(
         "compute_calibration_from_csvs: left_csv=%s right_csv=%s "
-        "masks=(0x%02X, 0x%02X) skip_leading_frames=%d",
+        "masks=(0x%02X, 0x%02X) skip_leading_frames=%d "
+        "frame_window_count=%s",
         os.path.basename(left_csv) if left_csv else None,
         os.path.basename(right_csv) if right_csv else None,
         left_camera_mask, right_camera_mask, skip_leading_frames,
+        frame_window_count,
     )
     samples = _collect_samples_from_csvs(
         left_csv=left_csv, right_csv=right_csv,
         skip_leading_frames=skip_leading_frames,
+        frame_window_count=frame_window_count,
         left_camera_mask=left_camera_mask,
         right_camera_mask=right_camera_mask,
     )
@@ -322,12 +343,19 @@ def build_result_rows(
     sensor_left,            # MotionSensor or None — for cached IDs
     sensor_right,           # MotionSensor or None
     calibration: Optional[Calibration],
+    frame_window_count: Optional[int] = None,
 ) -> list[CalibrationResultRow]:
     """Aggregate per-camera mean/contrast/BFI/BVI from validation-scan
-    CSVs and apply pass/fail thresholds."""
+    CSVs and apply pass/fail thresholds.
+
+    See :func:`_collect_samples_from_csvs` for the meaning of
+    ``frame_window_count`` — bounding the trailing edge keeps the
+    firmware's terminal dark frame out of the per-camera averages.
+    """
     samples = _collect_samples_from_csvs(
         left_csv=left_csv, right_csv=right_csv,
         skip_leading_frames=skip_leading_frames,
+        frame_window_count=frame_window_count,
         left_camera_mask=left_camera_mask,
         right_camera_mask=right_camera_mask,
         calibration=calibration,
@@ -602,6 +630,9 @@ class CalibrationWorkflow:
                 _emit_log("Calibration: computing arrays…")
                 logger.info("Calibration phase 2: computing (2, 8) arrays.")
                 skip_frames = int(round(request.scan_delay_sec * CAPTURE_HZ))
+                # Bound the trailing edge to keep the firmware's terminal
+                # dark frame (and any laser ramp-down) out of the average.
+                window_frames = int(round(request.duration_sec * CAPTURE_HZ))
                 try:
                     cal_obj = compute_calibration_from_csvs(
                         left_csv=cal_left or None,
@@ -609,6 +640,7 @@ class CalibrationWorkflow:
                         left_camera_mask=request.left_camera_mask,
                         right_camera_mask=request.right_camera_mask,
                         skip_leading_frames=skip_frames,
+                        frame_window_count=window_frames,
                     )
                 except DegenerateCalibrationError as e:
                     error = str(e)
@@ -667,6 +699,7 @@ class CalibrationWorkflow:
                     left_camera_mask=request.left_camera_mask,
                     right_camera_mask=request.right_camera_mask,
                     skip_leading_frames=skip_frames,
+                    frame_window_count=window_frames,
                     thresholds=request.thresholds,
                     sensor_left=getattr(self._interface, "left", None),
                     sensor_right=getattr(self._interface, "right", None),
