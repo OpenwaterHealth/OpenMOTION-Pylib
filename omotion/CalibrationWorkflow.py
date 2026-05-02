@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import json
 import logging
 import os
 import threading
@@ -62,6 +63,28 @@ class CalibrationRequest:
     duration_sec: int  # required; caller supplies from config
     scan_delay_sec: int = CALIBRATION_DEFAULT_SCAN_DELAY_SEC
     max_duration_sec: int = CALIBRATION_DEFAULT_MAX_DURATION_SEC
+    # Trigger config dict (matches the JSON payload expected by
+    # console.set_trigger_json). When non-None the workflow re-sends
+    # this to the console firmware before each sub-scan, which resets
+    # the firmware-side ``fsync_counter`` so the dark schedule starts
+    # fresh and aligned. The bloodflow app's CQ flow does this every
+    # time it sets up a scan; the calibration flow must do the same to
+    # avoid the off-by-one symptom that comes from stale firmware
+    # state inherited from a previous scan.
+    #
+    # Standard payload (matching pages/BloodFlow.qml):
+    #   {
+    #     "TriggerStatus": 2,                # 2=ON, 1=OFF
+    #     "TriggerFrequencyHz": 40,
+    #     "TriggerPulseWidthUsec": 500,
+    #     "LaserPulseDelayUsec": 100,
+    #     "LaserPulseWidthUsec": 500,
+    #     "LaserPulseSkipInterval": 600,
+    #     "LaserPulseSkipDelayUsec": 1800,
+    #     "EnableSyncOut": True,
+    #     "EnableTaTrigger": True,
+    #   }
+    trigger_config: Optional[dict] = None
     notes: str = ""
 
 
@@ -686,6 +709,35 @@ class CalibrationWorkflow:
             # Bound the trailing edge to keep the firmware's terminal
             # dark frame (and any laser ramp-down) out of the average.
             window_frames = int(round(request.duration_sec * CAPTURE_HZ))
+
+            def _reset_firmware_trigger(phase_label: str) -> None:
+                """Re-send the trigger config so the firmware's
+                fsync_counter resets to 1 and the dark schedule starts
+                fresh. Mirrors what the bloodflow app's CQ flow does
+                via SetTriggerLaserTask before every scan; without
+                this, the calibration scan inherits whatever firmware
+                state was left by an earlier scan and the dark schedule
+                lands on the wrong frames (the off-by-one symptom)."""
+                if request.trigger_config is None:
+                    logger.info(
+                        "Calibration %s: skipping trigger reset "
+                        "(request.trigger_config is None).", phase_label,
+                    )
+                    return
+                try:
+                    payload = json.dumps(request.trigger_config)
+                    self._interface.console.set_trigger_json(payload)
+                    logger.info(
+                        "Calibration %s: trigger reset (firmware "
+                        "fsync_counter is now 1).", phase_label,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Calibration %s: trigger reset failed: %s. "
+                        "Continuing with stale firmware state.",
+                        phase_label, e,
+                    )
+
             try:
                 _emit_progress("calibration_scan")
                 _emit_log("Calibration: starting calibration scan…")
@@ -695,6 +747,7 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
+                _reset_firmware_trigger("phase 1 (pre-scan)")
                 cal_left, cal_right, cal_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib1_{request.operator_id}",
@@ -756,6 +809,7 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
+                _reset_firmware_trigger("phase 4 (pre-scan)")
                 val_left, val_right, val_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib2_{request.operator_id}",
