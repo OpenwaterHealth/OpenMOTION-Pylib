@@ -785,6 +785,49 @@ class CalibrationWorkflow:
                     phase_label, last_err,
                 )
 
+            def _drain_sensor_comm_queues(phase_label: str) -> None:
+                """Drain stale parsed responses from each connected
+                sensor's COMM USB endpoint. The same root cause that
+                made set_trigger_json hit a 20s timeout (residual
+                packets from the prior scan stuck in the queue) also
+                shows up on the sensor side as
+                  ``LEFT-COMM: discarding stale response id=0x001C``
+                followed by an enable_camera timeout because the
+                stale response gets matched against the wrong request.
+                Calling this between scans flushes those out before
+                start_scan starts firing camera-config commands.
+                """
+                for side in ("left", "right"):
+                    sensor = getattr(self._interface, side, None)
+                    if sensor is None or not sensor.is_connected():
+                        continue
+                    try:
+                        comm = sensor.uart.comm
+                    except Exception:
+                        continue
+                    try:
+                        comm.clear_buffer()
+                    except Exception:
+                        pass
+                    drained = 0
+                    try:
+                        while not comm.response_queue.empty():
+                            pkt = comm.response_queue.get_nowait()
+                            drained += 1
+                            logger.info(
+                                "Calibration %s: drained stale %s "
+                                "response id=0x%04X",
+                                phase_label, side, getattr(pkt, "id", -1),
+                            )
+                    except Exception:
+                        pass
+                    if drained:
+                        logger.info(
+                            "Calibration %s: drained %d stale packet(s) "
+                            "from %s COMM queue",
+                            phase_label, drained, side,
+                        )
+
             try:
                 _emit_progress("calibration_scan")
                 _emit_log("Calibration: starting calibration scan…")
@@ -794,6 +837,7 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
+                _drain_sensor_comm_queues("phase 1 (pre-scan)")
                 _reset_firmware_trigger("phase 1 (pre-scan)")
                 cal_left, cal_right, cal_samples = _run_subscan_capture(
                     self._interface, request,
@@ -856,6 +900,7 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
+                _drain_sensor_comm_queues("phase 4 (pre-scan)")
                 _reset_firmware_trigger("phase 4 (pre-scan)")
                 val_left, val_right, val_samples = _run_subscan_capture(
                     self._interface, request,
