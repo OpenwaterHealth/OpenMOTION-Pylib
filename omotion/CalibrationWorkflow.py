@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -717,26 +718,72 @@ class CalibrationWorkflow:
                 via SetTriggerLaserTask before every scan; without
                 this, the calibration scan inherits whatever firmware
                 state was left by an earlier scan and the dark schedule
-                lands on the wrong frames (the off-by-one symptom)."""
+                lands on the wrong frames (the off-by-one symptom).
+
+                Defensive sequencing:
+                  1. ``stop_trigger`` first so the firmware's timer
+                     state is known. set_trigger_json on a still-
+                     running trigger has been observed to time out
+                     intermittently in the field (probably stale data
+                     in the UART RX buffer from prior streaming).
+                  2. Brief ``clear_buffer`` to drop any residual UART
+                     bytes before the SET_TRIG response reads.
+                  3. ``set_trigger_json`` with one retry on timeout.
+                """
                 if request.trigger_config is None:
                     logger.info(
                         "Calibration %s: skipping trigger reset "
                         "(request.trigger_config is None).", phase_label,
                     )
                     return
+
                 try:
-                    payload = json.dumps(request.trigger_config)
-                    self._interface.console.set_trigger_json(payload)
-                    logger.info(
-                        "Calibration %s: trigger reset (firmware "
-                        "fsync_counter is now 1).", phase_label,
-                    )
+                    self._interface.console.stop_trigger()
                 except Exception as e:
-                    logger.warning(
-                        "Calibration %s: trigger reset failed: %s. "
-                        "Continuing with stale firmware state.",
-                        phase_label, e,
+                    logger.info(
+                        "Calibration %s: stop_trigger before reset "
+                        "raised %s (continuing).", phase_label, e,
                     )
+
+                try:
+                    self._interface.console.uart.clear_buffer()
+                except Exception:
+                    pass
+
+                last_err: Optional[Exception] = None
+                for attempt in (1, 2):
+                    try:
+                        self._interface.console.set_trigger_json(
+                            data=request.trigger_config,
+                        )
+                        logger.info(
+                            "Calibration %s: trigger reset OK on attempt %d "
+                            "(firmware fsync_counter=1).",
+                            phase_label, attempt,
+                        )
+                        return
+                    except Exception as e:
+                        last_err = e
+                        logger.warning(
+                            "Calibration %s: trigger reset attempt %d "
+                            "failed: %s",
+                            phase_label, attempt, e,
+                        )
+                        # Brief settle then drop any partial response
+                        # the firmware may still be writing.
+                        time.sleep(0.1)
+                        try:
+                            self._interface.console.uart.clear_buffer()
+                        except Exception:
+                            pass
+
+                logger.error(
+                    "Calibration %s: trigger reset FAILED after retries: "
+                    "%s. Continuing with stale firmware state — the "
+                    "dark integrity monitor will catch any resulting "
+                    "schedule mis-alignment.",
+                    phase_label, last_err,
+                )
 
             try:
                 _emit_progress("calibration_scan")
