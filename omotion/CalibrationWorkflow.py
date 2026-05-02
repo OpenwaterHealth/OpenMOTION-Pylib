@@ -570,6 +570,57 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
             })
 
 
+def _format_result_rows_table(
+    rows: list[CalibrationResultRow],
+    thresholds: CalibrationThresholds,
+) -> str:
+    """Multi-line per-camera table for the log: actual measurement,
+    threshold(s), and PASS/FAIL for mean / contrast / BFI / BVI."""
+    def _t(arr: Optional[list[float]], i: int, fmt: str = "{:>7.3f}") -> str:
+        if arr is None or i >= len(arr):
+            return "   —   "
+        v = arr[i]
+        if not isinstance(v, (int, float)):
+            return "   —   "
+        return fmt.format(float(v))
+
+    pf = lambda s: "P" if s == "PASS" else "F"
+
+    header = (
+        "| cam | side  |   mean   |   min    | M |   contrast |    min   | C |    bfi   |    min   |    max   | B |    bvi   |    min   |    max   | V |"
+    )
+    sep = (
+        "|-----|-------|----------|----------|---|------------|----------|---|----------|----------|----------|---|----------|----------|----------|---|"
+    )
+    lines = [header, sep]
+    for r in rows:
+        cam_id = r.cam_id  # 0..7 internally; display 1..8
+        lines.append(
+            "| {cam:>3d} | {side:<5} | {mean:>8.3f} | {mean_min} | {mean_pf} "
+            "| {contrast:>10.5f} | {contrast_min} | {contrast_pf} "
+            "| {bfi:>+8.3f} | {bfi_min} | {bfi_max} | {bfi_pf} "
+            "| {bvi:>+8.3f} | {bvi_min} | {bvi_max} | {bvi_pf} |"
+            .format(
+                cam=cam_id + 1, side=r.side,
+                mean=r.mean,
+                mean_min=_t(thresholds.min_mean_per_camera, cam_id, "{:>8.2f}"),
+                mean_pf=pf(r.mean_test),
+                contrast=r.avg_contrast,
+                contrast_min=_t(thresholds.min_contrast_per_camera, cam_id, "{:>8.4f}"),
+                contrast_pf=pf(r.contrast_test),
+                bfi=r.bfi,
+                bfi_min=_t(thresholds.min_bfi_per_camera, cam_id, "{:>+8.3f}"),
+                bfi_max=_t(thresholds.max_bfi_per_camera, cam_id, "{:>+8.3f}"),
+                bfi_pf=pf(r.bfi_test),
+                bvi=r.bvi,
+                bvi_min=_t(thresholds.min_bvi_per_camera, cam_id, "{:>+8.3f}"),
+                bvi_max=_t(thresholds.max_bvi_per_camera, cam_id, "{:>+8.3f}"),
+                bvi_pf=pf(r.bvi_test),
+            )
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Orchestration class
 # ---------------------------------------------------------------------------
@@ -959,6 +1010,10 @@ class CalibrationWorkflow:
                     1 for r in rows
                     if r.mean_test == "PASS" and r.contrast_test == "PASS"
                     and r.bfi_test == "PASS" and r.bvi_test == "PASS"
+                )
+                logger.info(
+                    "Calibration result table:\n%s",
+                    _format_result_rows_table(rows, request.thresholds),
                 )
                 logger.info(
                     "Calibration phase 5 done: %d/%d cameras PASS, "
