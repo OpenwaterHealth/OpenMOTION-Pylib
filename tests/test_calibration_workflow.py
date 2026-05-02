@@ -62,7 +62,23 @@ def request_obj(tmp_path, thresholds):
 
 @pytest.fixture
 def interface():
-    return MotionInterface(demo_mode=True)
+    iface = MotionInterface(demo_mode=True)
+
+    # CalibrationWorkflow now flashes sensors at phase 0 via
+    # start_configure_camera_sensors. In demo mode there are no real
+    # sensors to configure, so we stub it to immediately succeed.
+    from omotion.ScanWorkflow import ConfigureResult
+
+    def _fake_configure(req, *, on_complete_fn=None, on_log_fn=None, **kw):
+        def _run():
+            time.sleep(0.02)
+            if on_complete_fn:
+                on_complete_fn(ConfigureResult(ok=True, error=""))
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
+    iface.start_configure_camera_sensors = _fake_configure
+    return iface
 
 
 def _make_fake_scan(left, right):

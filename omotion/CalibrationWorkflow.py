@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import threading
-import time
 from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -711,24 +710,64 @@ class CalibrationWorkflow:
             # dark frame (and any laser ramp-down) out of the average.
             window_frames = int(round(request.duration_sec * CAPTURE_HZ))
 
-            def _reset_firmware_trigger(phase_label: str) -> None:
-                """Re-send the trigger config so the firmware's
-                fsync_counter resets to 1 and the dark schedule starts
-                fresh. Mirrors what the bloodflow app's CQ flow does
-                via SetTriggerLaserTask before every scan; without
-                this, the calibration scan inherits whatever firmware
-                state was left by an earlier scan and the dark schedule
-                lands on the wrong frames (the off-by-one symptom).
+            def _flash_sensors() -> tuple[bool, str]:
+                """Re-flash the FPGA bitstream and reinitialize the
+                camera sensors. Equivalent to FlashSensorsTask in the
+                bloodflow app's QML scan chain. Resets the sensor's
+                frame counter, clears any residual COMM endpoint
+                state, and puts the FPGA + cameras into a known-good
+                configuration.
 
-                Defensive sequencing:
-                  1. ``stop_trigger`` first so the firmware's timer
-                     state is known. set_trigger_json on a still-
-                     running trigger has been observed to time out
-                     intermittently in the field (probably stale data
-                     in the UART RX buffer from prior streaming).
-                  2. Brief ``clear_buffer`` to drop any residual UART
-                     bytes before the SET_TRIG response reads.
-                  3. ``set_trigger_json`` with one retry on timeout.
+                Returns ``(ok, error_message)``. Synchronous from the
+                worker's perspective — blocks on a local event until
+                ``start_configure_camera_sensors`` fires its
+                ``on_complete_fn``.
+                """
+                from omotion.ScanWorkflow import ConfigureRequest, ConfigureResult
+
+                cfg_req = ConfigureRequest(
+                    left_camera_mask=request.left_camera_mask,
+                    right_camera_mask=request.right_camera_mask,
+                    power_off_unused_cameras=False,
+                )
+                evt = threading.Event()
+                holder: dict[str, ConfigureResult] = {}
+
+                def _on_done(r: ConfigureResult) -> None:
+                    holder["r"] = r
+                    evt.set()
+
+                def _on_log(msg: str) -> None:
+                    logger.info("Calibration flash: %s", msg)
+
+                started = self._interface.start_configure_camera_sensors(
+                    cfg_req,
+                    on_log_fn=_on_log,
+                    on_complete_fn=_on_done,
+                )
+                if not started:
+                    return False, (
+                        "start_configure_camera_sensors refused "
+                        "(another configure already running?)"
+                    )
+
+                while not evt.wait(timeout=0.2):
+                    if self._stop_evt.is_set():
+                        return False, "canceled during flash"
+                res = holder.get("r")
+                if res is None:
+                    return False, "flash completed with no result"
+                return bool(res.ok), str(res.error or "")
+
+            def _reset_firmware_trigger(phase_label: str) -> None:
+                """Send the trigger config to the firmware before each
+                sub-scan. Resets the firmware's ``fsync_counter`` to 1
+                so the dark schedule starts fresh.
+
+                Single attempt — flash already put the firmware into a
+                known state, so timeouts shouldn't happen here. If
+                this does fail, the dark-integrity monitor catches any
+                resulting schedule misalignment.
                 """
                 if request.trigger_config is None:
                     logger.info(
@@ -736,99 +775,41 @@ class CalibrationWorkflow:
                         "(request.trigger_config is None).", phase_label,
                     )
                     return
-
                 try:
-                    self._interface.console.stop_trigger()
-                except Exception as e:
+                    self._interface.console.set_trigger_json(
+                        data=request.trigger_config,
+                    )
                     logger.info(
-                        "Calibration %s: stop_trigger before reset "
-                        "raised %s (continuing).", phase_label, e,
+                        "Calibration %s: trigger reset OK "
+                        "(firmware fsync_counter=1).", phase_label,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Calibration %s: trigger reset failed: %s. "
+                        "Continuing — dark-integrity monitor will catch "
+                        "any schedule misalignment.",
+                        phase_label, e,
                     )
 
-                try:
-                    self._interface.console.uart.clear_buffer()
-                except Exception:
-                    pass
-
-                last_err: Optional[Exception] = None
-                for attempt in (1, 2):
-                    try:
-                        self._interface.console.set_trigger_json(
-                            data=request.trigger_config,
-                        )
-                        logger.info(
-                            "Calibration %s: trigger reset OK on attempt %d "
-                            "(firmware fsync_counter=1).",
-                            phase_label, attempt,
-                        )
-                        return
-                    except Exception as e:
-                        last_err = e
-                        logger.warning(
-                            "Calibration %s: trigger reset attempt %d "
-                            "failed: %s",
-                            phase_label, attempt, e,
-                        )
-                        # Brief settle then drop any partial response
-                        # the firmware may still be writing.
-                        time.sleep(0.1)
-                        try:
-                            self._interface.console.uart.clear_buffer()
-                        except Exception:
-                            pass
-
-                logger.error(
-                    "Calibration %s: trigger reset FAILED after retries: "
-                    "%s. Continuing with stale firmware state — the "
-                    "dark integrity monitor will catch any resulting "
-                    "schedule mis-alignment.",
-                    phase_label, last_err,
-                )
-
-            def _drain_sensor_comm_queues(phase_label: str) -> None:
-                """Drain stale parsed responses from each connected
-                sensor's COMM USB endpoint. The same root cause that
-                made set_trigger_json hit a 20s timeout (residual
-                packets from the prior scan stuck in the queue) also
-                shows up on the sensor side as
-                  ``LEFT-COMM: discarding stale response id=0x001C``
-                followed by an enable_camera timeout because the
-                stale response gets matched against the wrong request.
-                Calling this between scans flushes those out before
-                start_scan starts firing camera-config commands.
-                """
-                for side in ("left", "right"):
-                    sensor = getattr(self._interface, side, None)
-                    if sensor is None or not sensor.is_connected():
-                        continue
-                    try:
-                        comm = sensor.uart.comm
-                    except Exception:
-                        continue
-                    try:
-                        comm.clear_buffer()
-                    except Exception:
-                        pass
-                    drained = 0
-                    try:
-                        while not comm.response_queue.empty():
-                            pkt = comm.response_queue.get_nowait()
-                            drained += 1
-                            logger.info(
-                                "Calibration %s: drained stale %s "
-                                "response id=0x%04X",
-                                phase_label, side, getattr(pkt, "id", -1),
-                            )
-                    except Exception:
-                        pass
-                    if drained:
-                        logger.info(
-                            "Calibration %s: drained %d stale packet(s) "
-                            "from %s COMM queue",
-                            phase_label, drained, side,
-                        )
-
             try:
+                _emit_progress("flash_sensors")
+                _emit_log("Calibration: flashing sensors / FPGA…")
+                logger.info(
+                    "Calibration phase 0: re-flash sensors so frame "
+                    "counters and COMM endpoints start in a known state."
+                )
+                flash_ok, flash_err = _flash_sensors()
+                if not flash_ok:
+                    error = f"flash phase failed: {flash_err}"
+                    if "canceled" in flash_err:
+                        canceled = True
+                    return
+                logger.info("Calibration phase 0 done: sensors flashed.")
+                if self._stop_evt.is_set():
+                    canceled = True
+                    error = "canceled after flash"
+                    return
+
                 _emit_progress("calibration_scan")
                 _emit_log("Calibration: starting calibration scan…")
                 logger.info(
@@ -837,7 +818,6 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
-                _drain_sensor_comm_queues("phase 1 (pre-scan)")
                 _reset_firmware_trigger("phase 1 (pre-scan)")
                 cal_left, cal_right, cal_samples = _run_subscan_capture(
                     self._interface, request,
@@ -900,7 +880,6 @@ class CalibrationWorkflow:
                     request.duration_sec + request.scan_delay_sec,
                     request.duration_sec, request.scan_delay_sec,
                 )
-                _drain_sensor_comm_queues("phase 4 (pre-scan)")
                 _reset_firmware_trigger("phase 4 (pre-scan)")
                 val_left, val_right, val_samples = _run_subscan_capture(
                     self._interface, request,
