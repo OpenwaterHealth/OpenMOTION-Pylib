@@ -43,12 +43,22 @@ logger = logging.getLogger(
 
 @dataclass
 class CalibrationThresholds:
-    """Per-camera lower bounds (length 8, indexed by cam_id 0..7).
-    Applied symmetrically to left and right modules."""
+    """Per-camera bounds (length 8, indexed by cam_id 0..7), applied
+    symmetrically to left and right modules.
+
+    Mean and contrast are tested as lower bounds only (must be >= min).
+    BFI and BVI support both lower and optional upper bounds — for
+    target-based criteria like ``BFI = 0 ± 0.1`` the caller sets
+    ``min_bfi = -0.1`` and ``max_bfi = +0.1``. When a ``max_*`` field
+    is ``None`` (or shorter than 8) the upper-bound check is skipped
+    for those positions.
+    """
     min_mean_per_camera: list[float]
     min_contrast_per_camera: list[float]
     min_bfi_per_camera: list[float]
     min_bvi_per_camera: list[float]
+    max_bfi_per_camera: Optional[list[float]] = None
+    max_bvi_per_camera: Optional[list[float]] = None
 
 
 @dataclass
@@ -371,6 +381,27 @@ def _threshold_test(value: float, thresholds: list[float], cam_id: int) -> str:
     return "PASS" if value >= float(t) else "FAIL"
 
 
+def _threshold_max_test(
+    value: float,
+    maxs: Optional[list[float]],
+    cam_id: int,
+) -> str:
+    """PASS if the upper-bound list is None / shorter than cam_id /
+    has a non-numeric entry, or value <= max[cam_id]."""
+    if maxs is None or cam_id >= len(maxs):
+        return "PASS"
+    m = maxs[cam_id]
+    if m is None or not isinstance(m, (int, float)):
+        return "PASS"
+    return "PASS" if value <= float(m) else "FAIL"
+
+
+def _combined_test(*results: str) -> str:
+    """Combine multiple PASS/FAIL labels — overall PASS only if every
+    sub-test is PASS."""
+    return "PASS" if all(r == "PASS" for r in results) else "FAIL"
+
+
 def build_result_rows(
     *,
     left_csv: Optional[str],
@@ -457,6 +488,16 @@ def _build_result_rows_from_samples(
                 except Exception:
                     hwid = ""
 
+            # BFI / BVI support an optional upper bound for target-style
+            # criteria (e.g. BFI = 0 ± 0.1 → min=-0.1, max=+0.1).
+            bfi_test = _combined_test(
+                _threshold_test(bfi_val, thresholds.min_bfi_per_camera, cam_id),
+                _threshold_max_test(bfi_val, thresholds.max_bfi_per_camera, cam_id),
+            )
+            bvi_test = _combined_test(
+                _threshold_test(bvi_val, thresholds.min_bvi_per_camera, cam_id),
+                _threshold_max_test(bvi_val, thresholds.max_bvi_per_camera, cam_id),
+            )
             rows.append(CalibrationResultRow(
                 camera_index=len(rows),
                 side=side,
@@ -467,8 +508,8 @@ def _build_result_rows_from_samples(
                 bvi=bvi_val,
                 mean_test=_threshold_test(mean_val, thresholds.min_mean_per_camera, cam_id),
                 contrast_test=_threshold_test(contrast_val, thresholds.min_contrast_per_camera, cam_id),
-                bfi_test=_threshold_test(bfi_val, thresholds.min_bfi_per_camera, cam_id),
-                bvi_test=_threshold_test(bvi_val, thresholds.min_bvi_per_camera, cam_id),
+                bfi_test=bfi_test,
+                bvi_test=bvi_test,
                 security_id=security_id,
                 hwid=hwid,
             ))

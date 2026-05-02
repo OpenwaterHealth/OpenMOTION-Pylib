@@ -13,6 +13,7 @@ matches the existing ``test_console.py`` / ``test_sensor.py`` style.
 
 import os
 import threading
+import time
 
 import pytest
 
@@ -59,6 +60,17 @@ def _permissive_thresholds() -> CalibrationThresholds:
 
 
 def test_calibration_procedure_end_to_end(motion, tmp_path):
+    # The session ``motion`` fixture only waits 3 s for connection;
+    # if the hardware was just released by another process the SDK's
+    # connection monitor may need a few more seconds to reattach.
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        if motion.console.is_connected() and (
+            motion.left.is_connected() or motion.right.is_connected()
+        ):
+            break
+        time.sleep(0.25)
+
     if not motion.console.is_connected():
         pytest.skip("Console not connected")
     left_connected = motion.left.is_connected()

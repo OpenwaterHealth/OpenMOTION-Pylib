@@ -216,6 +216,58 @@ def test_build_result_rows_fail_when_mean_below_threshold():
     assert evaluate_passed(rows) is False
 
 
+def test_build_result_rows_bfi_max_bound_fails():
+    """Target-style BFI thresholds: a tight max bound that the
+    fixture's BFI values exceed should produce bfi_test = FAIL."""
+    if not _have_fixtures():
+        pytest.skip("fixture CSV missing")
+    thr = CalibrationThresholds(
+        min_mean_per_camera=[0.0]*8,
+        min_contrast_per_camera=[0.0]*8,
+        min_bfi_per_camera=[-1e9]*8,   # min permissive
+        min_bvi_per_camera=[-1e9]*8,
+        max_bfi_per_camera=[-1e9]*8,   # impossible to satisfy
+    )
+    rows = build_result_rows(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        skip_leading_frames=0,
+        thresholds=thr,
+        sensor_left=None, sensor_right=None,
+        calibration=None,
+    )
+    assert len(rows) == 8
+    assert all(r.bfi_test == "FAIL" for r in rows)
+    # bvi has no max set, should not be affected
+    assert all(r.bvi_test == "PASS" for r in rows)
+    assert evaluate_passed(rows) is False
+
+
+def test_build_result_rows_no_max_bound_keeps_min_only_semantics():
+    """When max_bfi/max_bvi is None, only the min check applies (back-
+    compat with the original min-only threshold model)."""
+    if not _have_fixtures():
+        pytest.skip("fixture CSV missing")
+    thr = CalibrationThresholds(
+        min_mean_per_camera=[0.0]*8,
+        min_contrast_per_camera=[0.0]*8,
+        min_bfi_per_camera=[-1e9]*8,
+        min_bvi_per_camera=[-1e9]*8,
+        # no max_bfi_per_camera, no max_bvi_per_camera
+    )
+    rows = build_result_rows(
+        left_csv=_LEFT_FIXTURE, right_csv=None,
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        skip_leading_frames=0,
+        thresholds=thr,
+        sensor_left=None, sensor_right=None,
+        calibration=None,
+    )
+    assert len(rows) == 8
+    assert all(r.bfi_test == "PASS" for r in rows)
+    assert all(r.bvi_test == "PASS" for r in rows)
+
+
 def test_build_result_rows_short_threshold_list_treated_as_pass():
     if not _have_fixtures():
         pytest.skip("fixture CSV missing")
