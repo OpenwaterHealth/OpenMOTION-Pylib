@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import csv
 import datetime
+import json
 import logging
 import os
+import platform
+import socket
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
@@ -120,6 +124,7 @@ class CalibrationResult:
     canceled: bool
     error: str
     csv_path: str
+    json_path: str
     calibration: Optional[Calibration]
     rows: list[CalibrationResultRow]
     calibration_scan_left_path: str
@@ -570,6 +575,200 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
             })
 
 
+# ---------------------------------------------------------------------------
+# JSON manifest — full record of a calibration run, including every device
+# identity that produced the data so the file is self-describing on its own
+# (no need to cross-reference logs to know which firmware / hardware
+# generated a given calibration).
+# ---------------------------------------------------------------------------
+
+_JSON_SCHEMA_VERSION = 1
+
+
+def _safe_call(fn: Callable[[], object], default: object = "") -> object:
+    """Call ``fn()`` and swallow any exception, returning ``default``.
+
+    Device-info reads can fail (disconnect, transient bus error). Manifest
+    writing must never abort the calibration result, so each field is
+    pulled defensively.
+    """
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _collect_host_info() -> dict:
+    return {
+        "hostname": _safe_call(socket.gethostname, ""),
+        "platform": _safe_call(platform.platform, ""),
+        "python": sys.version.split()[0],
+    }
+
+
+def _collect_sdk_info() -> dict:
+    try:
+        from omotion import __version__ as sdk_version
+    except Exception:
+        sdk_version = ""
+    return {"version": sdk_version}
+
+
+def _collect_console_info(console) -> dict:
+    if console is None:
+        return {"hwid": "", "firmware_version": ""}
+    return {
+        "hwid": str(_safe_call(console.get_hardware_id, "") or ""),
+        "firmware_version": str(_safe_call(console.get_version, "") or ""),
+    }
+
+
+def _collect_sensor_info(sensor, camera_mask: int) -> dict:
+    if sensor is None:
+        return {
+            "connected": False,
+            "hwid": "",
+            "firmware_version": "",
+            "camera_mask": f"0x{camera_mask:02X}",
+        }
+    hwid = _safe_call(sensor.get_cached_hardware_id, "") or _safe_call(sensor.get_hardware_id, "")
+    return {
+        "connected": True,
+        "hwid": str(hwid or ""),
+        "firmware_version": str(_safe_call(sensor.get_version, "") or ""),
+        "camera_mask": f"0x{camera_mask:02X}",
+    }
+
+
+def _calibration_to_dict(cal: Optional[Calibration]) -> Optional[dict]:
+    if cal is None:
+        return None
+    return {
+        "source": cal.source,
+        "c_min": cal.c_min.tolist(),
+        "c_max": cal.c_max.tolist(),
+        "i_min": cal.i_min.tolist(),
+        "i_max": cal.i_max.tolist(),
+    }
+
+
+def _row_with_thresholds(
+    r: CalibrationResultRow, thresholds: CalibrationThresholds
+) -> dict:
+    """Per-camera record matching the log table — measurement, the
+    threshold values it was tested against, and PASS/FAIL."""
+    def _get(arr, idx):
+        if arr is None or idx >= len(arr):
+            return None
+        v = arr[idx]
+        return float(v) if isinstance(v, (int, float)) else None
+
+    return {
+        "camera_index": r.camera_index,
+        "side": r.side,
+        "cam": r.cam_id + 1,
+        "security_id": r.security_id,
+        "sensor_hwid": r.hwid,
+        "mean": r.mean,
+        "min_mean": _get(thresholds.min_mean_per_camera, r.cam_id),
+        "mean_test": r.mean_test,
+        "avg_contrast": r.avg_contrast,
+        "min_contrast": _get(thresholds.min_contrast_per_camera, r.cam_id),
+        "contrast_test": r.contrast_test,
+        "bfi": r.bfi,
+        "min_bfi": _get(thresholds.min_bfi_per_camera, r.cam_id),
+        "max_bfi": _get(thresholds.max_bfi_per_camera, r.cam_id),
+        "bfi_test": r.bfi_test,
+        "bvi": r.bvi,
+        "min_bvi": _get(thresholds.min_bvi_per_camera, r.cam_id),
+        "max_bvi": _get(thresholds.max_bvi_per_camera, r.cam_id),
+        "bvi_test": r.bvi_test,
+    }
+
+
+def write_result_json(
+    path: str,
+    *,
+    started_timestamp: str,
+    passed: bool,
+    canceled: bool,
+    error: str,
+    request: CalibrationRequest,
+    rows: list[CalibrationResultRow],
+    calibration: Optional[Calibration],
+    scan_paths: dict,
+    interface,
+) -> None:
+    """Write a self-describing JSON manifest of the calibration run.
+
+    Includes the per-camera result table, the calibration arrays that
+    were written to the console, the camera/sensor/console identities
+    (security UIDs, HWIDs, firmware versions), and host info — so the
+    file is enough on its own to trace a run back to the exact hardware
+    + firmware that produced it.
+    """
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    started_iso = ""
+    try:
+        started_iso = datetime.datetime.strptime(
+            started_timestamp, "%Y%m%d_%H%M%S"
+        ).astimezone().isoformat()
+    except Exception:
+        pass
+
+    manifest = {
+        "schema_version": _JSON_SCHEMA_VERSION,
+        "started_timestamp": started_timestamp,
+        "started_iso": started_iso,
+        "passed": passed,
+        "canceled": canceled,
+        "error": error,
+        "operator_id": request.operator_id,
+        "notes": request.notes,
+        "host": _collect_host_info(),
+        "sdk": _collect_sdk_info(),
+        "console": _collect_console_info(getattr(interface, "console", None)),
+        "sensors": {
+            "left": _collect_sensor_info(
+                getattr(interface, "left", None), request.left_camera_mask,
+            ),
+            "right": _collect_sensor_info(
+                getattr(interface, "right", None), request.right_camera_mask,
+            ),
+        },
+        "request": {
+            "duration_sec": request.duration_sec,
+            "scan_delay_sec": request.scan_delay_sec,
+            "max_duration_sec": request.max_duration_sec,
+            "left_camera_mask": request.left_camera_mask,
+            "right_camera_mask": request.right_camera_mask,
+        },
+        "thresholds": {
+            "min_mean_per_camera": list(request.thresholds.min_mean_per_camera),
+            "min_contrast_per_camera": list(request.thresholds.min_contrast_per_camera),
+            "min_bfi_per_camera": list(request.thresholds.min_bfi_per_camera),
+            "max_bfi_per_camera": (
+                list(request.thresholds.max_bfi_per_camera)
+                if request.thresholds.max_bfi_per_camera is not None else None
+            ),
+            "min_bvi_per_camera": list(request.thresholds.min_bvi_per_camera),
+            "max_bvi_per_camera": (
+                list(request.thresholds.max_bvi_per_camera)
+                if request.thresholds.max_bvi_per_camera is not None else None
+            ),
+        },
+        "calibration": _calibration_to_dict(calibration),
+        "scan_paths": dict(scan_paths),
+        "cameras": [_row_with_thresholds(r, request.thresholds) for r in rows],
+    }
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=False)
+
+
 def _format_result_rows_table(
     rows: list[CalibrationResultRow],
     thresholds: CalibrationThresholds,
@@ -765,6 +964,7 @@ class CalibrationWorkflow:
             val_left = val_right = ""
             cal_obj: Optional[Calibration] = None
             csv_path = ""
+            json_path = ""
             rows: list[CalibrationResultRow] = []
             ok = False
             passed = False
@@ -1041,6 +1241,35 @@ class CalibrationWorkflow:
                         "Calibration: final calibration on console:\n%s",
                         _format_calibration(cal_obj),
                     )
+
+                # Self-describing JSON manifest — emitted unconditionally
+                # so failed/canceled runs still leave a record for triage.
+                try:
+                    json_path = os.path.join(
+                        request.output_dir, f"calibration-{ts}.json"
+                    )
+                    write_result_json(
+                        json_path,
+                        started_timestamp=ts,
+                        passed=passed,
+                        canceled=canceled,
+                        error=error,
+                        request=request,
+                        rows=rows,
+                        calibration=cal_obj,
+                        scan_paths={
+                            "calibration_left": cal_left,
+                            "calibration_right": cal_right,
+                            "validation_left": val_left,
+                            "validation_right": val_right,
+                        },
+                        interface=self._interface,
+                    )
+                    logger.info("Calibration manifest written: %s", json_path)
+                except Exception:
+                    logger.exception("Failed to write calibration JSON manifest.")
+                    json_path = ""
+
                 logger.info(
                     "Calibration: procedure complete (ok=%s, passed=%s, "
                     "canceled=%s, error=%r)",
@@ -1049,7 +1278,8 @@ class CalibrationWorkflow:
 
                 result = CalibrationResult(
                     ok=ok, passed=passed, canceled=canceled, error=error,
-                    csv_path=csv_path, calibration=cal_obj, rows=rows,
+                    csv_path=csv_path, json_path=json_path,
+                    calibration=cal_obj, rows=rows,
                     calibration_scan_left_path=cal_left,
                     calibration_scan_right_path=cal_right,
                     validation_scan_left_path=val_left,
