@@ -142,87 +142,7 @@ class CalibrationResult:
 from omotion.MotionProcessing import (
     CorrectedBatch,
     Sample,
-    create_science_pipeline,
-    feed_pipeline_from_csv,
 )
-
-
-def _collect_samples_from_csvs(
-    *,
-    left_csv: Optional[str],
-    right_csv: Optional[str],
-    skip_leading_frames: int,
-    frame_window_count: Optional[int] = None,
-    left_camera_mask: int = 0xFF,
-    right_camera_mask: int = 0xFF,
-    calibration: Optional[Calibration] = None,
-) -> list[Sample]:
-    """Run the science pipeline against raw histogram CSVs and return
-    *dark-frame-corrected* Samples whose ``absolute_frame_id`` falls in
-    the half-open window
-    ``[skip_leading_frames, skip_leading_frames + frame_window_count)``.
-
-    Each returned Sample has:
-        - ``mean``     = ``u1 − dark_u1`` (laser-on mean minus the linearly
-          interpolated dark baseline, no pedestal artifact)
-        - ``std_dev``  = sqrt(corrected variance with shot-noise removed)
-        - ``contrast`` = ``std_dev / mean`` (physically bounded speckle
-          contrast)
-        - ``is_corrected = True``
-
-    The dark baseline at every light frame is interpolated linearly
-    between the two bounding dark frames the firmware emits at the
-    start and end of every scan: frame 10 (the first scheduled dark)
-    and the terminal dark (last frame). For short calibration scans
-    this gives a clean, scan-local dark reference without waiting for
-    the next 600-frame interval.
-
-    When ``frame_window_count`` is ``None`` the trailing edge is
-    unbounded.
-
-    Calibration defaults to ``Calibration.default()``. The BFI/BVI
-    fields on the returned Samples reflect that calibration; for the
-    validation phase callers pass the freshly-written console
-    calibration so the values match what scans will produce in real
-    use.
-    """
-    cal = calibration or Calibration.default()
-    samples: list[Sample] = []
-
-    if frame_window_count is None:
-        upper_bound = None
-    else:
-        upper_bound = skip_leading_frames + int(frame_window_count)
-
-    def _on_corrected(batch: CorrectedBatch) -> None:
-        for s in batch.samples:
-            if s.absolute_frame_id < skip_leading_frames:
-                continue
-            if upper_bound is not None and s.absolute_frame_id >= upper_bound:
-                continue
-            samples.append(s)
-
-    pipeline = create_science_pipeline(
-        left_camera_mask=left_camera_mask,
-        right_camera_mask=right_camera_mask,
-        bfi_c_min=cal.c_min,
-        bfi_c_max=cal.c_max,
-        bfi_i_min=cal.i_min,
-        bfi_i_max=cal.i_max,
-        on_corrected_batch_fn=_on_corrected,
-    )
-    try:
-        if left_csv:
-            feed_pipeline_from_csv(left_csv, "left", pipeline)
-        if right_csv:
-            feed_pipeline_from_csv(right_csv, "right", pipeline)
-    finally:
-        # stop() drains the worker queue and triggers _flush_terminal_dark,
-        # which promotes the firmware's terminal dark frame to the dark
-        # history and emits the corrected batch even for short scans.
-        pipeline.stop(timeout=30.0)
-    samples.sort(key=lambda s: (s.side, s.cam_id, s.absolute_frame_id))
-    return samples
 
 
 class DegenerateCalibrationError(RuntimeError):
@@ -310,49 +230,6 @@ def _compute_calibration_from_samples(
     )
 
 
-def compute_calibration_from_csvs(
-    *,
-    left_csv: Optional[str],
-    right_csv: Optional[str],
-    left_camera_mask: int,
-    right_camera_mask: int,
-    skip_leading_frames: int,
-    frame_window_count: Optional[int] = None,
-) -> Calibration:
-    """CSV-driven entry point — for tests and offline analysis only.
-
-    Production calibration (run from the bloodflow app) goes through
-    :class:`CalibrationWorkflow`, which subscribes to the science
-    pipeline's corrected stream as the scan runs and never re-parses
-    the data from disk.
-    """
-    logger.info(
-        "compute_calibration_from_csvs: left_csv=%s right_csv=%s "
-        "masks=(0x%02X, 0x%02X) skip_leading_frames=%d "
-        "frame_window_count=%s",
-        os.path.basename(left_csv) if left_csv else None,
-        os.path.basename(right_csv) if right_csv else None,
-        left_camera_mask, right_camera_mask, skip_leading_frames,
-        frame_window_count,
-    )
-    samples = _collect_samples_from_csvs(
-        left_csv=left_csv, right_csv=right_csv,
-        skip_leading_frames=skip_leading_frames,
-        frame_window_count=frame_window_count,
-        left_camera_mask=left_camera_mask,
-        right_camera_mask=right_camera_mask,
-    )
-    logger.info(
-        "compute_calibration_from_csvs: collected %d dark-corrected samples.",
-        len(samples),
-    )
-    return _compute_calibration_from_samples(
-        samples,
-        left_camera_mask=left_camera_mask,
-        right_camera_mask=right_camera_mask,
-    )
-
-
 def _format_calibration(cal: Calibration) -> str:
     """Return a multi-line human-readable dump of a Calibration's arrays.
     Cameras are labeled 1..8 (not 0..7)."""
@@ -405,46 +282,6 @@ def _combined_test(*results: str) -> str:
     """Combine multiple PASS/FAIL labels — overall PASS only if every
     sub-test is PASS."""
     return "PASS" if all(r == "PASS" for r in results) else "FAIL"
-
-
-def build_result_rows(
-    *,
-    left_csv: Optional[str],
-    right_csv: Optional[str],
-    left_camera_mask: int,
-    right_camera_mask: int,
-    skip_leading_frames: int,
-    thresholds: CalibrationThresholds,
-    sensor_left,            # MotionSensor or None — for cached IDs
-    sensor_right,           # MotionSensor or None
-    calibration: Optional[Calibration],
-    frame_window_count: Optional[int] = None,
-) -> list[CalibrationResultRow]:
-    """CSV-driven entry point — for tests and offline analysis only.
-
-    Production validation (run from the bloodflow app) goes through
-    :class:`CalibrationWorkflow`, which subscribes to the corrected
-    stream as the scan runs.
-
-    See :func:`_collect_samples_from_csvs` for ``frame_window_count``
-    semantics.
-    """
-    samples = _collect_samples_from_csvs(
-        left_csv=left_csv, right_csv=right_csv,
-        skip_leading_frames=skip_leading_frames,
-        frame_window_count=frame_window_count,
-        left_camera_mask=left_camera_mask,
-        right_camera_mask=right_camera_mask,
-        calibration=calibration,
-    )
-    return _build_result_rows_from_samples(
-        samples,
-        left_camera_mask=left_camera_mask,
-        right_camera_mask=right_camera_mask,
-        thresholds=thresholds,
-        sensor_left=sensor_left,
-        sensor_right=sensor_right,
-    )
 
 
 def _build_result_rows_from_samples(
