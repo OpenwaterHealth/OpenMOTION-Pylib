@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import csv
 import datetime
-import json
 import logging
 import os
 import threading
@@ -32,7 +31,6 @@ from omotion.config import (
     CALIBRATION_I_MAX_MULTIPLIER,
     CAMS_PER_MODULE,
     CAPTURE_HZ,
-    MODULES,
 )
 
 if TYPE_CHECKING:
