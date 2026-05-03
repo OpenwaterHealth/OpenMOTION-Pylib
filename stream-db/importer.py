@@ -37,7 +37,10 @@ FILENAME_RE = (
     r"(?P<label>[^_]+)_"
     r"(?P<date>\d{8})_"
     r"(?P<time>\d{6})"
-    r"(?:_(?P<side>left|right)_mask(?P<mask>[0-9A-Fa-f]+))?"
+    # Per-side raw histogram CSVs gained a `_raw` suffix in
+    # openwaterhealth/openmotion-bloodflow-app#44; accept it as optional so
+    # both pre- and post-rename scan_data folders import cleanly.
+    r"(?:_(?P<side>left|right)_mask(?P<mask>[0-9A-Fa-f]+)(?:_raw)?)?"
     r"\.(?P<ext>csv|txt)$"
 )
 

@@ -634,7 +634,7 @@ After CSV writing, the batch samples are grouped by `(side, absolute_frame_id)` 
 
 ### 16.5 What is NOT changed in reduced mode
 
-- **Raw histogram CSVs** — per-camera histogram data continues to be written to `*_left_mask*.csv` and `*_right_mask*.csv` files at full resolution.  These files are the ground-truth record and can be reprocessed offline if needed.
+- **Raw histogram CSVs** — per-camera histogram data continues to be written to `*_left_mask*_raw.csv` and `*_right_mask*_raw.csv` files at full resolution.  These files are the ground-truth record and can be reprocessed offline if needed.
 - **Science pipeline** — all per-camera computations (frame classification, dark subtraction, shot-noise correction, BFI/BVI calibration) run identically.
 - **Telemetry CSV** — console temperature, PDC, and safety data are unaffected.
 

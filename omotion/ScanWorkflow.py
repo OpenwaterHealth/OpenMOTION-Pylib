@@ -242,7 +242,7 @@ class ScanWorkflow:
             writer_queues: dict[str, queue.Queue] = {}
             science_pipeline = None
             corrected_path = os.path.join(
-                request.data_dir, f"{ts}_{request.subject_id}_corrected.csv"
+                request.data_dir, f"{ts}_{request.subject_id}.csv"
             )
             telemetry_path = os.path.join(
                 request.data_dir, f"{ts}_{request.subject_id}_telemetry.csv"
@@ -700,7 +700,7 @@ class ScanWorkflow:
 
                     # Resolve CSV file path for this side.
                     if request.write_raw_csv:
-                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
+                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}_raw.csv"
                         filepath = os.path.join(request.data_dir, filename)
                     else:
                         filepath = ""

@@ -45,11 +45,31 @@ def _is_valid_corrected_csv(path: Path) -> bool:
 
 
 def _latest_corrected_csv(scan_data_dir: Path) -> Path:
-    candidates = sorted(
-        scan_data_dir.glob("scan_*_corrected.csv"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    # The SDK now writes the merged dark-baseline-corrected CSV without a
+    # `_corrected` suffix (see openwaterhealth/openmotion-bloodflow-app#44).
+    # Match both the new bare-stem layout and the legacy `_corrected.csv`
+    # name so historical scans keep loading.  Per-side raw histogram CSVs
+    # use a `_raw.csv` suffix and are excluded.
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for pattern in ("scan_*.csv", "scan_*_corrected.csv"):
+        for p in scan_data_dir.glob(pattern):
+            rp = p.resolve()
+            if rp in seen:
+                continue
+            name = p.name
+            if name.endswith("_raw.csv"):
+                continue
+            if name.endswith("_telemetry.csv"):
+                continue
+            # Skip per-side raw histogram CSVs (mask suffix without _raw is
+            # only produced by pre-rename SDK builds; new builds emit
+            # ..._mask##_raw.csv.  We handle both by gating on cam_id below.)
+            if "_mask" in name and not name.endswith("_corrected.csv"):
+                continue
+            seen.add(rp)
+            candidates.append(p)
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for c in candidates:
         if _is_valid_corrected_csv(c):
             return c
@@ -113,10 +133,22 @@ def _read_raw_metrics(raw_csv: Path, side_prefix: str):
 
 
 def _load_mean_contrast(corrected_csv: Path, frame_ids: List[int]):
-    stem = corrected_csv.name.replace("_corrected.csv", "")
+    # Strip the legacy `_corrected.csv` suffix if present; otherwise drop
+    # the bare `.csv` extension.  Either layout yields the shared scan stem
+    # used to discover the per-side raw histogram CSVs.
+    if corrected_csv.name.endswith("_corrected.csv"):
+        stem = corrected_csv.name[: -len("_corrected.csv")]
+    else:
+        stem = corrected_csv.stem
     scan_data_dir = corrected_csv.parent
-    left = list(scan_data_dir.glob(f"{stem}_left_mask*.csv"))
-    right = list(scan_data_dir.glob(f"{stem}_right_mask*.csv"))
+    # Match both the new `_raw.csv` suffix and the legacy bare mask suffix
+    # so historical scan_data folders keep loading.
+    left = list(scan_data_dir.glob(f"{stem}_left_mask*_raw.csv")) or list(
+        scan_data_dir.glob(f"{stem}_left_mask*.csv")
+    )
+    right = list(scan_data_dir.glob(f"{stem}_right_mask*_raw.csv")) or list(
+        scan_data_dir.glob(f"{stem}_right_mask*.csv")
+    )
 
     raw_metrics: Dict[str, Dict[int, tuple[float, float]]] = {}
     if left:
