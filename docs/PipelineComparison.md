@@ -76,9 +76,11 @@ a bug. The real-time display shows positive BFI because it uses uncorrected cont
 ## Scripts Written
 
 ### `data-processing/plot_corrected_scan.py`
-Plots data from a `_corrected.csv` file produced by the SDK pipeline.
+Plots data from the merged dark-baseline-corrected CSV produced by the SDK pipeline
+(`<timestamp>_<subject>.csv`; legacy `<timestamp>_<subject>_corrected.csv` files are
+also accepted).
 
-- **Inputs:** `--csv path/to/_corrected.csv`
+- **Inputs:** `--csv path/to/<timestamp>_<subject>.csv`
 - **Options:** `--save` (save PNGs next to CSV), `--show-signal` (add second figure with
   mean / std / contrast in addition to BFI/BVI)
 - **Layout:** Uses the physical camera grid from `docs/CameraArrangement.md`. Inactive
@@ -87,7 +89,7 @@ Plots data from a `_corrected.csv` file produced by the SDK pipeline.
   secondary y-axis.
 
 ```bash
-python data-processing/plot_corrected_scan.py --csv path/to/scan_corrected.csv --save
+python data-processing/plot_corrected_scan.py --csv path/to/scan.csv --save
 ```
 
 ### `data-processing/compare_pipelines.py`
@@ -110,8 +112,8 @@ python data-processing/compare_pipelines.py --left left.csv --right right.csv --
 ## Tests Written
 
 ### `tests/test_corrected_csv_output.py`
-Verifies the content and structure of the `_corrected.csv` file produced by the SDK
-pipeline, using the real perf-test fixture CSVs as input.
+Verifies the content and structure of the merged dark-baseline-corrected CSV produced
+by the SDK pipeline, using the real perf-test fixture CSVs as input.
 
 **Key checks (20 tests):**
 - Header contains all 98 expected columns (`frame_id`, `timestamp_s`, and 96 metric

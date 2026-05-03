@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Plot BFI and BVI from a _corrected.csv file produced by the OpenMOTION SDK.
+Plot BFI and BVI from the merged dark-baseline-corrected CSV produced by the
+OpenMOTION SDK (``<timestamp>_<subject>.csv``; legacy builds wrote
+``<timestamp>_<subject>_corrected.csv`` and are still accepted).
 
 Both sensor sides are shown in one figure.  The subplot grid mirrors the
 physical camera layout described in docs/CameraArrangement.md:
@@ -23,7 +25,7 @@ Optional secondary figure (--show-signal) adds mean, std, and contrast.
 
 Usage
 -----
-    python plot_corrected_scan.py --csv path/to/_corrected.csv
+    python plot_corrected_scan.py --csv path/to/scan.csv
     python plot_corrected_scan.py --csv scan.csv --show-signal --save
 """
 
@@ -119,7 +121,7 @@ def _requested_sides(df: pd.DataFrame, requested: str) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Plot OpenMOTION corrected scan CSV")
-    p.add_argument("--csv", required=True, help="Path to the _corrected.csv file")
+    p.add_argument("--csv", required=True, help="Path to the merged corrected CSV (legacy *_corrected.csv also accepted)")
     p.add_argument(
         "--sides", choices=["left", "right", "both"], default="both",
         help="Which sensor side(s) to plot (default: both)",
@@ -227,7 +229,7 @@ def main() -> None:
     print(f"  {len(df)} rows, {len(df.columns)} columns")
 
     if "timestamp_s" not in df.columns:
-        print("ERROR: 'timestamp_s' column not found — is this a _corrected.csv?",
+        print("ERROR: 'timestamp_s' column not found — is this the merged corrected CSV?",
               file=sys.stderr)
         sys.exit(1)
 

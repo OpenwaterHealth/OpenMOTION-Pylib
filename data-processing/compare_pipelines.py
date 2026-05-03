@@ -12,7 +12,8 @@ Two modes:
   Precomputed mode (compares already-generated output files):
     python data-processing/compare_pipelines.py \\
         --bfi-results path/to/_bfi_results.csv \\
-        --corrected   path/to/_corrected.csv   [--save]
+        --corrected   path/to/<timestamp>_<subject>.csv   [--save]
+    (Legacy <timestamp>_<subject>_corrected.csv files are also accepted.)
 
   Defaults (raw mode) use the perf-test fixture CSVs.
 """
@@ -380,7 +381,9 @@ def load_legacy_precomputed(bfi_results_csv: str) -> dict[tuple, dict]:
 
 def load_sdk_precomputed(corrected_csv: str) -> dict[tuple, dict]:
     """
-    Load a _corrected.csv written by the SDK SciencePipeline streaming writer.
+    Load the merged dark-baseline-corrected CSV written by the SDK
+    SciencePipeline streaming writer (``<timestamp>_<subject>.csv``;
+    legacy ``..._corrected.csv`` files are also accepted).
     Format: frame_id, timestamp_s, bfi_l1..r8, bvi_l1..r8, mean_l1..r8,
             std_l1..r8, contrast_l1..r8, temp_l1..r8
 
@@ -628,7 +631,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bfi-results",
                    help="Pre-computed _bfi_results.csv from VisualizeBloodflow (precomputed mode)")
     p.add_argument("--corrected",
-                   help="Pre-computed _corrected.csv from SDK pipeline (precomputed mode)")
+                   help="Pre-computed merged corrected CSV from SDK pipeline; legacy *_corrected.csv also accepted (precomputed mode)")
     p.add_argument("--save", action="store_true", help="Save PNGs instead of showing")
     return p.parse_args()
 
