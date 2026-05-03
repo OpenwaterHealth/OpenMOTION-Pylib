@@ -276,8 +276,15 @@ class ScanWorkflow:
             writer_row_counts: dict[str, int] = {}
             writer_queues: dict[str, queue.Queue] = {}
             science_pipeline = None
+            # Issue #44: dropped the ``_corrected`` suffix from the
+            # canonical output. The corrected stream is the default,
+            # so naming it doesn't add information; the raw histo CSVs
+            # below now carry ``_raw`` to disambiguate. Old scans
+            # written before this change still use ``_corrected.csv``;
+            # downstream consumers (bloodflow-app's get_scan_list /
+            # get_scan_details) accept both.
             corrected_path = os.path.join(
-                request.data_dir, f"{ts}_{request.subject_id}_corrected.csv"
+                request.data_dir, f"{ts}_{request.subject_id}.csv"
             )
             telemetry_path = os.path.join(
                 request.data_dir, f"{ts}_{request.subject_id}_telemetry.csv"
@@ -729,9 +736,12 @@ class ScanWorkflow:
 
                     _row_handler = _make_row_handler(side, science_pipeline)
 
-                    # Resolve CSV file path for this side.
+                    # Resolve CSV file path for this side. Issue #44:
+                    # raw histo CSVs now carry a ``_raw`` suffix so
+                    # they're visually distinct from the canonical
+                    # corrected output (which dropped ``_corrected``).
                     if request.write_raw_csv:
-                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}.csv"
+                        filename = f"{ts}_{request.subject_id}_{side}_mask{mask:02X}_raw.csv"
                         filepath = os.path.join(request.data_dir, filename)
                     else:
                         filepath = ""
