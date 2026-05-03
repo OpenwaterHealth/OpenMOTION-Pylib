@@ -22,7 +22,12 @@ from omotion.MotionSensor import MotionSensor
 from omotion.connection_monitor import ConnectionMonitor
 from omotion.connection_state import ConnectionState
 from omotion.Calibration import Calibration
-from omotion.config import CONSOLE_MODULE_PID, SENSOR_MODULE_PID
+from omotion.config import (
+    CONSOLE_MODULE_PID,
+    DEFAULT_TRIGGER_CONFIG,
+    SENSOR_MODULE_PID,
+    merge_trigger_config,
+)
 from omotion import __version__ as _SDK_VERSION, _log_root
 
 logger = logging.getLogger(
@@ -42,10 +47,20 @@ class MotionInterface:
         baudrate: int = 921600,
         timeout: int = 30,
         demo_mode: bool = False,
+        default_trigger_config: Optional[dict] = None,
     ):
         self.vid = vid
         self.sensor_pid = sensor_pid
         self.console_pid = console_pid
+
+        # Resolved default trigger config used by every workflow whose
+        # request doesn't carry a ``trigger_config`` override. Stored
+        # as the merge of (SDK default, app-supplied override) so the
+        # lookup is a single dict access. ``default_trigger_config``
+        # property returns a fresh defensive copy.
+        self._default_trigger_config: dict = merge_trigger_config(
+            default_trigger_config
+        )
 
         # The three stable handles. None of these are ever replaced — apps
         # cache them once and connect signals once.
@@ -65,6 +80,23 @@ class MotionInterface:
         self._calibration_workflow = None
         self._monitor: Optional[ConnectionMonitor] = None
         self._started = False
+
+    @property
+    def default_trigger_config(self) -> dict:
+        """A defensive copy of the resolved default trigger config —
+        :data:`omotion.config.DEFAULT_TRIGGER_CONFIG` shallow-merged
+        with whatever the constructor caller passed for
+        ``default_trigger_config``. Workflows fall back to this when
+        their request doesn't override."""
+        return dict(self._default_trigger_config)
+
+    def resolve_trigger_config(self, override: Optional[dict] = None) -> dict:
+        """Return a complete trigger-config dict — the resolved default
+        with ``override`` shallow-merged on top. Callers that know they
+        want a specific tweak (e.g. ``TriggerStatus: 1`` to disarm)
+        pass just the changed keys; missing keys fall through to the
+        default."""
+        return merge_trigger_config(self._default_trigger_config, override)
 
     # ──────────────────────────────────────────────────────────────────
     # Lifecycle

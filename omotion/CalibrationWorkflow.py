@@ -896,15 +896,19 @@ class CalibrationWorkflow:
                 this does fail, the dark-integrity monitor catches any
                 resulting schedule misalignment.
                 """
-                if request.trigger_config is None:
-                    logger.info(
-                        "Calibration %s: skipping trigger reset "
-                        "(request.trigger_config is None).", phase_label,
-                    )
-                    return
+                # Resolve to (interface default ⊕ request override).
+                # Per-request fields win; absent fields fall through
+                # to the SDK / app-level default. Always populated, so
+                # we no longer need a None check / skip-the-reset
+                # branch — the trigger is always reset before each
+                # phase, which is what we want for the firmware
+                # fsync_counter alignment guarantee anyway.
+                trigger_cfg = self._interface.resolve_trigger_config(
+                    request.trigger_config
+                )
                 try:
                     self._interface.console.set_trigger_json(
-                        data=request.trigger_config,
+                        data=trigger_cfg,
                     )
                     logger.info(
                         "Calibration %s: trigger reset OK "

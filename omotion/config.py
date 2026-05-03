@@ -242,3 +242,49 @@ class MuxChannel(IntEnum):
     FPGA_TA = 1
     FPGA_SAFE_EE = 2
     FPGA_SAFE_OPT = 3
+
+
+# ---------------------------------------------------------------------------
+# Trigger config defaults
+#
+# Single source of truth for the JSON payload that
+# ``MotionConsole.set_trigger_json`` expects. Workflows
+# (CalibrationWorkflow, ScanWorkflow) consult this when their request
+# doesn't carry a ``trigger_config`` override; an app can also pass
+# ``MotionInterface(default_trigger_config=...)`` to layer its own
+# overrides on top of these defaults at construction time.
+#
+# Values match what the bloodflow-app and the early CLI scripts have
+# been hardcoding everywhere — extracted so changing the standard
+# 40 Hz pulse pattern is a one-file edit.
+# ---------------------------------------------------------------------------
+DEFAULT_TRIGGER_CONFIG: dict = {
+    "TriggerStatus":           2,     # 2 = laser ON, 1 = OFF
+    "TriggerFrequencyHz":      40,
+    "TriggerPulseWidthUsec":   500,
+    "LaserPulseDelayUsec":     100,
+    "LaserPulseWidthUsec":     500,
+    "LaserPulseSkipInterval":  600,
+    "LaserPulseSkipDelayUsec": 1800,
+    "EnableSyncOut":           True,
+    "EnableTaTrigger":         True,
+}
+
+
+def merge_trigger_config(*overrides) -> dict:
+    """Shallow-merge a stack of trigger-config overrides on top of
+    :data:`DEFAULT_TRIGGER_CONFIG`. Later args win over earlier ones;
+    ``None`` entries are skipped. The result is a fresh dict — safe
+    to mutate.
+
+    Use this whenever a workflow needs to resolve 'the' trigger
+    config from a request: caller passes
+    ``merge_trigger_config(interface.default_trigger_config_override,
+    request.trigger_config)`` and gets back a complete dict with all
+    keys populated.
+    """
+    out: dict = dict(DEFAULT_TRIGGER_CONFIG)
+    for override in overrides:
+        if override:
+            out.update(override)
+    return out
