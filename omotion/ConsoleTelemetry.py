@@ -87,6 +87,12 @@ class ConsoleTelemetry:
     safety_se: int = 0              # raw byte from channel 6
     safety_so: int = 0              # raw byte from channel 7
     safety_ok: bool = True          # True if both low-nibbles are zero (interlock clear)
+    # safety_known is False until _read_safety has actually heard back
+    # from the interlock chip on this poll. Lets callers distinguish
+    # "no data, defaulted to OK" (don't trust safety_ok) from "chip
+    # responded, faults absent" (trust safety_ok). See issue
+    # OpenwaterHealth/openmotion-bloodflow-app#107.
+    safety_known: bool = False
 
     # --- Read health ---
     read_ok: bool = True            # False if any sub-read threw an exception
@@ -294,7 +300,11 @@ class ConsoleTelemetryPoller:
         )
         if not se_raw or not so_raw:
             # Safety interlock chip not responding — treat as unknown/unavailable.
-            # Leave safety_ok at its default True so callers don't falsely trip on absent hardware.
+            # Leave safety_ok at its default True so legacy callers don't falsely
+            # trip on absent hardware; new callers should gate on safety_known
+            # to distinguish "no data, defaulted to OK" from "chip responded,
+            # faults absent". See issue
+            # OpenwaterHealth/openmotion-bloodflow-app#107.
             logger.warning(
                 "Safety I2C read returned no data (se=%s so=%s) — interlock state unknown",
                 se_raw,
@@ -306,6 +316,7 @@ class ConsoleTelemetryPoller:
         se_faults = _decode_safety_faults(snap.safety_se & _SAFETY_FAULT_MASK)
         so_faults = _decode_safety_faults(snap.safety_so & _SAFETY_FAULT_MASK)
         snap.safety_ok = not se_faults and not so_faults
+        snap.safety_known = True
 
         if se_faults:
             logger.error(
