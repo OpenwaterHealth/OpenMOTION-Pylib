@@ -307,15 +307,18 @@ def _configure_cameras_isolated(sensor, side: str) -> dict[int, dict]:
 
 
 def _imu_bringup(handles) -> None:
-    """IMU must be init'd + powered before imu_get_temperature returns real
-    values (reads 0.0 otherwise — observed cycle 0, 02:51)."""
+    """imu_init only, deliberately NOT imu_on: imu_on at 03:21 wedged the
+    sensor comm interface (every subsequent write timed out; suspected
+    unconsumed IMU-stream backpressure on IF2). If init-only temperature
+    reads stay 0.0/None we accept losing the IMU observable — bring-up
+    reliability is sacred. Die temps from frames remain the primary signal."""
     for side, sensor in handles:
         try:
-            ok1 = sensor.imu_init()
-            ok2 = sensor.imu_on()
-            logger.info("%s: imu init=%s on=%s", side, ok1, ok2)
+            ok = sensor.imu_init()
+            logger.info("%s: imu init=%s (imu_on skipped, see 03:21 wedge)",
+                        side, ok)
         except Exception:
-            logger.exception("%s: IMU bring-up failed", side)
+            logger.exception("%s: IMU init failed", side)
 
 
 def _read_imu_temps(handles) -> dict[str, float | None]:
@@ -705,7 +708,6 @@ def run_cool(args) -> int:
     try:
         iface, connected = _connect(min(60.0, max(20.0, args.duration_s / 2)))
         handles = _sensor_handles(iface, connected)
-        _imu_bringup(handles)
         fan_on = args.fan == "on"
         for side, sensor in handles:
             if args.cams == "off":
