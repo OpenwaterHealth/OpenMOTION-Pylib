@@ -20,8 +20,8 @@ the right module; the left/right revision comparison could not be done.
 3. **Recovery is electrical, not thermal.** "How long must we wait?" has a
    sharp answer: **waiting does nothing — a full module power cycle fixes
    everything, and even 10 s off is enough on a hot module.**
-   - mains off 10 / 15 / 30 / 60×2 / 120×2 / 300×2 / 900 / 1800 s → **recovers everything, all 10 trials**
-   - camera rails off via `disable_camera_power`, fan on or off, 60 s–**30 min** → **0 recover, all 5 trials** (even with the board cooled to ~28 °C)
+   - mains off 10 / 15 / 30 / 60×2 / 120×2 / 300×2 / 900 / 1800 s → **recovers everything, all 11 trials**
+   - camera rails off via `disable_camera_power`, fan on or off, 60 s–**30 min** → **0 recover, all 7 trials** (even with the board cooled to ~28 °C)
    - idle (cameras powered, fan on) 5–10 min → **0 recover, both trials**
    The latch only clears when module *input power* is removed —
    `OW_CAMERA_POWER_OFF` does not de-energize the failing regulator domain.

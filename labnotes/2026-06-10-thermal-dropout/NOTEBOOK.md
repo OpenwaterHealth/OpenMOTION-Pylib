@@ -283,9 +283,9 @@ tripped cameras that produce data after bring-up):
 - Repeats all consistent: mains 60 ✓ (2nd), mains 900 ✓, mains 120 ✓ (2nd);
   rails-off fan-on 120 ✗, rails-off fan-off 300/600/1200 ✗✗✗ (adaptive kept
   doubling the only unresolved mode — by design, and every point red).
-- Final tallies: **24 cycles, 93 dropout events (115.2 ± 0.93 °C), 10/10
-  mains-off recoveries, 0/13 powered-mode recoveries** (incl. artifacts-
-  excluded counting; see analyze.py output).
+- Final tallies: **24 cycles, 93 dropout events (115.2 ± 0.93 °C), 11/11
+  mains-off recoveries, 0/9 powered-mode recoveries** (artifact trials
+  excluded; see analyze.py output).
 - Rig bug noted for posterity (not fixed live): the campaign writes its
   stale in-memory control.json back when consuming queue entries —
   lost-update against concurrent hand edits. Worth a re-read-before-write
