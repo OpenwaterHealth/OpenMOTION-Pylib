@@ -253,3 +253,27 @@ tripped cameras that produce data after bring-up):
 - Module heavily heat-soaked by the trial chain; recovered cameras re-trip
   in ~2–5 min fans-off, still at the same ~115 °C die line.
 - 06:08 queue: mains 30 → 15 → 10 → 300 (repeat) → 60 (repeat).
+
+### 2026-06-11 06:08–07:19 — floor hunt + production fans-on soak
+
+| cycle | cooling before | recovered | note |
+|---|---|---|---|
+| 12 | mains_off 30 s | **8/8** | clean repeat of the artifact-tainted point |
+| 13 | mains_off 15 s | **6/6** | |
+| 14 | mains_off 10 s | **8/8** | module hot throughout — recovery is NOT thermal |
+| 15 | mains_off 300 s | **8/8** | repeat ✓; then fans-ON 45-min soak |
+
+- **Recovery floor < 10 s.** A 10-second mains cut on a hot, heat-soaked
+  module recovers all 8 cameras. Combined with rails-off (30 min, cold)
+  recovering nothing: the latch is **electrical, not thermal** — clearing it
+  requires removing module input power, duration irrelevant in practice.
+- **The "how long to wait" question is answered: ~0 — but only via a full
+  module power cycle.** No wait duration helps without one.
+- **Cycle 15 fans-ON soak**: 45 min at 40 Hz from a heat-soaked start,
+  **zero dropouts**; die steady-state 56–105 °C (cam3 hottest), ≈10 °C below
+  the 115 °C line. At tonight's lab ambient, fan-on operation does not trip.
+  Caveat for report: warmer clinical ambient / blocked airflow shrinks that
+  margin; cam-to-cam spread is ~50 °C so margin is position-dependent.
+- 07:19: control back to fans-off heating; remaining trials = mains 60
+  repeat + leftover plan (cams_off_fan_off 300 fills the fan-off row,
+  mains 900, cams_off_fan_on 120, mains 120). Report drafting begins.

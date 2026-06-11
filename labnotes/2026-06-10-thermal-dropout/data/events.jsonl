@@ -88,3 +88,23 @@
 {"type": "cool_start", "mode": "mains_off", "planned_s": 30.0, "t": "2026-06-11T06:07:24"}
 {"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T06:08:14"}
 {"type": "cycle_start", "cycle": 12, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T06:08:14"}
+{"type": "cycle_done", "cycle": 12, "rc": 0, "end_reason": "dropout_plus_soak", "error": null, "t": "2026-06-11T06:15:03"}
+{"type": "trial", "cycle": 12, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "dropout_plus_soak", "t": "2026-06-11T06:15:03"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 15.0, "t": "2026-06-11T06:15:03"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T06:15:38"}
+{"type": "cycle_start", "cycle": 13, "cool_mode_before": "mains_off", "cool_s_before": 15.0, "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T06:15:38"}
+{"type": "cycle_done", "cycle": 13, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T06:21:05"}
+{"type": "trial", "cycle": 13, "cool_mode": "mains_off", "cool_s": 15.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:1": true, "right:2": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "all_cameras_dead", "t": "2026-06-11T06:21:05"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 10.0, "t": "2026-06-11T06:21:05"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T06:21:35"}
+{"type": "cycle_start", "cycle": 14, "cool_mode_before": "mains_off", "cool_s_before": 10.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T06:21:35"}
+{"type": "cycle_done", "cycle": 14, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T06:26:33"}
+{"type": "trial", "cycle": 14, "cool_mode": "mains_off", "cool_s": 10.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "all_cameras_dead", "t": "2026-06-11T06:26:33"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 300.0, "t": "2026-06-11T06:26:33"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T06:31:53"}
+{"type": "cycle_start", "cycle": 15, "cool_mode_before": "mains_off", "cool_s_before": 300.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T06:31:53"}
+{"type": "cycle_done", "cycle": 15, "rc": 0, "end_reason": "max_heat_elapsed", "error": null, "t": "2026-06-11T07:18:37"}
+{"type": "trial", "cycle": 15, "cool_mode": "mains_off", "cool_s": 300.0, "dropped": [], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "max_heat_elapsed", "t": "2026-06-11T07:18:37"}
+{"type": "cool_start", "mode": "idle_fan_on", "planned_s": 15.0, "t": "2026-06-11T07:18:37"}
+{"type": "cool_done", "mode": "idle_fan_on", "t": "2026-06-11T07:18:52"}
+{"type": "cycle_start", "cycle": 16, "cool_mode_before": "idle_fan_on", "cool_s_before": 15.0, "prev_dropped": [], "t": "2026-06-11T07:18:52"}

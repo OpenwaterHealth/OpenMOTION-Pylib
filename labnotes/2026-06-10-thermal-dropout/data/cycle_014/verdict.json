@@ -1,0 +1,343 @@
+{
+  "cycle": 14,
+  "off_time_before_s": 10.0,
+  "cool_mode_before": "mains_off",
+  "started_iso": "2026-06-11T06:21:35",
+  "params": {
+    "max_heat_s": 1500.0,
+    "post_dropout_soak_s": 180.0,
+    "recovery_window_s": 120.0,
+    "dropout_silence_s": 3.0,
+    "connect_timeout_s": 180.0
+  },
+  "prev_dropped": [
+    "right:0",
+    "right:1",
+    "right:2",
+    "right:3",
+    "right:4",
+    "right:5",
+    "right:6",
+    "right:7"
+  ],
+  "fans": "off",
+  "connected": {
+    "console": true,
+    "left": false,
+    "right": true
+  },
+  "identity": {
+    "console": {
+      "fw": "1.5.4-rc.1-36-gcde2d0f",
+      "hwid": "23004c00065133333735383300000000"
+    },
+    "right": {
+      "fw": "1.6.1-dev.1",
+      "hwid": "24004600035133333639353500000000"
+    }
+  },
+  "imu_temp_at_start_c": {
+    "right": 37.73
+  },
+  "laser_ok": true,
+  "configure": {
+    "right": {
+      "0": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "1": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "2": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "3": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "4": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "5": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "6": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      },
+      "7": {
+        "power": true,
+        "ready": true,
+        "fpga": true,
+        "registers": true,
+        "status_after": 7,
+        "error": null
+      }
+    }
+  },
+  "scan": {
+    "trigger_iso": "2026-06-11T06:23:14",
+    "end_reason": "all_cameras_dead",
+    "duration_s": 194.3,
+    "post_camera_status": {
+      "right": {
+        "0": 134,
+        "1": 134,
+        "2": 134,
+        "3": 134,
+        "4": 134,
+        "5": 134,
+        "6": 134,
+        "7": 134
+      }
+    }
+  },
+  "cameras": {
+    "left:0": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:1": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:2": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:3": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:4": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:5": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:6": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:7": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "right:0": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 7608,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 190.4,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 116.11599731445312,
+      "temp_max_c": 116.13500213623047,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:1": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 3216,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 80.9,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 113.2239990234375,
+      "temp_max_c": 113.2239990234375,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:2": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 3752,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 94.2,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 116.0260009765625,
+      "temp_max_c": 116.0260009765625,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:3": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 7244,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 181.7,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 115.12100219726562,
+      "temp_max_c": 115.12100219726562,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:4": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 5184,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 130.1,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 114.21700286865234,
+      "temp_max_c": 114.21700286865234,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:5": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 3535,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 88.8,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 115.13800048828125,
+      "temp_max_c": 115.13800048828125,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:6": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 3719,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 93.4,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 116.05999755859375,
+      "temp_max_c": 116.05999755859375,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    },
+    "right:7": {
+      "configured": true,
+      "configure_error": null,
+      "streamed": true,
+      "frames": 5511,
+      "first_frame_s": 0.5,
+      "dropout_t_s": 138.2,
+      "dropout_kind": "dropout",
+      "temp_at_drop_c": 116.06900024414062,
+      "temp_max_c": 116.06900024414062,
+      "was_dropped_last_cycle": true,
+      "recovered": true
+    }
+  },
+  "imu_temp_at_end_c": {
+    "right": 54.64
+  },
+  "end_reason": "all_cameras_dead",
+  "error": null
+}

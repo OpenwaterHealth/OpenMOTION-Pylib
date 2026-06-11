@@ -1,21 +1,6 @@
 {
   "heat_fans": "off",
   "next_trials": [
-    {
-      "mode": "mains_off",
-      "off_s": 15
-    },
-    {
-      "mode": "mains_off",
-      "off_s": 10
-    },
-    {
-      "mode": "mains_off",
-      "off_s": 300
-    },
-    {
-      "mode": "mains_off",
-      "off_s": 60
-    }
+    {"mode": "mains_off", "off_s": 60}
   ]
 }
