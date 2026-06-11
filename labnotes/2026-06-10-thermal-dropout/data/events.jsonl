@@ -1,0 +1,12 @@
+{"type": "campaign_start", "until": "09:00", "shelly": "192.168.1.81", "t": "2026-06-11T02:31:28"}
+{"type": "power_off", "planned_off_s": 30, "t": "2026-06-11T02:31:29"}
+{"type": "power_on", "t": "2026-06-11T02:31:59"}
+{"type": "cycle_start", "cycle": 0, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": [], "t": "2026-06-11T02:32:19"}
+{"type": "cycle_done", "cycle": 0, "rc": 2, "end_reason": "bringup_failed", "error": "console never connected", "t": "2026-06-11T02:35:20"}
+{"type": "trial", "cycle": 0, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": [], "prev_dropped": [], "recovered": {}, "end_reason": "bringup_failed", "t": "2026-06-11T02:35:20"}
+{"type": "cool_start", "mode": "idle_fan_on", "planned_s": 15.0, "t": "2026-06-11T02:35:20"}
+{"type": "cool_done", "mode": "idle_fan_on", "t": "2026-06-11T02:35:41"}
+{"type": "cycle_start", "cycle": 1, "cool_mode_before": "idle_fan_on", "cool_s_before": 15.0, "prev_dropped": [], "t": "2026-06-11T02:35:41"}
+{"type": "cycle_done", "cycle": 1, "rc": 2, "end_reason": "bringup_failed", "error": "console never connected", "t": "2026-06-11T02:38:43"}
+{"type": "trial", "cycle": 1, "cool_mode": "idle_fan_on", "cool_s": 15.0, "dropped": [], "prev_dropped": [], "recovered": {}, "end_reason": "bringup_failed", "t": "2026-06-11T02:38:43"}
+{"type": "cool_start", "mode": "idle_fan_on", "planned_s": 15.0, "t": "2026-06-11T02:38:43"}

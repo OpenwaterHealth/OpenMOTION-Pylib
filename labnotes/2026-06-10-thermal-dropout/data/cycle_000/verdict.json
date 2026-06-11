@@ -1,0 +1,29 @@
+{
+  "cycle": 0,
+  "off_time_before_s": 30.0,
+  "cool_mode_before": "mains_off",
+  "started_iso": "2026-06-11T02:32:19",
+  "params": {
+    "max_heat_s": 1500.0,
+    "post_dropout_soak_s": 180.0,
+    "recovery_window_s": 120.0,
+    "dropout_silence_s": 3.0,
+    "connect_timeout_s": 180.0
+  },
+  "prev_dropped": [],
+  "fans": "on",
+  "connected": {
+    "console": false,
+    "left": false,
+    "right": false
+  },
+  "identity": {},
+  "imu_temp_at_start_c": {},
+  "laser_ok": null,
+  "configure": {},
+  "scan": {},
+  "cameras": {},
+  "imu_temp_at_end_c": {},
+  "end_reason": "bringup_failed",
+  "error": "console never connected"
+}

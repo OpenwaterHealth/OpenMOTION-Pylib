@@ -110,3 +110,24 @@ camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
   at 0.1 Hz) and the interleaved three-mode trial plan.
 - Noted: per-frame camera temp = sensor **die** temp, not regulator/PCBA temp.
   Analysis must test, not assume, its correlation with dropout.
+
+### 2026-06-11 02:31 — campaign launch + first findings
+
+- 02:31:28 campaign start; clean-slate 30 s mains cycle OK (Shelly confirmed
+  switching). Console (COM12) and **right** sensor (`357B395A3333`,
+  FW 1.6.1-dev.1) reconnect in <2 s after power-on.
+- **LEFT SENSOR MISSING**: never enumerated on USB after power-on (checked at
+  OS level: only one PID 0x5A5A composite device present; YKUSH ports all ON,
+  so not a hub issue). Unknown whether it was present before the experiment —
+  I did not verify USB presence at 22:30 (lesson logged). Campaign proceeds
+  right-side-only; left/right revision comparison at risk. Will watch
+  whether left re-appears on subsequent mains cycles.
+- Cycle 0 rc=2 was partly my bug: `_connect`'s rebuild churn could return a
+  freshly-reset interface state at the deadline ("console never connected"
+  was false). Fixed: rebuild at most once, never trust a negative from an
+  interface <15 s old, and proceed with a partial sensor set after 90 s.
+  Campaign-side: `bringup_failed` now gets a 60 s mains recovery cycle
+  instead of being treated as "no dropouts".
+- Side-effect of cycle 0's failure: campaign set force_fans_off, so cycle 1's
+  heat phase runs **fans OFF** (off-protocol for a baseline but guarantees an
+  early dropout to seed recovery trials; fans-on baselines come later).

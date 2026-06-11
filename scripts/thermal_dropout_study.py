@@ -164,37 +164,52 @@ def _setup_cycle_logging(out_dir: str) -> None:
     root.addHandler(sh)
 
 
-def _connect(connect_timeout_s: float):
-    """Bring up MotionInterface; retry until console + both sensors connect
-    or the budget runs out. Returns (iface, connected_dict)."""
+def _connect(connect_timeout_s: float, partial_after_s: float = 90.0):
+    """Bring up MotionInterface; retry until console + both sensors connect.
+
+    Proceeds with a partial sensor set after ``partial_after_s`` (a module
+    that hasn't enumerated by then is missing, not slow — burning the full
+    budget every cycle would waste the night). The interface is rebuilt at
+    most ONCE (half budget), and a negative verdict is never returned from
+    an interface younger than 15 s — a fresh rebuild needs time to ping.
+    """
     from omotion import MotionInterface
 
-    deadline = time.monotonic() + connect_timeout_s
+    t0 = time.monotonic()
+    deadline = t0 + connect_timeout_s
+    partial_t = t0 + min(partial_after_s, connect_timeout_s)
+    iface = MotionInterface()
+    iface.start(wait=True, wait_timeout=5.0)
+    iface_born = time.monotonic()
+    rebuilt = False
     attempt = 0
-    iface = None
     while True:
         attempt += 1
-        if iface is None:
-            iface = MotionInterface()
-            iface.start(wait=True, wait_timeout=5.0)
         con, left, right = iface.is_device_connected()
         logger.info("connect attempt %d: console=%s left=%s right=%s",
                     attempt, con, left, right)
         if con and left and right:
             return iface, {"console": True, "left": True, "right": True}
-        if time.monotonic() > deadline:
-            logger.error("connect budget exhausted; proceeding with partial set")
+        now = time.monotonic()
+        if con and (left or right) and now >= partial_t:
+            logger.warning("proceeding with PARTIAL sensor set after %.0fs: "
+                           "left=%s right=%s", now - t0, left, right)
             return iface, {"console": con, "left": left, "right": right}
-        time.sleep(3.0)
-        # Halfway through the budget, tear down and rebuild the interface in
-        # case enumeration happened mid-discovery and the handles are stuck.
-        if time.monotonic() > deadline - connect_timeout_s / 2 and attempt % 10 == 0:
-            logger.info("rebuilding MotionInterface (stuck discovery?)")
+        if now >= deadline and now - iface_born >= 15.0:
+            logger.error("connect budget exhausted (console=%s left=%s right=%s)",
+                         con, left, right)
+            return iface, {"console": con, "left": left, "right": right}
+        if not rebuilt and now >= t0 + connect_timeout_s / 2:
+            logger.info("rebuilding MotionInterface once (stuck discovery?)")
             try:
                 iface.stop()
             except Exception:
                 logger.exception("iface.stop() during rebuild")
-            iface = None
+            iface = MotionInterface()
+            iface.start(wait=True, wait_timeout=5.0)
+            iface_born = time.monotonic()
+            rebuilt = True
+        time.sleep(3.0)
 
 
 def _sensor_handles(iface, connected: dict) -> list[tuple[str, object]]:
@@ -916,8 +931,9 @@ def run_campaign(args) -> int:
         prev_dropped = dropped_now
         cycle_idx += 1
         force_fans_off = False
-        if rc != 0 and not verdict:
-            logger.error("cycle produced no verdict; 60 s recovery power-cycle")
+        if (rc != 0 and not verdict) or verdict.get("end_reason") == "bringup_failed":
+            logger.error("cycle failed bring-up or produced no verdict; "
+                         "60 s recovery power-cycle")
             cool_mode, cool_s = "mains_off", 60.0
         elif not dropped_now:
             # Nothing tripped: no recovery to test, so don't burn a planned
