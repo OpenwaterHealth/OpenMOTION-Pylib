@@ -131,3 +131,33 @@ camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
 - Side-effect of cycle 0's failure: campaign set force_fans_off, so cycle 1's
   heat phase runs **fans OFF** (off-protocol for a baseline but guarantees an
   early dropout to seed recovery trials; fans-on baselines come later).
+
+### 2026-06-11 02:40–02:52 — two more rig bugs found & fixed live
+
+- Cycle 2 (first run): scan worker crashed at start — **SDK bug**:
+  `ScanWorkflow.start_scan` passes both permanent sensor handles to
+  `LiveUsbSource`; a never-connected handle has `uart=None` → AttributeError
+  in `start_streaming`. Fixed on this branch (mask-0/disconnected sides now
+  pass None, which the source supports). Commit 0662236.
+- IMU temps read 0.0 — `imu_init()`+`imu_on()` required before
+  `imu_get_temperature()`. Fixed (commit 6588c09). Campaign relaunched 02:49.
+
+### 2026-06-11 03:17 — RESULT: fans-on baseline (cycle 0, restarted campaign)
+
+- Right module (FW 1.6.1-dev.1, HWID 24004600035133333639353500000000),
+  8-camera scan, laser on, **fan ON**, ambient-night bench: **25 min,
+  ZERO dropouts**. 59,868 frames/camera ≈ perfect 40 Hz throughout.
+- Die-temp plateau (°C) cam0..7: 55, 70, 90, **102 (cam3)**, 95, 93, 92, 84.
+  Hottest is cam3, not 6/7 — position/airflow dependent. Cameras run happily
+  at ~100 °C die temp with the fan on.
+- Mains draw during scan ≈ 27.5 W (barely above 27 W idle — scan+laser adds
+  little; the laser duty cycle is low).
+- **Campaign-logic bug found**: the absent left module was counted as
+  "dropped", which would have suppressed the fans-off fallback and fabricated
+  failed-recovery trials. Fixed (connected-sides-only filter); campaign
+  restarted with `control.json {"heat_fans": "off"}` to generate dropouts
+  efficiently. Fan-on validation cycles will be re-run near morning if a
+  boundary emerges.
+- Hypothesis for Ethan: the left module's absence may not be coincidence —
+  if left is the dropout-prone revision, it may have cooked itself into
+  non-enumeration during earlier bench use. Needs physical inspection.

@@ -926,11 +926,20 @@ def run_campaign(args) -> int:
                                "error": verdict.get("error")})
 
         cams = verdict.get("cameras", {})
+        connected_v = verdict.get("connected") or {}
+
+        def _on_connected_side(key: str) -> bool:
+            # A module absent from USB (left, tonight) must not be counted
+            # as "dropped" — it would poison the no-dropout fallback and
+            # fabricate failed-recovery data points.
+            return bool(connected_v.get(key.split(":")[0]))
+
         dropped_now = sorted(k for k, v in cams.items()
-                             if v.get("dropout_kind") or
-                             (not v.get("configured")) or (not v.get("streamed")))
+                             if _on_connected_side(k) and
+                             (v.get("dropout_kind") or
+                              (not v.get("configured")) or (not v.get("streamed"))))
         recovered = {k: v.get("recovered") for k, v in cams.items()
-                     if v.get("was_dropped_last_cycle")}
+                     if v.get("was_dropped_last_cycle") and _on_connected_side(k)}
         tr = TrialRecord(cycle=cycle_idx,
                          cool_mode=cool_mode, cool_s=cool_s,
                          dropped=dropped_now, prev_dropped=list(prev_dropped),

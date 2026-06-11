@@ -17,3 +17,10 @@
 {"type": "cool_start", "mode": "mains_off", "planned_s": 30.0, "t": "2026-06-11T02:40:44"}
 {"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T02:41:34"}
 {"type": "cycle_start", "cycle": 3, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": ["left:0", "left:1", "left:2", "left:3", "left:4", "left:5", "left:6", "left:7", "right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T02:41:34"}
+{"type": "campaign_start", "until": "09:00", "shelly": "192.168.1.81", "t": "2026-06-11T02:49:13"}
+{"type": "power_off", "planned_off_s": 30, "t": "2026-06-11T02:49:13"}
+{"type": "power_on", "t": "2026-06-11T02:49:43"}
+{"type": "cycle_start", "cycle": 0, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": [], "t": "2026-06-11T02:50:03"}
+{"type": "cycle_done", "cycle": 0, "rc": 0, "end_reason": "max_heat_elapsed", "error": null, "t": "2026-06-11T03:16:47"}
+{"type": "trial", "cycle": 0, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": ["left:0", "left:1", "left:2", "left:3", "left:4", "left:5", "left:6", "left:7"], "prev_dropped": [], "recovered": {}, "end_reason": "max_heat_elapsed", "t": "2026-06-11T03:16:47"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 30.0, "t": "2026-06-11T03:16:47"}
