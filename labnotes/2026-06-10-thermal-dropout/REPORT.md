@@ -91,12 +91,14 @@ without a power cycle.
    scan worker when a sensor is disconnected (`LiveUsbSource` got a handle
    with `uart=None`). Now passes None for mask-0/disconnected sides.
    Commit `0662236`.
-3. **SDK/firmware bug (open):** `imu_init()+imu_on()` then reading
-   temperature reliably **wedges the sensor's command interface** until
-   power cycle (reproduced 2×; suspected unconsumed IMU stream on IF2
-   back-pressuring the USB stack). Spawned follow-up task. Mitigation in
-   rig: init-only. Also: IMU temp reads 0.0 after a cold mains boot even
-   with init (works when the module was already up) — worth a look.
+3. **SDK/firmware bug:** `imu_init()+imu_on()` then reading temperature
+   reliably **wedges the sensor's command interface** until power cycle
+   (reproduced 2× tonight). Follow-up investigation (separate session) has
+   since confirmed the root cause: **firmware printf-from-ISR combined with
+   `USB_PRINTF`** permanently wedges IF0 — not IF2 backpressure as first
+   suspected. SDK-side guards are in `MotionSensor`; firmware fix pending.
+   Also: IMU temp reads 0.0 after a cold mains boot even with init (works
+   when the module was already up) — worth a look.
 4. The stock configure workflow aborts a whole side at the first failed
    camera — for diagnostics, per-camera isolation (as the rig does) gives a
    per-camera verdict instead. Maybe worth an SDK option.
