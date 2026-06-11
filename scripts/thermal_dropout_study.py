@@ -70,20 +70,22 @@ DEFAULTS = {
     "min_off_s": 10.0,
     "max_off_s": 3600.0,
     # Interleaved (cool_mode, cool_seconds) trial plan so every mode gets
-    # boundary data early. mains_off = the original off-time question;
-    # cams_off_fan_on = the practical "wait between 8-cam scans" mode
-    # (system stays powered, camera PCBA rails off, sensor fan forced on);
-    # cams_off_fan_off isolates the fan's contribution.
+    # boundary data early. Fans are assumed ON during normal operation
+    # (Ethan), so heat phases default to fans on. Modes:
+    #   mains_off        — whole system off via Shelly (original question)
+    #   idle_fan_on      — production "wait between scans": cameras stay
+    #                      powered, not streaming, fan on
+    #   cams_off_fan_on  — aggressive powered cooldown: camera rails off, fan on
+    #   cams_off_fan_off — isolates the fan's contribution (low priority)
     "trial_plan": [
-        ["mains_off", 30], ["cams_off_fan_on", 60], ["mains_off", 1800],
-        ["cams_off_fan_on", 600], ["mains_off", 300], ["cams_off_fan_on", 180],
-        ["cams_off_fan_off", 300], ["mains_off", 900], ["cams_off_fan_on", 300],
-        ["mains_off", 120], ["cams_off_fan_on", 120], ["cams_off_fan_off", 900],
-        ["mains_off", 600],
+        ["mains_off", 30], ["idle_fan_on", 120], ["cams_off_fan_on", 60],
+        ["mains_off", 1800], ["idle_fan_on", 600], ["cams_off_fan_on", 300],
+        ["mains_off", 300], ["idle_fan_on", 300], ["cams_off_fan_off", 300],
+        ["mains_off", 900], ["cams_off_fan_on", 120], ["mains_off", 120],
     ],
 }
 
-COOL_MODES = ("mains_off", "cams_off_fan_on", "cams_off_fan_off")
+COOL_MODES = ("mains_off", "cams_off_fan_on", "cams_off_fan_off", "idle_fan_on")
 
 
 def _utcnow_iso() -> str:
@@ -677,19 +679,22 @@ def run_cool(args) -> int:
         handles = _sensor_handles(iface, connected)
         fan_on = args.fan == "on"
         for side, sensor in handles:
-            try:
-                power = sensor.get_camera_power_status()
-                mask = 0
-                if power and len(power) == 8:
-                    mask = sum(1 << i for i in range(8) if power[i])
-                if mask:
-                    ok = sensor.disable_camera_power(mask)
-                    logger.info("%s: disable_camera_power(0x%02X) -> %s",
-                                side, mask, ok)
-                else:
-                    logger.info("%s: cameras already unpowered", side)
-            except Exception:
-                logger.exception("%s: camera power-off failed", side)
+            if args.cams == "off":
+                try:
+                    power = sensor.get_camera_power_status()
+                    mask = 0
+                    if power and len(power) == 8:
+                        mask = sum(1 << i for i in range(8) if power[i])
+                    if mask:
+                        ok = sensor.disable_camera_power(mask)
+                        logger.info("%s: disable_camera_power(0x%02X) -> %s",
+                                    side, mask, ok)
+                    else:
+                        logger.info("%s: cameras already unpowered", side)
+                except Exception:
+                    logger.exception("%s: camera power-off failed", side)
+            else:
+                logger.info("%s: leaving camera power as-is (idle mode)", side)
             try:
                 ok = sensor.set_fan_control(fan_on)
                 logger.info("%s: fan -> %s (set ok=%s)", side,
@@ -836,6 +841,7 @@ def run_campaign(args) -> int:
     outlet.on()
     _append_jsonl(events, {"type": "power_on"})
     cool_mode, cool_s = "mains_off", 30.0   # what preceded cycle 0
+    force_fans_off = False
     time.sleep(DEFAULTS["boot_wait_s"])
 
     while True:
@@ -849,6 +855,10 @@ def run_campaign(args) -> int:
             logger.info("control.json stop=true; stopping")
             break
 
+        heat_fans = "off" if force_fans_off else str(control.get("heat_fans", "on"))
+        if force_fans_off:
+            logger.info("previous heat phase tripped nothing — forcing fans OFF "
+                        "this cycle to generate a dropout")
         cycle_dir = os.path.join(out_root, f"cycle_{cycle_idx:03d}")
         os.makedirs(cycle_dir, exist_ok=True)
         cmd = [sys.executable, os.path.abspath(__file__), "cycle",
@@ -856,7 +866,7 @@ def run_campaign(args) -> int:
                "--cycle-index", str(cycle_idx),
                "--off-time-before", str(cool_s),
                "--cool-mode-before", cool_mode,
-               "--fans", str(control.get("heat_fans", "off"))]
+               "--fans", heat_fans]
         if prev_dropped:
             cmd += ["--prev-dropped", ",".join(prev_dropped)]
         for k in ("max_heat_s", "post_dropout_soak_s"):
@@ -905,9 +915,17 @@ def run_campaign(args) -> int:
         # next iteration
         prev_dropped = dropped_now
         cycle_idx += 1
+        force_fans_off = False
         if rc != 0 and not verdict:
             logger.error("cycle produced no verdict; 60 s recovery power-cycle")
             cool_mode, cool_s = "mains_off", 60.0
+        elif not dropped_now:
+            # Nothing tripped: no recovery to test, so don't burn a planned
+            # cooling trial. Roll straight into another heat phase (cameras
+            # stay warm) and force fans off once to generate a dropout.
+            logger.info("no dropouts this cycle — minimal cool, fans off next heat")
+            cool_mode, cool_s = "idle_fan_on", 15.0
+            force_fans_off = True
         else:
             cool_mode, cool_s = _next_trial(history, control, plan_left)
             if control.get("next_trials") is not None:
@@ -931,14 +949,15 @@ def run_campaign(args) -> int:
                 outlet.on()
             time.sleep(DEFAULTS["boot_wait_s"])
         else:
-            fan = "on" if cool_mode == "cams_off_fan_on" else "off"
+            fan = "on" if cool_mode.endswith("fan_on") else "off"
+            cams = "leave" if cool_mode == "idle_fan_on" else "off"
             cool_dir = os.path.join(out_root, f"cool_{cycle_idx:03d}")
             os.makedirs(cool_dir, exist_ok=True)
             try:
                 subprocess.run(
                     [sys.executable, os.path.abspath(__file__), "cool",
                      "--out", cool_dir, "--duration-s", str(cool_s),
-                     "--fan", fan],
+                     "--fan", fan, "--cams", cams],
                     timeout=cool_s + 300)
             except subprocess.TimeoutExpired:
                 logger.error("cool subprocess timed out — continuing")
@@ -1001,7 +1020,7 @@ def main() -> int:
     py.add_argument("--cool-mode-before", default="", choices=("", *COOL_MODES))
     py.add_argument("--prev-dropped", default="",
                     help="comma list like left:6,right:7")
-    py.add_argument("--fans", choices=["on", "off"], default="off")
+    py.add_argument("--fans", choices=["on", "off"], default="on")
     py.add_argument("--restore-fans", action="store_true")
     py.add_argument("--max-heat-s", type=float, dest="max_heat_s",
                     default=DEFAULTS["max_heat_s"])
@@ -1019,6 +1038,8 @@ def main() -> int:
     pl.add_argument("--out", required=True)
     pl.add_argument("--duration-s", type=float, required=True, dest="duration_s")
     pl.add_argument("--fan", choices=["on", "off"], required=True)
+    pl.add_argument("--cams", choices=["off", "leave"], default="off",
+                    help="off = disable camera power rails; leave = idle mode")
 
     pr = sub.add_parser("restore", help="fans back on; leave system idle-sane")
     pr.add_argument("--out", required=True)

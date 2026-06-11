@@ -15,10 +15,11 @@ camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
    usable again — characterize recovery vs. cool-down duration, per sensor
    module (revisions may differ), under several cooling modes:
    - `mains_off` — whole system off via Shelly (passive cooling, fans dead too);
-   - `cams_off_fan_on` — system stays powered, camera PCBA rails off
-     (`disable_camera_power(0xFF)`), sensor fan forced ON — the practical
-     between-scan candidate, with the IMU-temperature cooling curve logged;
-   - `cams_off_fan_off` — same but fan off, isolating the fan's contribution.
+   - `idle_fan_on` — what a real app does between scans: cameras stay powered
+     (scan stop does NOT cut the rails), not streaming, fan on;
+   - `cams_off_fan_on` — aggressive powered cooldown: camera PCBA rails off
+     (`disable_camera_power(0xFF)`), fan ON; IMU cooling curve logged;
+   - `cams_off_fan_off` — fan's contribution isolated (low priority).
 2. **A detection/prediction rule** for dropout. Caveat from Ethan: the per-frame
    camera temperature comes from the **camera sensor die**, not a PCBA sensor
    near the regulator — it may or may not correlate with dropout probability.
@@ -38,7 +39,11 @@ camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
   Operationally: after power-on bring-up, camera configures AND emits histogram
   frames within 120 s of trigger start. Survival time until re-drop is logged too.
 - **Heat phase** = normal scan with laser on (Ethan: easier, safe unattended),
-  all 8 cameras both sides, **sensor fans OFF** to accelerate. No abort limits
+  all 8 cameras both sides, **sensor fans ON** — Ethan (~23:55): assume the fan
+  runs all the time in operation, test accordingly. If a fans-on heat phase
+  trips nothing within the 25-min cap, that result is recorded (lower bound on
+  production time-to-dropout) and the *next* heat phase forces fans OFF once,
+  purely to generate a dropout to test recovery on. No abort limits
   (Ethan: nothing can be permanently damaged; regulator trip is recoverable).
 - **Firmware debug printf ON** (`DEBUG_FLAG_USB_PRINTF`) on both sensors every
   power-on — firmware has its own dropout-detection logic that prints (Ethan).
