@@ -277,3 +277,21 @@ tripped cameras that produce data after bring-up):
 - 07:19: control back to fans-off heating; remaining trials = mains 60
   repeat + leftover plan (cams_off_fan_off 300 fills the fan-off row,
   mains 900, cams_off_fan_on 120, mains 120). Report drafting begins.
+
+### 2026-06-11 07:23–09:40 — validation trials and campaign close
+
+- Repeats all consistent: mains 60 ✓ (2nd), mains 900 ✓, mains 120 ✓ (2nd);
+  rails-off fan-on 120 ✗, rails-off fan-off 300/600/1200 ✗✗✗ (adaptive kept
+  doubling the only unresolved mode — by design, and every point red).
+- Final tallies: **24 cycles, 93 dropout events (115.2 ± 0.93 °C), 10/10
+  mains-off recoveries, 0/13 powered-mode recoveries** (incl. artifacts-
+  excluded counting; see analyze.py output).
+- Rig bug noted for posterity (not fixed live): the campaign writes its
+  stale in-memory control.json back when consuming queue entries —
+  lost-update against concurrent hand edits. Worth a re-read-before-write
+  if this script gets reused.
+- 09:36 campaign self-stopped (24 cycles), restore ran. 09:37: manual 30 s
+  mains cycle to clear the tripped cameras, fans set ON, verified all 8
+  cameras READY (status 0x1). **Bench left healthy.**
+- Left module: final USB probe at 09:38 — still absent. Physical inspection
+  needed.

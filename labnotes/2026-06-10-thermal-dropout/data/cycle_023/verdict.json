@@ -1,0 +1,325 @@
+{
+  "cycle": 23,
+  "off_time_before_s": 1200.0,
+  "cool_mode_before": "cams_off_fan_off",
+  "started_iso": "2026-06-11T08:54:39",
+  "params": {
+    "max_heat_s": 1500.0,
+    "post_dropout_soak_s": 180.0,
+    "recovery_window_s": 120.0,
+    "dropout_silence_s": 3.0,
+    "connect_timeout_s": 180.0
+  },
+  "prev_dropped": [
+    "right:0",
+    "right:1",
+    "right:2",
+    "right:3",
+    "right:4",
+    "right:5",
+    "right:6",
+    "right:7"
+  ],
+  "fans": "off",
+  "connected": {
+    "console": true,
+    "left": false,
+    "right": true
+  },
+  "identity": {
+    "console": {
+      "fw": "1.5.4-rc.1-36-gcde2d0f",
+      "hwid": "23004c00065133333735383300000000"
+    },
+    "right": {
+      "fw": "1.6.1-dev.1",
+      "hwid": "24004600035133333639353500000000"
+    }
+  },
+  "imu_temp_at_start_c": {
+    "right": 38.97
+  },
+  "laser_ok": true,
+  "configure": {
+    "right": {
+      "0": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "1": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "2": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "3": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "4": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "5": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "6": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      },
+      "7": {
+        "power": true,
+        "ready": false,
+        "fpga": null,
+        "registers": null,
+        "status_after": null,
+        "error": "not READY (status=0)"
+      }
+    }
+  },
+  "scan": {},
+  "cameras": {
+    "left:0": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:1": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:2": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:3": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:4": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:5": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:6": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "left:7": {
+      "configured": false,
+      "configure_error": null,
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": false,
+      "recovered": null
+    },
+    "right:0": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:1": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:2": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:3": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:4": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:5": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:6": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    },
+    "right:7": {
+      "configured": false,
+      "configure_error": "not READY (status=0)",
+      "streamed": false,
+      "frames": 0,
+      "first_frame_s": null,
+      "dropout_t_s": null,
+      "dropout_kind": null,
+      "temp_at_drop_c": null,
+      "temp_max_c": null,
+      "was_dropped_last_cycle": true,
+      "recovered": false
+    }
+  },
+  "imu_temp_at_end_c": {},
+  "end_reason": "no_cameras_configured",
+  "error": null
+}

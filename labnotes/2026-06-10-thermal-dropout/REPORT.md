@@ -1,6 +1,6 @@
 # Camera thermal-dropout characterization — overnight report
 
-**Run:** 2026-06-11, 02:30–09:00, autonomous (Claude). Bench: console +
+**Run:** 2026-06-11, 02:30–09:36, autonomous (Claude), 24 cycles. Bench: console +
 right sensor module (FW 1.6.1-dev.1, HWID `2400460003513333…`), Shelly
 mains switching, 8-camera scans with laser. **Left module was absent from
 USB all night** — see Anomalies. All quantitative results below are from
@@ -113,6 +113,12 @@ Shelly mains-off; rails-off via `disable_camera_power(0xFF)` fan on/off;
 idle fan on. Trial decisions logged in `data/events.jsonl`; per-cycle logs,
 1 Hz per-camera samples, verdicts under `data/cycle_*`; full narrative in
 `NOTEBOOK.md`. Artifact trials (comm-wedge cycles 0–1) excluded from stats.
+
+## Bench state at hand-off (09:40)
+
+System powered, all 8 right-module cameras READY (status 0x1), sensor fan
+ON, no scan running. The tripped state from the final trials was cleared
+with a 30 s mains cycle at 09:37. Left module still absent from USB.
 
 ## Data index
 

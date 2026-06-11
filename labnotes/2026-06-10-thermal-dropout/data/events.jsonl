@@ -136,3 +136,15 @@
 {"type": "cycle_done", "cycle": 21, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T08:22:46"}
 {"type": "trial", "cycle": 21, "cool_mode": "mains_off", "cool_s": 120.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "all_cameras_dead", "t": "2026-06-11T08:22:46"}
 {"type": "cool_start", "mode": "cams_off_fan_off", "planned_s": 600.0, "t": "2026-06-11T08:22:46"}
+{"type": "cool_done", "mode": "cams_off_fan_off", "t": "2026-06-11T08:32:47"}
+{"type": "cycle_start", "cycle": 22, "cool_mode_before": "cams_off_fan_off", "cool_s_before": 600.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T08:32:47"}
+{"type": "cycle_done", "cycle": 22, "rc": 0, "end_reason": "no_cameras_configured", "error": null, "t": "2026-06-11T08:34:38"}
+{"type": "trial", "cycle": 22, "cool_mode": "cams_off_fan_off", "cool_s": 600.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": false, "right:1": false, "right:2": false, "right:3": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "no_cameras_configured", "t": "2026-06-11T08:34:38"}
+{"type": "cool_start", "mode": "cams_off_fan_off", "planned_s": 1200.0, "t": "2026-06-11T08:34:38"}
+{"type": "cool_done", "mode": "cams_off_fan_off", "t": "2026-06-11T08:54:39"}
+{"type": "cycle_start", "cycle": 23, "cool_mode_before": "cams_off_fan_off", "cool_s_before": 1200.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T08:54:39"}
+{"type": "cycle_done", "cycle": 23, "rc": 0, "end_reason": "no_cameras_configured", "error": null, "t": "2026-06-11T08:56:30"}
+{"type": "trial", "cycle": 23, "cool_mode": "cams_off_fan_off", "cool_s": 1200.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": false, "right:1": false, "right:2": false, "right:3": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "no_cameras_configured", "t": "2026-06-11T08:56:30"}
+{"type": "cool_start", "mode": "cams_off_fan_off", "planned_s": 2400.0, "t": "2026-06-11T08:56:30"}
+{"type": "cool_done", "mode": "cams_off_fan_off", "t": "2026-06-11T09:36:30"}
+{"type": "campaign_end", "cycles": 24, "t": "2026-06-11T09:36:33"}
