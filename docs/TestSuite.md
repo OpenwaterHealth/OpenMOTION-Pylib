@@ -47,7 +47,13 @@ known holes), **Thin** (minimal), **Gap** (little/none).
 - **Pure-software (337)** — runs anywhere, no hardware: the entire
   `tests/test_pipeline/` suite (167), calibration compute/math, contact-quality,
   scan-DB, facade/config units, laser, telemetry unit, transport-down. Run with:
-  `pytest -m "not console and not sensor and not destructive"`.
+  `pytest -m "not console and not sensor and not destructive and not slow"`
+  (~12 s). The `not slow` clause matters: the EFT replay tests
+  (`test_pipeline/test_eft_correction.py`, `test_eft_regression.py`) are
+  pure-software but each replays a full 600 s dual-side scan capture —
+  including them turns the quick tier into a 15+ minute CPU-bound run. Run
+  them deliberately (`pytest tests/test_pipeline/test_eft_*.py`) when working
+  on timestamp repair; they skip unless the local `eft-testing` captures exist.
 - **Hardware-gated (165)** — `console` / `sensor` markers; skip gracefully when
   the device is absent. Run on the self-hosted rig (see `TestPlan.md` §7).
 
