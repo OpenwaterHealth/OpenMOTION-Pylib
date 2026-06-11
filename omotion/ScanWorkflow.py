@@ -518,10 +518,19 @@ class ScanWorkflow:
         all_sinks = default_sinks + list(request.sinks)
 
         # ── Build source + runner (set self._runner synchronously) ─────────
+        def _scan_handle(sensor, mask: int):
+            # LiveUsbSource treats a None side as absent and skips its
+            # reader bring-up. Passing a never-connected handle would crash
+            # the worker (`sensor.uart` is None); a mask of 0 means the side
+            # is not part of this scan at all.
+            if not mask or sensor is None or not sensor.is_connected():
+                return None
+            return sensor
+
         source = LiveUsbSource(
             console=self._interface.console,
-            left=self._interface.left,
-            right=self._interface.right,
+            left=_scan_handle(self._interface.left, request.left_camera_mask),
+            right=_scan_handle(self._interface.right, request.right_camera_mask),
             batch_size_frames=request.batch_size_frames or 10,
             metadata=meta,
         )
