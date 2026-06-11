@@ -1,0 +1,14 @@
+{
+  "t_s": 614.3,
+  "alive": 1,
+  "active": 2,
+  "dropouts": {
+    "right:3": {
+      "kind": "dropout",
+      "t_s": 580.3,
+      "temp_at_drop_c": 115.08200073242188,
+      "frames": 23188
+    }
+  },
+  "power_w": 23.8
+}

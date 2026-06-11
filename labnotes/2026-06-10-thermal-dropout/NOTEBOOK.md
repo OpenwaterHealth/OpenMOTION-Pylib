@@ -161,3 +161,43 @@ camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
 - Hypothesis for Ethan: the left module's absence may not be coincidence —
   if left is the dropout-prone revision, it may have cooked itself into
   non-enumeration during earlier bench use. Needs physical inspection.
+
+### 2026-06-11 03:21–03:24 — SDK finding: imu_on wedges sensor comms
+
+- Adding `imu_init()+imu_on()` to bring-up **stalled the right sensor's
+  command interface twice** (cycles 0–1 of run 3, identical signature):
+  imu_on succeeds → imu_get_temperature times out → every later command
+  write times out (`RIGHT-COMM: write timed out after 6 attempts`,
+  `usb.core.USBTimeoutError`) → camera power-on fails → whole bring-up dead.
+  Teardown shows `RIGHT-IMU: Streaming stopped — 0 USB read chunk(s)`.
+  Working hypothesis: imu_on starts IMU streaming on IF2 with no consumer →
+  USB backpressure wedges the firmware's command endpoint. Worth a proper
+  SDK/firmware investigation (filed as morning-report follow-up).
+- Mitigation: imu_init only; accept IMU temp possibly invalid. Die temps
+  (per-frame, on-chip) remain the primary thermal observable.
+- **DATA HYGIENE**: run-3 trials for cycles 0 and 1 (mains_off 30 s, all-8
+  "dropped"/"not recovered") are ARTIFACTS of the comm wedge, NOT thermal
+  results. Exclude from recovery analysis; the in-campaign bisection sees
+  them, so steer via control.json if it skews the schedule post-ladder.
+
+### 2026-06-11 03:26–03:46 — first genuine dropouts + first recovery trial
+
+**Cycle 2** (fans OFF, all 8 fresh after power cycle): 6/8 cameras dropped
+between t=110–224 s of scan. Die temps at drop, °C: cam1 ~115 (early), cam5
+115.2, cam6 116.1, cam2 116.0, cam4 114.2, cam7 116.1. **Trip line ≈ 115 °C
+die temp, strikingly consistent.** Survivors: cam0, cam3 (stayed cooler).
+Firmware's own detection prints `Camera N has stopped posting data` (1-based
+numbering!) ~3.5 s before the host watchdog each time, and dumps wedged
+peripheral states post-scan (`SPI/USART HAL_*_STATE_BUSY_RX`).
+
+**Cycle 3** (recovery test after **cams_off_fan_on 60 s**): **0/6 recovered**
+— all six tripped cameras report `get_camera_status = 0` (not even
+peripheral-READY). So the trip persists ≥60 s of rails-off+fan cooling, and
+**a tripped camera is detectable by a cheap status poll** — no scan needed.
+Meanwhile fresh cams 0 and 3 configured, streamed ~10 min, and dropped at
+116.1/115.1 °C (t=615/580 s) → 115 °C line holds for 8/8 dropout events.
+IMU temp now valid (init-only fix): 36.7 °C at bring-up (cameras still
+tripped!), 51.8 °C after the scan — IMU/board temp runs FAR below die temp;
+its value as a recovery gate is questionable, cooling curves will tell.
+
+Next: mains_off 1800 s (until ~04:16) → cycle 4 = long-cool recovery anchor.

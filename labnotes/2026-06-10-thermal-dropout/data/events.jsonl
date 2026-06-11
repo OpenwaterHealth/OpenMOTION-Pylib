@@ -24,3 +24,25 @@
 {"type": "cycle_done", "cycle": 0, "rc": 0, "end_reason": "max_heat_elapsed", "error": null, "t": "2026-06-11T03:16:47"}
 {"type": "trial", "cycle": 0, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": ["left:0", "left:1", "left:2", "left:3", "left:4", "left:5", "left:6", "left:7"], "prev_dropped": [], "recovered": {}, "end_reason": "max_heat_elapsed", "t": "2026-06-11T03:16:47"}
 {"type": "cool_start", "mode": "mains_off", "planned_s": 30.0, "t": "2026-06-11T03:16:47"}
+{"type": "campaign_start", "until": "09:00", "shelly": "192.168.1.81", "t": "2026-06-11T03:18:41"}
+{"type": "power_off", "planned_off_s": 30, "t": "2026-06-11T03:18:41"}
+{"type": "power_on", "t": "2026-06-11T03:19:11"}
+{"type": "cycle_start", "cycle": 0, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": [], "t": "2026-06-11T03:19:31"}
+{"type": "cycle_done", "cycle": 0, "rc": 0, "end_reason": "no_cameras_configured", "error": null, "t": "2026-06-11T03:21:18"}
+{"type": "trial", "cycle": 0, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": [], "recovered": {}, "end_reason": "no_cameras_configured", "t": "2026-06-11T03:21:18"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 30.0, "t": "2026-06-11T03:21:18"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T03:22:08"}
+{"type": "cycle_start", "cycle": 1, "cool_mode_before": "mains_off", "cool_s_before": 30.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T03:22:08"}
+{"type": "cycle_done", "cycle": 1, "rc": 0, "end_reason": "no_cameras_configured", "error": null, "t": "2026-06-11T03:23:54"}
+{"type": "trial", "cycle": 1, "cool_mode": "mains_off", "cool_s": 30.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": false, "right:1": false, "right:2": false, "right:3": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "no_cameras_configured", "t": "2026-06-11T03:23:54"}
+{"type": "cool_start", "mode": "idle_fan_on", "planned_s": 120.0, "t": "2026-06-11T03:23:54"}
+{"type": "cool_done", "mode": "idle_fan_on", "t": "2026-06-11T03:25:55"}
+{"type": "cycle_start", "cycle": 2, "cool_mode_before": "idle_fan_on", "cool_s_before": 120.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T03:25:55"}
+{"type": "cycle_done", "cycle": 2, "rc": 0, "end_reason": "dropout_plus_soak", "error": null, "t": "2026-06-11T03:32:31"}
+{"type": "trial", "cycle": 2, "cool_mode": "idle_fan_on", "cool_s": 120.0, "dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "dropout_plus_soak", "t": "2026-06-11T03:32:31"}
+{"type": "cool_start", "mode": "cams_off_fan_on", "planned_s": 60.0, "t": "2026-06-11T03:32:31"}
+{"type": "cool_done", "mode": "cams_off_fan_on", "t": "2026-06-11T03:33:31"}
+{"type": "cycle_start", "cycle": 3, "cool_mode_before": "cams_off_fan_on", "cool_s_before": 60.0, "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T03:33:31"}
+{"type": "cycle_done", "cycle": 3, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T03:45:42"}
+{"type": "trial", "cycle": 3, "cool_mode": "cams_off_fan_on", "cool_s": 60.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:1": false, "right:2": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "all_cameras_dead", "t": "2026-06-11T03:45:42"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 1800.0, "t": "2026-06-11T03:45:42"}
