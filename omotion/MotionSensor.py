@@ -1,4 +1,5 @@
 import logging
+import queue
 import re
 import struct
 import threading
@@ -12,6 +13,7 @@ from omotion.usb_backend import get_libusb1_backend
 from omotion.connection_state import ConnectionState
 from omotion.signal_wrapper import SignalWrapper
 from omotion.config import (
+    DEBUG_FLAG_USB_PRINTF,
     OW_BAD_CRC,
     OW_BAD_PARSE,
     OW_CAMERA,
@@ -78,6 +80,15 @@ logger = logging.getLogger(f"{_log_root}.Sensor" if _log_root else "Sensor")
 
 # Firmware response types that indicate an error condition.
 _ERROR_TYPES = frozenset({OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN})
+
+# USB bulk read size for the IMU stream (interface 2). Firmware pushes one
+# JSON line of at most 128 bytes per sample; 512 = one high-speed bulk
+# packet, so each read returns exactly one sample transfer.
+_IMU_STREAM_READ_SIZE = 512
+
+# Bounded queue for streamed IMU samples: 200 Hz x ~20 s of backlog. The
+# stream reader drops (with a warning) rather than blocking when full.
+_IMU_QUEUE_MAXSIZE = 4096
 
 
 # Matches the leading "MAJOR.MINOR.PATCH" of a firmware version, ignoring any
@@ -150,6 +161,13 @@ class MotionSensor(SignalWrapper):
         self._state = ConnectionState.DISCONNECTED
         self._state_cv = threading.Condition()
         self._monitor = None  # set by MotionInterface.start()
+
+        # IMU streaming state (see imu_on for the firmware constraints that
+        # make this guard necessary). imu_queue holds raw IF2 chunks while
+        # streaming is active; None otherwise.
+        self._imu_streaming = False
+        self._imu_suspended_usb_printf = False
+        self.imu_queue: Optional[queue.Queue] = None
 
     # ──────────────────────────────────────────────────────────────────
     # Compatibility: MotionSensor itself does not support demo mode in the
@@ -686,38 +704,131 @@ class MotionSensor(SignalWrapper):
     # ------------------------------------------------------------------
 
     def imu_init(self) -> bool:
-        """Initialise the IMU hardware.
+        """Request IMU initialisation from firmware.
 
-        Must be called before :meth:`imu_on`.
+        Firmware <= 1.6.x does **not** implement ``OW_IMU_INIT`` (it answers
+        ``OW_UNKNOWN``); the ICM20948 is initialised once at boot instead.
+        Returns False in that case so callers don't mistake the no-op for
+        success. Calling this is not required before :meth:`imu_on`.
         """
         if self.demo_mode:
             return True
         r = self._send(packetType=OW_IMU, command=OW_IMU_INIT)
-        return r is not None
+        if r.packetType in _ERROR_TYPES:
+            logger.warning(
+                "%s: imu_init not supported by firmware %s (IMU is "
+                "initialised at boot); continuing without it",
+                self.side, self._version,
+            )
+            return False
+        return True
 
     def imu_on(self) -> bool:
-        """Power on the IMU (accelerometer and gyroscope).
+        """Start firmware IMU streaming (timer-driven samples on USB IF2).
 
-        Includes a 100 ms startup delay so data registers are valid when
-        the caller proceeds to read motion data.
+        ``OW_IMU_ON`` starts a 200 Hz timer interrupt in the sensor firmware
+        that polls the ICM20948 over I2C and pushes one JSON line per sample
+        to USB interface 2. Two SDK-side guards protect against firmware
+        <= 1.6.x defects (observed 2026-06-11, fw 1.6.1-dev.1):
+
+        1. ``DEBUG_FLAG_USB_PRINTF`` is cleared first. The firmware's IMU
+           sample ISR printf()s on any I2C error; with USB printf routing
+           enabled that printf busy-waits, inside the interrupt, on a USB
+           transmit-complete interrupt of equal NVIC priority that can never
+           fire. The CPU then never leaves the ISR and the sensor's command
+           interface is dead until a power cycle. :meth:`imu_off` restores
+           the flag.
+        2. The host-side IF2 stream reader is started before the firmware
+           begins pushing, so samples land in :attr:`imu_queue` (raw JSON
+           chunks) instead of being silently dropped by the firmware's
+           busy-endpoint check.
+
+        While streaming is active the polling getters
+        (:meth:`imu_get_temperature` etc.) raise — see their docstrings.
         """
         if self.demo_mode:
+            self._imu_streaming = True
             return True
+        flags = self.get_debug_flags()
+        if flags & DEBUG_FLAG_USB_PRINTF:
+            logger.warning(
+                "%s: clearing DEBUG_FLAG_USB_PRINTF before IMU streaming — "
+                "firmware <= 1.6.x wedges its USB command interface if the "
+                "IMU sample ISR printf()s with USB printf routing enabled "
+                "(restored by imu_off)", self.side,
+            )
+            if not self.set_debug_flags(flags & ~DEBUG_FLAG_USB_PRINTF):
+                logger.error(
+                    "%s: imu_on aborted — could not clear "
+                    "DEBUG_FLAG_USB_PRINTF", self.side,
+                )
+                return False
+            self._imu_suspended_usb_printf = True
+        if self.uart is not None and not self.uart.imu.isStreaming:
+            self.imu_queue = queue.Queue(maxsize=_IMU_QUEUE_MAXSIZE)
+            self.uart.imu.start_streaming(self.imu_queue, _IMU_STREAM_READ_SIZE)
         r = self._send(packetType=OW_IMU, command=OW_IMU_ON)
+        if r.packetType in _ERROR_TYPES:
+            # Firmware did not start its sample timer — undo the reader.
+            if self.uart is not None and self.uart.imu.isStreaming:
+                self.uart.imu.stop_streaming()
+            self.imu_queue = None
+            return False
+        self._imu_streaming = True
         # Most IMU chips require 50–100 ms after power-on before data registers
         # are valid.
         time.sleep(0.1)
-        return r is not None
+        return True
 
     def imu_off(self) -> bool:
-        """Power down the IMU."""
+        """Stop firmware IMU streaming and the host-side IF2 reader.
+
+        Restores ``DEBUG_FLAG_USB_PRINTF`` if :meth:`imu_on` suspended it.
+        On failure (firmware NAK) the streaming guard stays active because
+        the firmware's sample timer may still be running.
+        """
         if self.demo_mode:
+            self._imu_streaming = False
             return True
         r = self._send(packetType=OW_IMU, command=OW_IMU_OFF)
-        return r is not None
+        if r.packetType in _ERROR_TYPES:
+            return False
+        self._imu_streaming = False
+        if self.uart is not None and self.uart.imu.isStreaming:
+            self.uart.imu.stop_streaming()
+        self.imu_queue = None
+        if self._imu_suspended_usb_printf:
+            flags = self.get_debug_flags()
+            self.set_debug_flags(flags | DEBUG_FLAG_USB_PRINTF)
+            self._imu_suspended_usb_printf = False
+        return True
+
+    def _imu_polling_guard(self, method: str) -> None:
+        """Raise if an IMU register poll is attempted while streaming.
+
+        Firmware <= 1.6.x services ``OW_IMU_GET_*`` from its main loop with
+        blocking I2C reads on the same bus its 200 Hz IMU sample interrupt
+        uses — the poll races the interrupt (garbage data), and the shared
+        error path is the printf storm described in :meth:`imu_on`. The
+        observed failure on the bench was a 10 s command timeout followed by
+        a dead command interface (see labnotes 2026-06-10-thermal-dropout).
+        """
+        if self._imu_streaming:
+            raise RuntimeError(
+                f"{method} while IMU streaming is active would race the "
+                "firmware's 200 Hz IMU sample interrupt on the shared I2C "
+                "bus (fw <= 1.6.x) and can wedge the sensor's USB command "
+                "interface until power cycle. Call imu_off() first, or parse "
+                "the streamed samples from imu_queue instead."
+            )
 
     def imu_get_temperature(self) -> float:
-        """Return IMU temperature in degrees Celsius."""
+        """Return IMU temperature in degrees Celsius.
+
+        Only valid while IMU streaming is off (raises RuntimeError
+        otherwise); the streamed JSON contains the temperature as ``"T"``.
+        """
+        self._imu_polling_guard("imu_get_temperature")
         if self.demo_mode:
             return 25.0
         r = self._send(packetType=OW_IMU, command=OW_IMU_GET_TEMP)
@@ -728,7 +839,12 @@ class MotionSensor(SignalWrapper):
         return round(struct.unpack("<f", r.data)[0], 2)
 
     def imu_get_accelerometer(self) -> list[int]:
-        """Return raw accelerometer readings as [x, y, z] signed 16-bit integers."""
+        """Return raw accelerometer readings as [x, y, z] signed 16-bit integers.
+
+        Only valid while IMU streaming is off (raises RuntimeError
+        otherwise); the streamed JSON contains the accelerometer as ``"A"``.
+        """
+        self._imu_polling_guard("imu_get_accelerometer")
         if self.demo_mode:
             return [0, 0, 0]
         r = self._send(packetType=OW_IMU, command=OW_IMU_GET_ACCEL)
@@ -739,7 +855,12 @@ class MotionSensor(SignalWrapper):
         return list(struct.unpack("<hhh", r.data))
 
     def imu_get_gyroscope(self) -> list[int]:
-        """Return raw gyroscope readings as [x, y, z] signed 16-bit integers."""
+        """Return raw gyroscope readings as [x, y, z] signed 16-bit integers.
+
+        Only valid while IMU streaming is off (raises RuntimeError
+        otherwise); the streamed JSON contains the gyroscope as ``"G"``.
+        """
+        self._imu_polling_guard("imu_get_gyroscope")
         if self.demo_mode:
             return [0, 0, 0]
         r = self._send(packetType=OW_IMU, command=OW_IMU_GET_GYRO)

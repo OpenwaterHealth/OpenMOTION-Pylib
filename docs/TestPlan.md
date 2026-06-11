@@ -270,6 +270,13 @@ Calls `toggle_led()` twice. Asserts both return `True`.
 
 ### 3.2 IMU
 
+All polling getters run with IMU streaming **off** — on fw <= 1.6.x,
+`OW_IMU_ON` starts a 200 Hz sample interrupt whose I2C traffic races
+main-loop register polls and whose error path wedges the sensor's USB
+command interface until power cycle (2026-06-11 bench incident; SDK
+guards covered by `tests/test_imu_guard.py`). The SDK raises
+`RuntimeError` on `imu_get_*` while streaming is active.
+
 **`test_imu_temperature`**
 Calls `imu_get_temperature()`. Asserts a float in [-40, 85].
 
@@ -278,6 +285,16 @@ Calls `imu_get_accelerometer()`. Asserts a list of 3 integers. Asserts the magni
 
 **`test_imu_gyroscope`**
 Calls `imu_get_gyroscope()`. Asserts a list of 3 integers. For a stationary device, asserts all three values are within ±100 raw LSB of zero.
+
+**`test_imu_streaming_does_not_wedge_comm`**
+Regression for the 2026-06-11 wedge. `imu_on()` (which clears
+`DEBUG_FLAG_USB_PRINTF` and starts the IF2 reader), asserts `imu_get_*`
+raises while streaming, lets the firmware sample timer run 2 s, asserts
+`ping()` still succeeds, `imu_off()`, asserts polling works again.
+
+**`test_imu_stream_delivers_samples`**
+While streaming, asserts raw JSON sample chunks arrive in
+`MotionSensor.imu_queue` within 2 s and the comm interface survives.
 
 ### 3.3 Fan control (sensor)
 

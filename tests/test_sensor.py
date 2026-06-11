@@ -53,20 +53,14 @@ def test_sensor_toggle_led(any_sensor):
 # 3.2 IMU
 # ===========================================================================
 
-@pytest.fixture(scope="function", autouse=False)
-def imu_enabled(any_sensor):
-    """Power the IMU on for the duration of one test, then turn it off.
-
-    Function-scoped so the IMU is explicitly disabled after each test that
-    needs it, preventing the enabled state from leaking into unrelated tests.
-    """
-    any_sensor.imu_init()
-    any_sensor.imu_on()
-    yield
-    try:
-        any_sensor.imu_off()
-    except Exception:
-        pass
+# NOTE (2026-06-11): polling getters (imu_get_*) must run with IMU
+# streaming OFF. On fw <= 1.6.x, OW_IMU_ON starts a 200 Hz sample
+# interrupt whose I2C traffic races main-loop register polls and whose
+# error path can wedge the sensor's USB command interface until power
+# cycle (see labnotes 2026-06-10-thermal-dropout, cycles 000/001).
+# The SDK now enforces this: imu_get_* raises while streaming is active.
+# The ICM20948 is initialised at firmware boot, so polls work without
+# any prior imu_init()/imu_on().
 
 
 @pytest.mark.imu
@@ -77,7 +71,7 @@ def test_imu_temperature(any_sensor):
 
 
 @pytest.mark.imu
-def test_imu_accelerometer(any_sensor, imu_enabled):
+def test_imu_accelerometer(any_sensor):
     accel = any_sensor.imu_get_accelerometer()
     assert isinstance(accel, list) and len(accel) == 3
     for v in accel:
@@ -87,13 +81,67 @@ def test_imu_accelerometer(any_sensor, imu_enabled):
 
 
 @pytest.mark.imu
-def test_imu_gyroscope(any_sensor, imu_enabled):
+def test_imu_gyroscope(any_sensor):
     gyro = any_sensor.imu_get_gyroscope()
     assert isinstance(gyro, list) and len(gyro) == 3
     for v in gyro:
         assert isinstance(v, int)
         # Raw LSB values depend on firmware full-scale range (~16000 for this hardware)
         assert -32768 <= v <= 32767, f"Gyro axis {v} out of signed 16-bit range"
+
+
+@pytest.mark.imu
+def test_imu_streaming_does_not_wedge_comm(any_sensor):
+    """Regression for the 2026-06-11 wedge: imu_on + a poll attempt must
+    leave the command interface alive. Before the SDK guards, this exact
+    sequence killed IF0 until a power cycle (imu_get_temperature timed out,
+    then every bulk write failed)."""
+    assert any_sensor.imu_on() is True
+    try:
+        # Polls are refused while streaming — this used to go to the wire
+        # and start the wedge.
+        with pytest.raises(RuntimeError):
+            any_sensor.imu_get_temperature()
+        # Let the firmware's 200 Hz sample timer run for a bit.
+        time.sleep(2.0)
+        # The command interface must still respond while streaming.
+        assert any_sensor.ping() is True, "command interface died during IMU streaming"
+    finally:
+        assert any_sensor.imu_off() is True
+    # And after streaming stops, polling works again.
+    assert any_sensor.ping() is True
+    t = any_sensor.imu_get_temperature()
+    assert isinstance(t, float)
+
+
+@pytest.mark.imu
+def test_imu_stream_delivers_samples(any_sensor):
+    """While streaming, raw JSON sample chunks should land in imu_queue.
+
+    Tolerant of a flaky ICM (samples are only pushed on successful reads):
+    asserts the plumbing, and reports sample count for the bench log.
+    """
+    assert any_sensor.imu_on() is True
+    try:
+        assert any_sensor.imu_queue is not None
+        time.sleep(2.0)
+        chunks = []
+        while True:
+            try:
+                chunks.append(any_sensor.imu_queue.get_nowait())
+            except Exception:
+                break
+        # ~400 samples expected at 200 Hz; require at least a trickle to
+        # call the stream alive. If the ICM I2C reads are failing the
+        # firmware pushes nothing — that is a hardware fault worth failing
+        # loudly on here.
+        assert len(chunks) > 0, (
+            "no IMU stream data in 2 s — ICM reads likely failing in firmware"
+        )
+        assert b"{" in chunks[0], f"unexpected stream payload: {chunks[0][:40]!r}"
+    finally:
+        assert any_sensor.imu_off() is True
+    assert any_sensor.ping() is True
 
 
 # ===========================================================================
