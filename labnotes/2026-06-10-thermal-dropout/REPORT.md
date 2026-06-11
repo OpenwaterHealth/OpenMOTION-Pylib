@@ -8,10 +8,11 @@ the right module; the left/right revision comparison could not be done.
 
 ## TL;DR
 
-1. **Dropout cause/threshold:** every dropout (40+ events) occurred when that
-   camera's **die temperature hit 115.2 ± 0.95 °C**. The on-chip temp in the
-   frame stream is an excellent *dropout* predictor (contrary to our prior
-   skepticism) — per-camera trip points are stable (113.2–116.1 °C).
+1. **Dropout cause/threshold:** every dropout (**93 events**) occurred when
+   that camera's **die temperature hit 115.2 ± 0.93 °C**. The on-chip temp in
+   the frame stream is an excellent *dropout* predictor (contrary to our
+   prior skepticism) — per-camera trip points are stable (113.4–116.1 °C
+   means, n=10–12 each).
 2. **With the fan ON the module never tripped** — 25 min from cold and 45 min
    from a worst-case heat-soaked start, die temps plateau at 56–105 °C
    (hottest camera ~10 °C below the trip line) at overnight lab ambient.
@@ -19,9 +20,9 @@ the right module; the left/right revision comparison could not be done.
 3. **Recovery is electrical, not thermal.** "How long must we wait?" has a
    sharp answer: **waiting does nothing — a full module power cycle fixes
    everything, and even 10 s off is enough on a hot module.**
-   - mains off 10 / 15 / 30 / 60 / 120 / 300 / 300 / 1800 s → **8/8 recover, every time**
-   - camera rails off via `disable_camera_power` + fan, 60 s–**30 min** → **0 recover, every time** (even with the board cooled to ~28 °C)
-   - idle (cameras powered, fan on) 5–10 min → **0 recover**
+   - mains off 10 / 15 / 30 / 60×2 / 120×2 / 300×2 / 900 / 1800 s → **recovers everything, all 10 trials**
+   - camera rails off via `disable_camera_power`, fan on or off, 60 s–**30 min** → **0 recover, all 5 trials** (even with the board cooled to ~28 °C)
+   - idle (cameras powered, fan on) 5–10 min → **0 recover, both trials**
    The latch only clears when module *input power* is removed —
    `OW_CAMERA_POWER_OFF` does not de-energize the failing regulator domain.
 4. **A tripped camera is detectable in <1 s without scanning:**
@@ -55,9 +56,9 @@ the right module; the left/right revision comparison could not be done.
 
 ### Trip line (die temperature at dropout)
 
-40 dropout events across 9 heat phases, fans off:
-mean **115.2 °C**, σ **0.95**, range 113.2–116.1. Per camera (n=5 each):
-cam0 115.9, cam1 113.2, cam2 115.9, cam3 115.0, cam4 114.5, cam5 115.1,
+93 dropout events across 14 heat phases, fans off:
+mean **115.2 °C**, σ **0.93**, range 113.2–116.1. Per camera (n=10–12):
+cam0 116.0, cam1 113.4, cam2 115.8, cam3 115.1, cam4 114.5, cam5 115.1,
 cam6 116.1, cam7 116.1. Cameras 0 and 3 run coolest at this airflow/position
 and survive longest; with the fan off, 6/8 cameras trip within 2–4 min from
 warm. See `figs/fig_die_temps.png`.

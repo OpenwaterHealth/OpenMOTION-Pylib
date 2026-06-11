@@ -1,6 +1,4 @@
 {
   "heat_fans": "off",
-  "next_trials": [
-    {"mode": "mains_off", "off_s": 60}
-  ]
+  "next_trials": []
 }

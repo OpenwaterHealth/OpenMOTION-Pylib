@@ -108,3 +108,31 @@
 {"type": "cool_start", "mode": "idle_fan_on", "planned_s": 15.0, "t": "2026-06-11T07:18:37"}
 {"type": "cool_done", "mode": "idle_fan_on", "t": "2026-06-11T07:18:52"}
 {"type": "cycle_start", "cycle": 16, "cool_mode_before": "idle_fan_on", "cool_s_before": 15.0, "prev_dropped": [], "t": "2026-06-11T07:18:52"}
+{"type": "cycle_done", "cycle": 16, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T07:23:33"}
+{"type": "trial", "cycle": 16, "cool_mode": "idle_fan_on", "cool_s": 15.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": [], "recovered": {}, "end_reason": "all_cameras_dead", "t": "2026-06-11T07:23:33"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 60.0, "t": "2026-06-11T07:23:33"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T07:24:54"}
+{"type": "cycle_start", "cycle": 17, "cool_mode_before": "mains_off", "cool_s_before": 60.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T07:24:54"}
+{"type": "cycle_done", "cycle": 17, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T07:29:24"}
+{"type": "trial", "cycle": 17, "cool_mode": "mains_off", "cool_s": 60.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "all_cameras_dead", "t": "2026-06-11T07:29:24"}
+{"type": "cool_start", "mode": "cams_off_fan_off", "planned_s": 300.0, "t": "2026-06-11T07:29:24"}
+{"type": "cool_done", "mode": "cams_off_fan_off", "t": "2026-06-11T07:34:24"}
+{"type": "cycle_start", "cycle": 18, "cool_mode_before": "cams_off_fan_off", "cool_s_before": 300.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T07:34:24"}
+{"type": "cycle_done", "cycle": 18, "rc": 0, "end_reason": "no_cameras_configured", "error": null, "t": "2026-06-11T07:36:16"}
+{"type": "trial", "cycle": 18, "cool_mode": "cams_off_fan_off", "cool_s": 300.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": false, "right:1": false, "right:2": false, "right:3": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "no_cameras_configured", "t": "2026-06-11T07:36:16"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 900.0, "t": "2026-06-11T07:36:16"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T07:51:36"}
+{"type": "cycle_start", "cycle": 19, "cool_mode_before": "mains_off", "cool_s_before": 900.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T07:51:36"}
+{"type": "cycle_done", "cycle": 19, "rc": 0, "end_reason": "dropout_plus_soak", "error": null, "t": "2026-06-11T07:58:08"}
+{"type": "trial", "cycle": 19, "cool_mode": "mains_off", "cool_s": 900.0, "dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "dropout_plus_soak", "t": "2026-06-11T07:58:08"}
+{"type": "cool_start", "mode": "cams_off_fan_on", "planned_s": 120.0, "t": "2026-06-11T07:58:08"}
+{"type": "cool_done", "mode": "cams_off_fan_on", "t": "2026-06-11T08:00:09"}
+{"type": "cycle_start", "cycle": 20, "cool_mode_before": "cams_off_fan_on", "cool_s_before": 120.0, "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T08:00:09"}
+{"type": "cycle_done", "cycle": 20, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T08:14:53"}
+{"type": "trial", "cycle": 20, "cool_mode": "cams_off_fan_on", "cool_s": 120.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:1", "right:2", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:1": false, "right:2": false, "right:4": false, "right:5": false, "right:6": false, "right:7": false}, "end_reason": "all_cameras_dead", "t": "2026-06-11T08:14:53"}
+{"type": "cool_start", "mode": "mains_off", "planned_s": 120.0, "t": "2026-06-11T08:14:53"}
+{"type": "cool_done", "mode": "mains_off", "t": "2026-06-11T08:17:13"}
+{"type": "cycle_start", "cycle": 21, "cool_mode_before": "mains_off", "cool_s_before": 120.0, "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "t": "2026-06-11T08:17:13"}
+{"type": "cycle_done", "cycle": 21, "rc": 0, "end_reason": "all_cameras_dead", "error": null, "t": "2026-06-11T08:22:46"}
+{"type": "trial", "cycle": 21, "cool_mode": "mains_off", "cool_s": 120.0, "dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "prev_dropped": ["right:0", "right:1", "right:2", "right:3", "right:4", "right:5", "right:6", "right:7"], "recovered": {"right:0": true, "right:1": true, "right:2": true, "right:3": true, "right:4": true, "right:5": true, "right:6": true, "right:7": true}, "end_reason": "all_cameras_dead", "t": "2026-06-11T08:22:46"}
+{"type": "cool_start", "mode": "cams_off_fan_off", "planned_s": 600.0, "t": "2026-06-11T08:22:46"}

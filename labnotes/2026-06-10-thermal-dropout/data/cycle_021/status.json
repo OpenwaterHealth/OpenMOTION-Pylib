@@ -1,0 +1,50 @@
+{
+  "t_s": 227.9,
+  "alive": 1,
+  "active": 8,
+  "dropouts": {
+    "right:1": {
+      "kind": "dropout",
+      "t_s": 90.7,
+      "temp_at_drop_c": 113.2040023803711,
+      "frames": 3612
+    },
+    "right:5": {
+      "kind": "dropout",
+      "t_s": 102.9,
+      "temp_at_drop_c": 115.13800048828125,
+      "frames": 4099
+    },
+    "right:2": {
+      "kind": "dropout",
+      "t_s": 105.6,
+      "temp_at_drop_c": 116.00700378417969,
+      "frames": 4206
+    },
+    "right:6": {
+      "kind": "dropout",
+      "t_s": 109.0,
+      "temp_at_drop_c": 116.11799621582031,
+      "frames": 4342
+    },
+    "right:4": {
+      "kind": "dropout",
+      "t_s": 155.7,
+      "temp_at_drop_c": 114.23699951171875,
+      "frames": 6206
+    },
+    "right:7": {
+      "kind": "dropout",
+      "t_s": 168.8,
+      "temp_at_drop_c": 116.08799743652344,
+      "frames": 6734
+    },
+    "right:3": {
+      "kind": "dropout",
+      "t_s": 203.9,
+      "temp_at_drop_c": 115.06300354003906,
+      "frames": 8132
+    }
+  },
+  "power_w": 23.8
+}
