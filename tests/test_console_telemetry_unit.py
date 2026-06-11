@@ -50,6 +50,28 @@ def test_pdc_sample_scales_raw_to_mA():
 def test_pdc_sample_dark_slot_false_when_flags_clear():
     s = PdcSample.from_raw(frame_idx=43, pdc_raw=200, flags=0x00, host_recv_timestamp=0.0)
     assert s.dark_slot is False
+    assert s.demod_slot is False
+
+
+def test_pdc_sample_demod_slot_decoded_from_flags_bit1():
+    s = PdcSample.from_raw(frame_idx=44, pdc_raw=300, flags=0x02, host_recv_timestamp=0.0)
+    assert s.demod_slot is True
+    assert s.dark_slot is False
+
+
+def test_demod_phase_word_conversion():
+    import math
+    from omotion.MotionConsole import MotionConsole
+
+    # phase = 2*pi/4096 * PHASEREG  =>  PHASEREG = phase * 4096 / (2*pi)
+    assert MotionConsole.demod_phase_word(0.0) == 0
+    assert MotionConsole.demod_phase_word(math.pi) == 2048
+    assert MotionConsole.demod_phase_word(math.pi / 2) == 1024
+    # full turn wraps back to zero, negative phases normalize
+    assert MotionConsole.demod_phase_word(2 * math.pi) == 0
+    assert MotionConsole.demod_phase_word(-math.pi / 2) == 3072
+    # result always fits the 12-bit register
+    assert 0 <= MotionConsole.demod_phase_word(123.456) <= 0x0FFF
 
 
 from unittest.mock import MagicMock

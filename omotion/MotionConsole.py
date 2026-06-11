@@ -1,4 +1,5 @@
 import logging
+import math
 import struct
 import json
 import os
@@ -60,6 +61,8 @@ from omotion.config import (
     OW_CTRL_PDUMON,
     OW_CTRL_READ_ADC,
     OW_CTRL_READ_GPIO,
+    OW_CTRL_SET_DEMOD,
+    OW_CTRL_GET_DEMOD,
     OW_CTRL_SET_IND,
     OW_CTRL_SET_TRIG,
     OW_CTRL_START_TRIG,
@@ -1149,6 +1152,133 @@ class MotionConsole(SignalWrapper):
             self._log_command_error("get_trigger_json", e)
             raise  # Re-raise the exception for the caller to handle
 
+    @staticmethod
+    def demod_phase_word(phase_rad: float) -> int:
+        """
+        Convert a modulation phase in radians to the raw 12-bit DDS phase
+        register word (Seed FPGA regs 0x00-0x01) for ``set_demod_config``.
+
+        Per the Unified Board FPGA Memory Map (700-00010):
+        phase = 2*pi/4096 * PHASEREG.
+
+        There is intentionally no Hz -> ModulationFrequencyWord helper yet:
+        the frequency tuning word formula depends on the DDS reference clock,
+        which is not documented in this repo. Take the formula from the DDS
+        data sheet once the reference clock is confirmed with the laser team,
+        and pass the raw word in the meantime.
+        """
+        return round((phase_rad % (2 * math.pi)) * 4096 / (2 * math.pi)) & 0x0FFF
+
+    def set_demod_config(self, data=None) -> dict:
+        """
+        Set the demod-frame configuration on the console device.
+
+        While the trigger runs, the console interleaves "demod" frames —
+        laser pulses fired with the Seed FPGA DDS modulation enabled — every
+        Nth laser cycle. Dark frames take precedence on collision. See the
+        console firmware's CommandHandling.md (OW_CTRL_SET_DEMOD) for full
+        semantics.
+
+        Args:
+            data (dict): Demod configuration. All keys are optional; keys
+                absent from the JSON keep their current device-side value:
+                - "DemodPulseInterval": every Nth laser cycle is a demod
+                  frame; 0 disables the feature (default).
+                - "ModulationFrequencyWord": raw 32-bit DDS frequency tuning
+                  word (Seed FPGA regs 0x0A-0x0D).
+                - "ModulationPhaseWord": raw 12-bit DDS phase word (Seed FPGA
+                  regs 0x00-0x01); see ``demod_phase_word``.
+
+        Returns:
+            dict: the device's current demod configuration, or None on error.
+
+        Raises:
+            ValueError: If `data` is None or the UART is not connected.
+            Exception: If an error occurs while setting the demod config.
+        """
+        try:
+            if self.uart.demo_mode:
+                return None
+
+            # Ensure data is not None and is a valid dictionary
+            if data is None:
+                logger.error("Data cannot be None.")
+                return None
+
+            if not self.is_connected():
+                raise ValueError("Console controller not connected")
+
+            try:
+                json_string = json.dumps(data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Data must be valid JSON: {e}")
+                return None
+
+            payload = json_string.encode("utf-8")
+
+            r = self.uart.send_packet(
+                id=None,
+                packetType=OW_CONTROLLER,
+                command=OW_CTRL_SET_DEMOD,
+                data=payload,
+            )
+            self.uart.clear_buffer()
+
+            if r.packetType != OW_ERROR and r.data_len > 0:
+                # Parse response as JSON, if possible
+                try:
+                    response_json = json.loads(r.data.decode("utf-8"))
+                    return response_json
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding JSON: {e}")
+                    return None
+            else:
+                return None
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            self._log_command_error("set_demod_config", e)
+            raise  # Re-raise the exception for the caller to handle
+
+    def get_demod_config(self) -> dict:
+        """
+        Read the current demod-frame configuration from the console device.
+
+        Returns:
+            dict: the device's current demod configuration (same keys as
+            ``set_demod_config``), or None on error.
+
+        Raises:
+            ValueError: If the UART is not connected.
+            Exception: If an error occurs while reading the demod config.
+        """
+        try:
+            if self.uart.demo_mode:
+                return None
+
+            if not self.is_connected():
+                raise ValueError("Console controller not connected")
+
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CONTROLLER, command=OW_CTRL_GET_DEMOD, data=None
+            )
+            self.uart.clear_buffer()
+            data_object = None
+            try:
+                data_object = json.loads(r.data.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON: {e}")
+            return data_object
+        except ValueError as v:
+            logger.error("ValueError: %s", v)
+            raise  # Re-raise the exception for the caller to handle
+
+        except Exception as e:
+            self._log_command_error("get_demod_config", e)
+            raise  # Re-raise the exception for the caller to handle
+
     def start_trigger(self) -> bool:
         """
         Start the trigger on the Console device.
@@ -1786,7 +1916,8 @@ class MotionConsole(SignalWrapper):
         """Drain up to ``max_samples`` per-frame PDC samples from the console firmware.
 
         Returns ``(dropped_count_delta, samples)`` where ``samples`` is a list of
-        ``(frame_idx, pdc_raw, flags)`` tuples in FIFO order.  Flags bit 0 = dark_slot.
+        ``(frame_idx, pdc_raw, flags)`` tuples in FIFO order.  Flags bit 0 =
+        dark_slot, bit 1 = demod_slot.
         Returns ``(0, [])`` on transport error.
         """
         if max_samples < 1 or max_samples > 64:

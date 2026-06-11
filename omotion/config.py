@@ -176,6 +176,14 @@ OW_CTRL_GET_LASER_ODO = 0x27
 # Payload: 1 byte target (0=system, 1=laser, 2=both). Missing payload defaults
 # to both.
 OW_CTRL_RESET_ODO = 0x28
+# Demod-frame interleaving (Seed FPGA DDS modulation). JSON payload like the
+# trigger config commands: {"DemodPulseInterval": N,
+# "ModulationFrequencyWord": W, "ModulationPhaseWord": P} — all fields
+# optional on SET (absent fields keep their device-side value); the response
+# echoes the current config. Frequency/phase are raw DDS register words (see
+# Unified Board FPGA Memory Map 700-00010 and console CommandHandling.md).
+OW_CTRL_SET_DEMOD = 0x29
+OW_CTRL_GET_DEMOD = 0x2A
 OW_CTRL_FAN_CTL = 0x0A
 
 # Page-by-page direct FPGA programming commands (0x30–0x3C)

@@ -104,6 +104,7 @@ class ConsoleTelemetry:
 
 
 PDC_FLAG_DARK_SLOT: int = 1 << 0
+PDC_FLAG_DEMOD_SLOT: int = 1 << 1
 
 
 @dataclass
@@ -118,6 +119,7 @@ class PdcSample:
     dark_slot: bool
     host_recv_timestamp: float
     dropped_delta: int = 0
+    demod_slot: bool = False  # laser pulse fired with Seed FPGA DDS modulation on
 
     @classmethod
     def from_raw(
@@ -134,6 +136,7 @@ class PdcSample:
             dark_slot=bool(flags & PDC_FLAG_DARK_SLOT),
             host_recv_timestamp=float(host_recv_timestamp),
             dropped_delta=int(dropped_delta),
+            demod_slot=bool(flags & PDC_FLAG_DEMOD_SLOT),
         )
 
 
