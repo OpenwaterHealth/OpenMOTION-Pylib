@@ -109,6 +109,48 @@ def test_default_pipeline_includes_raw_tee_with_none_unbounded():
     assert raw_tee.max_duration_s is None
 
 
+def _meta():
+    return ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-06-10T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=False,
+    )
+
+
+def test_default_pipeline_uses_hybrid_realtime_dark_estimator_by_default():
+    from omotion.pipeline.stages.dark import HybridRealtimePredictor
+
+    pipeline = default_pipeline(
+        metadata=_meta(), calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+    )
+    dark = next(s for s in pipeline.stages if s.name == "dark_correction")
+    assert isinstance(dark._realtime, HybridRealtimePredictor)
+
+
+def test_default_pipeline_selects_zoh_realtime_dark_estimator():
+    from omotion.pipeline.stages.dark import ZeroOrderHoldPredictor
+
+    pipeline = default_pipeline(
+        metadata=_meta(), calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        realtime_dark_estimator="zoh",
+    )
+    dark = next(s for s in pipeline.stages if s.name == "dark_correction")
+    assert isinstance(dark._realtime, ZeroOrderHoldPredictor)
+
+
+def test_default_pipeline_rejects_unknown_realtime_dark_estimator():
+    import pytest
+
+    with pytest.raises(ValueError, match="realtime_dark_estimator"):
+        default_pipeline(
+            metadata=_meta(), calibration=_trivial_calibration(),
+            pedestals=SensorPedestals(left=64.0, right=64.0),
+            realtime_dark_estimator="kalman",
+        )
+
+
 def test_pipeline_order_raw_tee_before_timestamp_repair():
     """Tee('raw') must come before TimestampRepairStage in the pipeline."""
     from omotion.pipeline.stages.timestamp_repair import TimestampRepairStage

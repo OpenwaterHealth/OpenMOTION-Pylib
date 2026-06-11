@@ -60,6 +60,37 @@ def test_zoh_std_when_two_darks_have_same_timestamp():
     assert std == 20.0
 
 
+def test_zoh_predictor_returns_last_dark_verbatim():
+    """Where hybrid would average u1 and extrapolate std, ZOH must return
+    the most recent observation unchanged."""
+    from omotion.pipeline.stages.dark import ZeroOrderHoldPredictor
+    h = _hist_with([
+        (0.0,  100.0, 10.0),
+        (15.0, 110.0, 12.0),
+        (30.0, 120.0, 14.0),
+    ])
+    pred = ZeroOrderHoldPredictor()
+    u1, std = pred.predict("left", 0, history=h, target_t=45.0)
+    assert u1 == 120.0
+    assert std == 14.0
+
+
+def test_zoh_predictor_ignores_target_t():
+    """No extrapolation: prediction is identical at any target time."""
+    from omotion.pipeline.stages.dark import ZeroOrderHoldPredictor
+    h = _hist_with([(0.0, 100.0, 10.0), (15.0, 110.0, 12.0)])
+    pred = ZeroOrderHoldPredictor()
+    assert pred.predict("left", 0, history=h, target_t=15.1) \
+        == pred.predict("left", 0, history=h, target_t=1e6)
+
+
+def test_zoh_predictor_returns_none_when_history_is_empty():
+    from omotion.pipeline.stages.dark import ZeroOrderHoldPredictor
+    h = DarkHistory(max_darks=4)
+    pred = ZeroOrderHoldPredictor()
+    assert pred.predict("left", 0, history=h, target_t=15.0) is None
+
+
 def test_pending_interval_collects_frames_between_darks():
     pi = PendingInterval()
     pi.set_left_dark(DarkObservation(t=0.0, u1=100.0, std=10.0), abs_frame_id=10)

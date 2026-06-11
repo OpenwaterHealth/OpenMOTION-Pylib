@@ -15,6 +15,7 @@ from .stages.moments import MomentsStage
 from .stages.pedestal_sub import PedestalSubtractionStage
 from .stages.dark import (
     DarkCorrectionStage, HybridRealtimePredictor, LinearInterpolation,
+    ZeroOrderHoldPredictor,
     EnrichedCorrectedFrame, EnrichedCorrectedInterval,
 )
 from .stages.shot_noise import ShotNoiseCorrectionStage
@@ -33,11 +34,18 @@ def default_pipeline(*,
                      discard_count: int = 9,
                      dark_interval: int = 600,
                      realtime_dark_history_size: int = 4,
+                     realtime_dark_estimator: str = "hybrid",
                      raw_save_max_duration_s: Optional[float] = None,
                      telemetry: Optional[Any] = None) -> Pipeline:
     """Build the canonical pipeline. See SciencePipeline.md for the algorithm.
 
     Args:
+        realtime_dark_estimator: Which realtime dark-baseline predictor the
+            DarkCorrectionStage uses for the live channel. "hybrid"
+            (default) is HybridRealtimePredictor (avg-of-3 u1 + linear-
+            extrapolated std); "zoh" is ZeroOrderHoldPredictor (hold the
+            last dark verbatim — no averaging or extrapolation). The
+            batched/final correction path is unaffected either way.
         raw_save_max_duration_s: If provided and > 0, includes Tee("raw") with
             max_duration_s set. If 0 or negative, omits the raw tee. If None
             (default), includes unbounded raw tee.
@@ -47,6 +55,16 @@ def default_pipeline(*,
             the pdc/tcm/tcl context at its capture time. None (default)
             omits the stage (replay sources, tests, no console telemetry).
     """
+
+    realtime_estimators = {
+        "hybrid": HybridRealtimePredictor,
+        "zoh": ZeroOrderHoldPredictor,
+    }
+    if realtime_dark_estimator not in realtime_estimators:
+        raise ValueError(
+            f"realtime_dark_estimator must be one of "
+            f"{sorted(realtime_estimators)}, got {realtime_dark_estimator!r}"
+        )
 
     not_warmup_or_stale = lambda ft: ft != "warmup" and ft != "stale"
 
@@ -76,7 +94,7 @@ def default_pipeline(*,
         PedestalSubtractionStage(pedestals=pedestals),
 
         DarkCorrectionStage(
-            realtime_estimator=HybridRealtimePredictor(),
+            realtime_estimator=realtime_estimators[realtime_dark_estimator](),
             batch_estimator=LinearInterpolation(),
             pedestals=pedestals,
             realtime_history_size=realtime_dark_history_size,

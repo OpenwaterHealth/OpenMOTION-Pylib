@@ -141,6 +141,27 @@ class HybridRealtimePredictor:
         return (float(u1_pred), float(std_pred))
 
 
+class ZeroOrderHoldPredictor:
+    """Plain realtime dark baseline: hold the most recent dark observation.
+
+    The non-ambitious alternative to HybridRealtimePredictor — no averaging,
+    no extrapolation. Selected via default_pipeline(realtime_dark_estimator=
+    "zoh") to A/B against the hybrid predictor when its over/undershoot is
+    suspected of imprinting the dark-interval period on the live trace.
+
+    Returns None when no darks have been observed yet — same warmup
+    contract as HybridRealtimePredictor.
+    """
+
+    def predict(self, side: str, cam_id: int, *, history: DarkHistory,
+                target_t: float) -> Optional[tuple[float, float]]:
+        recent = history.recent(side, cam_id, n=1)
+        if not recent:
+            return None
+        last = recent[-1]
+        return (float(last.u1), float(last.std))
+
+
 @dataclass
 class _LightSample:
     abs_frame_id: int

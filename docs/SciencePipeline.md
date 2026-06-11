@@ -317,6 +317,8 @@ dark_baseline_rt[i, side, cam] = û₁
 
 The pedestal cancels exactly in `mean_raw − û₁` because both terms carry the same pedestal; no explicit pedestal subtraction occurs in this path.
 
+**Selecting the realtime estimator.** `default_pipeline(realtime_dark_estimator=...)` chooses the predictor for this path: `"hybrid"` (default) is the algorithm above; `"zoh"` is `ZeroOrderHoldPredictor`, which holds the most recent dark's `(u1, std)` verbatim — no averaging, no extrapolation. Both share the same warmup contract (`None` → NaN until the first dark). The ZOH option exists to A/B against the hybrid predictor: because its std is extrapolated through two noisy darks one interval apart, prediction error can imprint the dark-interval period (~15 s) on the live trace as a slow oscillation. The batched correction (§5.7.4) is unaffected by this flag.
+
 #### 5.7.3 PendingInterval — batched buffering
 
 For each `(side, cam_id)` the stage holds a `PendingInterval` with:
