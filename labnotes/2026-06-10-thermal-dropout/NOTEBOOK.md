@@ -9,9 +9,22 @@ Host PC is NOT on the switched outlet.
 ## Research question
 
 In 8-camera mode, cameras (most often 6 and 7) drop out under thermal load — the
-camera chip's power regulator gives out. After the system is powered off, how long
-must it stay off before a dropped camera is usable again? Characterize
-**recovery vs. power-off duration**, per sensor module (revisions may differ).
+camera chip's power regulator gives out. Deliverables (refined by Ethan ~23:40):
+
+1. **How long must one wait between 8-camera scans** before dropped cameras are
+   usable again — characterize recovery vs. cool-down duration, per sensor
+   module (revisions may differ), under several cooling modes:
+   - `mains_off` — whole system off via Shelly (passive cooling, fans dead too);
+   - `cams_off_fan_on` — system stays powered, camera PCBA rails off
+     (`disable_camera_power(0xFF)`), sensor fan forced ON — the practical
+     between-scan candidate, with the IMU-temperature cooling curve logged;
+   - `cams_off_fan_off` — same but fan off, isolating the fan's contribution.
+2. **A detection/prediction rule** for dropout. Caveat from Ethan: the per-frame
+   camera temperature comes from the **camera sensor die**, not a PCBA sensor
+   near the regulator — it may or may not correlate with dropout probability.
+   Treat it as a hypothesis to test: is temp-at-dropout consistent across
+   events/cameras/modules? Does IMU temp (readable even with cameras dead, so
+   usable as an app-side gate) predict recovery/dropout?
 
 ## Agreed protocol (interview with Ethan, 2026-06-10 evening)
 
@@ -31,9 +44,13 @@ must it stay off before a dropped camera is usable again? Characterize
   power-on — firmware has its own dropout-detection logic that prints (Ethan).
   Captured into each cycle's `cycle.log` as `[... PRINTF] ...` lines.
 - Each recovery test doubles as the next trial's heat phase. One trial =
-  heat-to-dropout (+180 s soak) → power off for T → power on → bring up → observe.
-- T swept: coarse ladder `30, 1800, 300, 900, 120, 600, 60, 2400` s, then
-  bisection on the recover/not-recover boundary. Ethan-due report ≈ 10:00.
+  heat-to-dropout (+180 s soak) → cool via (mode, T) → bring up → observe.
+- Trials interleave the three cooling modes (default plan in the script's
+  `DEFAULTS["trial_plan"]`), then adaptive bisection per mode on the
+  recover/not-recover boundary. Steerable overnight via `data/control.json`
+  (`next_trials`, `heat_fans`, `max_heat_s`, `stop`). Report due ≈ 10:00.
+- If time permits near morning: one heat trial with fans ON
+  (`heat_fans: "on"`) for a production-realistic time-to-dropout reference.
 
 ## Key implementation facts (for reproducibility)
 
@@ -79,3 +96,12 @@ must it stay off before a dropped camera is usable again? Characterize
 - Found & designed around: stock configure aborts side on first dead camera;
   pipeline nan-fills missing frames after TimestampRepair (watchdog uses `raw`
   channel); laser power registers clear on every power cycle.
+
+### 2026-06-10 ~23:40 — scope refinement from Ethan
+
+- Goal restated: the wait-between-scans rule (or a detection rule), not just
+  mains-off recovery. Added powered cooling modes (`cool` subcommand:
+  camera rails off via `disable_camera_power`, fan on/off, IMU cooling curve
+  at 0.1 Hz) and the interleaved three-mode trial plan.
+- Noted: per-frame camera temp = sensor **die** temp, not regulator/PCBA temp.
+  Analysis must test, not assume, its correlation with dropout.

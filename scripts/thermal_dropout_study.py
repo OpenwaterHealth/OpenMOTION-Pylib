@@ -67,10 +67,23 @@ DEFAULTS = {
     "boot_wait_s": 20.0,           # shelly-on -> first connection attempt
     "connect_timeout_s": 180.0,    # total budget to get console+sensors connected
     "cycle_timeout_s": 3600.0,     # hard kill for a wedged cycle subprocess
-    "off_ladder": [30, 1800, 300, 900, 120, 600, 60, 2400],
     "min_off_s": 10.0,
     "max_off_s": 3600.0,
+    # Interleaved (cool_mode, cool_seconds) trial plan so every mode gets
+    # boundary data early. mains_off = the original off-time question;
+    # cams_off_fan_on = the practical "wait between 8-cam scans" mode
+    # (system stays powered, camera PCBA rails off, sensor fan forced on);
+    # cams_off_fan_off isolates the fan's contribution.
+    "trial_plan": [
+        ["mains_off", 30], ["cams_off_fan_on", 60], ["mains_off", 1800],
+        ["cams_off_fan_on", 600], ["mains_off", 300], ["cams_off_fan_on", 180],
+        ["cams_off_fan_off", 300], ["mains_off", 900], ["cams_off_fan_on", 300],
+        ["mains_off", 120], ["cams_off_fan_on", 120], ["cams_off_fan_off", 900],
+        ["mains_off", 600],
+    ],
 }
+
+COOL_MODES = ("mains_off", "cams_off_fan_on", "cams_off_fan_off")
 
 
 def _utcnow_iso() -> str:
@@ -315,6 +328,7 @@ def run_cycle(args) -> int:
     verdict: dict = {
         "cycle": args.cycle_index,
         "off_time_before_s": args.off_time_before if args.off_time_before >= 0 else None,
+        "cool_mode_before": args.cool_mode_before or None,
         "started_iso": _utcnow_iso(),
         "params": params,
         "prev_dropped": sorted(f"{s}:{c}" for s, c in prev_dropped),
@@ -641,12 +655,83 @@ def _finish_cameras(verdict, cfg_results, final_snap, prev_dropped, params,
     verdict["cameras"] = cameras
 
 
+# ═══════════════════════════════════════════════════════════════ cool mode
+
+def run_cool(args) -> int:
+    """Powered cooldown: camera PCBA rails off, sensor fan per --fan, hold
+    for --duration-s while logging the IMU-temperature cooling curve — the
+    only module-temperature observable while cameras are unpowered (the
+    camera temps come from the sensor die itself and vanish with the rail).
+    Falls back to a plain wait if hardware is unreachable; cooling happens
+    regardless.
+    """
+    os.makedirs(args.out, exist_ok=True)
+    _setup_cycle_logging(args.out)
+    t_end = time.monotonic() + args.duration_s
+    curve_path = os.path.join(args.out, "cooling_curve.csv")
+    with open(curve_path, "w", encoding="utf-8") as f:
+        f.write("t_s,side,imu_temp_c,power_w\n")
+    iface = None
+    try:
+        iface, connected = _connect(min(60.0, max(20.0, args.duration_s / 2)))
+        handles = _sensor_handles(iface, connected)
+        fan_on = args.fan == "on"
+        for side, sensor in handles:
+            try:
+                power = sensor.get_camera_power_status()
+                mask = 0
+                if power and len(power) == 8:
+                    mask = sum(1 << i for i in range(8) if power[i])
+                if mask:
+                    ok = sensor.disable_camera_power(mask)
+                    logger.info("%s: disable_camera_power(0x%02X) -> %s",
+                                side, mask, ok)
+                else:
+                    logger.info("%s: cameras already unpowered", side)
+            except Exception:
+                logger.exception("%s: camera power-off failed", side)
+            try:
+                ok = sensor.set_fan_control(fan_on)
+                logger.info("%s: fan -> %s (set ok=%s)", side,
+                            "ON" if fan_on else "OFF", ok)
+            except Exception:
+                logger.exception("%s: fan control failed", side)
+        t0 = time.monotonic()
+        while time.monotonic() < t_end:
+            time.sleep(min(10.0, max(0.5, t_end - time.monotonic())))
+            row_t = time.monotonic() - t0
+            power_w = _shelly_power_w()
+            with open(curve_path, "a", encoding="utf-8") as f:
+                for side, sensor in handles:
+                    try:
+                        temp = round(float(sensor.imu_get_temperature()), 2)
+                    except Exception:
+                        temp = ""
+                    f.write(f"{row_t:.0f},{side},{temp},"
+                            f"{power_w if power_w is not None else ''}\n")
+        logger.info("cooldown complete (%.0fs, fan %s)", args.duration_s, args.fan)
+        return 0
+    except Exception:
+        logger.exception("cool phase error; falling back to plain wait")
+        remaining = t_end - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        return 0
+    finally:
+        if iface is not None:
+            try:
+                iface.stop()
+            except Exception:
+                pass
+
+
 # ════════════════════════════════════════════════════════════ campaign mode
 
 @dataclass
 class TrialRecord:
     cycle: int
-    off_time_s: float | None
+    cool_mode: str | None          # cooling applied BEFORE this cycle
+    cool_s: float | None
     dropped: list[str] = field(default_factory=list)       # cameras dead by end
     prev_dropped: list[str] = field(default_factory=list)
     recovered: dict[str, bool] = field(default_factory=dict)
@@ -671,45 +756,52 @@ def _read_control(out_root: str) -> dict:
         return {}
 
 
-def _next_off_time(history: list[TrialRecord], control: dict,
-                   ladder_left: list[float]) -> float:
-    """Pick the next power-off duration.
+def _next_trial(history: list[TrialRecord], control: dict,
+                plan_left: list) -> tuple[str, float]:
+    """Pick the next (cool_mode, cool_seconds).
 
-    Priority: control.json queue > coarse ladder > bisection of the
-    recovery boundary (largest all-fail T vs smallest all-recover T).
+    Priority: control.json "next_trials" queue > interleaved default plan >
+    adaptive (least-sampled mode, bisection of its recovery boundary).
     """
-    q = control.get("next_off_times") or []
+    q = control.get("next_trials") or []
     if q:
-        t = float(q.pop(0))
-        control["next_off_times"] = q
-        logger.info("off-time %ss from control.json queue", t)
-        return t
-    if ladder_left:
-        t = float(ladder_left.pop(0))
-        logger.info("off-time %ss from coarse ladder", t)
-        return t
+        e = q.pop(0)
+        control["next_trials"] = q
+        mode, t = str(e["mode"]), float(e["off_s"])
+        logger.info("trial (%s, %ss) from control.json queue", mode, t)
+        return mode, t
+    if plan_left:
+        mode, t = plan_left.pop(0)
+        logger.info("trial (%s, %ss) from default plan", mode, t)
+        return str(mode), float(t)
+
+    counts = {m: 0 for m in COOL_MODES}
+    for tr in history:
+        if tr.cool_mode in counts and tr.recovered:
+            counts[tr.cool_mode] += 1
+    mode = min(counts, key=lambda m: counts[m])
     fails, succs = [], []
     for tr in history:
-        if tr.off_time_s is None or not tr.recovered:
+        if tr.cool_mode != mode or tr.cool_s is None or not tr.recovered:
             continue
         vals = [v for v in tr.recovered.values() if v is not None]
         if not vals:
             continue
-        (succs if all(vals) else fails).append(tr.off_time_s)
-    if fails and succs and min(succs) > max(f for f in fails):
+        (succs if all(vals) else fails).append(tr.cool_s)
+    if fails and succs and min(succs) > max(fails):
         t = round((max(fails) + min(succs)) / 2.0, 0)
-        logger.info("off-time %ss by bisection (fail<=%s, success>=%s)",
-                    t, max(fails), min(succs))
+        logger.info("trial (%s, %ss) by bisection (fail<=%s, success>=%s)",
+                    mode, t, max(fails), min(succs))
     elif fails and not succs:
         t = min(DEFAULTS["max_off_s"], max(fails) * 2)
-        logger.info("off-time %ss (no success yet; doubling)", t)
+        logger.info("trial (%s, %ss): no success yet; doubling", mode, t)
     elif succs and not fails:
         t = max(DEFAULTS["min_off_s"], min(succs) / 2)
-        logger.info("off-time %ss (no failure yet; halving)", t)
+        logger.info("trial (%s, %ss): no failure yet; halving", mode, t)
     else:
         t = 300.0
-        logger.info("off-time %ss (no boundary data; default)", t)
-    return float(t)
+        logger.info("trial (%s, %ss): no boundary data; default", mode, t)
+    return mode, float(t)
 
 
 def run_campaign(args) -> int:
@@ -731,11 +823,10 @@ def run_campaign(args) -> int:
     _append_jsonl(events, {"type": "campaign_start", "until": args.until,
                            "shelly": os.environ.get("SHELLY_IP_ADDRESS")})
 
-    ladder_left = list(args.off_ladder)
+    plan_left = [list(x) for x in DEFAULTS["trial_plan"]]
     history: list[TrialRecord] = []
     prev_dropped: list[str] = []
     cycle_idx = 0
-    off_before: float = -1.0  # cycle 0: baseline (we power-cycle 30 s for a clean state)
 
     # Clean slate: brief power cycle so cycle 0 starts from a known reset.
     logger.info("initial 30 s power cycle for a clean baseline state")
@@ -744,7 +835,7 @@ def run_campaign(args) -> int:
     time.sleep(30)
     outlet.on()
     _append_jsonl(events, {"type": "power_on"})
-    off_before = 30.0 if not history else off_before
+    cool_mode, cool_s = "mains_off", 30.0   # what preceded cycle 0
     time.sleep(DEFAULTS["boot_wait_s"])
 
     while True:
@@ -763,8 +854,9 @@ def run_campaign(args) -> int:
         cmd = [sys.executable, os.path.abspath(__file__), "cycle",
                "--out", cycle_dir,
                "--cycle-index", str(cycle_idx),
-               "--off-time-before", str(off_before),
-               "--fans", "off"]
+               "--off-time-before", str(cool_s),
+               "--cool-mode-before", cool_mode,
+               "--fans", str(control.get("heat_fans", "off"))]
         if prev_dropped:
             cmd += ["--prev-dropped", ",".join(prev_dropped)]
         for k in ("max_heat_s", "post_dropout_soak_s"):
@@ -772,10 +864,11 @@ def run_campaign(args) -> int:
                 cmd += [f"--{k.replace('_', '-')}", str(control[k])]
 
         _append_jsonl(events, {"type": "cycle_start", "cycle": cycle_idx,
-                               "off_time_before_s": off_before,
+                               "cool_mode_before": cool_mode,
+                               "cool_s_before": cool_s,
                                "prev_dropped": prev_dropped})
-        logger.info("=== cycle %d (off-time before: %ss, prev dropped: %s) ===",
-                    cycle_idx, off_before, prev_dropped or "none")
+        logger.info("=== cycle %d (cooled %ss via %s, prev dropped: %s) ===",
+                    cycle_idx, cool_s, cool_mode, prev_dropped or "none")
         try:
             proc = subprocess.run(cmd, timeout=DEFAULTS["cycle_timeout_s"])
             rc = proc.returncode
@@ -800,7 +893,7 @@ def run_campaign(args) -> int:
         recovered = {k: v.get("recovered") for k, v in cams.items()
                      if v.get("was_dropped_last_cycle")}
         tr = TrialRecord(cycle=cycle_idx,
-                         off_time_s=off_before if off_before >= 0 else None,
+                         cool_mode=cool_mode, cool_s=cool_s,
                          dropped=dropped_now, prev_dropped=list(prev_dropped),
                          recovered=recovered,
                          end_reason=verdict.get("end_reason"))
@@ -814,32 +907,42 @@ def run_campaign(args) -> int:
         cycle_idx += 1
         if rc != 0 and not verdict:
             logger.error("cycle produced no verdict; 60 s recovery power-cycle")
-            off_before = 60.0
+            cool_mode, cool_s = "mains_off", 60.0
         else:
-            off_before = _next_off_time(history, control, ladder_left)
-            if control.get("next_off_times") is not None:
+            cool_mode, cool_s = _next_trial(history, control, plan_left)
+            if control.get("next_trials") is not None:
                 with open(os.path.join(out_root, "control.json"), "w",
                           encoding="utf-8") as f:
                     json.dump(control, f, indent=2)
 
-        # projected end check: don't start a cycle we can't finish by ~until+45m
-        proj = _dt.datetime.now() + _dt.timedelta(seconds=off_before + 2700)
-        if proj.time() >= until and proj.hour < 12 and _dt.datetime.now().time() < until:
-            pass  # informational only; the loop-top check enforces the stop
-
-        logger.info("powering OFF for %ss", off_before)
-        if not outlet.off():
-            logger.error("Shelly OFF failed! retrying once")
-            time.sleep(2)
-            outlet.off()
-        _append_jsonl(events, {"type": "power_off", "planned_off_s": off_before})
-        time.sleep(off_before)
-        if not outlet.on():
-            logger.error("Shelly ON failed! retrying once")
-            time.sleep(2)
-            outlet.on()
-        _append_jsonl(events, {"type": "power_on"})
-        time.sleep(DEFAULTS["boot_wait_s"])
+        # ── cooling phase ────────────────────────────────────────────
+        _append_jsonl(events, {"type": "cool_start", "mode": cool_mode,
+                               "planned_s": cool_s})
+        logger.info("cooling: %s for %ss", cool_mode, cool_s)
+        if cool_mode == "mains_off":
+            if not outlet.off():
+                logger.error("Shelly OFF failed! retrying once")
+                time.sleep(2)
+                outlet.off()
+            time.sleep(cool_s)
+            if not outlet.on():
+                logger.error("Shelly ON failed! retrying once")
+                time.sleep(2)
+                outlet.on()
+            time.sleep(DEFAULTS["boot_wait_s"])
+        else:
+            fan = "on" if cool_mode == "cams_off_fan_on" else "off"
+            cool_dir = os.path.join(out_root, f"cool_{cycle_idx:03d}")
+            os.makedirs(cool_dir, exist_ok=True)
+            try:
+                subprocess.run(
+                    [sys.executable, os.path.abspath(__file__), "cool",
+                     "--out", cool_dir, "--duration-s", str(cool_s),
+                     "--fan", fan],
+                    timeout=cool_s + 300)
+            except subprocess.TimeoutExpired:
+                logger.error("cool subprocess timed out — continuing")
+        _append_jsonl(events, {"type": "cool_done", "mode": cool_mode})
 
     # ── leave the bench in a sane state: power on, fans on ─────────────
     try:
@@ -890,13 +993,12 @@ def main() -> int:
     pc = sub.add_parser("campaign", help="overnight orchestrator (owns the Shelly)")
     pc.add_argument("--out", required=True)
     pc.add_argument("--until", default="09:15", help="stop time HH:MM (default 09:15)")
-    pc.add_argument("--off-ladder", type=lambda s: [float(x) for x in s.split(",")],
-                    default=DEFAULTS["off_ladder"])
 
     py = sub.add_parser("cycle", help="one power-on session (hardware work)")
     py.add_argument("--out", required=True)
     py.add_argument("--cycle-index", type=int, required=True)
     py.add_argument("--off-time-before", type=float, default=-1.0)
+    py.add_argument("--cool-mode-before", default="", choices=("", *COOL_MODES))
     py.add_argument("--prev-dropped", default="",
                     help="comma list like left:6,right:7")
     py.add_argument("--fans", choices=["on", "off"], default="off")
@@ -912,6 +1014,12 @@ def main() -> int:
     py.add_argument("--connect-timeout-s", type=float, dest="connect_timeout_s",
                     default=DEFAULTS["connect_timeout_s"])
 
+    pl = sub.add_parser("cool", help="powered cooldown: cams off, fan on/off, "
+                                     "log IMU cooling curve")
+    pl.add_argument("--out", required=True)
+    pl.add_argument("--duration-s", type=float, required=True, dest="duration_s")
+    pl.add_argument("--fan", choices=["on", "off"], required=True)
+
     pr = sub.add_parser("restore", help="fans back on; leave system idle-sane")
     pr.add_argument("--out", required=True)
 
@@ -920,6 +1028,8 @@ def main() -> int:
         return run_campaign(args)
     if args.mode == "cycle":
         return run_cycle(args)
+    if args.mode == "cool":
+        return run_cool(args)
     if args.mode == "restore":
         return run_restore(args)
     return 2
