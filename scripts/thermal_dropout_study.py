@@ -306,6 +306,18 @@ def _configure_cameras_isolated(sensor, side: str) -> dict[int, dict]:
     return results
 
 
+def _imu_bringup(handles) -> None:
+    """IMU must be init'd + powered before imu_get_temperature returns real
+    values (reads 0.0 otherwise — observed cycle 0, 02:51)."""
+    for side, sensor in handles:
+        try:
+            ok1 = sensor.imu_init()
+            ok2 = sensor.imu_on()
+            logger.info("%s: imu init=%s on=%s", side, ok1, ok2)
+        except Exception:
+            logger.exception("%s: IMU bring-up failed", side)
+
+
 def _read_imu_temps(handles) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for side, sensor in handles:
@@ -412,6 +424,7 @@ def run_cycle(args) -> int:
                             side, "ON" if fans_on else "OFF", ok, st)
             except Exception:
                 logger.exception("%s: fan control failed", side)
+        _imu_bringup(handles)
         verdict["imu_temp_at_start_c"] = _read_imu_temps(handles)
         logger.info("IMU temps at start: %s", verdict["imu_temp_at_start_c"])
 
@@ -692,6 +705,7 @@ def run_cool(args) -> int:
     try:
         iface, connected = _connect(min(60.0, max(20.0, args.duration_s / 2)))
         handles = _sensor_handles(iface, connected)
+        _imu_bringup(handles)
         fan_on = args.fan == "on"
         for side, sensor in handles:
             if args.cams == "off":
