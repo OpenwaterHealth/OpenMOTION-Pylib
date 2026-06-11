@@ -201,3 +201,34 @@ tripped!), 51.8 °C after the scan — IMU/board temp runs FAR below die temp;
 its value as a recovery gate is questionable, cooling curves will tell.
 
 Next: mains_off 1800 s (until ~04:16) → cycle 4 = long-cool recovery anchor.
+
+### 2026-06-11 04:16–05:05 — THE MODE, NOT THE TIME, CLEARS THE TRIP
+
+Genuine trial matrix so far (right module only; "recovered n/m" = previously
+tripped cameras that produce data after bring-up):
+
+| cycle | cooling before | recovered |
+|---|---|---|
+| 4 | mains_off 1800 s | **8/8** |
+| 5 | idle_fan_on 600 s | **0/6** (board cooled 50→31 °C, trip persisted!) |
+| 6 | cams_off_fan_on 300 s | **0/8** |
+| 7 | mains_off 300 s | **8/8** |
+
+- **mains_off 300 s recovers everything; rails-off 300 s recovers nothing.**
+  Same duration, opposite outcome → the recovery variable is FULL module
+  power removal, not elapsed time, not module temperature (IMU/board temp
+  reached ~31 °C during the failed idle cool — colder than after the
+  successful 300 s mains-off).
+- Implication: `disable_camera_power` (OW_CAMERA_POWER_OFF) does NOT
+  de-energize whatever latches — likely a shared upstream regulator with
+  per-camera load switches downstream, or a latched fault state in the
+  regulator that only input-power removal resets.
+- Every dropout event so far (12/12) occurred at **114–116 °C die temp**;
+  cams 0/3 repeatedly survive longest (coolest positions), 1/2/4/5/6/7 trip
+  within ~2 min fans-off from warm, ~2–4 min from cold.
+- Cumulative-cooling confound noted: failed-recovery cycles chain without
+  re-heating. Mitigation in analysis: count only mains-off seconds (idle and
+  rails-off demonstrably contribute nothing).
+- 05:06 steering: control.json queue = mains 120 → mains 60 →
+  cams_off_fan_on 1800 (does rails-off EVER clear it?) → mains 30 →
+  mains 300 (repeat). Boundary to bisect: 30 s < T_mains ≤ 300 s.
