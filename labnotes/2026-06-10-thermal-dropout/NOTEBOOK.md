@@ -232,3 +232,24 @@ tripped cameras that produce data after bring-up):
 - 05:06 steering: control.json queue = mains 120 → mains 60 →
   cams_off_fan_on 1800 (does rails-off EVER clear it?) → mains 30 →
   mains 300 (repeat). Boundary to bisect: 30 s < T_mains ≤ 300 s.
+
+### 2026-06-11 05:21–06:07 — boundary collapse + the definitive rails-off probe
+
+| cycle | cooling before | recovered |
+|---|---|---|
+| 8 | idle_fan_on 300 s | 0/6 (cams 0/3 streamed, re-tripped ~115 °C) |
+| 9 | mains_off 120 s | **8/8** |
+| 10 | mains_off 60 s | **8/8** |
+| 11 | **cams_off_fan_on 1800 s** | **0/8** |
+
+- **mains-off works down to 60 s (so far). Rails-off NEVER works — not even
+  30 minutes with the fan on, module stone cold.** `disable_camera_power`
+  (OW_CAMERA_POWER_OFF) demonstrably does not de-energize the latched
+  domain; the trip survives indefinitely while the module stays powered.
+- Operational consequence: there is no firmware-only recovery path today.
+  Recovery requires cutting module input power (Shelly tonight; whatever
+  feeds the sensors in the product). Conversely the required outage is
+  short: ≤60 s (floor hunt at 30/15/10 s in progress).
+- Module heavily heat-soaked by the trial chain; recovered cameras re-trip
+  in ~2–5 min fans-off, still at the same ~115 °C die line.
+- 06:08 queue: mains 30 → 15 → 10 → 300 (repeat) → 60 (repeat).
