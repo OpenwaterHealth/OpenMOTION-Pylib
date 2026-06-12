@@ -276,6 +276,13 @@ def convert_raw_csv(raw_csv: Path, side: int, writer) -> int:
     return n
 
 
+def _merge_trigger_overrides(args) -> dict | None:
+    cfg = dict(json.loads(args.trigger_json)) if args.trigger_json else {}
+    if args.trigger_freq is not None:
+        cfg["TriggerFrequencyHz"] = args.trigger_freq
+    return cfg or None
+
+
 def cmd_collect(args) -> int:
     """Run a scan via the standard ScanWorkflow and write frames.csv.
 
@@ -374,12 +381,29 @@ def cmd_collect(args) -> int:
             right_camera_mask=args.right_mask,
             write_corrected_csv=False,
             raw_save_max_duration_s=float(args.duration) + 30.0,
-            trigger_config=({"TriggerFrequencyHz": args.trigger_freq}
-                            if args.trigger_freq is not None else None),
+            trigger_config=_merge_trigger_overrides(args),
         )
         if not motion.start_scan(req):
             print("ERROR: start_scan refused", file=sys.stderr)
             return 1
+
+        if args.strobe_hz > 0:
+            # Polarity diagnostic: each 0x22 configure strobe leaves the DDS
+            # free-running until the next STOP trigger edge. Normal polarity
+            # -> the run covers one full laser pulse per strobe; inverted ->
+            # it stops at the next pulse start and covers nothing.
+            stop_evt = threading.Event()
+
+            def _strober():
+                payload = {"ModulationFrequencyWord": args.freq_word}
+                while not stop_evt.wait(1.0 / args.strobe_hz):
+                    try:
+                        console.set_demod_config(payload)
+                    except Exception:
+                        pass
+
+            th = threading.Thread(target=_strober, daemon=True)
+            th.start()
 
         probe = {}
         if args.probe:
@@ -408,6 +432,8 @@ def cmd_collect(args) -> int:
         deadline = time.monotonic() + args.duration + 120.0
         while motion.scan_workflow.running and time.monotonic() < deadline:
             time.sleep(1.0)
+        if args.strobe_hz > 0:
+            stop_evt.set()
         if motion.scan_workflow.running:
             print("WARNING: scan still running at deadline; cancelling", file=sys.stderr)
             motion.cancel_scan()
@@ -675,6 +701,9 @@ def main(argv=None) -> int:
                     help="hold modulation ON for the whole run (Phase 2 reference)")
     pc.add_argument("--trigger-freq", type=float, default=None,
                     help="override trigger frequency in Hz (Phase 4b sweeps)")
+    pc.add_argument("--trigger-json", default=None,
+                    help="JSON dict merged over the trigger config "
+                         "(e.g. '{\"LaserPulseDelayUsec\": 5000}')")
     pc.add_argument("--left-mask", type=lambda v: int(v, 0), default=0x0F,
                     help="left camera bitmask (default 0x0F = 4 cameras)")
     pc.add_argument("--right-mask", type=lambda v: int(v, 0), default=0)
@@ -682,6 +711,9 @@ def main(argv=None) -> int:
     pc.add_argument("--probe", action="store_true",
                     help="mid-scan register probe over UART (arm bit, gain, "
                          "TA trigger count, seed ADC current)")
+    pc.add_argument("--strobe-hz", type=float, default=0.0,
+                    help="spam 0x22 configure strobes during the scan "
+                         "(trigger-polarity diagnostic)")
     pc.set_defaults(fn=cmd_collect)
 
     pa = sub.add_parser("analyze", help="classify frames and report S/F/M ratios")
