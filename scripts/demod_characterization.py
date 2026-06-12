@@ -187,29 +187,59 @@ def cmd_sanity(args) -> int:
 # collect — Phases 1-5 capture
 # ---------------------------------------------------------------------------
 
-def cmd_collect(args) -> int:
-    """Run a capture and write per-frame moments CSV + metadata JSON.
+def convert_raw_csv(raw_csv: Path, side: int, writer) -> int:
+    """Convert one CsvSink raw-histogram CSV into frames.csv rows.
 
-    NOTE: bench-validation pending — mirrors the LiveUsbSource usage of
-    tests/test_pipeline/test_sources.py::test_live_usb_source_smoke.
+    Raw schema: cam_id, frame_id, timestamp_s, type, 0..1023, temperature,
+    sum, tcm, tcl, pdc. Moments are recomputed from the bins so frames.csv
+    is self-consistent with the synthetic-test path.
+    """
+    n = 0
+    with open(raw_csv, newline="") as f:
+        r = csv.reader(f)
+        header = next(r)
+        idx = {name: i for i, name in enumerate(header)}
+        bin0 = idx["0"]
+        for row in r:
+            hist = np.asarray(row[bin0:bin0 + 1024], dtype=np.float64)
+            counts, mean, std = hist_moments(hist)
+            writer.writerow([row[idx["frame_id"]], row[idx["timestamp_s"]],
+                             side, row[idx["cam_id"]],
+                             int(counts), f"{mean:.4f}", f"{std:.4f}",
+                             row[idx["type"]]])
+            n += 1
+    return n
+
+
+def cmd_collect(args) -> int:
+    """Run a scan via the standard ScanWorkflow and write frames.csv.
+
+    Uses MotionInterface.start_scan so camera bring-up, trigger config and
+    start/stop, and raw-CSV storage all follow the production scan path.
+    The demod config (and optional continuous-modulation override) is
+    applied just before the scan starts.
     """
     from omotion import MotionInterface
-    from omotion.pipeline.sources import LiveUsbSource
-    from omotion.pipeline.sinks import ScanMetadata
+    from omotion.ScanWorkflow import ScanRequest
 
     out_dir = Path(args.out) / args.label
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    motion = MotionInterface(data_dir=None, scan_db_path=None, operator_id="demod-char")
+    motion = MotionInterface(data_dir=str(out_dir), scan_db_path=None,
+                             operator_id="demod-char")
     motion.start()
     continuous_on = False
     try:
         console = motion.console
+        if not console.is_connected():
+            print("ERROR: console not connected", file=sys.stderr)
+            return 1
 
-        trigger_cfg = console.get_trigger_json() or {}
-        if args.trigger_freq is not None:
-            trigger_cfg = console.set_trigger_json(
-                {**trigger_cfg, "TriggerFrequencyHz": args.trigger_freq}) or trigger_cfg
+        # Cold-start requirement: laser driver registers are cleared at
+        # power-up; without this the trigger fires but no light is emitted.
+        if not motion.apply_laser_power():
+            print("ERROR: apply_laser_power failed", file=sys.stderr)
+            return 1
 
         demod_payload = {"DemodPulseInterval": 0 if args.continuous else args.demod_interval}
         if args.freq_word is not None:
@@ -218,6 +248,10 @@ def cmd_collect(args) -> int:
             demod_payload["ModulationPhaseWord"] = args.phase_word
         demod_cfg = console.set_demod_config(demod_payload)
         print(f"demod config: {demod_cfg}")
+        if demod_cfg is None:
+            print("ERROR: SET_DEMOD rejected — is the console running the "
+                  "feature/demod-frames firmware?", file=sys.stderr)
+            return 1
 
         if args.continuous:
             # Phase 2 reference: hold modulation ON for the whole run,
@@ -229,60 +263,56 @@ def cmd_collect(args) -> int:
             continuous_on = True
 
         seed_rev = _read_seed(console, SEED_REG_REVISION, 3)
+
+        req = ScanRequest(
+            subject_id=args.label,
+            duration_sec=int(args.duration),
+            left_camera_mask=args.left_mask,
+            right_camera_mask=args.right_mask,
+            write_corrected_csv=False,
+            raw_save_max_duration_s=float(args.duration) + 30.0,
+            trigger_config=({"TriggerFrequencyHz": args.trigger_freq}
+                            if args.trigger_freq is not None else None),
+        )
+        if not motion.start_scan(req):
+            print("ERROR: start_scan refused", file=sys.stderr)
+            return 1
+
+        deadline = time.monotonic() + args.duration + 120.0
+        while motion.scan_workflow.running and time.monotonic() < deadline:
+            time.sleep(1.0)
+        if motion.scan_workflow.running:
+            print("WARNING: scan still running at deadline; cancelling", file=sys.stderr)
+            motion.cancel_scan()
+        err = getattr(motion.scan_workflow, "last_scan_error", None)
+        if err:
+            print(f"ERROR: scan reported failure: {err}", file=sys.stderr)
+            return 1
+
+        raw_csvs = sorted(out_dir.glob("*_raw.csv"))
+        if not raw_csvs:
+            print(f"ERROR: no *_raw.csv produced in {out_dir}", file=sys.stderr)
+            return 1
+        n_rows = 0
+        with open(out_dir / "frames.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(CSV_HEADERS + ["fw_type"])
+            for raw in raw_csvs:
+                side = 0 if "_left_" in raw.name else 1
+                n_rows += convert_raw_csv(raw, side, w)
+
         meta = {
             "label": args.label,
             "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "duration_sec": args.duration,
             "continuous_modulation": args.continuous,
             "demod_config": demod_cfg,
-            "trigger_config": trigger_cfg,
+            "trigger_config": console.get_trigger_json(),
             "seed_fpga_rev": list(seed_rev) if seed_rev else None,
+            "raw_csvs": [r.name for r in raw_csvs],
         }
-
-        scan_meta = ScanMetadata(
-            scan_id=f"demod-{args.label}", subject_id="phantom", operator="demod-char",
-            started_at_iso=meta["collected_at"], duration_sec=args.duration,
-            left_camera_mask=args.left_mask, right_camera_mask=args.right_mask,
-            reduced_mode=False,
-        )
-        src = LiveUsbSource(console=console, left=motion.left, right=motion.right,
-                            batch_size_frames=40, metadata=scan_meta)
-
-        csv_path = out_dir / "frames.csv"
-        t_end = time.monotonic() + args.duration
-        n_rows = 0
-        # Per-(side, cam) 8-bit frame-id unwrap state
-        unwrap: dict[tuple[int, int], list[int]] = {}
-
-        with open(csv_path, "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(CSV_HEADERS)
-            for batch in src:
-                n = batch.cam_ids.shape[0]
-                for i in range(n):
-                    side = int(batch.side_ids[i]) if batch.side_ids is not None else 0
-                    cam = int(batch.cam_ids[i])
-                    fid = int(batch.frame_ids[i])
-                    key = (side, cam)
-                    if key not in unwrap:
-                        unwrap[key] = [fid, fid]          # [last_raw, abs]
-                    else:
-                        last_raw, abs_id = unwrap[key]
-                        abs_id += (fid - last_raw) & 0xFF
-                        unwrap[key] = [fid, abs_id]
-                    abs_id = unwrap[key][1]
-
-                    counts, mean, std = hist_moments(
-                        batch.raw_histograms[i, side, cam].astype(np.float64))
-                    w.writerow([abs_id, float(batch.timestamp_s[i]), side, cam,
-                                int(counts), f"{mean:.4f}", f"{std:.4f}"])
-                    n_rows += 1
-                if time.monotonic() >= t_end:
-                    src.close()
-                    break
-
         (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
-        print(f"wrote {n_rows} rows -> {csv_path}")
+        print(f"wrote {n_rows} rows -> {out_dir / 'frames.csv'}")
     finally:
         if continuous_on:
             motion.console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
@@ -498,7 +528,8 @@ def main(argv=None) -> int:
                     help="hold modulation ON for the whole run (Phase 2 reference)")
     pc.add_argument("--trigger-freq", type=float, default=None,
                     help="override trigger frequency in Hz (Phase 4b sweeps)")
-    pc.add_argument("--left-mask", type=lambda v: int(v, 0), default=0xFF)
+    pc.add_argument("--left-mask", type=lambda v: int(v, 0), default=0x0F,
+                    help="left camera bitmask (default 0x0F = 4 cameras)")
     pc.add_argument("--right-mask", type=lambda v: int(v, 0), default=0)
     pc.add_argument("--out", default="scan_data/demod-characterization")
     pc.set_defaults(fn=cmd_collect)
