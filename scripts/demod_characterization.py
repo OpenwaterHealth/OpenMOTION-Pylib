@@ -46,6 +46,7 @@ import csv
 import json
 import logging
 import sys
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -112,6 +113,23 @@ def hist_moments(hist: np.ndarray) -> tuple[float, float, float]:
 # sanity — Phase 0
 # ---------------------------------------------------------------------------
 
+def _wait_connected(motion, *, need_left=False, need_right=False,
+                    timeout_s: float = 20.0) -> bool:
+    """Connection happens on the hotplug monitor thread after start();
+    poll until the devices we need are up."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        ok = motion.console.is_connected()
+        if ok and need_left:
+            ok = getattr(motion.left, "is_connected", lambda: False)()
+        if ok and need_right:
+            ok = getattr(motion.right, "is_connected", lambda: False)()
+        if ok:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def _read_seed(console, reg: int, n: int) -> bytes | None:
     data, n_read = console.read_i2c_packet(SEED_MUX, SEED_CHANNEL,
                                            SEED_I2C_ADDR, reg, n)
@@ -127,6 +145,9 @@ def cmd_sanity(args) -> int:
     motion.start()
     failures = 0
     try:
+        if not _wait_connected(motion):
+            print("ERROR: console did not connect", file=sys.stderr)
+            return 1
         console = motion.console
 
         def check(name, ok, detail=""):
@@ -264,7 +285,7 @@ def cmd_collect(args) -> int:
     applied just before the scan starts.
     """
     from omotion import MotionInterface
-    from omotion.ScanWorkflow import ScanRequest
+    from omotion.ScanWorkflow import ScanRequest, ConfigureRequest
 
     out_dir = Path(args.out) / args.label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -274,10 +295,37 @@ def cmd_collect(args) -> int:
     motion.start()
     continuous_on = False
     try:
-        console = motion.console
-        if not console.is_connected():
-            print("ERROR: console not connected", file=sys.stderr)
+        if not _wait_connected(motion, need_left=args.left_mask != 0,
+                               need_right=args.right_mask != 0):
+            print("ERROR: console/sensors did not connect", file=sys.stderr)
             return 1
+        console = motion.console
+
+        # Camera configuration (FPGA/sensor init) — required once per sensor
+        # power-on before start_scan's camera-enable works. Idempotent, so
+        # run it every collect rather than tracking power-cycle state.
+        cfg_done = threading.Event()
+        cfg_result: dict = {}
+
+        def _cfg_complete(res):
+            cfg_result["ok"] = getattr(res, "ok", False)
+            cfg_result["error"] = getattr(res, "error", "")
+            cfg_done.set()
+
+        if not motion.start_configure_camera_sensors(
+                ConfigureRequest(left_camera_mask=args.left_mask,
+                                 right_camera_mask=args.right_mask),
+                on_complete_fn=_cfg_complete):
+            print("ERROR: camera configure refused (already running?)", file=sys.stderr)
+            return 1
+        if not cfg_done.wait(timeout=180.0):
+            print("ERROR: camera configure timed out", file=sys.stderr)
+            return 1
+        if not cfg_result.get("ok"):
+            print(f"ERROR: camera configure failed: {cfg_result.get('error')}",
+                  file=sys.stderr)
+            return 1
+        print("camera configure OK")
 
         # Cold-start requirement: laser driver registers are cleared at
         # power-up; without this the trigger fires but no light is emitted.
@@ -333,6 +381,30 @@ def cmd_collect(args) -> int:
             print("ERROR: start_scan refused", file=sys.stderr)
             return 1
 
+        probe = {}
+        if args.probe:
+            # Mid-scan electrical probe over UART (independent of the USB
+            # histogram stream): is the arm bit still set, did the amplitude
+            # survive, is the trigger reaching the unified board?
+            time.sleep(min(15.0, args.duration / 3))
+
+            def _rd(ch, reg, n):
+                d, ln = console.read_i2c_packet(SEED_MUX, ch, SEED_I2C_ADDR, reg, n)
+                return int.from_bytes(bytes(d[:n]), "little") if d is not None and ln == n else None
+
+            ta_count_0 = _rd(4, 0x10, 4)
+            probe["seed_static_ctrl"] = _rd(5, SEED_REG_STATIC_CTRL, 2)
+            probe["seed_dds_gain"] = _rd(5, SEED_REG_DDS_GAIN, 2)
+            probe["seed_freq_word"] = _rd(5, SEED_REG_FREQ, 4)
+            probe["seed_adc_current_0"] = _rd(5, 0x0E, 2)
+            time.sleep(2.0)
+            ta_count_1 = _rd(4, 0x10, 4)
+            probe["seed_adc_current_1"] = _rd(5, 0x0E, 2)
+            probe["ta_trigger_count_delta_2s"] = (
+                ta_count_1 - ta_count_0
+                if ta_count_0 is not None and ta_count_1 is not None else None)
+            print(f"mid-scan probe: {probe}")
+
         deadline = time.monotonic() + args.duration + 120.0
         while motion.scan_workflow.running and time.monotonic() < deadline:
             time.sleep(1.0)
@@ -366,6 +438,7 @@ def cmd_collect(args) -> int:
             "trigger_config": console.get_trigger_json(),
             "seed_fpga_rev": list(seed_rev) if seed_rev else None,
             "raw_csvs": [r.name for r in raw_csvs],
+            "mid_scan_probe": probe,
         }
         (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
         print(f"wrote {n_rows} rows -> {out_dir / 'frames.csv'}")
@@ -386,6 +459,7 @@ class CamSeries:
     frame_ids: list[int] = field(default_factory=list)
     means: list[float] = field(default_factory=list)
     stds: list[float] = field(default_factory=list)
+    fw_types: list[str] = field(default_factory=list)  # "" when not recorded
 
 
 @dataclass
@@ -422,6 +496,7 @@ def load_run(run_dir: Path) -> dict[tuple[int, int], CamSeries]:
             s.frame_ids.append(int(row["abs_frame_id"]))
             s.means.append(float(row["mean_raw"]))
             s.stds.append(float(row["std_raw"]))
+            s.fw_types.append(row.get("fw_type", "") or "")
     return dict(series)
 
 
@@ -437,11 +512,20 @@ def analyze_cam(side: int, cam: int, s: CamSeries,
     fid = np.asarray(s.frame_ids)
     mean = np.asarray(s.means)
     std = np.asarray(s.stds)
+    ftype = np.asarray(s.fw_types if len(s.fw_types) == len(s.frame_ids)
+                       else [""] * len(s.frame_ids))
     order = np.argsort(fid)
-    fid, mean, std = fid[order], mean[order], std[order]
+    fid, mean, std, ftype = fid[order], mean[order], std[order], ftype[order]
 
-    med_mean = float(np.nanmedian(mean))
-    dark = mean < dark_frac * med_mean
+    if (ftype != "").any():
+        # The pipeline's frame classification is authoritative when present:
+        # exclude warmup/stale frames entirely; darks by label.
+        keep = (ftype == "dark") | (ftype == "light")
+        fid, mean, std, ftype = fid[keep], mean[keep], std[keep], ftype[keep]
+        dark = ftype == "dark"
+    else:
+        med_mean = float(np.nanmedian(mean))
+        dark = mean < dark_frac * med_mean
     pedestal = float(np.nanmedian(mean[dark])) if dark.any() else 0.0
 
     light = ~dark & np.isfinite(mean) & np.isfinite(std)
@@ -595,6 +679,9 @@ def main(argv=None) -> int:
                     help="left camera bitmask (default 0x0F = 4 cameras)")
     pc.add_argument("--right-mask", type=lambda v: int(v, 0), default=0)
     pc.add_argument("--out", default="scan_data/demod-characterization")
+    pc.add_argument("--probe", action="store_true",
+                    help="mid-scan register probe over UART (arm bit, gain, "
+                         "TA trigger count, seed ADC current)")
     pc.set_defaults(fn=cmd_collect)
 
     pa = sub.add_parser("analyze", help="classify frames and report S/F/M ratios")
