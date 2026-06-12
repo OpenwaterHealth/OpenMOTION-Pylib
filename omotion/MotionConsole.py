@@ -1152,10 +1152,10 @@ class MotionConsole(SignalWrapper):
             self._log_command_error("get_trigger_json", e)
             raise  # Re-raise the exception for the caller to handle
 
-    #: Assumed DDS reference clock. The Seed FPGA (openmotion-seed-fpga)
-    #: drives an AD9833-class SPI DDS; its own input clock is 25 MHz and the
-    #: DDS MCLK is believed to share it. Confirm against the schematic or a
-    #: scope before trusting absolute frequencies.
+    #: DDS reference clock, confirmed from the Unified Console Board
+    #: schematic (700-00010 rev 0.5, sheet 20): the modulation device is an
+    #: AD9837 (U19) clocked by a dedicated ECS-2033-250 25.000 MHz
+    #: oscillator (Y1).
     SEED_DDS_MCLK_HZ: int = 25_000_000
 
     @staticmethod
@@ -1175,10 +1175,10 @@ class MotionConsole(SignalWrapper):
         Convert a modulation frequency in Hz to the raw 28-bit DDS frequency
         tuning word (Seed FPGA regs 0x0A-0x0D) for ``set_demod_config``.
 
-        The Seed FPGA loads the word into an AD9833-class DDS (triangle
-        output, gated by the laser trigger pulse):
-        f_out = word * MCLK / 2**28. MCLK is assumed 25 MHz (see
-        ``SEED_DDS_MCLK_HZ``).
+        The Seed FPGA loads the word into an AD9837 DDS (triangle output,
+        gated per laser trigger pulse): f_out = word * MCLK / 2**28 with
+        MCLK = 25 MHz (``SEED_DDS_MCLK_HZ``, confirmed from schematic
+        700-00010 sheet 20). One LSB is ~0.0931 Hz.
 
         Caveat for Seed FPGA images <= rev 1.1.0: an I2C write-path bug
         (registers.v reg 0x0C) leaves word bits [23:16] stuck at zero, so
