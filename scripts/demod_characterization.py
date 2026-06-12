@@ -55,19 +55,32 @@ import numpy as np
 
 logger = logging.getLogger("demod_characterization")
 
-# Seed FPGA location/registers (Unified Board FPGA Memory Map 700-00010)
+# Seed FPGA location/registers (Unified Board FPGA Memory Map 700-00010,
+# cross-checked against openmotion-seed-fpga src/registers.v)
 SEED_MUX = 1
 SEED_CHANNEL = 5
 SEED_I2C_ADDR = 0x41
 SEED_REG_PHASE = 0x00       # 2 bytes, PHASEREG[11:0], LSB first
-SEED_REG_FREQ = 0x0A        # 4 bytes, FREQ[31:0], LSB first
+SEED_REG_DDS_GAIN = 0x02    # 2 bytes, modulation amplitude DAC, 0.064 mA/step (POR: 0!)
+SEED_REG_CW_GAIN = 0x04     # 2 bytes, CW current DAC, 0.0688 mA/step (POR: 140 mA)
+SEED_REG_DDS_CL = 0x06      # 2 bytes, modulation current limit, 0.081 mA/step (POR: 80 mA)
+SEED_REG_CW_CL = 0x08       # 2 bytes, CW current limit (POR: 160 mA)
+SEED_REG_FREQ = 0x0A        # 4 bytes, FREQ[27:0], LSB first -> AD9833-class DDS
 SEED_REG_STATUS = 0x12
 SEED_REG_REVISION = 0x13
 SEED_REG_MINOR = 0x14
 SEED_REG_MAJOR = 0x15
 SEED_REG_ID = 0x16          # expect 1
-SEED_REG_STATIC_CTRL = 0x20  # D[0] = modulate ON
+SEED_REG_STATIC_CTRL = 0x20  # D[0] = arm modulation (FPGA gates it per trigger pulse)
 SEED_REG_DYNAMIC_CTRL = 0x22
+
+# Default frequency word: 0x01000000 = 1.5625 MHz at the assumed 25 MHz DDS
+# MCLK. Bits [23:16] are zero, so it lands exactly even on Seed FPGA images
+# with the reg-0x0C write bug (registers.v <= rev 1.1.0).
+DEFAULT_FREQ_WORD = 0x01000000
+# Default modulation amplitude: ~20 mA (0.064 mA/step). The FPGA's POR value
+# is ZERO - without writing this register, arming modulation does nothing.
+DEFAULT_MOD_CURRENT_WORD = 312
 
 _BIN_VALUES = np.arange(1024, dtype=np.float64)
 _BIN_VALUES_SQ = _BIN_VALUES ** 2
@@ -133,9 +146,9 @@ def cmd_sanity(args) -> int:
         check("Revision regs readable", rev is not None,
               f"rev/minor/major = {list(rev) if rev else None}")
 
-        # Distinctive words: every byte differs, so any byte-order or
-        # offset mistake shows up in the readback.
-        freq_word = args.freq_word if args.freq_word is not None else 0x0DDC0FFE
+        # Functional check with a word whose bits [23:16] are zero so it
+        # lands exactly on both fixed and reg-0x0C-bug FPGA images.
+        freq_word = args.freq_word if args.freq_word is not None else 0x0A00BEEF
         phase_word = args.phase_word if args.phase_word is not None else 0x0ABC
         resp = console.set_demod_config({
             "DemodPulseInterval": 0,
@@ -153,6 +166,37 @@ def cmd_sanity(args) -> int:
         expect = bytes((freq_word >> (8 * b)) & 0xFF for b in range(4))
         check("Freq regs 0x0A-0x0D readback (byte order!)", raw == expect,
               f"expect LSB-first {expect.hex()} got {raw.hex() if raw else None}")
+
+        # Probe for the registers.v reg-0x0C write bug: write a word with
+        # bits [23:16] set and see whether they survive. The firmware writes
+        # bytes in 0x0C,0x0A,0x0B,0x0D order, so on a buggy image the rest of
+        # the word still lands and only [23:16] reads back as zero.
+        probe = 0x0DDC0FFE
+        console.set_demod_config({"ModulationFrequencyWord": probe})
+        raw = _read_seed(console, SEED_REG_FREQ, 4)
+        if raw is not None:
+            got = int.from_bytes(raw, "little")
+            if got == probe:
+                print("  [INFO] freq reg-0x0C write bug: FIXED on this image")
+            elif got == (probe & 0xFF00FFFF):
+                print("  [INFO] freq reg-0x0C write bug: PRESENT — restrict to "
+                      "frequency words with bits [23:16] == 0")
+            else:
+                check("Freq bug probe readback recognizable", False,
+                      f"wrote {probe:#010x} read {got:#010x}")
+        # Restore the functional word
+        console.set_demod_config({"ModulationFrequencyWord": freq_word})
+
+        # Report drive/limit DAC words (POR: DDS gain = 0 -> modulation is
+        # invisible until collect/--mod-current-word writes it).
+        for name, reg, scale in (("DDS gain (mod amplitude)", SEED_REG_DDS_GAIN, 0.064),
+                                 ("CW gain", SEED_REG_CW_GAIN, 0.0688),
+                                 ("DDS current limit", SEED_REG_DDS_CL, 0.081),
+                                 ("CW current limit", SEED_REG_CW_CL, 0.081)):
+            raw = _read_seed(console, reg, 2)
+            if raw is not None:
+                word = int.from_bytes(raw, "little")
+                print(f"  [INFO] {name}: word={word} (~{word * scale:.1f} mA)")
 
         raw = _read_seed(console, SEED_REG_PHASE, 2)
         pw = phase_word & 0x0FFF
@@ -241,17 +285,28 @@ def cmd_collect(args) -> int:
             print("ERROR: apply_laser_power failed", file=sys.stderr)
             return 1
 
-        demod_payload = {"DemodPulseInterval": 0 if args.continuous else args.demod_interval}
-        if args.freq_word is not None:
-            demod_payload["ModulationFrequencyWord"] = args.freq_word
-        if args.phase_word is not None:
-            demod_payload["ModulationPhaseWord"] = args.phase_word
+        demod_payload = {
+            "DemodPulseInterval": 0 if args.continuous else args.demod_interval,
+            "ModulationFrequencyWord": args.freq_word,
+            "ModulationPhaseWord": args.phase_word,
+        }
         demod_cfg = console.set_demod_config(demod_payload)
         print(f"demod config: {demod_cfg}")
         if demod_cfg is None:
             print("ERROR: SET_DEMOD rejected — is the console running the "
                   "feature/demod-frames firmware?", file=sys.stderr)
             return 1
+
+        # Modulation amplitude DAC: POR value is 0 mA — without this write,
+        # armed modulation has no effect. Auto-increment write 0x02 then
+        # 0x03 latches the value into the DAC on the upper-byte write.
+        mc = args.mod_current_word
+        if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                        SEED_REG_DDS_GAIN,
+                                        bytes([mc & 0xFF, (mc >> 8) & 0xFF])):
+            print("ERROR: could not set modulation amplitude", file=sys.stderr)
+            return 1
+        print(f"modulation amplitude word: {mc} (~{mc * 0.064:.1f} mA)")
 
         if args.continuous:
             # Phase 2 reference: hold modulation ON for the whole run,
@@ -307,6 +362,7 @@ def cmd_collect(args) -> int:
             "duration_sec": args.duration,
             "continuous_modulation": args.continuous,
             "demod_config": demod_cfg,
+            "mod_current_word": args.mod_current_word,
             "trigger_config": console.get_trigger_json(),
             "seed_fpga_rev": list(seed_rev) if seed_rev else None,
             "raw_csvs": [r.name for r in raw_csvs],
@@ -512,9 +568,10 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     ps = sub.add_parser("sanity", help="Phase 0 Seed FPGA register checks")
-    ps.add_argument("--freq-word", type=int, default=None,
-                    help="frequency word to use (default: distinctive test pattern)")
-    ps.add_argument("--phase-word", type=int, default=None)
+    ps.add_argument("--freq-word", type=lambda v: int(v, 0), default=None,
+                    help="frequency word for the functional check "
+                         "(default: distinctive bug-immune test pattern)")
+    ps.add_argument("--phase-word", type=lambda v: int(v, 0), default=None)
     ps.set_defaults(fn=cmd_sanity)
 
     pc = sub.add_parser("collect", help="run a capture, write per-frame moments CSV")
@@ -522,8 +579,14 @@ def main(argv=None) -> int:
     pc.add_argument("--duration", type=float, default=60.0)
     pc.add_argument("--demod-interval", type=int, default=0,
                     help="every Nth laser cycle is a demod frame; 0 = disabled")
-    pc.add_argument("--freq-word", type=int, default=None)
-    pc.add_argument("--phase-word", type=int, default=None)
+    pc.add_argument("--freq-word", type=lambda v: int(v, 0), default=DEFAULT_FREQ_WORD,
+                    help="raw 28-bit DDS word (default 0x01000000 = 1.5625 MHz "
+                         "@ 25 MHz MCLK, immune to the reg-0x0C FPGA bug)")
+    pc.add_argument("--phase-word", type=lambda v: int(v, 0), default=0)
+    pc.add_argument("--mod-current-word", type=lambda v: int(v, 0),
+                    default=DEFAULT_MOD_CURRENT_WORD,
+                    help="SEED_DDS_GAIN word, 0.064 mA/step (default ~20 mA; "
+                         "FPGA POR value is 0 = no modulation; limit POR is 80 mA)")
     pc.add_argument("--continuous", action="store_true",
                     help="hold modulation ON for the whole run (Phase 2 reference)")
     pc.add_argument("--trigger-freq", type=float, default=None,

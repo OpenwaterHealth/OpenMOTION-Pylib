@@ -1152,6 +1152,12 @@ class MotionConsole(SignalWrapper):
             self._log_command_error("get_trigger_json", e)
             raise  # Re-raise the exception for the caller to handle
 
+    #: Assumed DDS reference clock. The Seed FPGA (openmotion-seed-fpga)
+    #: drives an AD9833-class SPI DDS; its own input clock is 25 MHz and the
+    #: DDS MCLK is believed to share it. Confirm against the schematic or a
+    #: scope before trusting absolute frequencies.
+    SEED_DDS_MCLK_HZ: int = 25_000_000
+
     @staticmethod
     def demod_phase_word(phase_rad: float) -> int:
         """
@@ -1160,14 +1166,29 @@ class MotionConsole(SignalWrapper):
 
         Per the Unified Board FPGA Memory Map (700-00010):
         phase = 2*pi/4096 * PHASEREG.
-
-        There is intentionally no Hz -> ModulationFrequencyWord helper yet:
-        the frequency tuning word formula depends on the DDS reference clock,
-        which is not documented in this repo. Take the formula from the DDS
-        data sheet once the reference clock is confirmed with the laser team,
-        and pass the raw word in the meantime.
         """
         return round((phase_rad % (2 * math.pi)) * 4096 / (2 * math.pi)) & 0x0FFF
+
+    @staticmethod
+    def demod_frequency_word(freq_hz: float, mclk_hz: int = SEED_DDS_MCLK_HZ) -> int:
+        """
+        Convert a modulation frequency in Hz to the raw 28-bit DDS frequency
+        tuning word (Seed FPGA regs 0x0A-0x0D) for ``set_demod_config``.
+
+        The Seed FPGA loads the word into an AD9833-class DDS (triangle
+        output, gated by the laser trigger pulse):
+        f_out = word * MCLK / 2**28. MCLK is assumed 25 MHz (see
+        ``SEED_DDS_MCLK_HZ``).
+
+        Caveat for Seed FPGA images <= rev 1.1.0: an I2C write-path bug
+        (registers.v reg 0x0C) leaves word bits [23:16] stuck at zero, so
+        only words with those bits clear land exactly — i.e. N x 1.5625 MHz
+        coarse steps plus a 0-6.1 kHz fine fill at 25 MHz MCLK. The console
+        firmware's byte-ordered write makes the rest of the word land
+        correctly on both buggy and fixed images.
+        """
+        word = round(freq_hz * (1 << 28) / mclk_hz)
+        return max(0, min(word, (1 << 28) - 1))
 
     def set_demod_config(self, data=None) -> dict:
         """

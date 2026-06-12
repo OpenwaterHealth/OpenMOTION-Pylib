@@ -59,6 +59,19 @@ def test_pdc_sample_demod_slot_decoded_from_flags_bit1():
     assert s.dark_slot is False
 
 
+def test_demod_frequency_word_conversion():
+    from omotion.MotionConsole import MotionConsole
+
+    # f_out = word * MCLK / 2**28 with assumed 25 MHz MCLK
+    assert MotionConsole.demod_frequency_word(0) == 0
+    assert MotionConsole.demod_frequency_word(1_562_500.0) == 0x01000000
+    assert MotionConsole.demod_frequency_word(25e6 / (1 << 28)) == 1  # one LSB
+    # clamps to the 28-bit register
+    assert MotionConsole.demod_frequency_word(1e12) == (1 << 28) - 1
+    # explicit MCLK override
+    assert MotionConsole.demod_frequency_word(1000.0, mclk_hz=1 << 28) == 1000
+
+
 def test_demod_phase_word_conversion():
     import math
     from omotion.MotionConsole import MotionConsole
