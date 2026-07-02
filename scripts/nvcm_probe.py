@@ -109,16 +109,19 @@ def interpret(d: dict) -> None:
     # receiving the activation key, so it never ACKs after a key-less CRESETB
     # release regardless of NVCM state — it read "programmed" for blank parts
     # (openmotion-test-app#44; sensor-fw commit c40a6b4).  The reliable signal
-    # is the STATUS Done bit (bit 8): it is the last fuse burned during NVCM
-    # programming and is what gates auto-boot.
+    # is STATUS bit 19 (BE word 0x00080000): bench-verified 2026-07-02 on a
+    # 16-camera blind sweep — all 15 programmed cameras read 00 08 02 08,
+    # the known blank read 00 00 02 08.  The SRAM Done bit (bit 8) is NOT
+    # usable: the ISC probe flow holds the part unconfigured, so it reads 0
+    # on every camera regardless of NVCM state.
     featrow_real = any(d["feature_row"]) and not all(b == 0xFF for b in d["feature_row"])
     usercode_nz = any(d["usercode"])
     nvcm_real = any(any(b for b in r if b != 0xFF) for r in d["nvcm_rows"])
-    done_bit = bool((s_msb >> 8) & 1)
+    prog_bit = bool((s_msb >> 19) & 1)  # STATUS bit 19 — NVCM-programmed discriminator
     status_read = bool(d["step_status"] & (1 << 3))  # FPGA_NVCM_STEP_STATUS
 
     print("\n  --- signals ---")
-    print(f"    [primary] status Done bit : {done_bit}")
+    print(f"    [primary] status bit 19  : {prog_bit}")
     print(f"    boot test ran             : {bool(boot_done)}  (informational "
           "only — 0x40 never ACKs without the activation key)")
     print(f"    0x40 after boot           : {'ACKs' if boot_ack else 'no ACK'}")
@@ -133,16 +136,15 @@ def interpret(d: dict) -> None:
     elif not status_read:
         print("  VERDICT: INCONCLUSIVE — STATUS register read failed; the Done "
               "bit could not be sampled.")
-    elif done_bit:
-        print("  VERDICT: *** NVCM PROGRAMMED *** -- STATUS Done bit is set. "
-              "The Done fuse is the last step of NVCM programming and gates "
-              "auto-boot, so the stored image is complete and bootable.")
+    elif prog_bit:
+        print("  VERDICT: *** NVCM PROGRAMMED *** -- STATUS bit 19 is set "
+              "(empirical NVCM-programmed discriminator; programmed parts "
+              "read 00 08 02 08, blanks 00 00 02 08).")
         if featrow_real or nvcm_real or usercode_nz:
             print("  (corroborated by a non-blank content read)")
     else:
-        print("  VERDICT: BLANK -- STATUS Done bit is clear: NVCM is not "
-              "programmed (or a burn never completed its Done fuse — see "
-              "scripts/nvcm_burn_done.py).")
+        print("  VERDICT: BLANK -- STATUS bit 19 is clear: NVCM is not "
+              "programmed.")
     print("==================================================\n")
 
 
