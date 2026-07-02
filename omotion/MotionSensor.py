@@ -864,10 +864,10 @@ class MotionSensor(SignalWrapper):
                    boot_test: bool = True) -> bytes:
         """Probe the active camera's CrossLink NVCM state.
 
-        Reads NVCM discriminators over I2C (config-mode read-back) and, if
-        boot_test is set, additionally performs a behaviorally-definitive
-        auto-boot test: releases CRESETB without the activation key and checks
-        whether the config port at 0x40 still answers.  Neither phase touches
+        Reads NVCM discriminators over I2C (config-mode read-back).  The
+        programmed/blank discriminator is the STATUS register Done bit
+        (response byte 8, bit 0): the Done fuse is the last step burned
+        during NVCM programming and gates auto-boot.  Neither phase touches
         camera power.  Select the camera first with switch_camera() and make
         sure it is powered.
 
@@ -875,7 +875,11 @@ class MotionSensor(SignalWrapper):
             isc_operand: ISC_ENABLE operand1 — 0x08 = NVCM access (default),
                          0x00 = SRAM access.
             num_rows:    Number of 16-byte NVCM array rows to read back (0-8).
-            boot_test:   Run the auto-boot 0x40-disappearance test (default True).
+            boot_test:   Also release CRESETB without the activation key and
+                         probe 0x40.  Informational only — NOT a programmed/
+                         blank discriminator: the config port needs the
+                         activation key to respond, so 0x40 never ACKs here
+                         regardless of NVCM state (openmotion-test-app#44).
 
         Returns:
             Raw fixed-layout response blob (see scripts/nvcm_probe.py for the

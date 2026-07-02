@@ -104,40 +104,45 @@ def interpret(d: dict) -> None:
     # ---- signals -------------------------------------------------------
     # NOTE: the content reads (feature_row / NVCM array) come back as floating
     # 0xFF on this part because a bare ISC_ENABLE 0x08 doesn't read-enable the
-    # NVCM array — they are NOT trustworthy yet.  The auto-boot test is the
-    # primary, behaviorally-definitive signal.
+    # NVCM array — they are NOT trustworthy.  The auto-boot test is NOT a
+    # discriminator either: the I2C config port at 0x40 only responds after
+    # receiving the activation key, so it never ACKs after a key-less CRESETB
+    # release regardless of NVCM state — it read "programmed" for blank parts
+    # (openmotion-test-app#44; sensor-fw commit c40a6b4).  The reliable signal
+    # is the STATUS Done bit (bit 8): it is the last fuse burned during NVCM
+    # programming and is what gates auto-boot.
     featrow_real = any(d["feature_row"]) and not all(b == 0xFF for b in d["feature_row"])
     usercode_nz = any(d["usercode"])
     nvcm_real = any(any(b for b in r if b != 0xFF) for r in d["nvcm_rows"])
     done_bit = bool((s_msb >> 8) & 1)
+    status_read = bool(d["step_status"] & (1 << 3))  # FPGA_NVCM_STEP_STATUS
 
     print("\n  --- signals ---")
-    print(f"    [primary] boot test ran   : {bool(boot_done)}")
-    print(f"    [primary] 0x40 after boot : "
-          f"{'ACKs (blank)' if boot_ack else 'gone (programmed)'}")
+    print(f"    [primary] status Done bit : {done_bit}")
+    print(f"    boot test ran             : {bool(boot_done)}  (informational "
+          "only — 0x40 never ACKs without the activation key)")
+    print(f"    0x40 after boot           : {'ACKs' if boot_ack else 'no ACK'}")
     print(f"    feature_row real (non-FF) : {featrow_real}")
     print(f"    usercode    != 0          : {usercode_nz}")
     print(f"    nvcm row real (non-FF)    : {nvcm_real}")
-    print(f"    status Done bit           : {done_bit}")
 
     print()
     if d["idcode_ok"] != 1:
         print("  VERDICT: INCONCLUSIVE — IDCODE mismatch; config port not "
               "answering in forced config mode. Check power / mux / CRESETB.")
-    elif boot_done:
-        # Primary, behaviorally-definitive signal.
-        if boot_ack == 0:
-            print("  VERDICT: *** NVCM PROGRAMMED *** -- config port reachable when "
-                  "forced (IDCODE ok), but 0x40 DISAPPEARS after auto-boot, i.e. "
-                  "the FPGA booted a user design from NVCM.")
-        else:
-            print("  VERDICT: BLANK -- 0x40 still ACKs after releasing CRESETB "
-                  "without the activation key, i.e. nothing auto-booted.")
-        if featrow_real or nvcm_real or usercode_nz or done_bit:
+    elif not status_read:
+        print("  VERDICT: INCONCLUSIVE — STATUS register read failed; the Done "
+              "bit could not be sampled.")
+    elif done_bit:
+        print("  VERDICT: *** NVCM PROGRAMMED *** -- STATUS Done bit is set. "
+              "The Done fuse is the last step of NVCM programming and gates "
+              "auto-boot, so the stored image is complete and bootable.")
+        if featrow_real or nvcm_real or usercode_nz:
             print("  (corroborated by a non-blank content read)")
     else:
-        print("  VERDICT: boot test was skipped; content reads on this part are "
-              "untrustworthy (floating 0xFF). Re-run without --no-boot-test.")
+        print("  VERDICT: BLANK -- STATUS Done bit is clear: NVCM is not "
+              "programmed (or a burn never completed its Done fuse — see "
+              "scripts/nvcm_burn_done.py).")
     print("==================================================\n")
 
 
