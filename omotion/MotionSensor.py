@@ -905,6 +905,9 @@ class MotionSensor(SignalWrapper):
         Bit 5 (DEBUG_FLAG_CMD_VERBOSE) enables printf in command handlers.
         Bit 7 (DEBUG_FLAG_SEND_DEFER) defers the per-frame histogram send out
         of the FSIN ISR into the main loop (sensor-fw#68).
+        Bit 8 (DEBUG_FLAG_HISTO_STALL) stops histogram sends after ~45 s of
+        streaming while USB stays alive — deterministic camera-stall repro
+        (sensor-fw#75).
         """
         if self.demo_mode:
             return True

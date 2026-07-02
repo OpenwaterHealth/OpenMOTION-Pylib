@@ -158,6 +158,7 @@ DEBUG_FLAG_HISTO_CMP = 0x40  # Send compressed histogram packets (TYPE_HISTO_CMP
 DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_comms
 DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
 DEBUG_FLAG_SEND_DEFER = 0x80  # Defer per-frame histogram send out of the FSIN ISR into the main loop (sensor-fw#68)
+DEBUG_FLAG_HISTO_STALL = 0x100  # Stop sending histogram frames after ~45 s while USB stays alive — deterministic camera-stall repro (sensor-fw#75)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
