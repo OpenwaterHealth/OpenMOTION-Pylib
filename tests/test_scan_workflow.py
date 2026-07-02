@@ -139,7 +139,7 @@ def test_start_scan_excludes_unconnected_unmasked_sensor_from_live_source():
 
         captured = {}
 
-        def _factory(*, console, left, right, batch_size_frames, metadata):
+        def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
             captured["left"] = left
             captured["right"] = right
             return _EmptySource(metadata=metadata)
@@ -169,7 +169,7 @@ def test_start_scan_excludes_masked_out_sensor_even_when_connected():
 
         captured = {}
 
-        def _factory(*, console, left, right, batch_size_frames, metadata):
+        def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
             captured["left"] = left
             captured["right"] = right
             return _EmptySource(metadata=metadata)
@@ -302,7 +302,7 @@ def test_duration_guard_skips_redundant_stop_trigger_and_close_on_cancel(tmp_pat
 
     captured_source = {}
 
-    def _factory(*, console, left, right, batch_size_frames, metadata):
+    def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
         src = _MockSource(metadata=metadata)
         captured_source["src"] = src
         return src
@@ -416,7 +416,7 @@ def _run_scan_capturing_trigger(motion, request):
     per-side hardware bring-up so the worker reaches the trigger send."""
     calls = []
 
-    def _factory(*, console, left, right, batch_size_frames, metadata):
+    def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
         return _MockSource(metadata=metadata)
 
     fake_side = ("left", request.left_camera_mask or 0xFF, mock.MagicMock())
@@ -581,7 +581,7 @@ def test_cancel_scan_emits_trigger_off_even_when_stop_trigger_raises():
 
     captured_source = {}
 
-    def _factory(*, console, left, right, batch_size_frames, metadata):
+    def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
         src = _MockSource(metadata=metadata)
         captured_source["src"] = src
         return src
@@ -646,7 +646,7 @@ def test_console_disconnect_mid_scan_emits_trigger_off():
 
     captured_source = {}
 
-    def _factory(*, console, left, right, batch_size_frames, metadata):
+    def _factory(*, console, left, right, batch_size_frames, metadata, **kwargs):
         src = _MockSource(metadata=metadata)
         captured_source["src"] = src
         return src

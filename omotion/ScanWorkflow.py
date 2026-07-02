@@ -573,11 +573,21 @@ class ScanWorkflow:
         def _live_sensor(sensor, mask: int):
             return sensor if (int(mask) != 0 and sensor.is_connected()) else None
 
+        live_left = _live_sensor(self._interface.left, request.left_camera_mask)
+        live_right = _live_sensor(self._interface.right, request.right_camera_mask)
+        # Active-camera count sizes the source's batch queue: a batch row is
+        # one per-camera sample, so the data rate scales with the mask
+        # popcounts of the sides that actually stream, not just CAPTURE_HZ.
+        active_cameras = (
+            (bin(request.left_camera_mask).count("1") if live_left else 0)
+            + (bin(request.right_camera_mask).count("1") if live_right else 0)
+        )
         source = LiveUsbSource(
             console=self._interface.console,
-            left=_live_sensor(self._interface.left, request.left_camera_mask),
-            right=_live_sensor(self._interface.right, request.right_camera_mask),
+            left=live_left,
+            right=live_right,
             batch_size_frames=request.batch_size_frames or 10,
+            active_cameras=active_cameras or None,
             metadata=meta,
         )
         self._runner = ScanRunner(
