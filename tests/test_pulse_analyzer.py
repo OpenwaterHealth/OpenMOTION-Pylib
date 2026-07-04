@@ -167,6 +167,42 @@ def test_recovers_low_heart_rate():
     assert _mean_abs_hr_err(48.0, noise=0.3) < 5.0
 
 
+def test_clean_pulse_is_reliable():
+    a = PulseWaveformAnalyzer(side="left")
+    _feed_all(a, *_clean_signal(bpm=72.0, duration_s=16.0))
+    f = a.snapshot().features
+    assert f.reliable is True
+    assert f.periodicity > 0.45
+
+
+def test_flat_noisy_signal_is_not_reliable():
+    # baseline + noise, no cardiac pulse (static phantom / lead-off). Band-
+    # limited noise can fake positive amplitude + high consistency, so the
+    # gate must key on periodicity, not amplitude/consistency alone.
+    t, v = synth_bfi(duration_s=16.0, fs=40.0, bpm=72.0, amp=0.0,
+                     baseline=5.0, noise=0.4, wander=0.2, seed=5)
+    a = PulseWaveformAnalyzer(side="left")
+    a.add_samples(t, v)
+    f = a.snapshot().features
+    assert f.reliable is False
+    assert f.periodicity < 0.45
+
+
+def test_realistic_pulse_across_rates_is_reliable():
+    for bpm in (55.0, 85.0, 110.0):
+        a = PulseWaveformAnalyzer(side="left")
+        t, v = synth_bfi(duration_s=16.0, fs=40.0, bpm=bpm, hrv_frac=0.03,
+                         amp=2.0, baseline=5.0, noise=0.3, wander=0.2, seed=1)
+        a.add_samples(t, v)
+        assert a.snapshot().features.reliable is True, f"bpm={bpm}"
+
+
+def test_empty_snapshot_is_not_reliable():
+    a = PulseWaveformAnalyzer(side="left")
+    a.add_samples(np.array([0.0, 0.025]), np.array([5.0, 5.1]))
+    assert a.snapshot().features.reliable is False
+
+
 @pytest.mark.parametrize("method", ["movavg", "modwt"])
 def test_band_method_recovers_heart_rate(method):
     a = PulseWaveformAnalyzer(side="left", band_method=method)

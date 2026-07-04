@@ -35,6 +35,8 @@ class PulseFeatures:
     aix: float = NAN             # augmentation index (best-effort at 40 Hz)
     beat_count: int = 0          # accepted beats in the current window
     consistency: float = NAN     # median Pearson r of beats vs the template
+    periodicity: float = 0.0     # normalized autocorrelation peak, 0..1
+    reliable: bool = False       # a genuine, regular cardiac pulse is present
 
     def as_dict(self) -> dict:
         return asdict(self)

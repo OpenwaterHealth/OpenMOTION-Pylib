@@ -127,23 +127,34 @@ def _wavelet_band(x: np.ndarray, fs: float,
     return band
 
 
-def _estimate_period_samples(ac: np.ndarray, fs: float,
-                             min_bpm: float, max_bpm: float) -> Optional[int]:
-    """Dominant cardiac period (samples) via autocorrelation within the
-    plausible RR-interval band. None if it can't be estimated."""
-    n = ac.size
+def _autocorr_period(sm: np.ndarray, fs: float, min_bpm: float,
+                     max_bpm: float) -> tuple[Optional[int], float]:
+    """Dominant cardiac period and its **periodicity strength**.
+
+    Returns ``(lag_samples or None, peak)`` where ``peak`` is the normalized
+    autocorrelation (0..1) at the dominant lag within the plausible RR band.
+    A real, regular pulse peaks high (~0.8-0.9); band-limited noise — which
+    can otherwise fake a positive amplitude and high beat-consistency — peaks
+    low (~0.1-0.2), so this is the discriminator the reliability gate keys on.
+    """
+    n = sm.size
     if n < 8:
-        return None
-    ac = ac - ac.mean()
+        return None, 0.0
+    ac = sm - sm.mean()
     corr = np.correlate(ac, ac, mode="full")[n - 1:]     # lags 0..n-1
+    c0 = corr[0]
+    if not np.isfinite(c0) or c0 <= 0:
+        return None, 0.0
+    corr = corr / c0
     lag_min = max(1, int(fs * 60.0 / max_bpm))
     lag_max = min(n - 1, int(fs * 60.0 / min_bpm))
     if lag_max <= lag_min + 1:
-        return None
+        return None, 0.0
     seg = corr[lag_min:lag_max + 1]
     if seg.size == 0 or not np.any(np.isfinite(seg)):
-        return None
-    return lag_min + int(np.argmax(seg))
+        return None, 0.0
+    k = int(np.argmax(seg))
+    return lag_min + k, float(seg[k])
 
 
 def _detect_peaks(sm: np.ndarray, refractory: int) -> np.ndarray:
@@ -225,6 +236,14 @@ class PulseWaveformAnalyzer:
     #: Benchmarks show them equivalent for HR recovery on 40 fps data; movavg
     #: is the simpler default. See tests/test_pulse_analyzer.py.
     BAND_METHODS = ("movavg", "modwt")
+
+    #: Reliability gate thresholds (see _features). A snapshot is "reliable"
+    #: only with at least this many beats, a positive pulse amplitude, and an
+    #: autocorrelation periodicity at/above PERIODICITY_MIN. Calibrated so a
+    #: real cardiac pulse (periodicity ~0.8-0.9) passes and band-limited noise
+    #: from a static phantom / lead-off channel (~0.1-0.2) does not.
+    MIN_BEATS_RELIABLE = 3
+    PERIODICITY_MIN = 0.45
 
     def __init__(self, *, side: str = "left", fs_hint: float = 40.0,
                  phase_bins: int = 60, history_beats: int = 20,
@@ -312,7 +331,8 @@ class PulseWaveformAnalyzer:
         vfill = _nan_interp(v)
         sm = self._band_limit(vfill, fs)
 
-        period = _estimate_period_samples(sm, fs, self.min_bpm, self.max_bpm)
+        period, periodicity = _autocorr_period(
+            sm, fs, self.min_bpm, self.max_bpm)
         if period is None:
             refractory = int(fs * 60.0 / self.max_bpm)
         else:
@@ -352,7 +372,7 @@ class PulseWaveformAnalyzer:
         env_p25 = np.percentile(stack, 25, axis=0)
         env_p75 = np.percentile(stack, 75, axis=0)
 
-        features = self._features(template, stack, rr)
+        features = self._features(template, stack, rr, periodicity)
         beat_count = len(beats)
         updated = beat_count != self._last_reported_count
         self._last_reported_count = beat_count
@@ -367,7 +387,7 @@ class PulseWaveformAnalyzer:
         return snap
 
     def _features(self, template: np.ndarray, stack: np.ndarray,
-                  rr: list[float]) -> PulseFeatures:
+                  rr: list[float], periodicity: float) -> PulseFeatures:
         bins = self.phase_bins
         psf = float(np.nanmax(template))
         peak_idx = int(np.nanargmax(template))
@@ -383,10 +403,18 @@ class PulseWaveformAnalyzer:
         rise_ms = rise_frac * med_rr * 1000.0 if np.isfinite(med_rr) else np.nan
         consistency = float(np.median([_pearson(b, template) for b in stack]))
         aix = self._augmentation_index(template, peak_idx, psf, edf)
+        # Reliability gate: a genuine, regular cardiac pulse — not band-limited
+        # noise from a phantom / lead-off channel. Periodicity (autocorrelation
+        # strength) is the discriminator; amplitude and consistency alone can
+        # be faked by narrowband noise.
+        reliable = (len(stack) >= self.MIN_BEATS_RELIABLE
+                    and amp > 0.0
+                    and periodicity >= self.PERIODICITY_MIN)
         return PulseFeatures(
             hr_bpm=hr, mean_flow=mf, psf=psf, edf=edf, amp=amp, pi=pi, ri=ri,
             auc=auc, rise_time_frac=rise_frac, rise_time_ms=rise_ms, aix=aix,
             beat_count=len(stack), consistency=consistency,
+            periodicity=float(periodicity), reliable=bool(reliable),
         )
 
     def _augmentation_index(self, template: np.ndarray, peak_idx: int,
