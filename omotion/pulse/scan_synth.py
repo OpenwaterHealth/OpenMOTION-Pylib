@@ -22,6 +22,8 @@ Kept out of the pure ``synth``/``analyzer`` modules (and out of
 
 from __future__ import annotations
 
+import csv
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterator
 
@@ -34,6 +36,10 @@ from .synth import synth_bfi
 
 _N_COUNTS = 10000
 _HISTO_BINS = 1024
+
+
+def _mask_to_cams(mask) -> list:
+    return [i for i in range(8) if int(mask) & (1 << i)]
 
 
 @dataclass
@@ -157,6 +163,163 @@ class SyntheticPulseScanSource:
                 fid[i] = raw
                 sid[i] = side
                 ts[i] = t
+            yield FrameBatch(cam_ids=cam, frame_ids=fid, side_ids=sid,
+                             raw_histograms=rh, temperature_c=tc,
+                             timestamp_s=ts, pdc=None, tcm=None, tcl=None)
+
+    def close(self) -> None:
+        pass
+
+
+def _read_bfi_results(path: str) -> dict:
+    """Parse a bfi_results CSV → ``{(side_idx, cam): (bfi_arr, bvi_arr)}`` sorted
+    by time. side_idx 0=left, 1=right."""
+    rows: dict = defaultdict(dict)      # (side, cam) -> {t: (bfi, bvi)}
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                side = 0 if r["side"] == "left" else 1
+                cam = int(r["camera"])
+                t = float(r["time_s"])
+                bfi = float(r["BFI"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            try:
+                bvi = float(r.get("BVI"))
+            except (TypeError, ValueError):
+                bvi = float("nan")
+            rows[(side, cam)][t] = (bfi, bvi)
+    out: dict = {}
+    for key, d in rows.items():
+        ts = sorted(d)
+        out[key] = (np.array([d[t][0] for t in ts], dtype=np.float64),
+                    np.array([d[t][1] for t in ts], dtype=np.float64))
+    return out
+
+
+class DemoScanSource:
+    """Replay a recorded ``*_bfi_results.csv`` as raw histograms at the TOP of
+    the real pipeline (no hardware).
+
+    Inverts each recorded BFI/BVI back into a speckle contrast and mean, then a
+    gaussian histogram (the inverse of the moments → dark → shot-noise → BfiBvi
+    chain), and exposes a matching ``calibration`` so the pipeline recomputes
+    ~the recorded BFI/BVI. It therefore feeds the *whole* pipeline — the regular
+    BFI/BVI plots AND the pulse view. Warmup/dark frames are synthesised at the
+    classifier's positional schedule. The iterator ends when the recording is
+    exhausted, which lets a replay scan auto-stop.
+
+    ``left_mask`` / ``right_mask`` select which cameras (of those present in the
+    file) are emitted — should match the ScanRequest / pipeline masks.
+    """
+
+    def __init__(self, *, csv_path: str, metadata, left_mask: int,
+                 right_mask: int, fs: float = 40.0, pedestal: float = 64.0,
+                 dark_interval: int = 600, discard_count: int = 9,
+                 batch_size: int = 100, terminal_dark: int = 3):
+        self.metadata = metadata
+        self.pedestal = float(pedestal)
+        self.dark_interval = int(dark_interval)
+        self._discard = int(discard_count)
+        self._terminal = int(terminal_dark)
+        self._fs = float(fs)
+        self._batch = int(batch_size)
+        self._gains = np.asarray(CAMERA_GAIN_MAP, dtype=np.float64).ravel()
+        self._adc = adc_gain_for_pedestal(self.pedestal)
+
+        series = _read_bfi_results(csv_path)
+        if not series:
+            raise ValueError(f"no BFI rows in {csv_path}")
+        self._masks = {0: _mask_to_cams(left_mask), 1: _mask_to_cams(right_mask)}
+        self._series = {k: v for k, v in series.items()
+                        if k[1] in self._masks[k[0]]}
+
+        # Calibration brackets: BFI 0..10 ↔ contrast [c_max..c_min],
+        # BVI 0..10 ↔ mean_dc [i_max..i_min]. Chosen (not fit) — used both to
+        # invert here AND by the pipeline forward, so the values round-trip.
+        self._c_min, self._c_max = 0.04, 0.18
+        self._i_min, self._i_max = 100.0, 200.0
+        self.calibration = SyntheticCalibration(
+            c_min=np.full((2, 8), self._c_min, np.float32),
+            c_max=np.full((2, 8), self._c_max, np.float32),
+            i_min=np.full((2, 8), self._i_min, np.float32),
+            i_max=np.full((2, 8), self._i_max, np.float32))
+        self._frames = self._build_frames()
+
+    def _mean_dc(self, bvi: float) -> float:
+        b = float(np.clip(bvi, 0.0, 10.0)) if np.isfinite(bvi) else 5.0
+        return self._i_min + (1.0 - b / 10.0) * (self._i_max - self._i_min)
+
+    def _std_for(self, bfi: float, mean_dc: float, cam: int) -> float:
+        b = float(np.clip(bfi, 0.01, 9.99)) if np.isfinite(bfi) else 5.0
+        contrast = self._c_min + (1.0 - b / 10.0) * (self._c_max - self._c_min)
+        shot = self._adc * mean_dc * self._gains[cam]
+        return float(((contrast * mean_dc) ** 2 + shot) ** 0.5)
+
+    def _is_dark(self, abs_id: int) -> bool:
+        if abs_id == self._discard + 1:
+            return True
+        if abs_id <= self._discard + 1:
+            return False
+        return (abs_id - 1) % self.dark_interval == 0
+
+    def _build_frames(self) -> list:
+        rng = np.random.default_rng(0)
+        frames: list = []
+        for side in (0, 1):
+            cams = [c for c in self._masks[side] if (side, c) in self._series]
+            if not cams:
+                continue
+            n = min(self._series[(side, c)][0].size for c in cams)
+            j = 0        # index into the recorded (light-frame) samples
+            i = 0        # absolute frame counter (1-based)
+            while j < n:
+                i += 1
+                raw = i % 256
+                t = (i - 1) / self._fs
+                warm = i <= self._discard
+                dark = self._is_dark(i)
+                for cam in cams:
+                    if warm:
+                        h = _gaussian_histogram(self.pedestal + 40.0, 10.0, rng)
+                    elif dark:
+                        h = _gaussian_histogram(self.pedestal + 3.0, 3.0, rng)
+                    else:
+                        bfi = self._series[(side, cam)][0][j]
+                        bvi = self._series[(side, cam)][1][j]
+                        mdc = self._mean_dc(bvi)
+                        h = _gaussian_histogram(self.pedestal + mdc,
+                                                self._std_for(bfi, mdc, cam), rng)
+                    frames.append((raw, side, cam, t, h))
+                if not warm and not dark:
+                    j += 1
+            for _ in range(self._terminal):       # laser-off frames at the end
+                i += 1
+                raw = i % 256
+                t = (i - 1) / self._fs
+                for cam in cams:
+                    frames.append((raw, side, cam, t,
+                                   _gaussian_histogram(self.pedestal + 3.0, 3.0, rng)))
+        return frames
+
+    def __iter__(self) -> Iterator[FrameBatch]:
+        f = self._frames
+        for s in range(0, len(f), self._batch):
+            chunk = f[s:s + self._batch]
+            nrows = len(chunk)
+            rh = np.zeros((nrows, 2, 8, _HISTO_BINS), dtype=np.uint32)
+            tc = np.zeros((nrows, 2, 8), dtype=np.float32)
+            cam = np.zeros(nrows, dtype=np.int8)
+            fid = np.zeros(nrows, dtype=np.uint8)
+            sid = np.zeros(nrows, dtype=np.int8)
+            ts = np.zeros(nrows, dtype=np.float64)
+            for k, (raw, side, c, t, h) in enumerate(chunk):
+                rh[k, side, c] = h
+                tc[k, side, c] = 30.0
+                cam[k] = c
+                fid[k] = raw
+                sid[k] = side
+                ts[k] = t
             yield FrameBatch(cam_ids=cam, frame_ids=fid, side_ids=sid,
                              raw_histograms=rh, temperature_c=tc,
                              timestamp_s=ts, pdc=None, tcm=None, tcl=None)

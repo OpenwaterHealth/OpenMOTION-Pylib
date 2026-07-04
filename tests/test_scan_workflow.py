@@ -117,6 +117,31 @@ def test_start_scan_uses_new_runner():
     assert isinstance(motion.scan_workflow._runner, ScanRunner)
 
 
+def test_start_scan_demo_csv_uses_demo_source(tmp_path):
+    """demo_csv makes start_scan replay the file via DemoScanSource (no
+    LiveUsbSource / hardware)."""
+    import csv as _csv
+    from omotion.pulse.scan_synth import DemoScanSource
+    from omotion.pulse.synth import synth_bfi
+    p = tmp_path / "demo.csv"
+    _, v = synth_bfi(duration_s=5.0, fs=40.0, bpm=72.0, seed=1)
+    with open(p, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["camera", "side", "time_s", "BFI", "BVI"])
+        for cam in (0, 1):
+            for side in ("left", "right"):
+                for i in range(len(v)):
+                    w.writerow([cam, side, round(i / 40.0, 3),
+                                round(float(v[i]), 4), 7.5])
+    motion = _build_motion_with_data_dir(None)
+    request = ScanRequest(
+        subject_id="x", duration_sec=60, left_camera_mask=0x03,
+        right_camera_mask=0x03, reduced_mode=True, demo_csv=str(p),
+    )
+    assert motion.scan_workflow.start_scan(request)
+    assert isinstance(motion.scan_workflow._runner.source, DemoScanSource)
+
+
 def test_start_scan_excludes_unconnected_unmasked_sensor_from_live_source():
     """bloodflow-app issue #274: on a single-sensor rig, ``right`` is a real
     ``MotionSensor`` object (never ``None`` — see ``MotionInterface.__init__``)

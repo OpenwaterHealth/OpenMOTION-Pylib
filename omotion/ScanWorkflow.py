@@ -138,6 +138,12 @@ class ScanRequest:
     # When True (and reduced_mode is on), insert PulseWaveformStage so the
     # pipeline emits LiveEmit("pulse", PulseAnalysis) for the pulse-view sink.
     pulse_analysis: bool = False
+    # Demo mode: path to a recorded bfi_results CSV to replay at the top of the
+    # pipeline instead of streaming from sensors. When set, no hardware is
+    # driven (no camera enable / trigger / laser) and the scan auto-stops when
+    # the recording is exhausted. left/right_camera_mask select the replayed
+    # cameras and drive the side-average.
+    demo_csv: str | None = None
     # Pipeline sinks list — will be injected by the runner at start_scan time.
     # Normally managed by the SDK at MotionInterface construction (data_dir, scan_db_path).
     sinks: list = field(default_factory=list)
@@ -467,8 +473,34 @@ class ScanWorkflow:
                 telemetry_aggregator = None
                 telemetry_feeder = None
 
-        # ── Build pipeline ────────────────────────────────────────────────
+        # ── Demo mode: replay a recorded bfi_results CSV at the pipeline top
+        # instead of streaming from sensors. DemoScanSource provides its own
+        # calibration so the pipeline recomputes ~the recorded BFI/BVI.
         calibration = self._calibration
+        demo_source = None
+        if request.demo_csv:
+            from omotion.pulse.scan_synth import DemoScanSource
+            try:
+                demo_source = DemoScanSource(
+                    csv_path=request.demo_csv, metadata=meta,
+                    left_mask=request.left_camera_mask,
+                    right_mask=request.right_camera_mask,
+                    batch_size=request.batch_size_frames or 100,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "start_scan: demo_csv load failed (%s) — aborting",
+                    request.demo_csv,
+                )
+                self._last_scan_error = f"Demo data unavailable: {exc}"
+                with self._lock:
+                    self._running = False
+                return False
+            calibration = demo_source.calibration
+            pedestals = SensorPedestals(left=demo_source.pedestal,
+                                        right=demo_source.pedestal)
+
+        # ── Build pipeline ────────────────────────────────────────────────
         pipeline = default_pipeline(
             metadata=meta,
             calibration=calibration,
@@ -568,7 +600,7 @@ class ScanWorkflow:
         def _live_sensor(sensor, mask: int):
             return sensor if (int(mask) != 0 and sensor.is_connected()) else None
 
-        source = LiveUsbSource(
+        source = demo_source if demo_source is not None else LiveUsbSource(
             console=self._interface.console,
             left=_live_sensor(self._interface.left, request.left_camera_mask),
             right=_live_sensor(self._interface.right, request.right_camera_mask),
@@ -589,7 +621,10 @@ class ScanWorkflow:
         def _worker():
             try:
                 # ── Pre-flight hardware setup ─────────────────────────────
-                active_sides = self._resolve_active_sides(
+                # Demo mode drives no hardware — an empty active_sides makes
+                # the worker skip camera-enable / trigger / laser and just run
+                # the runner over the DemoScanSource.
+                active_sides = [] if request.demo_csv else self._resolve_active_sides(
                     request.left_camera_mask, request.right_camera_mask
                 )
                 # Expose for cancel_scan's teardown.
