@@ -124,6 +124,7 @@ iface.stop()
 | `docs/scan-sequencing.md` | Frame ID unwrapping + histogram packet ordering. |
 | `docs/SciencePipeline.md` | BFI/BVI computation. |
 | `docs/PulseWaveform.md` | Cardiac pulse-waveform analysis — beat detection, template/envelope, morphology features, reliability gate (consumes the BFI from `SciencePipeline.md`). |
+| `docs/PulseWaveform-vs-Gen2Analysis.md` | Compares the real-time SDK pulse engine to the offline `opw_bloodflow_gen2_ai` research pipeline (autocorr vs FFT, peak-then-foot vs Elgendi, reliability gate vs segment-std, feature sets, asymmetry). |
 | `docs/ScanDatabase.md` | SQLite schema. |
 | `docs/ScanDatabase-HardwareVerification.md` | DB sink test plan. |
 | `docs/ConsoleTelemetry.md` | PDC (dark correction) + TEC telemetry. |
