@@ -21,6 +21,7 @@ from .stages.shot_noise import ShotNoiseCorrectionStage
 from .stages.bfi_bvi import BfiBviStage
 from .stages.dark_frame_hold import DarkFrameHoldStage
 from .stages.side_avg import SideAverageStage
+from .stages.pulse_waveform import PulseWaveformStage
 from .stages.timestamp_repair import TimestampRepairStage
 from .tee import Tee
 
@@ -34,7 +35,8 @@ def default_pipeline(*,
                      dark_interval: int = 600,
                      realtime_dark_history_size: int = 4,
                      raw_save_max_duration_s: Optional[float] = None,
-                     telemetry: Optional[Any] = None) -> Pipeline:
+                     telemetry: Optional[Any] = None,
+                     enable_pulse: bool = False) -> Pipeline:
     """Build the canonical pipeline. See SciencePipeline.md for the algorithm.
 
     Args:
@@ -101,7 +103,14 @@ def default_pipeline(*,
             left_camera_mask=metadata.left_camera_mask,
             right_camera_mask=metadata.right_camera_mask,
         ),
-        Tee("live", emit_if_any=not_warmup_or_stale),
     ])
+
+    # Optional cardiac pulse-waveform analysis. Consumes the per-side
+    # realtime averages SideAverageStage emits, so it only runs in reduced
+    # mode (where those averages exist) and must sit before the live tee.
+    if enable_pulse and metadata.reduced_mode:
+        stages.append(PulseWaveformStage(enabled=True))
+
+    stages.append(Tee("live", emit_if_any=not_warmup_or_stale))
 
     return Pipeline(stages)

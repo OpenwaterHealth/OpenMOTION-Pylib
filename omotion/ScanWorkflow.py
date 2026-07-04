@@ -135,6 +135,9 @@ class ScanRequest:
     # bfi_left, bfi_right, bvi_left, bvi_right columns.  Uncorrected
     # samples emitted to the UI are also averaged per-side per-frame.
     reduced_mode: bool = False
+    # When True (and reduced_mode is on), insert PulseWaveformStage so the
+    # pipeline emits LiveEmit("pulse", PulseAnalysis) for the pulse-view sink.
+    pulse_analysis: bool = False
     # Pipeline sinks list — will be injected by the runner at start_scan time.
     # Normally managed by the SDK at MotionInterface construction (data_dir, scan_db_path).
     sinks: list = field(default_factory=list)
@@ -472,6 +475,7 @@ class ScanWorkflow:
             pedestals=pedestals,
             raw_save_max_duration_s=request.raw_save_max_duration_s,
             telemetry=telemetry_aggregator,
+            enable_pulse=request.pulse_analysis,
         )
 
         # ── Auto-inject default sinks ──────────────────────────────────────

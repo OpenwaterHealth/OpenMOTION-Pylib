@@ -47,6 +47,52 @@ def test_default_pipeline_has_expected_stages():
     ]
 
 
+def test_default_pipeline_omits_pulse_stage_by_default():
+    meta = ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=True,
+    )
+    pipeline = default_pipeline(
+        metadata=meta, calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+    )
+    assert "pulse_waveform" not in [s.name for s in pipeline.stages]
+
+
+def test_default_pipeline_includes_pulse_stage_when_enabled():
+    meta = ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=True,
+    )
+    pipeline = default_pipeline(
+        metadata=meta, calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        enable_pulse=True,
+    )
+    names = [s.name for s in pipeline.stages]
+    assert "pulse_waveform" in names
+    # Must sit after side_average (its input) and before the live tee.
+    assert names.index("side_average") < names.index("pulse_waveform")
+    assert names.index("pulse_waveform") < names.index("tee:live")
+
+
+def test_pulse_stage_disabled_when_not_reduced_mode():
+    meta = ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=False,
+    )
+    pipeline = default_pipeline(
+        metadata=meta, calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        enable_pulse=True,
+    )
+    # No per-side averages exist without reduced mode, so no pulse stage.
+    assert "pulse_waveform" not in [s.name for s in pipeline.stages]
+
+
 def test_default_pipeline_omits_raw_tee_when_duration_zero():
     cal = _trivial_calibration()
     meta = ScanMetadata(
