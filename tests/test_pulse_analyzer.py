@@ -167,6 +167,36 @@ def test_recovers_low_heart_rate():
     assert _mean_abs_hr_err(48.0, noise=0.3) < 5.0
 
 
+@pytest.mark.parametrize("method", ["movavg", "modwt"])
+def test_band_method_recovers_heart_rate(method):
+    a = PulseWaveformAnalyzer(side="left", band_method=method)
+    _feed_all(a, *_clean_signal(bpm=72.0))
+    assert 68.0 <= a.snapshot().features.hr_bpm <= 76.0
+
+
+@pytest.mark.parametrize("method", ["movavg", "modwt"])
+def test_band_method_envelope_brackets_template(method):
+    a = PulseWaveformAnalyzer(side="left", band_method=method)
+    _feed_all(a, *_clean_signal(bpm=72.0, duration_s=16.0))
+    snap = a.snapshot()
+    assert np.all(snap.env_min <= snap.template + 1e-6)
+    assert np.all(snap.template <= snap.env_max + 1e-6)
+
+
+def test_modwt_method_recovers_hr_under_noise():
+    # The literature-exact sym4 MODWT band (numpy à trous) must also be robust.
+    a = PulseWaveformAnalyzer(side="left", band_method="modwt")
+    t, v = synth_bfi(duration_s=16.0, fs=40.0, bpm=72.0, hrv_frac=0.04,
+                     noise=0.5, wander=0.3, pulse_shape="normal", seed=2)
+    a.add_samples(t, v)
+    assert 66.0 <= a.snapshot().features.hr_bpm <= 78.0
+
+
+def test_invalid_band_method_raises():
+    with pytest.raises(ValueError):
+        PulseWaveformAnalyzer(side="left", band_method="bogus")
+
+
 def test_live_partial_beat_is_within_current_cycle():
     a = PulseWaveformAnalyzer(side="left")
     _feed_all(a, *_clean_signal())

@@ -23,11 +23,13 @@ class PulseWaveformStage:
 
     def __init__(self, *, enabled: bool = True, emit_every: int = 8,
                  phase_bins: int = 60, history_beats: int = 20,
-                 min_bpm: float = 40.0, max_bpm: float = 180.0):
+                 min_bpm: float = 40.0, max_bpm: float = 180.0,
+                 band_method: str = "movavg"):
         self.enabled = bool(enabled)
         self.emit_every = max(1, int(emit_every))
         self._kw = dict(phase_bins=phase_bins, history_beats=history_beats,
-                        min_bpm=min_bpm, max_bpm=max_bpm)
+                        min_bpm=min_bpm, max_bpm=max_bpm,
+                        band_method=band_method)
         self._reset_state()
 
     def _reset_state(self) -> None:

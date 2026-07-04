@@ -95,6 +95,15 @@ def test_reset_clears_analyzers():
         assert e.payload.beat_count == 0
 
 
+def test_modwt_band_method_recovers_heart_rate_through_stage():
+    stage = PulseWaveformStage(enabled=True, emit_every=8, band_method="modwt")
+    t, left, right = synth_pair(duration_s=14.0, bpm=72.0, hrv_frac=0.0,
+                                noise=0.0, wander=0.0, seed=1)
+    emits = _feed_pair(stage, t, left, right)
+    last_left = [e.payload for e in emits if e.payload.side == "left"][-1]
+    assert 68.0 <= last_left.features.hr_bpm <= 76.0
+
+
 def test_has_stage_protocol_shape():
     stage = PulseWaveformStage(enabled=True)
     assert stage.name == "pulse_waveform"

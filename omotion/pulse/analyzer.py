@@ -8,15 +8,17 @@ area under curve, systolic rise time, augmentation index, heart rate).
 
 Design constraints (see the design spec):
 
-* **numpy only (by choice, not constraint)** — scipy is available, but a
-  benchmarked Butterworth-bandpass + ``scipy.signal.find_peaks`` detector was
-  statistically indistinguishable from this moving-average band-limit +
-  autocorrelation-period + refractory-trough approach across a noise / heart-
-  rate sweep (a naive find_peaks was markedly *worse* — it detects in-band
-  noise as beats). The residual errors are 40 fps resolution limits at high
-  HR, which no filter fixes. Kept dependency-free; don't reintroduce scipy
-  here without re-benchmarking (see tests/test_pulse_analyzer.py robustness
-  tests).
+* **numpy only, by choice** — the beat-detection band-limit is pluggable via
+  ``band_method``: ``"movavg"`` (default, a moving-average high-pass + light
+  smoothing) or ``"modwt"`` (the DCS pulsatility paper's sym4 stationary /
+  à-trous wavelet cardiac-band sum, implemented in pure numpy — no PyWavelets
+  needed). Three independent band-limits — moving average, a scipy
+  Butterworth bandpass + ``find_peaks``, and the sym4 MODWT — all benchmark
+  statistically indistinguishable for HR recovery across a noise / heart-rate
+  sweep; the residual error is the 40 fps sampling limit at high HR, which no
+  filter fixes. So the simple ``movavg`` is the default and scipy is *not* a
+  dependency. Don't change the default or add scipy/pywt without
+  re-benchmarking (see tests/test_pulse_analyzer.py).
 * **40 Hz-friendly** — at 40 fps a 40-180 bpm beat spans 13-60 samples, which
   resolves amplitude/timing/area features well (fine dicrotic structure only
   best-effort).
@@ -60,6 +62,69 @@ def _nan_interp(v: np.ndarray) -> np.ndarray:
     idx = np.arange(v.size)
     v[bad] = np.interp(idx[bad], idx[~bad], v[~bad])
     return v
+
+
+# sym4 (Symlet-4) analysis low-pass (matches PyWavelets ``dec_lo``); the
+# high-pass is the quadrature mirror g[k] = (-1)^k · h[N-1-k]. Used for a
+# dependency-free stationary ("à trous") MODWT band-limit — the DCS
+# pulsatility paper's method (sum of the cardiac-band detail levels), offered
+# as the optional ``band_method="modwt"``.
+_SYM4_LO = np.array([
+    -0.07576571478927333, -0.02963552764599851, 0.49761866763201545,
+    0.8037387518059161, 0.29785779560527736, -0.09921954357684722,
+    -0.012603967262037833, 0.032223100604042702,
+])
+_SYM4_HI = _SYM4_LO[::-1].copy()
+_SYM4_HI[1::2] *= -1.0
+
+
+def _atrous(filt: np.ndarray, up: int) -> np.ndarray:
+    """Insert ``up-1`` zeros between filter taps (the 'holes' of à trous)."""
+    if up <= 1:
+        return filt
+    out = np.zeros((filt.size - 1) * up + 1, dtype=np.float64)
+    out[::up] = filt
+    return out
+
+
+def _conv_reflect(x: np.ndarray, filt: np.ndarray) -> np.ndarray:
+    pad = filt.size // 2
+    xp = np.pad(x, pad, mode="reflect")
+    return np.convolve(xp, filt, mode="same")[pad:pad + x.size]
+
+
+def _cardiac_levels(fs: float, min_bpm: float, max_bpm: float) -> list[int]:
+    """Detail levels whose octave-band geometric centre lands in the cardiac
+    band. Level j covers ~[fs/2^(j+1), fs/2^j] Hz."""
+    f_lo = min_bpm / 60.0 * 0.7
+    f_hi = max_bpm / 60.0 * 1.3
+    levels = []
+    for j in range(1, 9):
+        fc = fs / (2 ** j) / np.sqrt(2.0)
+        if f_lo <= fc <= f_hi:
+            levels.append(j)
+    return levels
+
+
+def _wavelet_band(x: np.ndarray, fs: float,
+                  min_bpm: float, max_bpm: float) -> np.ndarray:
+    """Sum of the cardiac-band sym4 stationary-wavelet detail levels (à trous).
+
+    Falls back to a moving-average detrend if no detail level lands in-band
+    (degenerate ``fs``)."""
+    levels = _cardiac_levels(fs, min_bpm, max_bpm)
+    if not levels:
+        base = int(round(fs * 60.0 / min_bpm))
+        return _movavg(x - _movavg(x, base), 5)
+    a = x.astype(np.float64, copy=True)
+    band = np.zeros_like(a)
+    for j in range(1, max(levels) + 1):
+        up = 2 ** (j - 1)
+        d = _conv_reflect(a, _atrous(_SYM4_HI, up))
+        a = _conv_reflect(a, _atrous(_SYM4_LO, up))
+        if j in levels:
+            band += d
+    return band
 
 
 def _estimate_period_samples(ac: np.ndarray, fs: float,
@@ -154,10 +219,22 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class PulseWaveformAnalyzer:
+    #: Band-limit strategies for beat detection. ``"movavg"`` (default) — a
+    #: moving-average high-pass + light smoothing; ``"modwt"`` — a sym4
+    #: stationary-wavelet cardiac-band sum (the DCS paper's method).
+    #: Benchmarks show them equivalent for HR recovery on 40 fps data; movavg
+    #: is the simpler default. See tests/test_pulse_analyzer.py.
+    BAND_METHODS = ("movavg", "modwt")
+
     def __init__(self, *, side: str = "left", fs_hint: float = 40.0,
                  phase_bins: int = 60, history_beats: int = 20,
                  min_bpm: float = 40.0, max_bpm: float = 180.0,
-                 smooth_win: int = 5, raw_window_s: float = 12.0):
+                 smooth_win: int = 5, raw_window_s: float = 12.0,
+                 band_method: str = "movavg"):
+        if band_method not in self.BAND_METHODS:
+            raise ValueError(
+                f"band_method must be one of {self.BAND_METHODS}, got {band_method!r}")
+        self.band_method = band_method
         self.side = side
         self.fs_hint = float(fs_hint)
         self.phase_bins = int(phase_bins)
@@ -215,6 +292,14 @@ class PulseWaveformAnalyzer:
             features=PulseFeatures(), beat_count=0, updated_beat=False,
         )
 
+    def _band_limit(self, vfill: np.ndarray, fs: float) -> np.ndarray:
+        """Cardiac-band signal used to locate beats (per ``band_method``)."""
+        if self.band_method == "modwt":
+            return _wavelet_band(vfill, fs, self.min_bpm, self.max_bpm)
+        base_win = int(round(fs * 60.0 / self.min_bpm))     # ~one longest beat
+        ac = vfill - _movavg(vfill, base_win)
+        return _movavg(ac, self.smooth_win)
+
     def snapshot(self) -> PulseAnalysis:
         if self._t.size < 8:
             return self._empty_snapshot()
@@ -223,12 +308,9 @@ class PulseWaveformAnalyzer:
         v = self._v
         fs = self._estimate_fs()
 
-        # Band-limit for detection: subtract a long baseline (high-pass) then
-        # lightly smooth (low-pass). NaN-interpolated so detection stays valid.
+        # Band-limit for detection (NaN-interpolated so detection stays valid).
         vfill = _nan_interp(v)
-        base_win = int(round(fs * 60.0 / self.min_bpm))     # ~one longest beat
-        ac = vfill - _movavg(vfill, base_win)
-        sm = _movavg(ac, self.smooth_win)
+        sm = self._band_limit(vfill, fs)
 
         period = _estimate_period_samples(sm, fs, self.min_bpm, self.max_bpm)
         if period is None:
