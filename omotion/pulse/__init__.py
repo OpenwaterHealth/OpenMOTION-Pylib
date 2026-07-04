@@ -19,9 +19,9 @@ Everything here is numpy-only (no scipy) and Qt-free.
 
 from .synth import synth_beat, synth_bfi, synth_pair, SHAPE_PRESETS
 from .analyzer import PulseWaveformAnalyzer
-from .types import PulseAnalysis, PulseFeatures
+from .types import PulseAnalysis, PulseFeatures, PulseCoverage
 
 __all__ = [
     "synth_beat", "synth_bfi", "synth_pair", "SHAPE_PRESETS",
-    "PulseWaveformAnalyzer", "PulseAnalysis", "PulseFeatures",
+    "PulseWaveformAnalyzer", "PulseAnalysis", "PulseFeatures", "PulseCoverage",
 ]

@@ -43,6 +43,25 @@ class PulseFeatures:
 
 
 @dataclass
+class PulseCoverage:
+    """Per-channel pulse-presence verdict from
+    ``PulseWaveformAnalyzer.beat_coverage`` — used by the contact-quality check
+    (issue #126), NOT the live pulse view.
+
+    ``coverage`` is the fraction of the scan spanned by in-band cardiac beats
+    (Σ in-band inter-onset intervals / total scan duration). ``periodicity`` is
+    the autocorrelation strength (0..1) that rejects band-limited noise. A
+    channel is ``valid`` only when ``coverage > min_coverage`` AND
+    ``periodicity >= PulseWaveformAnalyzer.PERIODICITY_MIN``.
+    """
+    coverage:    float = NAN   # 0..1, NaN when unmeasurable
+    periodicity: float = 0.0   # autocorrelation strength 0..1
+    hr_bpm:      float = NAN   # 60 / median in-band RR (NaN if <1 beat)
+    beat_count:  int = 0       # in-band beats counted
+    valid:       bool = False
+
+
+@dataclass
 class PulseAnalysis:
     """One analysis snapshot for a single side."""
     side: str
