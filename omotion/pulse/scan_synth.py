@@ -216,7 +216,8 @@ class DemoScanSource:
     def __init__(self, *, csv_path: str, metadata, left_mask: int,
                  right_mask: int, fs: float = 40.0, pedestal: float = 64.0,
                  dark_interval: int = 600, discard_count: int = 9,
-                 batch_size: int = 100, terminal_dark: int = 3):
+                 batch_size: int = 100, terminal_dark: int = 3,
+                 realtime: bool = False):
         self.metadata = metadata
         self.pedestal = float(pedestal)
         self.dark_interval = int(dark_interval)
@@ -224,6 +225,7 @@ class DemoScanSource:
         self._terminal = int(terminal_dark)
         self._fs = float(fs)
         self._batch = int(batch_size)
+        self._realtime = bool(realtime)
         self._gains = np.asarray(CAMERA_GAIN_MAP, dtype=np.float64).ravel()
         self._adc = adc_gain_for_pedestal(self.pedestal)
 
@@ -264,21 +266,26 @@ class DemoScanSource:
         return (abs_id - 1) % self.dark_interval == 0
 
     def _build_frames(self) -> list:
+        # Interleave both sides by time (a monotonic 0..T timeline) so a real-
+        # time replay advances both sides together and matches how the sensors
+        # actually stream.
         rng = np.random.default_rng(0)
-        frames: list = []
+        sides_cams = {}
         for side in (0, 1):
             cams = [c for c in self._masks[side] if (side, c) in self._series]
-            if not cams:
-                continue
-            n = min(self._series[(side, c)][0].size for c in cams)
-            j = 0        # index into the recorded (light-frame) samples
-            i = 0        # absolute frame counter (1-based)
-            while j < n:
-                i += 1
-                raw = i % 256
-                t = (i - 1) / self._fs
-                warm = i <= self._discard
-                dark = self._is_dark(i)
+            if cams:
+                sides_cams[side] = cams
+        if not sides_cams:
+            return []
+        n = min(self._series[(side, c)][0].size
+                for side, cams in sides_cams.items() for c in cams)
+
+        frames: list = []
+
+        def _emit(i, dark, warm, j):
+            raw = i % 256
+            t = (i - 1) / self._fs
+            for side, cams in sides_cams.items():
                 for cam in cams:
                     if warm:
                         h = _gaussian_histogram(self.pedestal + 40.0, 10.0, rng)
@@ -291,21 +298,33 @@ class DemoScanSource:
                         h = _gaussian_histogram(self.pedestal + mdc,
                                                 self._std_for(bfi, mdc, cam), rng)
                     frames.append((raw, side, cam, t, h))
-                if not warm and not dark:
-                    j += 1
-            for _ in range(self._terminal):       # laser-off frames at the end
-                i += 1
-                raw = i % 256
-                t = (i - 1) / self._fs
-                for cam in cams:
-                    frames.append((raw, side, cam, t,
-                                   _gaussian_histogram(self.pedestal + 3.0, 3.0, rng)))
+
+        j = 0        # index into the recorded (light-frame) samples
+        i = 0        # absolute frame counter (1-based)
+        while j < n:
+            i += 1
+            warm = i <= self._discard
+            dark = self._is_dark(i)
+            _emit(i, dark, warm, j)
+            if not warm and not dark:
+                j += 1
+        for _ in range(self._terminal):            # laser-off frames at the end
+            i += 1
+            _emit(i, dark=True, warm=False, j=0)
         return frames
 
     def __iter__(self) -> Iterator[FrameBatch]:
+        import time as _time
+        wall0 = _time.monotonic()
         f = self._frames
         for s in range(0, len(f), self._batch):
             chunk = f[s:s + self._batch]
+            if self._realtime and chunk:
+                # Pace the stream to ~real time: sleep until wall-clock reaches
+                # this batch's last frame timestamp.
+                dt = chunk[-1][3] - (_time.monotonic() - wall0)
+                if dt > 0:
+                    _time.sleep(min(dt, 2.0))
             nrows = len(chunk)
             rh = np.zeros((nrows, 2, 8, _HISTO_BINS), dtype=np.uint32)
             tc = np.zeros((nrows, 2, 8), dtype=np.float32)

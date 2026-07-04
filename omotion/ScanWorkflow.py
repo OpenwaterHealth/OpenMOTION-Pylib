@@ -485,7 +485,7 @@ class ScanWorkflow:
                     csv_path=request.demo_csv, metadata=meta,
                     left_mask=request.left_camera_mask,
                     right_mask=request.right_camera_mask,
-                    batch_size=request.batch_size_frames or 100,
+                    realtime=True,
                 )
             except Exception as exc:
                 logger.exception(
