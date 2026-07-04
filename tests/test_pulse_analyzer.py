@@ -138,6 +138,35 @@ def test_streaming_in_chunks_recovers_heart_rate():
     assert 68.0 <= hr <= 76.0
 
 
+def _mean_abs_hr_err(bpm, noise, n_seeds=8, dur=16.0):
+    errs = []
+    for seed in range(n_seeds):
+        t, v = synth_bfi(duration_s=dur, fs=40.0, bpm=bpm, hrv_frac=0.04,
+                         noise=noise, wander=0.2, pulse_shape="normal", seed=seed)
+        a = PulseWaveformAnalyzer(side="left")
+        a.add_samples(t, v)
+        hr = a.snapshot().features.hr_bpm
+        if np.isfinite(hr):
+            errs.append(abs(hr - bpm))
+    return float(np.mean(errs)) if errs else 1e9
+
+
+def test_recovers_heart_rate_under_heavy_noise():
+    # Low-SNR (noise ~= half the pulse amplitude) — a proper cardiac-band
+    # filter should keep beat detection honest where a moving-average detrend
+    # lets noise spawn false peaks.
+    assert _mean_abs_hr_err(72.0, noise=1.0) < 5.0
+
+
+def test_recovers_high_heart_rate():
+    # 140 bpm = ~17 samples/beat at 40 fps — near the resolution limit.
+    assert _mean_abs_hr_err(140.0, noise=0.3) < 6.0
+
+
+def test_recovers_low_heart_rate():
+    assert _mean_abs_hr_err(48.0, noise=0.3) < 5.0
+
+
 def test_live_partial_beat_is_within_current_cycle():
     a = PulseWaveformAnalyzer(side="left")
     _feed_all(a, *_clean_signal())

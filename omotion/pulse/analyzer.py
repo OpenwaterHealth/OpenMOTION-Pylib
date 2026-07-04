@@ -8,9 +8,15 @@ area under curve, systolic rise time, augmentation index, heart rate).
 
 Design constraints (see the design spec):
 
-* **numpy only** — scipy is not available in the SDK, so segmentation uses a
-  moving-average band-limit + autocorrelation period estimate + refractory
-  trough detection instead of the literature's sym4 wavelet.
+* **numpy only (by choice, not constraint)** — scipy is available, but a
+  benchmarked Butterworth-bandpass + ``scipy.signal.find_peaks`` detector was
+  statistically indistinguishable from this moving-average band-limit +
+  autocorrelation-period + refractory-trough approach across a noise / heart-
+  rate sweep (a naive find_peaks was markedly *worse* — it detects in-band
+  noise as beats). The residual errors are 40 fps resolution limits at high
+  HR, which no filter fixes. Kept dependency-free; don't reintroduce scipy
+  here without re-benchmarking (see tests/test_pulse_analyzer.py robustness
+  tests).
 * **40 Hz-friendly** — at 40 fps a 40-180 bpm beat spans 13-60 samples, which
   resolves amplitude/timing/area features well (fine dicrotic structure only
   best-effort).
