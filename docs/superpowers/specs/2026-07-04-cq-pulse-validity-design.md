@@ -147,10 +147,15 @@ def check(self, *, duration_sec=1.0, rolling_window=10,
 
 New `PulseCoverage` / `beat_coverage` unit tests (`tests/test_pulse_analyzer.py` or a
 new module):
-- Synthetic sinusoidal pulse (~72 bpm, 15 s @ 40 Hz) → `valid=True`, coverage>0.9.
-- Flat + small noise, and broadband noise → `valid=False` via periodicity.
-- Pulse present only in the first half of the scan → coverage≈0.5 → `valid=False`.
-- `<8` samples → `valid=False`, no exception.
+- Synthetic pulse (~72 bpm, 15 s @ 40 Hz) → `valid=True`, coverage ~0.87.
+- Flat + small noise → `valid=False` (low coverage **and** low periodicity).
+- **Broadband noise → high coverage (~0.81) but `valid=False` via the periodicity
+  gate** — the regression guard proving coverage alone is insufficient.
+- Realistic dropout: channel produces a good pulse for the first ~7.5 s then frames
+  stop, evaluated against the full-scan (~15 s) denominator → coverage ~0.40 →
+  `valid=False`. (A flat-but-present degraded half does *not* reliably drop coverage —
+  documented limitation below.)
+- `<8` samples or `total_duration_s<=0` → `valid=False`, no exception.
 
 New CQ-sink tests (`tests/test_contact_quality_workflow.py`):
 - Pulsatile `bfi_live` over a simulated ~15 s scan → `pulse_valid=True`, `reason="ok"`.
@@ -184,3 +189,13 @@ All new tests are pure-software (`@pytest.mark.unit`, no hardware), runnable via
   `analyzer.py`/`types.py` **additively** to keep the merge surface small.
 - **`ContactQualityWorkflow` is small and focused** — the pulse buffering adds bounded
   per-channel state; no extraction needed.
+- **Coverage denominator is load-bearing:** it must be the **global** light-frame span
+  across all channels (≈ full scan), not the per-channel buffer span — otherwise a
+  channel that drops out mid-scan is measured only against its own short buffer and
+  passes spuriously. This is what makes dropout detectable (coverage ≈ 0.40 vs ≈ 0.87).
+- **Known limitation:** a channel whose contact degrades so the pulse *flattens* while
+  frames keep flowing (finite but non-pulsatile `bfi_live`) can still score high
+  coverage, because low-amplitude wiggles produce spurious in-band onsets and the global
+  periodicity is dominated by any healthy stretch. The coverage+periodicity criterion
+  targets *presence vs absence* of a pulse train, not *partial-scan* degradation; a
+  windowed metric (explicitly out of scope) would be needed for the latter.
