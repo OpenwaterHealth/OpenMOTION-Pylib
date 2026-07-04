@@ -27,6 +27,7 @@ from typing import Optional
 import numpy as np
 
 from omotion.ScanWorkflow import run_collection_scan
+from omotion.pulse.analyzer import PulseWaveformAnalyzer
 
 
 @dataclass
@@ -81,10 +82,14 @@ class _ContactQualitySink:
         dark_thresholds: list[float],
         light_thresholds: list[float],
         rolling_window: int = 10,
+        evaluate_pulse: bool = False,
+        pulse_min_coverage: float = 0.75,
     ) -> None:
         self._dark = list(dark_thresholds)
         self._light = list(light_thresholds)
         self._window_size = max(1, int(rolling_window))
+        self._evaluate_pulse = bool(evaluate_pulse)
+        self._pulse_min_coverage = float(pulse_min_coverage)
         # (side, cam_id) -> deque[float]   (light-frame subtracted_mean values)
         self._light_window: dict = {}
         # (side, cam_id) -> deque[float]   (light-frame std_raw values)
@@ -97,6 +102,15 @@ class _ContactQualitySink:
         self._light_count: dict = {}
         # (side, cam_id) -> float          (running sum of light subtracted_mean)
         self._light_sum: dict = {}
+        # (side, cam_id) -> list[float]    light-frame timestamps / bfi_live
+        # (pulse-validity criterion, issue #126; populated only when
+        # evaluate_pulse is set)
+        self._pulse_t: dict = {}
+        self._pulse_bfi: dict = {}
+        # global light-frame timestamp span — the coverage denominator, so a
+        # channel that drops out mid-scan is measured against the full scan.
+        self._light_t_min: float = float("inf")
+        self._light_t_max: float = float("-inf")
 
     def on_scan_start(self, meta) -> None:
         self._light_window.clear()
@@ -105,6 +119,10 @@ class _ContactQualitySink:
         self._dark_std.clear()
         self._light_count.clear()
         self._light_sum.clear()
+        self._pulse_t.clear()
+        self._pulse_bfi.clear()
+        self._light_t_min = float("inf")
+        self._light_t_max = float("-inf")
 
     def consume(self, channel: str, batch) -> None:
         if channel != "live":
@@ -167,6 +185,20 @@ class _ContactQualitySink:
                     sw.append(std_v)
                 self._light_sum[key]   = self._light_sum.get(key, 0.0) + v
                 self._light_count[key] = self._light_count.get(key, 0) + 1
+                # Buffer the calibrated per-camera BFI for the pulse-validity
+                # criterion (issue #126). bfi_live is NaN during warmup/dark
+                # hold; those are skipped so the analyzer sees a clean series.
+                if (self._evaluate_pulse
+                        and getattr(batch, "bfi_live", None) is not None):
+                    bfi_v = float(batch.bfi_live[i, side_idx, cam_id])
+                    ts = float(batch.timestamp_s[i])
+                    if math.isfinite(bfi_v) and math.isfinite(ts):
+                        self._pulse_t.setdefault(key, []).append(ts)
+                        self._pulse_bfi.setdefault(key, []).append(bfi_v)
+                        if ts < self._light_t_min:
+                            self._light_t_min = ts
+                        if ts > self._light_t_max:
+                            self._light_t_max = ts
 
     def on_complete(self) -> None:
         pass
@@ -179,6 +211,10 @@ class _ContactQualitySink:
         duration_sec: float,
     ) -> ContactQualityResult:
         per_cam: dict = {}
+        # Coverage denominator: the global light-frame span (≈ full scan), not
+        # the per-channel buffer span — so a dropped-out channel scores low.
+        span = self._light_t_max - self._light_t_min
+        pulse_total_s = span if (math.isfinite(span) and span > 0) else duration_sec
         for side, mask in (("left", left_mask), ("right", right_mask)):
             for cam_id in range(8):
                 if not (mask & (1 << cam_id)):
@@ -217,6 +253,32 @@ class _ContactQualitySink:
                     reason, passed = "poor_contact", False
                 else:
                     reason, passed = "ok", True
+
+                # Pulse-validity criterion (issue #126): only evaluated on
+                # channels that otherwise pass the signal-level checks.
+                pulse_valid = False
+                pulse_cov = float("nan")
+                pulse_hr = float("nan")
+                pulse_per = float("nan")
+                if self._evaluate_pulse and reason == "ok":
+                    tbuf = self._pulse_t.get(key)
+                    bbuf = self._pulse_bfi.get(key)
+                    if tbuf is not None and len(tbuf) >= 8:
+                        an = PulseWaveformAnalyzer(
+                            side=side, raw_window_s=pulse_total_s + 1.0)
+                        an.add_samples(tbuf, bbuf)
+                        pc = an.beat_coverage(
+                            total_duration_s=pulse_total_s,
+                            min_coverage=self._pulse_min_coverage)
+                        pulse_valid = pc.valid
+                        pulse_cov = pc.coverage
+                        pulse_hr = pc.hr_bpm
+                        pulse_per = pc.periodicity
+                        if not pc.valid:
+                            reason, passed = "no_pulse", False
+                    # <8 pulse samples: leave "ok"/passed as-is (fail-open on
+                    # missing pulse data — cannot evaluate what wasn't captured).
+
                 per_cam[key] = CamCQResult(
                     side=side,
                     cam_id=cam_id,
@@ -226,6 +288,10 @@ class _ContactQualitySink:
                     dark_max_dn=dark_max,
                     dark_std_dn=dark_std,
                     reason=reason,
+                    pulse_valid=pulse_valid,
+                    pulse_coverage=pulse_cov,
+                    pulse_hr_bpm=pulse_hr,
+                    pulse_periodicity=pulse_per,
                 )
         return ContactQualityResult(
             passed=all(r.passed for r in per_cam.values()),
@@ -255,6 +321,8 @@ class ContactQualityWorkflow:
         light_threshold_per_camera: list[float],
         left_camera_mask: int,
         right_camera_mask: int,
+        evaluate_pulse: bool = False,
+        pulse_min_coverage: float = 0.75,
     ) -> ContactQualityResult:
         """Run a contact-quality check scan and return the verdict.
 
@@ -275,11 +343,24 @@ class ContactQualityWorkflow:
             triggers POOR_CONTACT (e.g. legacy default 15.0 DN).
         left_camera_mask / right_camera_mask:
             Bitmask of active cameras to evaluate.
+        evaluate_pulse:
+            When True, additionally evaluate a per-camera cardiac
+            pulse-validity criterion on ``bfi_live``: a channel that passes
+            the signal-level checks is marked ``no_pulse`` unless a valid
+            pulse train covers more than ``pulse_min_coverage`` of the scan.
+            Requires a long enough ``duration_sec`` (~15 s) and a valid
+            calibration loaded (so ``bfi_live`` is meaningful).  Default False
+            keeps legacy behavior.
+        pulse_min_coverage:
+            Minimum beat-coverage fraction (0..1) for ``pulse_valid``.
+            Default 0.75.
         """
         sink = _ContactQualitySink(
             dark_thresholds=dark_threshold_per_camera,
             light_thresholds=light_threshold_per_camera,
             rolling_window=rolling_window,
+            evaluate_pulse=evaluate_pulse,
+            pulse_min_coverage=pulse_min_coverage,
         )
         # Shared short-scan engine (see ScanWorkflow.run_collection_scan), the
         # same one the calibration/test sub-scans use. CQ runs it synchronously
