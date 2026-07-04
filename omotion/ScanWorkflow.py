@@ -630,10 +630,18 @@ class ScanWorkflow:
                 # Expose for cancel_scan's teardown.
                 self._scan_active_sides = active_sides
                 if not active_sides:
-                    logger.warning(
-                        "start_scan: no active sensors (demo mode or masks 0x00); "
-                        "runner will iterate over empty source."
-                    )
+                    if request.demo_csv:
+                        # Expected in demo mode: no hardware, the runner drives
+                        # the DemoScanSource (a real source, not empty).
+                        logger.info(
+                            "start_scan: demo mode — replaying %s, no hardware.",
+                            request.demo_csv,
+                        )
+                    else:
+                        logger.warning(
+                            "start_scan: no active sensors (masks 0x00); "
+                            "runner will iterate over empty source."
+                        )
                 else:
                     if not request.disable_laser:
                         for side, _, _ in active_sides:

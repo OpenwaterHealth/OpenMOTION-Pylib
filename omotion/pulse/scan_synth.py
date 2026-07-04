@@ -240,6 +240,7 @@ class DemoScanSource:
         # probes this attr (getattr(source, "_stop", ...)) to detect the
         # cancel path.
         self._stop = threading.Event()
+        self._sides_cams: dict = {}   # active {side: [cam...]}, set in _build_frames
 
         series = _read_bfi_results(csv_path)
         if not series:
@@ -289,6 +290,8 @@ class DemoScanSource:
                 sides_cams[side] = cams
         if not sides_cams:
             return []
+        # Kept for _terminal_dark_batch (the on-Stop laser-off frame).
+        self._sides_cams = sides_cams
         n = min(self._series[(side, c)][0].size
                 for side, cams in sides_cams.items() for c in cams)
 
@@ -325,11 +328,48 @@ class DemoScanSource:
             _emit(i, dark=True, warm=False, j=0)
         return frames
 
+    def _batch_from_chunk(self, chunk) -> FrameBatch:
+        nrows = len(chunk)
+        rh = np.zeros((nrows, 2, 8, _HISTO_BINS), dtype=np.uint32)
+        tc = np.zeros((nrows, 2, 8), dtype=np.float32)
+        cam = np.zeros(nrows, dtype=np.int8)
+        fid = np.zeros(nrows, dtype=np.uint8)
+        sid = np.zeros(nrows, dtype=np.int8)
+        ts = np.zeros(nrows, dtype=np.float64)
+        for k, (raw, side, c, t, h) in enumerate(chunk):
+            rh[k, side, c] = h
+            tc[k, side, c] = 30.0
+            cam[k] = c
+            fid[k] = raw
+            sid[k] = side
+            ts[k] = t
+        return FrameBatch(cam_ids=cam, frame_ids=fid, side_ids=sid,
+                          raw_histograms=rh, temperature_c=tc,
+                          timestamp_s=ts, pdc=None, tcm=None, tcl=None)
+
+    def _terminal_dark_batch(self, last):
+        """One laser-off (dark) frame per active camera, continuing from the
+        last delivered frame. Emitted on Stop so the pipeline closes the open
+        interval — mirroring the firmware's terminal dark on a real cancel —
+        instead of logging TERMINAL DARK MISSING and dropping the interval.
+        None if nothing was delivered yet."""
+        if last is None:
+            return None
+        last_raw, _, _, last_t, _ = last
+        rng = np.random.default_rng(0)
+        raw = (int(last_raw) + 1) % 256
+        t = float(last_t) + 1.0 / self._fs
+        chunk = [(raw, side, cam, t,
+                  _gaussian_histogram(self.pedestal + 3.0, 3.0, rng))
+                 for side, cams in self._sides_cams.items() for cam in cams]
+        return self._batch_from_chunk(chunk) if chunk else None
+
     def __iter__(self) -> Iterator[FrameBatch]:
         import time as _time
         wall0 = _time.monotonic()
         f = self._frames
         n_batches = (len(f) + self._batch - 1) // self._batch
+        last = None                      # last delivered frame, for the terminal dark
         for s in range(0, len(f), self._batch):
             # Stop (cancel_scan -> close()) halts the replay here, so a manual
             # Stop in demo mode ends the scan instead of running to completion.
@@ -338,6 +378,9 @@ class DemoScanSource:
                     "[demo] replay halted by Stop at batch %d/%d",
                     s // self._batch, n_batches,
                 )
+                td = self._terminal_dark_batch(last)
+                if td is not None:
+                    yield td
                 return
             chunk = f[s:s + self._batch]
             if self._realtime and chunk:
@@ -350,24 +393,13 @@ class DemoScanSource:
                         "[demo] replay halted by Stop mid-pace at batch %d/%d",
                         s // self._batch, n_batches,
                     )
+                    td = self._terminal_dark_batch(last)
+                    if td is not None:
+                        yield td
                     return
-            nrows = len(chunk)
-            rh = np.zeros((nrows, 2, 8, _HISTO_BINS), dtype=np.uint32)
-            tc = np.zeros((nrows, 2, 8), dtype=np.float32)
-            cam = np.zeros(nrows, dtype=np.int8)
-            fid = np.zeros(nrows, dtype=np.uint8)
-            sid = np.zeros(nrows, dtype=np.int8)
-            ts = np.zeros(nrows, dtype=np.float64)
-            for k, (raw, side, c, t, h) in enumerate(chunk):
-                rh[k, side, c] = h
-                tc[k, side, c] = 30.0
-                cam[k] = c
-                fid[k] = raw
-                sid[k] = side
-                ts[k] = t
-            yield FrameBatch(cam_ids=cam, frame_ids=fid, side_ids=sid,
-                             raw_histograms=rh, temperature_c=tc,
-                             timestamp_s=ts, pdc=None, tcm=None, tcl=None)
+            if chunk:
+                last = chunk[-1]
+            yield self._batch_from_chunk(chunk)
 
     def close(self) -> None:
         # Idempotent: halts __iter__ (checked at each batch + interrupts the

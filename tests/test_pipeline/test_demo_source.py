@@ -114,7 +114,37 @@ def test_demo_source_close_halts_iteration(tmp_path):
     it = iter(src)
     assert next(it) is not None                     # one batch delivered
     src.close()                                     # user hits Stop
-    assert sum(1 for _ in it) == 0                  # generator must halt now
+    # Halts immediately — at most the single terminal-dark batch, NOT the ~48
+    # remaining batches of a full replay (see terminal-dark test below).
+    assert sum(1 for _ in it) <= 1
+
+
+def _wmean_bin(hist):
+    h = hist.astype(float)
+    tot = h.sum()
+    return float((np.arange(h.size) * h).sum() / tot) if tot > 0 else 0.0
+
+
+def test_demo_source_emits_terminal_dark_on_stop(tmp_path):
+    # Stopping mid-replay must emit a laser-off (dark) terminal frame like the
+    # firmware does on a real Stop, so the pipeline closes the open interval
+    # instead of logging "TERMINAL DARK MISSING" and dropping the interval /
+    # deleting the empty DB session.
+    p = str(tmp_path / "demo.csv")
+    _write_bfi_csv(p, dur=30.0)
+    src = DemoScanSource(csv_path=p, metadata=_meta(), left_mask=0x03,
+                         right_mask=0x03, dark_interval=600, realtime=False)
+    it = iter(src)
+    next(it); next(it)                 # a couple of light batches
+    src.close()                        # user hits Stop
+    tail = list(it)                    # remaining batches after Stop
+    assert tail, "expected a terminal-dark batch to be emitted on Stop"
+    last = tail[-1]
+    assert last.cam_ids.shape[0] > 0
+    for k in range(last.cam_ids.shape[0]):
+        side = int(last.side_ids[k]); cam = int(last.cam_ids[k])
+        wb = _wmean_bin(last.raw_histograms[k, side, cam])
+        assert wb < 100.0, f"terminal frame not laser-off (weighted bin {wb:.0f})"
 
 
 def test_demo_source_respects_masks(tmp_path):
