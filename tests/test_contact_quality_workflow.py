@@ -5,6 +5,8 @@ results are in **background-subtracted DN** scale (subtracted_mean), matching
 the legacy ContactQuality module semantics.
 """
 
+import math
+
 import numpy as np
 import pytest
 from unittest.mock import MagicMock
@@ -16,6 +18,7 @@ from omotion.ContactQualityWorkflow import (
     _ContactQualitySink,
 )
 from omotion.pipeline.batch import FrameBatch
+from omotion.pulse.synth import synth_bfi
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +324,19 @@ def test_cq_workflow_fails_when_below_light_threshold():
     )
 
     assert result.passed is False
+
+
+# ---------------------------------------------------------------------------
+# Pulse-validity criterion (issue #126)
+# ---------------------------------------------------------------------------
+
+def test_cam_cq_result_has_pulse_fields_defaulting_unevaluated():
+    r = CamCQResult(
+        side="left", cam_id=0, passed=True,
+        light_avg_dn=20.0, light_std_dn=2.5, dark_max_dn=1.0, dark_std_dn=2.5,
+        reason="ok",
+    )
+    assert r.pulse_valid is False
+    assert math.isnan(r.pulse_coverage)
+    assert math.isnan(r.pulse_hr_bpm)
+    assert math.isnan(r.pulse_periodicity)

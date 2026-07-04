@@ -40,7 +40,12 @@ class CamCQResult:
     light_std_dn: float # mean of rolling-window light-frame std_raw (NaN when no data)
     dark_max_dn:  float # max of dark-frame subtracted_mean (NaN when no data)
     dark_std_dn:  float # std_raw recorded with dark_max_dn (NaN when no data)
-    reason:      str    # "ok" | "poor_contact" | "ambient_light" | "no_signal"
+    reason:      str    # "ok" | "poor_contact" | "ambient_light" | "no_signal" | "no_pulse"
+    # ── pulse-validity criterion (issue #126); NaN/False when not evaluated ──
+    pulse_valid:       bool = False
+    pulse_coverage:    float = float("nan")   # Σ in-band RR / scan span, 0..1
+    pulse_hr_bpm:      float = float("nan")
+    pulse_periodicity: float = float("nan")
 
 
 @dataclass
