@@ -23,6 +23,8 @@ Kept out of the pure ``synth``/``analyzer`` modules (and out of
 from __future__ import annotations
 
 import csv
+import logging
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterator
@@ -33,6 +35,11 @@ from ..config import CAMERA_GAIN_MAP
 from ..pipeline.batch import FrameBatch
 from ..pipeline.pedestal import adc_gain_for_pedestal
 from .synth import synth_bfi
+
+# Explicit "openmotion.sdk.*" name (matching omotion/pipeline/*) so app hosts
+# that attach handlers to the "openmotion.sdk" tree capture these lines; a bare
+# __name__ ("omotion.pulse.scan_synth") falls outside that tree and is dropped.
+logger = logging.getLogger("openmotion.sdk.pulse.scan_synth")
 
 _N_COUNTS = 10000
 _HISTO_BINS = 1024
@@ -228,6 +235,11 @@ class DemoScanSource:
         self._realtime = bool(realtime)
         self._gains = np.asarray(CAMERA_GAIN_MAP, dtype=np.float64).ravel()
         self._adc = adc_gain_for_pedestal(self.pedestal)
+        # Set by close() so a mid-replay Stop (cancel_scan -> source.close())
+        # halts __iter__, matching LiveUsbSource. The duration guard also
+        # probes this attr (getattr(source, "_stop", ...)) to detect the
+        # cancel path.
+        self._stop = threading.Event()
 
         series = _read_bfi_results(csv_path)
         if not series:
@@ -317,14 +329,28 @@ class DemoScanSource:
         import time as _time
         wall0 = _time.monotonic()
         f = self._frames
+        n_batches = (len(f) + self._batch - 1) // self._batch
         for s in range(0, len(f), self._batch):
+            # Stop (cancel_scan -> close()) halts the replay here, so a manual
+            # Stop in demo mode ends the scan instead of running to completion.
+            if self._stop.is_set():
+                logger.info(
+                    "[demo] replay halted by Stop at batch %d/%d",
+                    s // self._batch, n_batches,
+                )
+                return
             chunk = f[s:s + self._batch]
             if self._realtime and chunk:
-                # Pace the stream to ~real time: sleep until wall-clock reaches
-                # this batch's last frame timestamp.
+                # Pace the stream to ~real time: wait until wall-clock reaches
+                # this batch's last frame timestamp. Wait on _stop (not sleep)
+                # so a Stop interrupts the pacing immediately.
                 dt = chunk[-1][3] - (_time.monotonic() - wall0)
-                if dt > 0:
-                    _time.sleep(min(dt, 2.0))
+                if dt > 0 and self._stop.wait(min(dt, 2.0)):
+                    logger.info(
+                        "[demo] replay halted by Stop mid-pace at batch %d/%d",
+                        s // self._batch, n_batches,
+                    )
+                    return
             nrows = len(chunk)
             rh = np.zeros((nrows, 2, 8, _HISTO_BINS), dtype=np.uint32)
             tc = np.zeros((nrows, 2, 8), dtype=np.float32)
@@ -344,4 +370,8 @@ class DemoScanSource:
                              timestamp_s=ts, pdc=None, tcm=None, tcl=None)
 
     def close(self) -> None:
-        pass
+        # Idempotent: halts __iter__ (checked at each batch + interrupts the
+        # realtime pacing wait). Mirrors LiveUsbSource.close().
+        if not self._stop.is_set():
+            logger.info("[demo] DemoScanSource.close() -> halting replay")
+        self._stop.set()

@@ -103,6 +103,20 @@ def test_demo_source_iterator_terminates(tmp_path):
     assert 0 < n_batches < 10000                # finite
 
 
+def test_demo_source_close_halts_iteration(tmp_path):
+    # Regression: Stop in demo mode routes cancel_scan() -> source.close().
+    # close() was a no-op and __iter__ had no stop check, so the replay ran
+    # to completion regardless of Stop ("Stop in demo mode doesn't stop").
+    p = str(tmp_path / "demo.csv")
+    _write_bfi_csv(p, dur=30.0)                     # many batches available
+    src = DemoScanSource(csv_path=p, metadata=_meta(), left_mask=0x03,
+                         right_mask=0x03, dark_interval=200, realtime=False)
+    it = iter(src)
+    assert next(it) is not None                     # one batch delivered
+    src.close()                                     # user hits Stop
+    assert sum(1 for _ in it) == 0                  # generator must halt now
+
+
 def test_demo_source_respects_masks(tmp_path):
     # Only cameras in the mask are emitted.
     p = str(tmp_path / "demo.csv")
