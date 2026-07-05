@@ -1451,8 +1451,16 @@ class MotionSensor(SignalWrapper):
 
         ``rate_hz`` selects the generator rate (firmware supports 40 and 60,
         sensor-fw#78). 40 is sent as the legacy enable value (1) so older
-        firmware keeps working.
+        firmware keeps working. Unsupported rates raise ``ValueError`` —
+        notably 0 would otherwise encode as reserved=0, which the firmware
+        interprets as *disable*.
         """
+        from omotion.config import SUPPORTED_CAPTURE_RATES_HZ
+        if rate_hz not in SUPPORTED_CAPTURE_RATES_HZ:
+            raise ValueError(
+                f"unsupported FSIN rate {rate_hz!r} Hz "
+                f"(supported: {SUPPORTED_CAPTURE_RATES_HZ})"
+            )
         if self.demo_mode:
             return True
         reserved = 1 if rate_hz == 40 else int(rate_hz)

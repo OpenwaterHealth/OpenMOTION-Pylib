@@ -160,6 +160,19 @@ def apply_laser_power(
     if opt_thresh is not None or opt_gain is not None:
         skip_entries.add(_OPT_DRIVE_CL)
 
+    # Laser-safety rate floor scaling (sdk#129). Fail-loud bookkeeping:
+    # if scaling is needed, every expected RATE_LL entry must actually be
+    # found and rescaled — a silently-unscaled floor at 60 Hz means the
+    # interlock trips on every pulse and the laser goes dark with no error.
+    from omotion.config import DEFAULT_TRIGGER_CONFIG
+    _RATE_SCALED_PARAMS = frozenset({"EE_RATE_LL", "OPT_RATE_LL"})
+    _baseline_freq_hz = float(DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"])
+    _rate_scale_needed = (
+        trigger_freq_hz is not None
+        and float(trigger_freq_hz) != _baseline_freq_hz
+    )
+    rate_scaled_names: set = set()
+
     if lock is not None:
         lock.lock()
     try:
@@ -179,17 +192,19 @@ def apply_laser_power(
             data_to_send = bytearray(laser_param["dataToSend"])
 
             if (
-                trigger_freq_hz is not None
-                and trigger_freq_hz != 40.0
-                and friendly_name in ("EE_RATE_LL", "OPT_RATE_LL")
+                _rate_scale_needed
+                and friendly_name in _RATE_SCALED_PARAMS
             ):
-                # Rescale the 40 Hz min-period floor to the requested rate,
-                # preserving the baseline's proportional margin (sdk#129).
+                # Rescale the baseline min-period floor to the requested
+                # rate, preserving the proportional margin (sdk#129).
                 baseline_raw = int.from_bytes(data_to_send, "little")
-                scaled_raw = int(round(baseline_raw * 40.0 / trigger_freq_hz))
+                scaled_raw = int(round(
+                    baseline_raw * _baseline_freq_hz / trigger_freq_hz
+                ))
                 data_to_send = bytearray(
                     scaled_raw.to_bytes(len(data_to_send), "little")
                 )
+                rate_scaled_names.add(friendly_name)
                 logger.info(
                     "Rescaled %s for %.4g Hz trigger: raw %d -> %d (%.0f us)",
                     friendly_name, trigger_freq_hz, baseline_raw, scaled_raw,
@@ -211,6 +226,18 @@ def apply_laser_power(
                     raw_int = float(override_val)
                     if scale:
                         raw_int = raw_int / scale
+                    if _rate_scale_needed and friendly_name in _RATE_SCALED_PARAMS:
+                        # A stored per-key RATE_LL override is calibrated
+                        # for the 40 Hz baseline; written verbatim at 60 Hz
+                        # it would EXCEED the pulse period and trip the
+                        # interlock on every pulse. Rescale it exactly like
+                        # the bundled baseline (sdk#129).
+                        raw_int = raw_int * _baseline_freq_hz / float(trigger_freq_hz)
+                        rate_scaled_names.add(friendly_name)
+                        logger.info(
+                            "Rescaled user-config %s for %.4g Hz trigger",
+                            friendly_name, trigger_freq_hz,
+                        )
                     max_val = (1 << (num_bytes * 8)) - 1
                     raw_int = max(0, min(max_val, int(round(raw_int))))
                     byteorder = "big" if fpga_entry.get("isMsbFirst", False) else "little"
@@ -237,6 +264,17 @@ def apply_laser_power(
             ):
                 logger.error(
                     "Failed to set laser power (muxIdx=%d, channel=%d)", mux_idx, channel
+                )
+                return False
+
+        if _rate_scale_needed:
+            missing = _RATE_SCALED_PARAMS - rate_scaled_names
+            if missing:
+                logger.error(
+                    "apply_laser_power: %.4g Hz trigger requested but "
+                    "RATE_LL entries %s were not found in laser_params — "
+                    "safety floor NOT scaled; refusing to continue",
+                    trigger_freq_hz, sorted(missing),
                 )
                 return False
 

@@ -114,6 +114,36 @@ def test_apply_laser_power_none_rate_keeps_baseline_rate_ll():
     assert writes[7] == (70313).to_bytes(4, "little")
 
 
+def test_apply_laser_power_60hz_scales_user_config_rate_ll_override():
+    """A stored per-key RATE_LL user-config override (us, calibrated for
+    40 Hz) must be rescaled like the bundled baseline — written verbatim
+    at 60 Hz it would exceed the pulse period and trip the interlock on
+    every pulse (sdk#129 review finding)."""
+    class _FakeConsoleWithCfg(_FakeConsole):
+        def read_config(self):
+            class _Cfg:
+                json_data = {"EE_RATE_LL": 22500.0}
+            return _Cfg()
+
+    console = _FakeConsoleWithCfg()
+    assert apply_laser_power(console, trigger_freq_hz=60.0) is True
+    writes = _rate_ll_writes(console)
+    # override 22,500 us / 0.32 = 70312.5 raw ticks, x 40/60 = 46875.
+    assert writes[6] == (46875).to_bytes(4, "little")
+    # OPT side has no override — bundled baseline scaling still applies.
+    assert writes[7] == (46875).to_bytes(4, "little")
+
+
+def test_trigger_overrides_for_rate_rejects_unsupported_rate():
+    from omotion.config import trigger_overrides_for_rate
+    import pytest
+
+    with pytest.raises(ValueError):
+        trigger_overrides_for_rate(0)
+    with pytest.raises(ValueError):
+        trigger_overrides_for_rate(100)
+
+
 def test_trigger_overrides_for_rate_scales_skip_delay():
     from omotion.config import trigger_overrides_for_rate
 

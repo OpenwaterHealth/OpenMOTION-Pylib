@@ -323,6 +323,12 @@ DEFAULT_TRIGGER_CONFIG: dict = {
 }
 
 
+#: Capture rates the full stack supports (app config validation, sensor
+#: firmware FSIN generator, laser-safety scaling all key off this). 40 is
+#: the validated clinical rate; 60 is experimental (sdk#129).
+SUPPORTED_CAPTURE_RATES_HZ: tuple = (40, 60)
+
+
 def trigger_overrides_for_rate(rate_hz: float) -> dict:
     """Trigger-config overrides for a non-default capture rate (sdk#129).
 
@@ -336,8 +342,18 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
     dark frame. Scaled (1200 us at 60 Hz) the margin stays ~3%, and the
     displaced pulse still lands well past the camera exposure window
     (648 us), preserving the dark.
+
+    Raises ``ValueError`` for rates outside
+    :data:`SUPPORTED_CAPTURE_RATES_HZ` — this helper feeds laser-safety
+    scaling, so an unvalidated rate must fail loudly, not half-configure.
     """
-    scale = 40.0 / float(rate_hz)
+    if rate_hz not in SUPPORTED_CAPTURE_RATES_HZ:
+        raise ValueError(
+            f"unsupported capture rate {rate_hz!r} Hz "
+            f"(supported: {SUPPORTED_CAPTURE_RATES_HZ})"
+        )
+    baseline_hz = DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"]
+    scale = float(baseline_hz) / float(rate_hz)
     return {
         "TriggerFrequencyHz": rate_hz,
         "LaserPulseSkipDelayUsec": int(round(
