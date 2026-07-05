@@ -99,6 +99,7 @@ def apply_laser_power(
     fpga_map: Optional[FpgaMap] = None,
     force_fault: bool = False,
     lock: Optional[Any] = None,
+    trigger_freq_hz: Optional[float] = None,
 ) -> bool:
     """Write the laser-driver configuration to ``console`` over I2C.
 
@@ -118,6 +119,13 @@ def apply_laser_power(
             w.r.t. other console access. Pass the app's console mutex when
             delegating from a multithreaded context; ``None`` = no external
             lock (the console serializes individual packets itself).
+        trigger_freq_hz: the trigger frequency the system will run at. The
+            bundled ``EE_RATE_LL``/``OPT_RATE_LL`` payloads encode the
+            minimum inter-pulse period for 40 Hz (22.5 ms = 0.9 x period);
+            at other rates the floor is rescaled by ``40 / trigger_freq_hz``
+            so the safety margin stays proportional (sdk#129 — 60 Hz mode).
+            ``None`` or 40 leaves the baseline values untouched. An explicit
+            per-key user-config override still wins.
     """
     if laser_params is None:
         laser_params = load_laser_params(force_fault=force_fault)
@@ -169,6 +177,24 @@ def apply_laser_power(
             offset = fpga_entry["start_address"]
 
             data_to_send = bytearray(laser_param["dataToSend"])
+
+            if (
+                trigger_freq_hz is not None
+                and trigger_freq_hz != 40.0
+                and friendly_name in ("EE_RATE_LL", "OPT_RATE_LL")
+            ):
+                # Rescale the 40 Hz min-period floor to the requested rate,
+                # preserving the baseline's proportional margin (sdk#129).
+                baseline_raw = int.from_bytes(data_to_send, "little")
+                scaled_raw = int(round(baseline_raw * 40.0 / trigger_freq_hz))
+                data_to_send = bytearray(
+                    scaled_raw.to_bytes(len(data_to_send), "little")
+                )
+                logger.info(
+                    "Rescaled %s for %.4g Hz trigger: raw %d -> %d (%.0f us)",
+                    friendly_name, trigger_freq_hz, baseline_raw, scaled_raw,
+                    scaled_raw * 0.32,
+                )
 
             if (channel, offset) in skip_entries:
                 logger.info(

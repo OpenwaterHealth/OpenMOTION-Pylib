@@ -78,6 +78,42 @@ def test_apply_laser_power_holds_lock_around_writes():
     assert lk.locked == 1 and lk.unlocked == 1
 
 
+def _rate_ll_writes(console):
+    # Both RATE_LL registers live at 0x41 offset 0x08 (EE ch 6, OPT ch 7).
+    return {
+        ch: data
+        for (mux, ch, dev, reg, data) in console.writes
+        if dev == 0x41 and reg == 0x08 and ch in (6, 7)
+    }
+
+
+def test_apply_laser_power_default_rate_keeps_baseline_rate_ll():
+    console = _FakeConsole()
+    assert apply_laser_power(console, trigger_freq_hz=40.0) is True
+    writes = _rate_ll_writes(console)
+    # Baseline: 70313 ticks x 0.32 us = 22,500 us min period.
+    assert writes[6] == (70313).to_bytes(4, "little")
+    assert writes[7] == (70313).to_bytes(4, "little")
+
+
+def test_apply_laser_power_60hz_scales_rate_ll():
+    console = _FakeConsole()
+    assert apply_laser_power(console, trigger_freq_hz=60.0) is True
+    writes = _rate_ll_writes(console)
+    # 70313 * 40/60 = 46875 ticks x 0.32 us = 15,000 us min period —
+    # same 0.9x proportional margin at the 16,667 us period of 60 Hz.
+    assert writes[6] == (46875).to_bytes(4, "little")
+    assert writes[7] == (46875).to_bytes(4, "little")
+
+
+def test_apply_laser_power_none_rate_keeps_baseline_rate_ll():
+    console = _FakeConsole()
+    assert apply_laser_power(console) is True
+    writes = _rate_ll_writes(console)
+    assert writes[6] == (70313).to_bytes(4, "little")
+    assert writes[7] == (70313).to_bytes(4, "little")
+
+
 def test_apply_laser_power_releases_lock_on_write_failure():
     lk = _Lock()
     assert apply_laser_power(_FakeConsole(write_ok=False), lock=lk) is False

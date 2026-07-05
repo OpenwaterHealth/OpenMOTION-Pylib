@@ -387,9 +387,22 @@ class MotionInterface:
         ``lock()``/``unlock()``) is held for the duration of the writes — pass
         a console mutex when calling from a multithreaded context. Returns True
         on success.
+
+        The laser-safety rate floor (``RATE_LL``) is scaled to this
+        interface's resolved default trigger frequency, so a 60 Hz interface
+        gets a matching safety window (sdk#129). Per-request trigger
+        overrides that change the frequency are NOT reflected here — set the
+        rate at interface construction (``default_trigger_config``).
         """
         from omotion.laser import apply_laser_power as _apply
-        return _apply(self.console, force_fault=force_fault, lock=lock)
+        return _apply(
+            self.console,
+            force_fault=force_fault,
+            lock=lock,
+            trigger_freq_hz=self._default_trigger_config.get(
+                "TriggerFrequencyHz"
+            ),
+        )
 
     # ──────────────────────────────────────────────────────────────────
     # Logging helpers
