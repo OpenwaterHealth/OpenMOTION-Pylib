@@ -163,9 +163,8 @@ def test_trigger_overrides_for_rate_moves_pulse_delay_with_vts():
     # (2768 - 1845) rows x 9.0318 us + 100 us base = 8436 us —
     # bench-measured optimum at 60 Hz (sensor-fw#80).
     assert o60["LaserPulseDelayUsec"] == 8436
-    # At the 40 Hz baseline the default (100 us) must stay authoritative —
-    # no override key at all.
-    assert "LaserPulseDelayUsec" not in trigger_overrides_for_rate(40)
+    # 40 Hz emits the explicit baseline so a live switch back restores it.
+    assert trigger_overrides_for_rate(40)["LaserPulseDelayUsec"] == 100
 
 
 def test_apply_laser_power_releases_lock_on_write_failure():

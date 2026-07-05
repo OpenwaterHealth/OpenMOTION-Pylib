@@ -361,24 +361,24 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
         )
     baseline_hz = DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"]
     scale = float(baseline_hz) / float(rate_hz)
-    overrides = {
+    # OV2312 per-rate frame timing (sensor-fw#80): VTS rows at each rate,
+    # and the row period of the deployed mode. The exposure-band shift
+    # below is exact — it predicted the bench-measured 8436 us to the
+    # microsecond. All rate-managed keys are ALWAYS emitted (baseline
+    # values at 40 Hz) so a live rate switch back to 40 restores them
+    # instead of leaving the previous rate's values merged in.
+    _VTS_ROWS = {40: 2768, 60: 1845}
+    _ROW_PERIOD_US = 25000.0 / 2768  # 9.0318 us (native-40 mode)
+    shift_us = (_VTS_ROWS[baseline_hz] - _VTS_ROWS[rate_hz]) * _ROW_PERIOD_US
+    return {
         "TriggerFrequencyHz": rate_hz,
         "LaserPulseSkipDelayUsec": int(round(
             DEFAULT_TRIGGER_CONFIG["LaserPulseSkipDelayUsec"] * scale
         )),
-    }
-    if rate_hz != baseline_hz:
-        # OV2312 per-rate frame timing (sensor-fw#80): VTS rows at each
-        # rate, and the row period of the deployed mode. The exposure
-        # band shift below is exact — it predicted the bench-measured
-        # 8436 us to the microsecond.
-        _VTS_ROWS = {40: 2768, 60: 1845}
-        _ROW_PERIOD_US = 25000.0 / 2768  # 9.0318 us (native-40 mode)
-        shift_us = (_VTS_ROWS[40] - _VTS_ROWS[rate_hz]) * _ROW_PERIOD_US
-        overrides["LaserPulseDelayUsec"] = int(round(
+        "LaserPulseDelayUsec": int(round(
             DEFAULT_TRIGGER_CONFIG["LaserPulseDelayUsec"] + shift_us
-        ))
-    return overrides
+        )),
+    }
 
 
 def merge_trigger_config(*overrides) -> dict:
