@@ -1446,11 +1446,19 @@ class MotionSensor(SignalWrapper):
     # Frame synchronisation / streaming
     # ------------------------------------------------------------------
 
-    def enable_aggregator_fsin(self) -> bool:
-        """Enable the internal frame-sync signal generator."""
+    def enable_aggregator_fsin(self, rate_hz: int = 40) -> bool:
+        """Enable the internal frame-sync signal generator.
+
+        ``rate_hz`` selects the generator rate (firmware supports 40 and 60,
+        sensor-fw#78). 40 is sent as the legacy enable value (1) so older
+        firmware keeps working.
+        """
         if self.demo_mode:
             return True
-        r = self._send(packetType=OW_CAMERA, command=OW_CAMERA_FSIN, reserved=1)
+        reserved = 1 if rate_hz == 40 else int(rate_hz)
+        r = self._send(
+            packetType=OW_CAMERA, command=OW_CAMERA_FSIN, reserved=reserved
+        )
         return r.packetType not in _ERROR_TYPES
 
     def disable_aggregator_fsin(self) -> bool:
