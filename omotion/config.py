@@ -323,6 +323,29 @@ DEFAULT_TRIGGER_CONFIG: dict = {
 }
 
 
+def trigger_overrides_for_rate(rate_hz: float) -> dict:
+    """Trigger-config overrides for a non-default capture rate (sdk#129).
+
+    Scales the dark-frame pulse displacement (``LaserPulseSkipDelayUsec``)
+    with the period so the shortened inter-pulse interval on the frame after
+    a dark keeps the same proportional distance from the laser-safety
+    ``RATE_LL`` floor (which :func:`omotion.laser.apply_laser_power` scales
+    the same way). At 40 Hz the post-dark interval is 25000-1800 = 23200 us
+    vs a 22500 us floor; an unscaled 1800 us displacement at 60 Hz would be
+    16667-1800 = 14867 us vs a 15000 us floor — an interlock trip on every
+    dark frame. Scaled (1200 us at 60 Hz) the margin stays ~3%, and the
+    displaced pulse still lands well past the camera exposure window
+    (648 us), preserving the dark.
+    """
+    scale = 40.0 / float(rate_hz)
+    return {
+        "TriggerFrequencyHz": rate_hz,
+        "LaserPulseSkipDelayUsec": int(round(
+            DEFAULT_TRIGGER_CONFIG["LaserPulseSkipDelayUsec"] * scale
+        )),
+    }
+
+
 def merge_trigger_config(*overrides) -> dict:
     """Shallow-merge a stack of trigger-config overrides on top of
     :data:`DEFAULT_TRIGGER_CONFIG`. Later args win over earlier ones;

@@ -114,6 +114,18 @@ def test_apply_laser_power_none_rate_keeps_baseline_rate_ll():
     assert writes[7] == (70313).to_bytes(4, "little")
 
 
+def test_trigger_overrides_for_rate_scales_skip_delay():
+    from omotion.config import trigger_overrides_for_rate
+
+    o60 = trigger_overrides_for_rate(60)
+    assert o60["TriggerFrequencyHz"] == 60
+    # 1800 us x 40/60 = 1200 us: post-dark interval 16667-1200 = 15467 us
+    # stays above the scaled 15000 us RATE_LL floor.
+    assert o60["LaserPulseSkipDelayUsec"] == 1200
+    o40 = trigger_overrides_for_rate(40)
+    assert o40["LaserPulseSkipDelayUsec"] == 1800
+
+
 def test_apply_laser_power_releases_lock_on_write_failure():
     lk = _Lock()
     assert apply_laser_power(_FakeConsole(write_ok=False), lock=lk) is False
