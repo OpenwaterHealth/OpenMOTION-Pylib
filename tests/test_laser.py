@@ -159,11 +159,10 @@ def test_trigger_overrides_for_rate_scales_skip_delay():
 def test_trigger_overrides_for_rate_moves_pulse_delay_with_vts():
     from omotion.config import trigger_overrides_for_rate
 
-    o60 = trigger_overrides_for_rate(60)
-    # (2768 - 1845) rows x 9.0318 us + 100 us base = 8436 us —
-    # bench-measured optimum at 60 Hz (sensor-fw#80).
-    assert o60["LaserPulseDelayUsec"] == 8436
-    # 40 Hz emits the explicit baseline so a live switch back restores it.
+    # Band at 60 Hz sits (2768-1845) rows x 9.0318 us later -> pulse at
+    # 8436 us (bench-swept). Known #68 limitation: this is inside the SPI
+    # push window; see trigger_overrides_for_rate docstring.
+    assert trigger_overrides_for_rate(60)["LaserPulseDelayUsec"] == 8436
     assert trigger_overrides_for_rate(40)["LaserPulseDelayUsec"] == 100
 
 

@@ -343,12 +343,15 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
     displaced pulse still lands well past the camera exposure window
     (648 us), preserving the dark.
 
-    Also moves ``LaserPulseDelayUsec`` to track the camera's exposed-row
-    band: the per-rate OV2312 VTS (sensor-fw#80) removes vertical-blanking
-    rows, which shifts where the active rows expose relative to FSIN by
-    (VTS_40 - VTS_rate) rows. Bench-measured 2026-07-05: at 60 Hz the
-    band sits 8336 us later, so the pulse fires at 100 + 8336 = 8436 us
-    (signal levels then match 40 Hz exactly).
+    ``LaserPulseDelayUsec`` tracks the camera's exposed-row band, which
+    drifts to ~8.4 ms after FSIN at the 60 Hz VTS (the sensor's FSIN sync
+    latches a config-time-VTS-derived row-counter init). KNOWN LIMITATION
+    (sensor-fw#68, bench-proven): at this position the pulse fires inside
+    the FPGA SPI push window and its driver transient can glitch the
+    marginal SPI links (cams 6/8) at scan start — 14/16 stable all-16;
+    clinical mask unaffected. The clean fix is re-pinning the band to
+    ~100 us via the sensor's r_init_man registers (runtime writes did not
+    take; needs config-time programming — follow-up on sensor-fw#68).
 
     Raises ``ValueError`` for rates outside
     :data:`SUPPORTED_CAPTURE_RATES_HZ` — this helper feeds laser-safety
@@ -361,12 +364,8 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
         )
     baseline_hz = DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"]
     scale = float(baseline_hz) / float(rate_hz)
-    # OV2312 per-rate frame timing (sensor-fw#80): VTS rows at each rate,
-    # and the row period of the deployed mode. The exposure-band shift
-    # below is exact — it predicted the bench-measured 8436 us to the
-    # microsecond. All rate-managed keys are ALWAYS emitted (baseline
-    # values at 40 Hz) so a live rate switch back to 40 restores them
-    # instead of leaving the previous rate's values merged in.
+    # All rate-managed keys are ALWAYS emitted (baseline values at 40 Hz)
+    # so a live rate switch back to 40 restores them.
     _VTS_ROWS = {40: 2768, 60: 1845}
     _ROW_PERIOD_US = 25000.0 / 2768  # 9.0318 us (native-40 mode)
     shift_us = (_VTS_ROWS[baseline_hz] - _VTS_ROWS[rate_hz]) * _ROW_PERIOD_US
