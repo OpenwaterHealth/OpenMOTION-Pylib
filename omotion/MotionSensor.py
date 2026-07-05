@@ -1508,14 +1508,28 @@ class MotionSensor(SignalWrapper):
         )
         return r.packetType not in _ERROR_TYPES
 
-    def enable_camera_fsin_ext(self) -> bool:
-        """Enable external frame-sync input."""
+    def enable_camera_fsin_ext(self, rate_hz: int = 40) -> bool:
+        """Enable external frame-sync input.
+
+        ``rate_hz`` is the trigger rate the external FSIN will run at; the
+        firmware retimes the camera VTS to match (sensor-fw#78/#80). 40 is
+        sent as the legacy enable value (1) so older firmware keeps
+        working; on such firmware non-40 rates silently stay at the 40 fps
+        camera timing (the scan then delivers one frame and stalls — see
+        sensor-fw#80). Unsupported rates raise ``ValueError``.
+        """
+        from omotion.config import SUPPORTED_CAPTURE_RATES_HZ
+        if rate_hz not in SUPPORTED_CAPTURE_RATES_HZ:
+            raise ValueError(
+                f"unsupported FSIN rate {rate_hz!r} Hz "
+                f"(supported: {SUPPORTED_CAPTURE_RATES_HZ})"
+            )
         if self.demo_mode:
             return True
         r = self._send(
             packetType=OW_CAMERA,
             command=OW_CAMERA_FSIN_EXTERNAL,
-            reserved=1,
+            reserved=1 if rate_hz == 40 else int(rate_hz),
             timeout=0.6,
         )
         return r.packetType not in _ERROR_TYPES

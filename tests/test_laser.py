@@ -156,6 +156,18 @@ def test_trigger_overrides_for_rate_scales_skip_delay():
     assert o40["LaserPulseSkipDelayUsec"] == 1800
 
 
+def test_trigger_overrides_for_rate_moves_pulse_delay_with_vts():
+    from omotion.config import trigger_overrides_for_rate
+
+    o60 = trigger_overrides_for_rate(60)
+    # (2768 - 1845) rows x 9.0318 us + 100 us base = 8436 us —
+    # bench-measured optimum at 60 Hz (sensor-fw#80).
+    assert o60["LaserPulseDelayUsec"] == 8436
+    # At the 40 Hz baseline the default (100 us) must stay authoritative —
+    # no override key at all.
+    assert "LaserPulseDelayUsec" not in trigger_overrides_for_rate(40)
+
+
 def test_apply_laser_power_releases_lock_on_write_failure():
     lk = _Lock()
     assert apply_laser_power(_FakeConsole(write_ok=False), lock=lk) is False

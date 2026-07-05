@@ -343,6 +343,13 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
     displaced pulse still lands well past the camera exposure window
     (648 us), preserving the dark.
 
+    Also moves ``LaserPulseDelayUsec`` to track the camera's exposed-row
+    band: the per-rate OV2312 VTS (sensor-fw#80) removes vertical-blanking
+    rows, which shifts where the active rows expose relative to FSIN by
+    (VTS_40 - VTS_rate) rows. Bench-measured 2026-07-05: at 60 Hz the
+    band sits 8336 us later, so the pulse fires at 100 + 8336 = 8436 us
+    (signal levels then match 40 Hz exactly).
+
     Raises ``ValueError`` for rates outside
     :data:`SUPPORTED_CAPTURE_RATES_HZ` — this helper feeds laser-safety
     scaling, so an unvalidated rate must fail loudly, not half-configure.
@@ -354,12 +361,24 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
         )
     baseline_hz = DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"]
     scale = float(baseline_hz) / float(rate_hz)
-    return {
+    overrides = {
         "TriggerFrequencyHz": rate_hz,
         "LaserPulseSkipDelayUsec": int(round(
             DEFAULT_TRIGGER_CONFIG["LaserPulseSkipDelayUsec"] * scale
         )),
     }
+    if rate_hz != baseline_hz:
+        # OV2312 per-rate frame timing (sensor-fw#80): VTS rows at each
+        # rate, and the row period of the deployed mode. The exposure
+        # band shift below is exact — it predicted the bench-measured
+        # 8436 us to the microsecond.
+        _VTS_ROWS = {40: 2768, 60: 1845}
+        _ROW_PERIOD_US = 25000.0 / 2768  # 9.0318 us (native-40 mode)
+        shift_us = (_VTS_ROWS[40] - _VTS_ROWS[rate_hz]) * _ROW_PERIOD_US
+        overrides["LaserPulseDelayUsec"] = int(round(
+            DEFAULT_TRIGGER_CONFIG["LaserPulseDelayUsec"] + shift_us
+        ))
+    return overrides
 
 
 def merge_trigger_config(*overrides) -> dict:
