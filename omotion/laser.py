@@ -160,12 +160,26 @@ def apply_laser_power(
     if opt_thresh is not None or opt_gain is not None:
         skip_entries.add(_OPT_DRIVE_CL)
 
-    # Laser-safety rate floor scaling (sdk#129). Fail-loud bookkeeping:
-    # if scaling is needed, every expected RATE_LL entry must actually be
-    # found and rescaled — a silently-unscaled floor at 60 Hz means the
-    # interlock trips on every pulse and the laser goes dark with no error.
+    # Laser-safety limit scaling for non-baseline rates (sdk#129).
+    # RATE_LL (min inter-pulse period) and PULSE_WIDTH_UL (max gate width)
+    # both scale by baseline/rate: the period shrinks with the rate, and
+    # the pulse width shrinks with it to hold the IEC 60825 duty cycle at
+    # the 40 Hz-validated 2.0% (per the "Ultrasound & Laser Safety Limits
+    # Calculator" AEL sheet: λ=795 nm, 500 µs @ 40 Hz, T=300 s, 3 mm beam
+    # — the average-power AEL rows scale as 1/rate, so constant duty
+    # preserves them exactly while the per-pulse t^0.75 AEL margin only
+    # improves). Scaling the UL means the interlock ENFORCES the shorter
+    # 60 Hz pulse rather than merely permitting it.
+    # Fail-loud bookkeeping: if scaling is needed, every expected entry
+    # must actually be found and rescaled — a silently-unscaled floor at
+    # 60 Hz means the interlock trips on every pulse (dark laser, no
+    # error); a silently-unscaled width ceiling means 60825 headroom
+    # assumed by the app isn't enforced.
     from omotion.config import DEFAULT_TRIGGER_CONFIG
-    _RATE_SCALED_PARAMS = frozenset({"EE_RATE_LL", "OPT_RATE_LL"})
+    _RATE_SCALED_PARAMS = frozenset({
+        "EE_RATE_LL", "OPT_RATE_LL",
+        "EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL",
+    })
     _baseline_freq_hz = float(DEFAULT_TRIGGER_CONFIG["TriggerFrequencyHz"])
     _rate_scale_needed = (
         trigger_freq_hz is not None

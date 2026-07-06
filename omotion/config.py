@@ -377,6 +377,22 @@ def trigger_overrides_for_rate(rate_hz: float) -> dict:
         "LaserPulseDelayUsec": int(round(
             DEFAULT_TRIGGER_CONFIG["LaserPulseDelayUsec"] + shift_us
         )),
+        # IEC 60825 compliance (app#327 / "Ultrasound & Laser Safety Limits
+        # Calculator" sheet, 'Laser Safety (with AEL)' tab: λ=795 nm,
+        # 500 µs @ 40 Hz, T=300 s, 3 mm beam, duty 2.0%): the gate width
+        # scales with the period so the duty cycle — and therefore every
+        # average-power AEL row, which scales as 1/rate — stays at the
+        # 40 Hz-validated value. Per-pulse energy then drops ∝ t while the
+        # per-pulse AEL falls only as t^0.75, so single-pulse and
+        # pulse-train (C5/N) margins strictly improve. 500 → 333 µs at
+        # 60 Hz. apply_laser_power scales the PULSE_WIDTH_UL interlock
+        # ceiling by the same factor so the safety FPGA enforces this.
+        # NOTE for bench validation at resurrect time: the optical pulse
+        # is driver-shaped at ~494 µs regardless of gate width, so a
+        # 333 µs gate CLIPS it — verify delivered energy optically.
+        "LaserPulseWidthUsec": int(round(
+            DEFAULT_TRIGGER_CONFIG["LaserPulseWidthUsec"] * scale
+        )),
     }
 
 
