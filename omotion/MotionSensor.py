@@ -1,5 +1,4 @@
 import logging
-import re
 import struct
 import threading
 import time
@@ -20,6 +19,7 @@ from omotion.config import (
     OW_CAMERA_SINGLE_HISTOGRAM,
     OW_CAMERA_SET_CONFIG,
     OW_CMD,
+    OW_CMD_DIAG_STATS,
     OW_CMD_ECHO,
     OW_CMD_HWID,
     OW_CMD_I2C_REG_READ,
@@ -84,32 +84,7 @@ logger = logging.getLogger(f"{_log_root}.Sensor" if _log_root else "Sensor")
 _ERROR_TYPES = frozenset({OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN})
 
 
-# Matches the leading "MAJOR.MINOR.PATCH" of a firmware version, ignoring any
-# leading "v" and any pre-release / build / git-describe suffix that follows.
-# Examples that match: "v1.5.4", "1.5.4-dev", "1.5.4-dev.0-5-g1234abc-dirty",
-# "1.5.4+build.7". Strings with no leading numeric component (e.g. "unknown")
-# do not match.
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
-
-
-def _parse_firmware_version(version_str: str) -> tuple[int, int, int]:
-    """Parse a sensor firmware version string into a ``(major, minor, patch)`` tuple.
-
-    Tolerates a leading ``v`` and any pre-release / build / git-describe suffix
-    (``-dev``, ``-rc.1``, ``-5-g1234abc``, ``-dirty``, ``+build.7``, etc.) by
-    matching only the leading numeric ``MAJOR.MINOR.PATCH`` segment. Sensor
-    firmware embeds ``git describe --tags --dirty --always`` as its version
-    string, so suffixes like these appear in every non-release build.
-
-    Raises ``ValueError`` if the string has no leading numeric component
-    (e.g. ``"unknown"``).
-    """
-    if version_str is None:
-        raise TypeError("version_str must be a string, got None")
-    m = _VERSION_RE.match(version_str)
-    if not m:
-        raise ValueError(f"unparseable firmware version {version_str!r}")
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+from omotion.firmware_update import parse_version as _parse_firmware_version
 
 
 class MotionSensor(SignalWrapper):
@@ -580,6 +555,56 @@ class MotionSensor(SignalWrapper):
             "all_present": bool(d[6]),
         }
 
+    # ------------------------------------------------------------------
+    # Diagnostics (sensor-fw#70)
+    # ------------------------------------------------------------------
+
+    _DIAG_STATS_FMT = "<B3x8IIIII"  # version, pad[3], cam_overrun_count[8], cmp_fail/timeout/fallback_count, cmp_max_time_us
+    _DIAG_STATS_SIZE = struct.calcsize(_DIAG_STATS_FMT)  # 52 bytes
+
+    def get_diag_stats(self) -> dict | None:
+        """Return the live firmware diagnostics snapshot, or None on error.
+
+        Printf-independent (works regardless of DEBUG_FLAG_USB_PRINTF) —
+        queries cam_diag_stats_t directly via OW_CMD_DIAG_STATS. Counters are
+        for the CURRENT scan (reset at scan start/end by the firmware); query
+        mid-scan to see live values, see sensor-fw camera_manager.c.
+
+        Returns a dict::
+
+            {
+                "version": int,
+                "cam_overrun_count": [int] * 8,  # per-camera SPI/USART RX overruns
+                "cmp_fail_count": int,           # rle_compress dst_max overflow
+                "cmp_timeout_count": int,         # rle_compress hit its time budget (#70)
+                "cmp_fallback_count": int,        # frames sent uncompressed (either above)
+                "cmp_max_time_us": int,           # worst-case compression time this scan
+            }
+        """
+        if self.demo_mode:
+            return {
+                "version": 1,
+                "cam_overrun_count": [0] * 8,
+                "cmp_fail_count": 0,
+                "cmp_timeout_count": 0,
+                "cmp_fallback_count": 0,
+                "cmp_max_time_us": 0,
+            }
+        r = self._send(packetType=OW_CMD, command=OW_CMD_DIAG_STATS)
+        if r is None or r.packetType in _ERROR_TYPES or r.data_len < self._DIAG_STATS_SIZE:
+            return None
+        (version, *counts) = struct.unpack(
+            self._DIAG_STATS_FMT, r.data[: self._DIAG_STATS_SIZE]
+        )
+        return {
+            "version": version,
+            "cam_overrun_count": list(counts[0:8]),
+            "cmp_fail_count": counts[8],
+            "cmp_timeout_count": counts[9],
+            "cmp_fallback_count": counts[10],
+            "cmp_max_time_us": counts[11],
+        }
+
     def _check_i2c_health(self) -> None:
         """Read and cache the boot-time I2C health snapshot (connection step).
 
@@ -839,10 +864,10 @@ class MotionSensor(SignalWrapper):
                    boot_test: bool = True) -> bytes:
         """Probe the active camera's CrossLink NVCM state.
 
-        Reads NVCM discriminators over I2C (config-mode read-back) and, if
-        boot_test is set, additionally performs a behaviorally-definitive
-        auto-boot test: releases CRESETB without the activation key and checks
-        whether the config port at 0x40 still answers.  Neither phase touches
+        Reads NVCM discriminators over I2C (config-mode read-back).  The
+        programmed/blank discriminator is the STATUS register Done bit
+        (response byte 8, bit 0): the Done fuse is the last step burned
+        during NVCM programming and gates auto-boot.  Neither phase touches
         camera power.  Select the camera first with switch_camera() and make
         sure it is powered.
 
@@ -850,7 +875,11 @@ class MotionSensor(SignalWrapper):
             isc_operand: ISC_ENABLE operand1 — 0x08 = NVCM access (default),
                          0x00 = SRAM access.
             num_rows:    Number of 16-byte NVCM array rows to read back (0-8).
-            boot_test:   Run the auto-boot 0x40-disappearance test (default True).
+            boot_test:   Also release CRESETB without the activation key and
+                         probe 0x40.  Informational only — NOT a programmed/
+                         blank discriminator: the config port needs the
+                         activation key to respond, so 0x40 never ACKs here
+                         regardless of NVCM state (openmotion-test-app#44).
 
         Returns:
             Raw fixed-layout response blob (see scripts/nvcm_probe.py for the
@@ -878,6 +907,11 @@ class MotionSensor(SignalWrapper):
         Bit 0 (DEBUG_FLAG_USB_PRINTF) enables firmware printf output over USB.
         Bit 4 (DEBUG_FLAG_COMM_VERBOSE) enables cmd id and "." response prints.
         Bit 5 (DEBUG_FLAG_CMD_VERBOSE) enables printf in command handlers.
+        Bit 7 (DEBUG_FLAG_SEND_DEFER) defers the per-frame histogram send out
+        of the FSIN ISR into the main loop (sensor-fw#68).
+        Bit 8 (DEBUG_FLAG_HISTO_STALL) stops histogram sends after ~45 s of
+        streaming while USB stays alive — deterministic camera-stall repro
+        (sensor-fw#75).
         """
         if self.demo_mode:
             return True

@@ -550,10 +550,24 @@ class ScanWorkflow:
         all_sinks = default_sinks + list(request.sinks)
 
         # ── Build source + runner (set self._runner synchronously) ─────────
+        # self._interface.left / .right are permanent MotionSensor objects
+        # (see MotionInterface.__init__) — never None, even when no physical
+        # sensor is attached to that side. LiveUsbSource only filters a side
+        # out when its sensor is None, so passing an unconnected/unrequested
+        # sensor through unconditionally makes __iter__ crash on
+        # sensor.uart.histo (uart is None until connect()) on every scan on
+        # a single-sensor rig, or silently streams a side the caller never
+        # asked for on a dual-sensor rig doing a one-sided scan
+        # (bloodflow-app issue #274). Match _resolve_active_sides' gate:
+        # only hand off a sensor that's both requested (nonzero mask) and
+        # actually connected.
+        def _live_sensor(sensor, mask: int):
+            return sensor if (int(mask) != 0 and sensor.is_connected()) else None
+
         source = LiveUsbSource(
             console=self._interface.console,
-            left=self._interface.left,
-            right=self._interface.right,
+            left=_live_sensor(self._interface.left, request.left_camera_mask),
+            right=_live_sensor(self._interface.right, request.right_camera_mask),
             batch_size_frames=request.batch_size_frames or 10,
             metadata=meta,
         )
@@ -683,9 +697,13 @@ class ScanWorkflow:
                     # in standby ready for the next flash.
                     try:
                         self._interface.console.stop_trigger()
-                        self._emit_trigger_event("OFF")
                     except Exception:
                         logger.warning("stop_trigger raised in duration guard", exc_info=True)
+                    finally:
+                        # Even if stop_trigger raised (console died mid-scan)
+                        # the trigger is not firing anymore — downstream
+                        # trigger-state consumers must still see the close.
+                        self._emit_trigger_event("OFF")
                     time.sleep(0.5)
                     # The deferred final FSYNC pulse (the terminal dark) has
                     # fired by now — report its index for positive terminal-
@@ -893,9 +911,13 @@ class ScanWorkflow:
         try:
             if self._interface and self._interface.console:
                 self._interface.console.stop_trigger()
-                self._emit_trigger_event("OFF")
         except Exception:
             logger.warning("stop_trigger raised in cancel_scan", exc_info=True)
+        finally:
+            # Even if stop_trigger raised (console died mid-scan) the trigger
+            # is not firing anymore — downstream trigger-state consumers must
+            # still see the close.
+            self._emit_trigger_event("OFF")
 
         # Stop cameras capturing so the firmware DMA stops being filled.
         # Use the snapshotted active_sides from the running worker. If the
@@ -1220,3 +1242,8 @@ class ScanWorkflow:
             # downstream "is partial data trustworthy" decisions.
             self._cancel_requested = True
             self._stop_evt.set()
+            # A dead console definitionally means the trigger is no longer
+            # firing; the teardown path's stop_trigger against it will raise,
+            # so record the OFF transition here where it's timely.
+            if handle is getattr(self._interface, "console", None):
+                self._emit_trigger_event("OFF")
