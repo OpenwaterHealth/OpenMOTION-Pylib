@@ -520,8 +520,8 @@ class ScanWorkflow:
         # ── Build source + runner (set self._runner synchronously) ─────────
         source = LiveUsbSource(
             console=self._interface.console,
-            left=self._interface.left,
-            right=self._interface.right,
+            left=self._interface.left if request.left_camera_mask else None,
+            right=self._interface.right if request.right_camera_mask else None,
             batch_size_frames=request.batch_size_frames or 10,
             metadata=meta,
         )
