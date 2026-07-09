@@ -340,6 +340,38 @@ def cmd_collect(args) -> int:
             print("ERROR: apply_laser_power failed", file=sys.stderr)
             return 1
 
+        # ---------------------------------------------------------------
+        # ORDERING IS LOAD-BEARING (found 2026-07-08): apply_laser_power()
+        # above just replayed laser_params.json, which writes
+        # SEED_DDS_CL = 864 and SEED_DDS_GAIN = 0. The Seed FPGA gain gate
+        # (dds_gain_control.v) SILENTLY DROPS any gain write whose word is
+        # >= DDS_CL, leaving the DAC at 0. Every earlier "fold-back above
+        # word 860" observation is consistent with this artifact: the CL
+        # raise was done once per session, then re-clobbered here per run.
+        # So: (a) any CL override must be written HERE, after laser params;
+        # (b) both CL and the gain word are read back and mismatches are
+        # fatal — never trust a write the gate may have eaten.
+        # ---------------------------------------------------------------
+        def _rd_seed16(reg):
+            d, ln = console.read_i2c_packet(SEED_MUX, SEED_CHANNEL,
+                                            SEED_I2C_ADDR, reg, 2)
+            return int.from_bytes(bytes(d[:2]), "little") if d is not None and ln == 2 else None
+
+        if args.dds_cl is not None:
+            cl = args.dds_cl
+            if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                            SEED_REG_DDS_CL,
+                                            bytes([cl & 0xFF, (cl >> 8) & 0xFF])):
+                print("ERROR: could not write DDS_CL override", file=sys.stderr)
+                return 1
+        cl_readback = _rd_seed16(SEED_REG_DDS_CL)
+        print(f"DDS_CL in effect: {cl_readback}"
+              + (f" (override {args.dds_cl})" if args.dds_cl is not None else " (laser-params value)"))
+        if args.dds_cl is not None and cl_readback != args.dds_cl:
+            print(f"ERROR: DDS_CL readback {cl_readback} != requested {args.dds_cl}",
+                  file=sys.stderr)
+            return 1
+
         demod_payload = {
             "DemodPulseInterval": 0 if args.continuous else args.demod_interval,
             "ModulationFrequencyWord": args.freq_word,
@@ -361,7 +393,14 @@ def cmd_collect(args) -> int:
                                         bytes([mc & 0xFF, (mc >> 8) & 0xFF])):
             print("ERROR: could not set modulation amplitude", file=sys.stderr)
             return 1
-        print(f"modulation amplitude word: {mc} (~{mc * 0.064:.1f} mA)")
+        gain_readback = _rd_seed16(SEED_REG_DDS_GAIN)
+        if gain_readback != mc:
+            print(f"ERROR: gain word readback {gain_readback} != requested {mc} — "
+                  f"the FPGA gate (DDS_CL={cl_readback}) silently dropped the "
+                  f"write. Use --dds-cl to raise the limit for this run.",
+                  file=sys.stderr)
+            return 1
+        print(f"modulation amplitude word: {mc} (~{mc * 0.064:.1f} mA), readback OK")
 
         if args.continuous:
             # Phase 2 reference: hold modulation ON for the whole run,
@@ -461,6 +500,8 @@ def cmd_collect(args) -> int:
             "continuous_modulation": args.continuous,
             "demod_config": demod_cfg,
             "mod_current_word": args.mod_current_word,
+            "dds_cl_in_effect": cl_readback,
+            "gain_word_readback": gain_readback,
             "trigger_config": console.get_trigger_json(),
             "seed_fpga_rev": list(seed_rev) if seed_rev else None,
             "raw_csvs": [r.name for r in raw_csvs],
@@ -472,6 +513,13 @@ def cmd_collect(args) -> int:
         if continuous_on:
             motion.console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
                                             SEED_REG_STATIC_CTRL, bytes([0x00, 0x00]))
+        if getattr(args, "dds_cl", None) is not None:
+            # Restore the production limit + zero the modulation DAC so an
+            # aborted run never leaves the bench with a raised gate.
+            motion.console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                            SEED_REG_DDS_GAIN, bytes([0x00, 0x00]))
+            motion.console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                            SEED_REG_DDS_CL, bytes([0x60, 0x03]))
         motion.stop()
     return 0
 
@@ -693,6 +741,11 @@ def main(argv=None) -> int:
                     help="raw 28-bit DDS word (default 0x01000000 = 1.5625 MHz "
                          "@ 25 MHz MCLK, immune to the reg-0x0C FPGA bug)")
     pc.add_argument("--phase-word", type=lambda v: int(v, 0), default=0)
+    pc.add_argument("--dds-cl", type=lambda v: int(v, 0), default=None,
+                    help="override SEED_DDS_CL for this run, written AFTER "
+                         "apply_laser_power (which resets it to 864) and "
+                         "readback-verified; restored to 864 + gain 0 on exit. "
+                         "Scale: 0.081 mA/step (FPGA POR 988 = 80 mA).")
     pc.add_argument("--mod-current-word", type=lambda v: int(v, 0),
                     default=DEFAULT_MOD_CURRENT_WORD,
                     help="SEED_DDS_GAIN word, 0.064 mA/step (default ~20 mA; "
