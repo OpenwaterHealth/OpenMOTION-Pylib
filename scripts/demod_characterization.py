@@ -402,15 +402,6 @@ def cmd_collect(args) -> int:
             return 1
         print(f"modulation amplitude word: {mc} (~{mc * 0.064:.1f} mA), readback OK")
 
-        if args.continuous:
-            # Phase 2 reference: hold modulation ON for the whole run,
-            # bypassing the firmware interleave on purpose.
-            if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
-                                            SEED_REG_STATIC_CTRL, bytes([0x01, 0x00])):
-                print("ERROR: could not switch modulation ON", file=sys.stderr)
-                return 1
-            continuous_on = True
-
         seed_rev = _read_seed(console, SEED_REG_REVISION, 3)
 
         req = ScanRequest(
@@ -425,6 +416,65 @@ def cmd_collect(args) -> int:
         if not motion.start_scan(req):
             print("ERROR: start_scan refused", file=sys.stderr)
             return 1
+
+        if args.continuous:
+            # Phase 2 reference: hold modulation ON for the whole run,
+            # bypassing the firmware interleave on purpose.
+            #
+            # ORDER (probe-verified 2026-07-09): these writes must happen
+            # AFTER start_scan — the firmware's scan/trigger bring-up
+            # hardware-resets the AD5689R, wiping any previously loaded
+            # DAC value while the FPGA register file still reads back the
+            # word. Static word carries D[0]=modulate arm, D[1]=
+            # laser_active (D[1] clear also holds the DAC reset).
+            time.sleep(6.0)  # let the scan's laser-on sequence finish
+            sc = args.static_word
+            if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                            SEED_REG_STATIC_CTRL,
+                                            bytes([sc & 0xFF, (sc >> 8) & 0xFF])):
+                print("ERROR: could not switch modulation ON", file=sys.stderr)
+                return 1
+            print(f"static ctrl: 0x{sc:04X} (written post-scan-start)")
+            continuous_on = True
+            # Re-write the gain word now that the DAC is out of reset —
+            # a reset eats the previous SPI-loaded value.
+            if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                            SEED_REG_DDS_GAIN,
+                                            bytes([mc & 0xFF, (mc >> 8) & 0xFF])):
+                print("ERROR: could not re-set modulation amplitude", file=sys.stderr)
+                return 1
+            gain_readback = _rd_seed16(SEED_REG_DDS_GAIN)
+            print(f"gain word re-written mid-scan: {gain_readback} at t={time.time():.1f}")
+
+        if args.continuous and args.rearm_interval > 0:
+            # Diagnostic: keep re-writing static+gain during the scan so an
+            # external analog capture window is guaranteed to bracket
+            # several DAC-update SPI transactions.
+            def _rearmer():
+                def _rd8(reg):
+                    d, ln = console.read_i2c_packet(SEED_MUX, SEED_CHANNEL,
+                                                    SEED_I2C_ADDR, reg, 1)
+                    return d[0] if d is not None and ln == 1 else None
+                while motion.scan_workflow.running:
+                    try:
+                        pre_gain = _rd_seed16(SEED_REG_DDS_GAIN)
+                        pre_static = _rd_seed16(SEED_REG_STATIC_CTRL)
+                        pre_cl = _rd_seed16(SEED_REG_DDS_CL)
+                        ctr = (_rd8(0x17), _rd8(0x18), _rd8(0x19))
+                        sc2 = args.static_word
+                        console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                                 SEED_REG_STATIC_CTRL,
+                                                 bytes([sc2 & 0xFF, (sc2 >> 8) & 0xFF]))
+                        console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                                 SEED_REG_DDS_GAIN,
+                                                 bytes([mc & 0xFF, (mc >> 8) & 0xFF]))
+                        print(f"rearm t={time.time():.1f} pre: gain={pre_gain} "
+                              f"static={pre_static} cl={pre_cl} "
+                              f"ctr(edge,start,stop)={ctr}")
+                    except Exception:
+                        pass
+                    time.sleep(args.rearm_interval)
+            threading.Thread(target=_rearmer, daemon=True).start()
 
         if args.strobe_hz > 0:
             # Polarity diagnostic: each 0x22 configure strobe leaves the DDS
@@ -741,6 +791,12 @@ def main(argv=None) -> int:
                     help="raw 28-bit DDS word (default 0x01000000 = 1.5625 MHz "
                          "@ 25 MHz MCLK, immune to the reg-0x0C FPGA bug)")
     pc.add_argument("--phase-word", type=lambda v: int(v, 0), default=0)
+    pc.add_argument("--rearm-interval", type=float, default=0.0,
+                    help="diagnostic: re-write static+gain every N seconds "
+                         "during the scan (0 = off)")
+    pc.add_argument("--static-word", type=lambda v: int(v, 0), default=0x0003,
+                    help="STATIC_CTRL word for --continuous: D0=modulate arm, "
+                         "D1=laser_active (0x0003; D1 clear resets the DAC)")
     pc.add_argument("--dds-cl", type=lambda v: int(v, 0), default=None,
                     help="override SEED_DDS_CL for this run, written AFTER "
                          "apply_laser_power (which resets it to 864) and "
