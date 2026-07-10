@@ -417,6 +417,21 @@ def cmd_collect(args) -> int:
             print("ERROR: start_scan refused", file=sys.stderr)
             return 1
 
+        if not args.continuous and args.demod_interval > 0:
+            # Firmware-interleave run: the fw toggles D[0] per frame
+            # (0x0003/0x0002 since the D[1] fix). Pre-set D[1] with the
+            # arm bit clear and re-write the gain word after the scan's
+            # laser bring-up, so the fw never transitions D[1] mid-scan
+            # and the DAC value survives scan start. Waits past the fw's
+            # scan-start force-off (which writes 0x0000).
+            time.sleep(6.0)
+            console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                     SEED_REG_STATIC_CTRL, bytes([0x02, 0x00]))
+            console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                     SEED_REG_DDS_GAIN,
+                                     bytes([mc & 0xFF, (mc >> 8) & 0xFF]))
+            print(f"interleave prep: static=0x0002, gain={_rd_seed16(SEED_REG_DDS_GAIN)}")
+
         if args.continuous:
             # Phase 2 reference: hold modulation ON for the whole run,
             # bypassing the firmware interleave on purpose.
@@ -445,6 +460,42 @@ def cmd_collect(args) -> int:
                 return 1
             gain_readback = _rd_seed16(SEED_REG_DDS_GAIN)
             print(f"gain word re-written mid-scan: {gain_readback} at t={time.time():.1f}")
+
+            if args.verify_mod and mc > 0:
+                # The DDS config FSM in the seed FPGA (image <= 1.5.0) loses
+                # roughly half the configure strobes (bench 2026-07-09:
+                # identical runs alternate between full modulation and a
+                # parked DDS). A configured, armed run shows an unmistakable
+                # PDC jump vs. momentarily-disarmed, so: measure armed vs
+                # disarmed PDC; below threshold -> re-strobe the config,
+                # re-write the gain, and try again.
+                sc_on = args.static_word
+                sc_off = sc_on & ~0x0001
+                for attempt in range(1, 5):
+                    time.sleep(1.0)
+                    snap_on = console.telemetry.get_snapshot()
+                    console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                             SEED_REG_STATIC_CTRL,
+                                             bytes([sc_off & 0xFF, (sc_off >> 8) & 0xFF]))
+                    time.sleep(1.0)
+                    snap_off = console.telemetry.get_snapshot()
+                    console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                             SEED_REG_STATIC_CTRL,
+                                             bytes([sc_on & 0xFF, (sc_on >> 8) & 0xFF]))
+                    ratio = (snap_on.pdc / snap_off.pdc
+                             if snap_on and snap_off and snap_off.pdc else None)
+                    print(f"mod-verify attempt {attempt}: PDC armed/disarmed = "
+                          f"{ratio if ratio is None else round(ratio, 3)}")
+                    if ratio is not None and ratio >= args.verify_mod_ratio:
+                        print("mod-verify OK — DDS configured and modulating")
+                        break
+                    console.set_demod_config(demod_payload)
+                    console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
+                                             SEED_REG_DDS_GAIN,
+                                             bytes([mc & 0xFF, (mc >> 8) & 0xFF]))
+                else:
+                    print("WARNING: mod-verify never passed — run is likely "
+                          "unmodulated", file=sys.stderr)
 
         if args.continuous and args.rearm_interval > 0:
             # Diagnostic: keep re-writing static+gain during the scan so an
@@ -791,6 +842,11 @@ def main(argv=None) -> int:
                     help="raw 28-bit DDS word (default 0x01000000 = 1.5625 MHz "
                          "@ 25 MHz MCLK, immune to the reg-0x0C FPGA bug)")
     pc.add_argument("--phase-word", type=lambda v: int(v, 0), default=0)
+    pc.add_argument("--verify-mod", action="store_true",
+                    help="verify modulation took (armed vs disarmed PDC jump); "
+                         "re-strobe the DDS config on failure (image <=1.5.0 "
+                         "drops ~half the configure strobes)")
+    pc.add_argument("--verify-mod-ratio", type=float, default=1.10)
     pc.add_argument("--rearm-interval", type=float, default=0.0,
                     help="diagnostic: re-write static+gain every N seconds "
                          "during the scan (0 = off)")
