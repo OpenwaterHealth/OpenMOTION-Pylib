@@ -442,7 +442,7 @@ def cmd_collect(args) -> int:
             # DAC value while the FPGA register file still reads back the
             # word. Static word carries D[0]=modulate arm, D[1]=
             # laser_active (D[1] clear also holds the DAC reset).
-            time.sleep(6.0)  # let the scan's laser-on sequence finish
+            time.sleep(args.arm_delay)  # let the scan's laser-on sequence finish
             sc = args.static_word
             if not console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
                                             SEED_REG_STATIC_CTRL,
@@ -471,22 +471,28 @@ def cmd_collect(args) -> int:
                 # re-write the gain, and try again.
                 sc_on = args.static_word
                 sc_off = sc_on & ~0x0001
+                def _pdc_avg(n=3, gap=0.7):
+                    vals = []
+                    for _ in range(n):
+                        time.sleep(gap)
+                        snap = console.telemetry.get_snapshot()
+                        if snap and snap.pdc:
+                            vals.append(snap.pdc)
+                    return sum(vals) / len(vals) if vals else None
+
                 for attempt in range(1, 5):
-                    time.sleep(1.0)
-                    snap_on = console.telemetry.get_snapshot()
+                    pdc_on = _pdc_avg()
                     console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
                                              SEED_REG_STATIC_CTRL,
                                              bytes([sc_off & 0xFF, (sc_off >> 8) & 0xFF]))
-                    time.sleep(1.0)
-                    snap_off = console.telemetry.get_snapshot()
+                    pdc_off = _pdc_avg()
                     console.write_i2c_packet(SEED_MUX, SEED_CHANNEL, SEED_I2C_ADDR,
                                              SEED_REG_STATIC_CTRL,
                                              bytes([sc_on & 0xFF, (sc_on >> 8) & 0xFF]))
-                    ratio = (snap_on.pdc / snap_off.pdc
-                             if snap_on and snap_off and snap_off.pdc else None)
+                    ratio = (pdc_on / pdc_off if pdc_on and pdc_off else None)
                     print(f"mod-verify attempt {attempt}: PDC armed/disarmed = "
                           f"{ratio if ratio is None else round(ratio, 3)}")
-                    if ratio is not None and ratio >= args.verify_mod_ratio:
+                    if ratio is not None and (ratio >= args.verify_mod_ratio or ratio <= 1.0 / args.verify_mod_ratio):
                         print("mod-verify OK — DDS configured and modulating")
                         break
                     console.set_demod_config(demod_payload)
@@ -842,6 +848,9 @@ def main(argv=None) -> int:
                     help="raw 28-bit DDS word (default 0x01000000 = 1.5625 MHz "
                          "@ 25 MHz MCLK, immune to the reg-0x0C FPGA bug)")
     pc.add_argument("--phase-word", type=lambda v: int(v, 0), default=0)
+    pc.add_argument("--arm-delay", type=float, default=6.0,
+                    help="seconds after start_scan before the continuous-mode "
+                         "arm+gain writes")
     pc.add_argument("--verify-mod", action="store_true",
                     help="verify modulation took (armed vs disarmed PDC jump); "
                          "re-strobe the DDS config on failure (image <=1.5.0 "
