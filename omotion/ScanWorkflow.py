@@ -135,6 +135,14 @@ class ScanRequest:
     # bfi_left, bfi_right, bvi_left, bvi_right columns.  Uncorrected
     # samples emitted to the UI are also averaged per-side per-frame.
     reduced_mode: bool = False
+    # Engineering bench mode (issue #134): bypass the dark subsystem for
+    # this scan — the scheduled laser-skip frames are not dark (continuous
+    # external illumination), so realtime + batch corrections use a static
+    # pedestal baseline, dark-frame integrity warnings are disabled, and
+    # the terminal flush closes unconditionally. Recorded values are
+    # raw − pedestal and the DB session is marked. Set only from
+    # developer/engineering UIs; clinical scans must leave this False.
+    dark_correction_bypass: bool = False
     # Pipeline sinks list — will be injected by the runner at start_scan time.
     # Normally managed by the SDK at MotionInterface construction (data_dir, scan_db_path).
     sinks: list = field(default_factory=list)
@@ -412,6 +420,13 @@ class ScanWorkflow:
             self._running = True
 
         logger.info("start_scan: building pipeline for new scan")
+        if request.dark_correction_bypass:
+            logger.warning(
+                "DARK CORRECTION BYPASSED for this scan (engineering bench "
+                "mode): values are raw minus pedestal; dark-frame integrity "
+                "checks and terminal-dark handling are disabled. Not valid "
+                "clinical data."
+            )
         self._stop_evt = threading.Event()
 
         # ── Build ScanMetadata ────────────────────────────────────────────
@@ -426,6 +441,7 @@ class ScanWorkflow:
             left_camera_mask=request.left_camera_mask,
             right_camera_mask=request.right_camera_mask,
             reduced_mode=request.reduced_mode,
+            dark_correction_bypass=request.dark_correction_bypass,
         )
         # Mirror ScanDBSink.on_scan_start's label so callers can bind to this
         # exact session row (must match f"{scan_id}_{subject_id}" there).

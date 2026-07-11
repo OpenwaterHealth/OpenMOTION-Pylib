@@ -33,6 +33,10 @@ class ScanMetadata:
     left_camera_mask:  int
     right_camera_mask: int
     reduced_mode:      bool
+    # Engineering bench mode (issue #134): dark correction bypassed for this
+    # scan — DarkCorrectionStage uses a static pedestal baseline and the
+    # recorded values are raw − pedestal, not dark-corrected.
+    dark_correction_bypass: bool = False
 
 
 @runtime_checkable
@@ -625,6 +629,11 @@ class ScanDBSink:
                 "right_camera_mask": meta.right_camera_mask,
             },
         }
+        if meta.dark_correction_bypass:
+            # Permanent marker: this session's values are raw − pedestal,
+            # not dark-corrected (issue #134). Readers treat a missing key
+            # as a normal, dark-corrected session.
+            self._session_meta["dark_correction"] = "bypassed"
         self._session_id = self._db.create_session(
             session_label=label,
             session_start=time.time(),

@@ -141,3 +141,24 @@ def test_pipeline_order_raw_tee_before_timestamp_repair():
         f"Tee('raw') at index {raw_tee_idx} must come before "
         f"TimestampRepairStage at index {repair_idx}"
     )
+
+
+def test_default_pipeline_plumbs_dark_correction_bypass():
+    """metadata.dark_correction_bypass reaches the dark stage (issue #134);
+    default stays off."""
+    def _meta(bypass):
+        return ScanMetadata(
+            scan_id="x", subject_id="y", operator="z",
+            started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+            left_camera_mask=0xFF, right_camera_mask=0xFF,
+            reduced_mode=False, dark_correction_bypass=bypass,
+        )
+
+    for bypass in (False, True):
+        pipeline = default_pipeline(
+            metadata=_meta(bypass), calibration=_trivial_calibration(),
+            pedestals=SensorPedestals(left=64.0, right=64.0),
+        )
+        stage = next(s for s in pipeline.stages
+                     if s.name == "dark_correction")
+        assert stage._bypass is bypass

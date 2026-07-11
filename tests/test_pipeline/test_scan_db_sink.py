@@ -276,3 +276,30 @@ def test_session_data_has_quality_column(tmp_path):
     columns = {row[1] for row in cursor.fetchall()}
     assert "quality" in columns
     db.close()
+
+
+def test_scan_db_sink_marks_bypassed_sessions(tmp_path):
+    """A dark-correction-bypassed scan is permanently distinguishable:
+    session_meta carries dark_correction=bypassed (issue #134). Normal
+    scans carry no such key."""
+    def _run(db_path, bypass):
+        meta = ScanMetadata(
+            scan_id="b", subject_id="subj", operator="op",
+            started_at_iso="2026-07-10T00:00:00Z", duration_sec=300,
+            left_camera_mask=0x01, right_camera_mask=0,
+            reduced_mode=False, dark_correction_bypass=bypass,
+        )
+        sink = ScanDBSink(db_path=db_path)
+        sink.on_scan_start(meta)
+        sink.consume("final", _interval([_frame(42)]))
+        sink.on_complete()
+        conn = sqlite3.connect(db_path)
+        meta_json = conn.execute(
+            "SELECT session_meta FROM sessions").fetchone()[0]
+        conn.close()
+        return json.loads(meta_json)
+
+    bypassed = _run(str(tmp_path / "bypass.db"), True)
+    assert bypassed["dark_correction"] == "bypassed"
+    normal = _run(str(tmp_path / "normal.db"), False)
+    assert "dark_correction" not in normal
