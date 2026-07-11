@@ -106,7 +106,7 @@ iface.stop()
 ```
 
 - **Output** lands in `data_dir`: `{YYYYMMDD_HHMMSS}_{subject}_{side}_mask{MASK:02X}_raw.csv`
-  (columns `cam_id,frame_id,timestamp_s,type,<1024 bins>,temperature,sum`), a telemetry CSV,
+  (columns `cam_id,frame_id,timestamp_s,type,<1024 bins>,temperature,sum,tcm,tcl,pdc`), a telemetry CSV,
   and `scans.db`. `timestamp_s` is **scan-relative** — a *negative* value is a leftover frame
   from a previous scan re-shipped into this one.
 - This path runs the full pipeline (classify + timestamp-repair + sinks), so it reproduces the
