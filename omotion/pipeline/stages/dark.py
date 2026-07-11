@@ -396,7 +396,8 @@ class DarkCorrectionStage:
                  batch_estimator: LinearInterpolation,
                  pedestals: Optional[SensorPedestals] = None,
                  realtime_history_size: int = 4,
-                 integrity_max_above_pedestal: float = 5.0):
+                 integrity_max_above_pedestal: float = 5.0,
+                 bypass: bool = False):
         self._realtime = realtime_estimator
         self._batch = batch_estimator
         self._pedestals = pedestals or SensorPedestals(left=64.0, right=64.0)
@@ -407,6 +408,12 @@ class DarkCorrectionStage:
         )
         self._last_realtime: dict[tuple[str, int], tuple[float, float, float]] = {}
         self._terminal_fsync_count: Optional[int] = None
+        # Engineering bench mode (issue #134): the scheduled laser-skip
+        # frames are NOT dark (continuous external illumination). Realtime
+        # + batch use a static zero-dark baseline (u1=pedestal, var=0), the
+        # integrity guard is silenced, and on_scan_stop closes the final
+        # interval unconditionally.
+        self._bypass = bool(bypass)
 
     def set_terminal_fsync_count(self, count: int) -> None:
         """Ground-truth index of the final FSYNC pulse, from the console
@@ -469,21 +476,27 @@ class DarkCorrectionStage:
 
                 pedestal = (self._pedestals.left if side == "left"
                             else self._pedestals.right)
-                self._guard.check(
-                    side=side, cam_id=cam_id, abs_frame_id=abs_id,
-                    u1=u1, pedestal=pedestal, events=batch.events,
-                )
-                self._history.append(side, cam_id, t=t, u1=u1, std=std)
+                if self._bypass:
+                    # Bypass: the frame is not dark — no guard, no history.
+                    # It still bounds intervals, with a synthetic zero-dark
+                    # observation so batch correction subtracts only the
+                    # static pedestal (baseline_var = 0).
+                    obs = DarkObservation(t=t, u1=pedestal, std=0.0)
+                else:
+                    self._guard.check(
+                        side=side, cam_id=cam_id, abs_frame_id=abs_id,
+                        u1=u1, pedestal=pedestal, events=batch.events,
+                    )
+                    self._history.append(side, cam_id, t=t, u1=u1, std=std)
+                    obs = DarkObservation(t=t, u1=u1, std=std)
 
                 pi = self._pending.get((side, cam_id))
                 if pi is None:
                     pi = PendingInterval()
                     self._pending[(side, cam_id)] = pi
-                    pi.set_left_dark(DarkObservation(t=t, u1=u1, std=std),
-                                     abs_frame_id=abs_id)
+                    pi.set_left_dark(obs, abs_frame_id=abs_id)
                 else:
-                    pi.set_right_dark(DarkObservation(t=t, u1=u1, std=std),
-                                      abs_frame_id=abs_id)
+                    pi.set_right_dark(obs, abs_frame_id=abs_id)
                     if pi.is_closed():
                         interval = pi.flush()
                         # After flush, pi's left has rolled to the just-flushed right.
@@ -512,9 +525,15 @@ class DarkCorrectionStage:
 
                 pred = None
                 if not dark_like:
-                    pred = self._realtime.predict(
-                        side, cam_id, history=self._history, target_t=t,
-                    )
+                    if self._bypass:
+                        # Static zero-dark baseline — same math as a
+                        # prediction of (pedestal, 0.0), so downstream
+                        # variance/std handling is unchanged.
+                        pred = (pedestal, 0.0)
+                    else:
+                        pred = self._realtime.predict(
+                            side, cam_id, history=self._history, target_t=t,
+                        )
                 if pred is not None:
                     u1_hat, std_hat = pred
                     baseline_rt[i, side_idx, cam_id] = np.float32(u1_hat)
@@ -582,7 +601,15 @@ class DarkCorrectionStage:
           4. Call _emit_interval with the remaining lights (which may be empty).
              The stencil for D_prev is applied as normal; if there are no lights,
              D_prev cannot be stencilled (no right neighbours) and is skipped.
+
+        In bypass mode (engineering bench source, issue #134) none of the
+        content/fsync machinery applies — _flush_terminal_bypass promotes
+        the last buffered frame unconditionally.
         """
+        if self._bypass:
+            self._flush_terminal_bypass(batch)
+            return
+
         expected_abs = (
             None if self._terminal_fsync_count is None
             else self._terminal_fsync_count + _TERMINAL_FSYNC_ABS_OFFSET
@@ -708,3 +735,36 @@ class DarkCorrectionStage:
 
             # _emit_interval applies the stencil for D_prev and emits the event.
             self._emit_interval((side, cam_id), interval, batch.events)
+
+    def _flush_terminal_bypass(self, batch: FrameBatch) -> None:
+        """Bypass terminal flush — no dark-like content exists (continuous
+        illumination source), so the single last buffered frame per
+        (side, cam) is promoted to the terminal boundary with the synthetic
+        zero-dark observation. No content checks, no fsync matching, no
+        MISSING/CONTAMINATED errors; the final interval always closes."""
+        closed = 0
+        for (side, cam_id), pi in self._pending.items():
+            if not pi._light:
+                continue
+            terminal = pi._light[-1]
+            pi._light = pi._light[:-1]
+            pedestal = (self._pedestals.left if side == "left"
+                        else self._pedestals.right)
+            batch.events.append(TerminalDarkResult(
+                side=side, cam_id=cam_id,
+                abs_frame_id=terminal.abs_frame_id,
+                u1=terminal.u1,
+                threshold=pedestal + self._guard.max_above_pedestal,
+                found=True, identified_by="bypass",
+            ))
+            pi.set_right_dark(
+                DarkObservation(t=terminal.t, u1=pedestal, std=0.0),
+                abs_frame_id=terminal.abs_frame_id,
+            )
+            self._emit_interval((side, cam_id), pi.flush(), batch.events)
+            closed += 1
+        if closed:
+            logger.info(
+                "bypass terminal flush: closed %d interval(s) at the last "
+                "buffered frame (dark correction bypassed)", closed,
+            )
