@@ -38,6 +38,8 @@ dev = [
   "pytest-timeout>=2.3",
   "pytest-benchmark>=4.0",
   "hidapi>=0.14",  # tests/ykush.py — YKUSH USB hub control for HIL tests
+  "pyvisa>=1.14",  # bench/thorlabs-pm100/read_thorlabs_powermeter.py — Thorlabs USB power meter readout
+  "pyvisa-py>=0.7",  # bench/thorlabs-pm100/read_thorlabs_powermeter.py — pure-Python VISA backend (no NI-VISA needed)
 ]
 
 [project.urls]
