@@ -230,8 +230,13 @@ class ConnectionMonitor(threading.Thread):
 
     def _dispatch(self, event: _Event) -> None:
         if isinstance(event, HotplugWake):
-            # OS noticed USB topology changed; figure out what before the
-            # next 200 ms tick.
+            # OS noticed USB topology changed. Drop the cached libusb context
+            # first so the sweep re-enumerates on a fresh one: a long-lived
+            # context's device list goes stale on Windows after hotplug churn
+            # (issue #139), which otherwise freezes sensor left/right
+            # detection on whatever it last saw.
+            from omotion.usb_backend import invalidate_libusb1_backend
+            invalidate_libusb1_backend()
             self._poll_sweep()
         elif isinstance(event, (IoError, PollArrived, PollGone, UserStop)):
             handle = self._handle_by_name(event.handle_name)
