@@ -170,3 +170,7 @@ histogram.csv
 /reports/*
 .claude/*
 .scratch/
+
+# bench/ test-rig outputs -- large raw histogram CSVs, never meant for git
+/bench/*_out/
+/bench/*/keysight-psu/__pycache__/
