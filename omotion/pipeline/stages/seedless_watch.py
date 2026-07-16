@@ -18,7 +18,7 @@ from typing import Callable
 
 from ..batch import FrameBatch
 
-logger = logging.getLogger("openmotion.sdk.pipeline")
+logger = logging.getLogger("openmotion.sdk.pipeline.stages.seedless_watch")
 
 
 class SeedlessWatchStage:
@@ -43,3 +43,8 @@ class SeedlessWatchStage:
             except Exception:
                 logger.exception("seedless transition callback raised")
         return batch
+
+    def reset(self) -> None:
+        """Re-arm the one-shot latch for a reused pipeline (scan-start /
+        replay-reuse), so the restore callback can fire again next scan."""
+        self._fired = False

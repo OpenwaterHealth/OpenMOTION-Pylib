@@ -47,3 +47,13 @@ def test_callback_exception_does_not_break_pipeline():
     stage = SeedlessWatchStage(n_frames=1, callback=boom)
     batch = _batch_with_abs_ids([1, 2])
     assert stage.process(batch) is batch   # must not raise
+
+
+def test_reset_rearms_the_latch():
+    fired = []
+    stage = SeedlessWatchStage(n_frames=5, callback=lambda: fired.append(1))
+    stage.process(_batch_with_abs_ids([5, 6]))
+    assert fired == [1]
+    stage.reset()
+    stage.process(_batch_with_abs_ids([5, 6]))
+    assert fired == [1, 1]   # fires again after reset
