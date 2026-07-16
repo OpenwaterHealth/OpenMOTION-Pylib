@@ -177,3 +177,54 @@ def test_reset_clears_unwrapper_state():
     stage.process(batch2)
     assert batch2.abs_frame_ids[0] == 1
     assert batch2.frame_type[0] == "warmup"
+
+
+# ── SEEDLESS frames (spec: docs/superpowers/specs/2026-07-15-seedless-frames-design.md) ──
+
+def test_seedless_tags_first_n_then_guard_band_then_normal():
+    # N=3, guard=80: ids 1-3 seedless, 4-83 seedless_tx, 84+ normal.
+    ids = list(range(1, 90))
+    batch = _batch_with_raw_ids({(0, 0): ids})
+    FrameClassificationStage(
+        discard_count=9, dark_interval=600, seedless_frames=3
+    ).process(batch)
+    assert list(batch.frame_type[:3]) == ["seedless"] * 3
+    assert list(batch.frame_type[3:83]) == ["seedless_tx"] * 80
+    # After the guard band, normal positional rules resume (these ids are
+    # past discard_count so they are light/dark, not warmup).
+    assert batch.frame_type[83] in ("light", "dark")
+
+
+def test_seedless_overrides_warmup_inside_region():
+    # Without seedless, ids 1..9 would be warmup. With N=5 they are seedless
+    # then seedless_tx — the seedless regime wins over warmup.
+    batch = _batch_with_raw_ids({(0, 0): [1, 2, 3, 4, 5, 6, 7]})
+    FrameClassificationStage(
+        discard_count=9, dark_interval=600, seedless_frames=5
+    ).process(batch)
+    assert list(batch.frame_type) == ["seedless"] * 5 + ["seedless_tx"] * 2
+
+
+def test_stale_still_wins_over_seedless():
+    # A stream not starting at 1 marks the leading frame stale even in a
+    # seedless scan — garbage is garbage in any regime.
+    batch = _batch_with_raw_ids({(0, 0): [42, 43, 44]})
+    FrameClassificationStage(
+        discard_count=9, dark_interval=600, seedless_frames=5
+    ).process(batch)
+    assert batch.frame_type[0] == "stale"
+
+
+def test_seedless_disabled_by_default():
+    batch = _batch_with_raw_ids({(0, 0): [1, 2, 3]})
+    FrameClassificationStage(discard_count=9, dark_interval=600).process(batch)
+    assert list(batch.frame_type) == ["warmup"] * 3
+
+
+def test_seedless_tx_tag_not_truncated():
+    # frame_type dtype must hold the 11-char "seedless_tx" without clipping.
+    batch = _batch_with_raw_ids({(0, 0): [1, 2]})
+    FrameClassificationStage(
+        discard_count=9, dark_interval=600, seedless_frames=1
+    ).process(batch)
+    assert batch.frame_type[1] == "seedless_tx"   # not "seedless" / "seedles…"

@@ -26,6 +26,12 @@ logger = logging.getLogger("openmotion.sdk.pipeline.stages.frame_classification"
 _FRAME_ID_MODULUS = 256
 _FRAME_ROLLOVER_THRESHOLD = 128
 
+# SEEDLESS engineering test (SDK issue #146): frames after the seedless
+# region are tagged as transition for this many frames — covers the
+# host-driven exposure revert smear (2 modules x 8 cameras of sequential
+# passthrough writes ~= 64 frames at 40 Hz) plus console-write jitter.
+SEEDLESS_TX_GUARD_FRAMES = 80
+
 
 class _FrameUnwrapper:
     """8-bit rolling → monotonic. One instance per (side, cam_id).
@@ -85,9 +91,11 @@ class _FrameUnwrapper:
 class FrameClassificationStage:
     name = "frame_classification"
 
-    def __init__(self, discard_count: int = 9, dark_interval: int = 600):
+    def __init__(self, discard_count: int = 9, dark_interval: int = 600,
+                 seedless_frames: int = 0):
         self.discard_count = int(discard_count)
         self.dark_interval = int(dark_interval)
+        self.seedless_frames = int(seedless_frames)
         self._unwrappers: dict[tuple[int, int], _FrameUnwrapper] = {}
         # Per-(side, cam) count of stale/non-monotonic frames dropped this
         # scan. A non-zero count is a hardware-health signal — the sensor
@@ -100,7 +108,7 @@ class FrameClassificationStage:
     def process(self, batch: FrameBatch) -> FrameBatch:
         n = batch.frame_ids.shape[0]
         abs_ids = np.zeros(n, dtype=np.int64)
-        types = np.empty(n, dtype="<U8")
+        types = np.empty(n, dtype="<U12")
 
         for i in range(n):
             cam_id = int(batch.cam_ids[i])
@@ -130,6 +138,12 @@ class FrameClassificationStage:
                 types[i] = "stale"
                 self._note_stale(side_idx, cam_id, raw_id,
                                  "leading stale frame (stream did not start at 1)")
+            elif (self.seedless_frames > 0
+                  and abs_id <= self.seedless_frames):
+                types[i] = "seedless"
+            elif (self.seedless_frames > 0
+                  and abs_id <= self.seedless_frames + SEEDLESS_TX_GUARD_FRAMES):
+                types[i] = "seedless_tx"
             elif abs_id <= self.discard_count:
                 types[i] = "warmup"
             elif self._is_dark(abs_id):
