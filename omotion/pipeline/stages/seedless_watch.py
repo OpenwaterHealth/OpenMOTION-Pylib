@@ -7,8 +7,8 @@ SeedlessController.schedule_restore(), which does its register writes on its
 own thread, so the callback returns immediately and never blocks the runner.
 
 Detection latency: batches flush every 10 frames / 0.25 s, so the callback
-fires up to ~12 frames after frame N. That lag lands inside the 80-frame
-seedless_tx guard band (see classify.SEEDLESS_TX_GUARD_FRAMES).
+fires up to ~12 frames after frame N. That lag lands inside the seedless_tx
+guard band (see classify.SEEDLESS_TX_GUARD_FRAMES).
 """
 
 from __future__ import annotations

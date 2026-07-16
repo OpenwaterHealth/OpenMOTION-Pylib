@@ -121,7 +121,7 @@ unchanged, so the `EE_RATE_LL` safety window is undisturbed.
   schedule_restore()` exactly once (a `_fired` latch), which runs the restore
   on its own thread. This replaces the originally-planned raw `on_row` source
   callback — it needs no change to `sources.py` and is trivially unit-testable.
-  Batching adds up to ~12 frames of detection latency, well inside the 80-frame
+  Batching adds up to ~12 frames of detection latency, well inside the
   `seedless_tx` guard band.
 - Restore runs on its **own worker thread** — never on the USB reader thread
   (console UART writes + 16 camera passthrough writes take ~1 s; blocking the
@@ -165,14 +165,17 @@ When > 0, positional tagging on unwrapped abs IDs — same mechanism as
 | abs frame ID | `frame_type` |
 |---|---|
 | 1 .. N | `seedless` |
-| N+1 .. N+80 | `seedless_tx` (guard band: register writes landing, exposure smear) |
-| > N+80 | normal classification (`warmup`/`dark`/`light`/`stale`) |
+| N+1 .. N+120 | `seedless_tx` (guard band: register writes landing, exposure smear) |
+| > N+120 | normal classification (`warmup`/`dark`/`light`/`stale`) |
 
 - The `frame_type` column dtype widens from `<U8` to `<U12` so `seedless_tx` (11 chars) fits; existing tags are unaffected.
 - `stale` still wins over `seedless` (a stale frame is garbage in any regime).
-- Guard band is fixed at 80 frames (2 s): worst case for the exposure revert
-  is 2 modules × 8 cameras of sequential passthrough writes (~64 frames at
-  40 Hz), plus console-write jitter, with margin.
+- Guard band is fixed at 120 frames (3 s): it must cover the WORST-CASE restore
+  latency — detection lag (~12 frames, batch flush) plus the exposure revert,
+  which for a full 16-camera scan is 16 × (2 × 50 ms settle + per-register USB
+  round-trips) ≈ 90–99 frames at 40 Hz. 120 gives margin over the 16-camera
+  case; the excess exclusion is harmless (very start of an engineering scan).
+  Smaller camera masks finish the revert well inside the band.
 - Downstream stages treat `seedless`/`seedless_tx` like `warmup`: excluded from
   BFI/BVI computation and dark correction; present in the raw CSV with their
   tags. Scientists filter `frame_type == "seedless"`.

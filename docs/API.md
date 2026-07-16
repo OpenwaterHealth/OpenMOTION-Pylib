@@ -222,7 +222,7 @@ stores only the per-side average (`cam_id = -1` rows), not per-camera rows.
 **seedless frames** (`seedless_frames`, engineering test only — issue #146) runs
 the first N frames of a scan with the seed laser off, the TA pulsing 2 ms, and
 camera exposure 2295 µs, then restores normal parameters mid-scan. These frames
-are tagged `seedless` (1..N) and `seedless_tx` (an 80-frame guard band covering
+are tagged `seedless` (1..N) and `seedless_tx` (a 120-frame guard band covering
 the exposure revert) in the CSV/DB `frame_type` column and are excluded from
 BFI/BVI like warmup frames. It deliberately widens the laser-safety pulse-width
 limits for the seedless window (restored on every scan exit path), so it is for

@@ -4,7 +4,10 @@ import logging
 
 import numpy as np
 from omotion.pipeline.batch import FrameBatch
-from omotion.pipeline.stages.classify import FrameClassificationStage
+from omotion.pipeline.stages.classify import (
+    FrameClassificationStage,
+    SEEDLESS_TX_GUARD_FRAMES,
+)
 
 
 def _batch_with_raw_ids(raw_ids_per_side_cam):
@@ -182,17 +185,20 @@ def test_reset_clears_unwrapper_state():
 # ── SEEDLESS frames (spec: docs/superpowers/specs/2026-07-15-seedless-frames-design.md) ──
 
 def test_seedless_tags_first_n_then_guard_band_then_normal():
-    # N=3, guard=80: ids 1-3 seedless, 4-83 seedless_tx, 84+ normal.
-    ids = list(range(1, 90))
+    # N=3: ids 1-3 seedless, next SEEDLESS_TX_GUARD_FRAMES seedless_tx, then
+    # normal. Referencing the constant keeps this robust to guard-band tuning.
+    n = 3
+    guard = SEEDLESS_TX_GUARD_FRAMES
+    ids = list(range(1, n + guard + 5))
     batch = _batch_with_raw_ids({(0, 0): ids})
     FrameClassificationStage(
-        discard_count=9, dark_interval=600, seedless_frames=3
+        discard_count=9, dark_interval=600, seedless_frames=n
     ).process(batch)
-    assert list(batch.frame_type[:3]) == ["seedless"] * 3
-    assert list(batch.frame_type[3:83]) == ["seedless_tx"] * 80
+    assert list(batch.frame_type[:n]) == ["seedless"] * n
+    assert list(batch.frame_type[n:n + guard]) == ["seedless_tx"] * guard
     # After the guard band, normal positional rules resume (these ids are
     # past discard_count so they are light/dark, not warmup).
-    assert batch.frame_type[83] in ("light", "dark")
+    assert batch.frame_type[n + guard] in ("light", "dark")
 
 
 def test_seedless_overrides_warmup_inside_region():

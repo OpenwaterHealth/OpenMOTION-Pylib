@@ -30,10 +30,15 @@ _FRAME_ID_MODULUS = 256
 _FRAME_ROLLOVER_THRESHOLD = 128
 
 # SEEDLESS engineering test (SDK issue #146): frames after the seedless
-# region are tagged as transition for this many frames — covers the
-# host-driven exposure revert smear (2 modules x 8 cameras of sequential
-# passthrough writes ~= 64 frames at 40 Hz) plus console-write jitter.
-SEEDLESS_TX_GUARD_FRAMES = 80
+# region are tagged as transition for this many frames, excluded from the
+# science like warmup. It must cover the WORST-CASE host-driven restore
+# latency: detection lag (~12 frames, batch flush) + the exposure revert
+# smear, which for a full 16-camera scan is 16 cameras x (2 x 50 ms settle +
+# per-register USB round-trips) ~= 90-99 frames at 40 Hz. 120 gives margin
+# over the 16-camera worst case; the excess exclusion is harmless (it's at
+# the very start of an engineering-test scan). Smaller camera masks finish
+# the revert well inside this band.
+SEEDLESS_TX_GUARD_FRAMES = 120
 
 
 class _FrameUnwrapper:
