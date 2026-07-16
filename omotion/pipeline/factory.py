@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from omotion.config import CAMERA_GAIN_MAP
 
@@ -10,6 +10,7 @@ from .pipeline import Pipeline
 from .pedestal import SensorPedestals
 from .sinks import ScanMetadata
 from .stages.classify import FrameClassificationStage
+from .stages.seedless_watch import SeedlessWatchStage
 from .stages.noise_floor import NoiseFloorStage
 from .stages.moments import MomentsStage
 from .stages.pedestal_sub import PedestalSubtractionStage
@@ -32,6 +33,8 @@ def default_pipeline(*,
                      noise_floor_threshold: int = 10,
                      discard_count: int = 9,
                      dark_interval: int = 600,
+                     seedless_frames: int = 0,
+                     seedless_transition_cb: Optional[Callable[[], None]] = None,
                      realtime_dark_history_size: int = 4,
                      raw_save_max_duration_s: Optional[float] = None,
                      telemetry: Optional[Any] = None) -> Pipeline:
@@ -48,11 +51,22 @@ def default_pipeline(*,
             omits the stage (replay sources, tests, no console telemetry).
     """
 
-    not_warmup_or_stale = lambda ft: ft != "warmup" and ft != "stale"
+    # Frames excluded from the live UI trace: warmup/stale as before, plus
+    # the SEEDLESS engineering-test regimes (treated like warmup — no valid
+    # BFI/BVI; they remain in the raw CSV via the raw tee).
+    not_warmup_or_stale = lambda ft: ft not in (
+        "warmup", "stale", "seedless", "seedless_tx",
+    )
 
     stages: list = [
-        FrameClassificationStage(discard_count=discard_count, dark_interval=dark_interval),
+        FrameClassificationStage(discard_count=discard_count,
+                                 dark_interval=dark_interval,
+                                 seedless_frames=seedless_frames),
     ]
+
+    if seedless_frames > 0 and seedless_transition_cb is not None:
+        stages.append(SeedlessWatchStage(n_frames=seedless_frames,
+                                         callback=seedless_transition_cb))
 
     if telemetry is not None:
         from .telemetry import TelemetryIngestStage

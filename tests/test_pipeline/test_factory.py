@@ -141,3 +141,48 @@ def test_pipeline_order_raw_tee_before_timestamp_repair():
         f"Tee('raw') at index {raw_tee_idx} must come before "
         f"TimestampRepairStage at index {repair_idx}"
     )
+
+
+def _meta():
+    return ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=False,
+    )
+
+
+def test_seedless_frames_plumbed_to_classification_and_watch_stage():
+    fired = []
+    pipeline = default_pipeline(
+        metadata=_meta(), calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        seedless_frames=120, seedless_transition_cb=lambda: fired.append(1),
+    )
+    names = [stage.name for stage in pipeline.stages]
+    assert names.index("seedless_watch") == names.index("frame_classification") + 1
+    classify = pipeline.stages[names.index("frame_classification")]
+    assert classify.seedless_frames == 120
+    watch = pipeline.stages[names.index("seedless_watch")]
+    assert watch.n_frames == 120
+
+
+def test_no_seedless_watch_stage_by_default():
+    pipeline = default_pipeline(
+        metadata=_meta(), calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+    )
+    assert "seedless_watch" not in [stage.name for stage in pipeline.stages]
+
+
+def test_live_tee_excludes_seedless_frames():
+    pipeline = default_pipeline(
+        metadata=_meta(), calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        seedless_frames=10, seedless_transition_cb=lambda: None,
+    )
+    live = [s for s in pipeline.stages if s.name == "tee:live"][0]
+    # The tee's emit predicate must reject seedless regimes like warmup/stale.
+    for ft in ("warmup", "stale", "seedless", "seedless_tx"):
+        assert not live.emit_if_any(ft), ft
+    for ft in ("light", "dark"):
+        assert live.emit_if_any(ft), ft
