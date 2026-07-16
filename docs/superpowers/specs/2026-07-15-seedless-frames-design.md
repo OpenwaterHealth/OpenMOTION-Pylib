@@ -1,9 +1,9 @@
-# NO_TA Frames — Design
+# SEEDLESS Frames — Design (formerly "NO_TA Frames")
 
 **Date:** 2026-07-15
 **Ticket:** [openmotion-bloodflow-app#361](https://github.com/OpenwaterHealth/openmotion-bloodflow-app/issues/361)
 **Requested by:** @bahartl — engineering testing only
-**Status:** draft for review
+**Status:** approved — laser engineer sign-off relayed by Ethan, 2026-07-16
 
 ## Purpose
 
@@ -13,7 +13,7 @@ exposure, then revert to normal scan parameters and let the scan continue.
 
 Per-frame regime for frames 1..N:
 
-| Parameter | Normal | NO_TA |
+| Parameter | Normal | SEEDLESS |
 |---|---|---|
 | Seed | CW, `SEED_CW_GAIN` ≈ 142 mV | **off** (`SEED_CW_GAIN=0`, `SEED_DDS_GAIN=0`) |
 | TA pulse width | 500 µs (raw 1563) | **2 ms** (raw 6250) |
@@ -28,7 +28,7 @@ Notes on the numbers:
 - The 1 ms safety UL is the normal fault-trip mechanism
   (`laser_params_fault.json` differs from the normal set *only* by UL).
   Widening it is a deliberate, Ethan-authorized safety change, **bounded to
-  the NO_TA scan** and restored on every exit path.
+  the SEEDLESS scan** and restored on every exit path.
 - Unseeded TA at 5 A: the *goal* is self-lasing. 2 ms at 40 Hz is 8 % duty
   vs the normal 2 % — thermal watch is a bench responsibility, not a
   software control.
@@ -58,7 +58,7 @@ entirely in the SDK, plus a small bloodflow-app UI toggle.
 `ScanRequest` gains one field:
 
 ```python
-no_ta_frames: int = 0   # >0: run the first N frames in NO_TA mode (issue
+seedless_frames: int = 0   # >0: run the first N frames in SEEDLESS mode (issue
                         # bloodflow-app#361, engineering test only). 0 = off.
 ```
 
@@ -68,35 +68,35 @@ no_ta_frames: int = 0   # >0: run the first N frames in NO_TA mode (issue
 
 ## Architecture
 
-New module **`omotion/no_ta.py`** — class `NoTaController` — owning all
-NO_TA register traffic and state. `ScanWorkflow` calls it at three defined
+New module **`omotion/seedless.py`** — class `SeedlessController` — owning all
+SEEDLESS register traffic and state. `ScanWorkflow` calls it at three defined
 points; nothing else in the pipeline knows the registers exist.
 
 ```
-ScanWorkflow worker                      NoTaController
+ScanWorkflow worker                      SeedlessController
 ────────────────────                     ─────────────────────────────
-pre-flight (before start_trigger) ────▶  snapshot() + apply_no_ta()
+pre-flight (before start_trigger) ────▶  snapshot() + apply_seedless()
 source on_row(frame_id) ──(abs id ≥ N)─▶ schedule restore (worker thread)
 finally / cancel path ────────────────▶  restore(force=True)  [idempotent]
 ```
 
 ### Phase 1 — pre-scan (before `start_trigger()`, `ScanWorkflow.py` ~line 650)
 
-Only when `request.no_ta_frames > 0`:
+Only when `request.seedless_frames > 0`:
 
 1. **Snapshot** current values of `SEED_CW_GAIN`, `SEED_DDS_GAIN`,
    `TA_PULSE_WIDTH`, `EE/OPT_PULSE_WIDTH_UL/LL` via console I2C read-back
    (`OW_CTRL_I2C_RD`). If any read fails, fall back to the bundled
    `laser_params.json` values and log a warning — restore must never be
    blocked by a failed read.
-2. **Write NO_TA config** (console I2C, order is free — laser not firing yet):
+2. **Write SEEDLESS config** (console I2C, order is free — laser not firing yet):
    widen `EE_PULSE_WIDTH_UL` and `OPT_PULSE_WIDTH_UL` to raw 7813 (≈2.5 ms,
    25 % margin over the 2 ms pulse), zero seed gains, set `TA_PULSE_WIDTH`
    raw 6250.
 3. **Set exposure 2295 µs** on all active cameras on both modules via the
    existing camera I2C passthrough path.
 4. Any write failure here **aborts the scan before the trigger starts** and
-   runs the restore. Never start the laser in a half-applied NO_TA state.
+   runs the restore. Never start the laser in a half-applied SEEDLESS state.
 
 ### Trigger-config adjustment (dark frames must stay dark)
 
@@ -104,9 +104,9 @@ Only when `request.no_ta_frames > 0`:
 to fall outside the exposure window — sized for 648 µs exposure. With
 2295 µs exposure, a pulse starting at 1900 µs lands **inside** the window,
 and the console schedules the first 10 frames dark (`NUM_DARK_FRAMES_AT_START`,
-`trigger.h:18`) — inside the NO_TA region.
+`trigger.h:18`) — inside the SEEDLESS region.
 
-When `no_ta_frames > 0`, the resolved per-scan trigger config sets
+When `seedless_frames > 0`, the resolved per-scan trigger config sets
 `LaserPulseSkipDelayUsec = 2500` (pulse start ≥ 2600 µs > 2295 µs exposure).
 This is a normal pre-scan `set_trigger_json` merge — no mid-scan change —
 and remains valid after the transition (2600 µs ≫ 648 µs). Pulse *rate* is
@@ -115,7 +115,7 @@ unchanged, so the `EE_RATE_LL` safety window is undisturbed.
 ### Phase 2 — transition at frame N (frame-ID-driven, not wall-clock)
 
 - The scan source's per-frame `on_row` callback (`pipeline/sources.py:353`)
-  reports raw frame IDs as packets arrive. `NoTaController` watches unwrapped
+  reports raw frame IDs as packets arrive. `SeedlessController` watches unwrapped
   IDs; when **any** camera reaches abs frame ID ≥ N, it fires the restore
   exactly once (`threading.Event` latch).
 - Restore runs on its **own worker thread** — never on the USB reader thread
@@ -138,7 +138,7 @@ unchanged, so the `EE_RATE_LL` safety window is undisturbed.
 
 The scan worker's `finally` and the `cancel_scan` path call
 `controller.restore(force=True)`. Idempotent (the Event latch makes a
-double-restore a no-op). **A NO_TA scan can never exit — complete, cancelled,
+double-restore a no-op). **A SEEDLESS scan can never exit — complete, cancelled,
 or crashed — with the seed off or the safety limits widened.** If a restore
 write fails, retry once, then log at ERROR and surface via the scan's
 `on_error` callback; the values also self-heal on the next
@@ -147,24 +147,24 @@ write fails, retry once, then log at ERROR and surface via the scan's
 ## Output: how scientists identify the frames
 
 `FrameClassificationStage` (`pipeline/stages/classify.py`) gains
-`no_ta_frames: int = 0` (plumbed from `ScanRequest` through `factory.py`).
+`seedless_frames: int = 0` (plumbed from `ScanRequest` through `factory.py`).
 When > 0, positional tagging on unwrapped abs IDs — same mechanism as
 `warmup`/`dark`/`light` today:
 
 | abs frame ID | `frame_type` |
 |---|---|
-| 1 .. N | `no_ta` |
-| N+1 .. N+80 | `no_ta_tx` (guard band: register writes landing, exposure smear) |
+| 1 .. N | `seedless` |
+| N+1 .. N+80 | `seedless_tx` (guard band: register writes landing, exposure smear) |
 | > N+80 | normal classification (`warmup`/`dark`/`light`/`stale`) |
 
-- Tags are ≤ 8 chars (the column is dtype `<U8`).
-- `stale` still wins over `no_ta` (a stale frame is garbage in any regime).
+- The `frame_type` column dtype widens from `<U8` to `<U12` so `seedless_tx` (11 chars) fits; existing tags are unaffected.
+- `stale` still wins over `seedless` (a stale frame is garbage in any regime).
 - Guard band is fixed at 80 frames (2 s): worst case for the exposure revert
   is 2 modules × 8 cameras of sequential passthrough writes (~64 frames at
   40 Hz), plus console-write jitter, with margin.
-- Downstream stages treat `no_ta`/`no_ta_tx` like `warmup`: excluded from
+- Downstream stages treat `seedless`/`seedless_tx` like `warmup`: excluded from
   BFI/BVI computation and dark correction; present in the raw CSV with their
-  tags. Scientists filter `frame_type == "no_ta"`.
+  tags. Scientists filter `frame_type == "seedless"`.
 - The boundary is also **recorded**: N goes into scan metadata (DB scan row
   + log line), and the controller logs the abs frame ID at which each restore
   step completed.
@@ -174,20 +174,20 @@ When > 0, positional tagging on unwrapped abs IDs — same mechanism as
 | Failure | Behavior |
 |---|---|
 | Snapshot read fails | Warn, fall back to bundled baseline values for restore |
-| NO_TA apply write fails | Abort scan pre-trigger, restore, surface error |
+| SEEDLESS apply write fails | Abort scan pre-trigger, restore, surface error |
 | Restore write fails mid-scan | Retry once, ERROR log + `on_error`; teardown retries again |
-| Scan cancelled during NO_TA region | `finally`-path restore (idempotent) |
-| Host crash mid-NO_TA | Registers left NO_TA until next `apply_laser_power()` rewrites baseline; console power-cycle also clears (registers are volatile) |
+| Scan cancelled during SEEDLESS region | `finally`-path restore (idempotent) |
+| Host crash mid-SEEDLESS | Registers left SEEDLESS until next `apply_laser_power()` rewrites baseline; console power-cycle also clears (registers are volatile) |
 
 ## Testing
 
-- **Unit (no hardware):** `NoTaController` with a mock console/sensors —
+- **Unit (no hardware):** `SeedlessController` with a mock console/sensors —
   ordering assertions (UL widened before TA width raised is not required
   pre-trigger, but restore order 1→5 is asserted strictly), latch
   idempotency, snapshot-fallback path. `FrameClassificationStage` tag tests
-  in `tests/test_pipeline/` (no_ta / no_ta_tx / boundary / stale-wins).
-- **Bench (with hardware):** one NO_TA scan; verify in the raw CSV that
-  (a) frames tagged `no_ta` show the dim unseeded signature, (b) exposure
+  in `tests/test_pipeline/` (seedless / seedless_tx / boundary / stale-wins).
+- **Bench (with hardware):** one SEEDLESS scan; verify in the raw CSV that
+  (a) frames tagged `seedless` show the dim unseeded signature, (b) exposure
   step is visible in histogram sums at the tagged boundary, (c) post-guard
   frames match a normal scan's levels, (d) safety FPGA did not latch
   (`TA_shutdown` clear — scan completes with light frames). Verify via
@@ -208,6 +208,6 @@ When > 0, positional tagging on unwrapped abs IDs — same mechanism as
 
 | Repo | Work | Ticket |
 |---|---|---|
-| openmotion-sdk | `no_ta.py`, `ScanRequest`, classify stage, factory plumbing, tests | new SDK issue, refs bloodflow-app#361 |
-| openmotion-bloodflow-app | engineering-mode checkbox + N spinner → `no_ta_frames` | #361 |
+| openmotion-sdk | `seedless.py`, `ScanRequest`, classify stage, factory plumbing, tests | new SDK issue, refs bloodflow-app#361 |
+| openmotion-bloodflow-app | engineering-mode checkbox + N spinner → `seedless_frames` | #361 |
 | console-fw / sensor-fw / FPGAs | **none** | — |
