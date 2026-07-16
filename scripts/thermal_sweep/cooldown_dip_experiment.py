@@ -106,9 +106,10 @@ def source_on() -> None:
         log(f"source_on FAILED (continuing): {e}")
 
 
-def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path) -> int:
-    """Fan OFF, rig ON (cold boot), enumerate, run one 30-min drift scan with the
-    source held on. drift_scan reads the IMU temp at start (cold-soak) + end."""
+def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path, mask: int) -> int:
+    """Fan OFF, rig ON (cold boot), enumerate, run one 30-min drift scan on the given
+    camera mask with the source held on. drift_scan reads the IMU temp at start + end.
+    Only the masked cameras are powered, so the thermal load matches that config."""
     _shelly(fan, False, "fan")            # never cool the cameras during a scan
     _shelly(rig, True, "rig")
     log(f"rig ON (cold boot); waiting {ENUM_WAIT_S:.0f}s for enumeration")
@@ -116,9 +117,10 @@ def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path)
     cmd = [sys.executable, "-u", str(DRIFT),
            "--duration-sec", str(SCAN_MIN * 60.0),
            "--control-voltage", str(CONTROL_VOLTAGE),
+           "--camera-mask", f"0x{mask:02X}",
            "--leave-source-on",
            "--subject-id", subject, "--data-dir", str(data_dir)]
-    log(f"launch drift_scan {subject}: {SCAN_MIN:g} min")
+    log(f"launch drift_scan {subject}: {SCAN_MIN:g} min, mask 0x{mask:02X}")
     t0 = time.time()
     try:
         rc = subprocess.run(cmd, cwd=str(WORKTREE)).returncode
@@ -166,12 +168,16 @@ def fan_cooling_probe(fan: ShellyOutlet, minutes: float, out_csv: Path) -> None:
     log("fan cooling probe complete")
 
 
-def _parse_ladder(spec: str) -> "list[tuple[float, bool]]":
-    """Parse '120:1,120:1,180:0,20:1' -> [(120.0,True),(120.0,True),(180.0,False),(20.0,True)]."""
+def _parse_ladder(spec: str) -> "list[tuple[float, bool, int | None]]":
+    """Parse 'cooldownMin:fanOn[:mask]' tokens, e.g. '120:1:0xFF,120:1:0xC3,20:1:0xC3' ->
+    [(120.0,True,255),(120.0,True,195),(20.0,True,195)]. The mask (hex 0xC3 or int) is
+    optional per step; when omitted the run uses the --camera-mask default."""
     out = []
     for tok in spec.split(","):
-        cd, fan = tok.split(":")
-        out.append((float(cd), bool(int(fan))))
+        parts = tok.split(":")
+        cd, fan = parts[0], parts[1]
+        mask = int(parts[2], 0) if len(parts) > 2 and parts[2] else None
+        out.append((float(cd), bool(int(fan)), mask))
     return out
 
 
@@ -180,20 +186,23 @@ def main() -> int:
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--skip-phase1", action="store_true", help="skip the warm-up scan + fan cooling probe")
     ap.add_argument("--ladder", default=None,
-                    help="override the Phase-2 ladder: comma list of cooldownMin:fanOn pairs, "
-                         "e.g. '120:1,120:1,180:0,20:1' (fanOn = 1/0). Deep soaks (2-3 h) reach "
-                         "the cold-ASSEMBLY regime that the fan-floored short cooldowns cannot -- "
-                         "the fan floors the board near ~29 C in ~10 min, but the deep dip needs "
-                         "the slow thermal mass to equilibrate cold (last night: 3 h -> 18%% dip).")
+                    help="override the Phase-2 ladder: comma list of cooldownMin:fanOn[:mask] steps, "
+                         "e.g. '120:1:0xFF,120:1:0xC3,120:1:0xC3,20:1:0xC3' (fanOn = 1/0; mask optional, "
+                         "hex or int, defaults to --camera-mask). Deep soaks (2-3 h) reach the cold-ASSEMBLY "
+                         "regime the fan-floored short cooldowns cannot (last night: 3 h -> ~18%% dip).")
     ap.add_argument("--subject-prefix", default="CDDIP",
                     help="subject/file prefix (use a distinct one to avoid clobbering a prior run's files)")
     ap.add_argument("--start-index", type=int, default=2,
                     help="index of the first ladder scan (Phase 1, when run, uses _01)")
+    ap.add_argument("--camera-mask", default="0xFF",
+                    help="default camera mask (hex 0xC3 or int) for scans; per-ladder-step masks override it. "
+                         "Clinical 'far 4' = 0xC3 (cams 1,2,7,8); all-8 = 0xFF.")
     args = ap.parse_args()
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     stop_file = data_dir / "STOP"
-    ladder = _parse_ladder(args.ladder) if args.ladder else LADDER
+    default_mask = int(args.camera_mask, 0)
+    ladder = _parse_ladder(args.ladder) if args.ladder else [(cd, fan, None) for cd, fan in LADDER]
     prefix = args.subject_prefix
 
     rig = ShellyOutlet(RIG_HOST)
@@ -207,19 +216,20 @@ def main() -> int:
     # then the continuous fan cooling curve.
     if not args.skip_phase1 and not stop_file.exists():
         log("--- Phase 1: cold-start scan (heats module) + fan cooling probe ---")
-        run_scan(rig, fan, f"{prefix}_01", data_dir)
+        run_scan(rig, fan, f"{prefix}_01", data_dir, default_mask)
         fan_cooling_probe(fan, FAN_PROBE_MIN, data_dir / "fan_cooling_probe.csv")
 
     # Phase 2: cooldown ladder.
     log("--- Phase 2: cooldown ladder ---")
-    for k, (cd_min, fan_on) in enumerate(ladder):
+    for k, (cd_min, fan_on, step_mask) in enumerate(ladder):
         if stop_file.exists():
             log("STOP file present -> exiting"); break
         idx = args.start_index + k
+        mask = step_mask if step_mask is not None else default_mask
         log(f"=== ladder {k+1}/{len(ladder)}: {cd_min:g} min cooldown "
-            f"(fan {'ON' if fan_on else 'OFF'}) -> {prefix}_{idx:02d} ===")
+            f"(fan {'ON' if fan_on else 'OFF'}), mask 0x{mask:02X} -> {prefix}_{idx:02d} ===")
         cooldown(rig, fan, cd_min, fan_on)
-        run_scan(rig, fan, f"{prefix}_{idx:02d}", data_dir)
+        run_scan(rig, fan, f"{prefix}_{idx:02d}", data_dir, mask)
 
     _shelly(rig, False, "rig")     # leave rig off (module cool) at the end
     _shelly(fan, False, "fan")

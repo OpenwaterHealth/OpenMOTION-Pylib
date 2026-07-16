@@ -110,6 +110,10 @@ def parse_cli() -> argparse.Namespace:
     parser.add_argument("--registry-path", type=Path, default=DEFAULT_REGISTRY_PATH, help="Central CSV that every run appends a summary row to. Default: bench/test_registry.csv.")
     parser.add_argument("--prewarm-min", type=float, default=0.0, help="Run a throwaway warmup scan of this many minutes first (no raw CSV), keeping cameras powered, then start the measurement scan immediately -- for isolating cold-start warmup effects. Default: 0 (off).")
     parser.add_argument("--leave-source-on", action="store_true", help="At scan end, leave the illumination source ON (control at --control-voltage, both PSU outputs on) instead of powering it off. Keeps the source thermally stable between runs -- tests whether the warm-up dip is source-side (a thermally-stable source would remove it) or camera-side (it would persist). The PSU is on separate mains from the Shelly rig plug, so it stays on through rig power-cycles.")
+    parser.add_argument("--camera-mask", default="0xFF",
+                        help="Which cameras to power + configure + stream, as hex (0xC3) or int (195). Only "
+                             "these cameras are powered on. Default 0xFF (all 8). The clinical 'far 4' config "
+                             "= 0xC3 (cams 1,2,7,8); research default = 0x99 (cams 1,4,5,8).")
     return parser.parse_args()
 
 
@@ -275,6 +279,8 @@ def read_imu_temp(sensor, label: str = "") -> "float | None":
 
 def main() -> int:
     args = parse_cli()
+    global CAMERA_MASK
+    CAMERA_MASK = int(args.camera_mask, 0)   # hex (0xC3) or int (195); powers/streams only these cameras
     args.data_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = args.data_dir / f"{args.subject_id}_run.log"
