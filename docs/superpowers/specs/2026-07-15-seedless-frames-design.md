@@ -114,10 +114,15 @@ unchanged, so the `EE_RATE_LL` safety window is undisturbed.
 
 ### Phase 2 — transition at frame N (frame-ID-driven, not wall-clock)
 
-- The scan source's per-frame `on_row` callback (`pipeline/sources.py:353`)
-  reports raw frame IDs as packets arrive. `SeedlessController` watches unwrapped
-  IDs; when **any** camera reaches abs frame ID ≥ N, it fires the restore
-  exactly once (`threading.Event` latch).
+- **As built (planning refinement):** the transition is detected by
+  `SeedlessWatchStage`, a tiny pipeline stage inserted directly after
+  `FrameClassificationStage`, which reuses the already-unwrapped absolute
+  frame IDs. When any frame reaches abs ID ≥ N it fires `SeedlessController.
+  schedule_restore()` exactly once (a `_fired` latch), which runs the restore
+  on its own thread. This replaces the originally-planned raw `on_row` source
+  callback — it needs no change to `sources.py` and is trivially unit-testable.
+  Batching adds up to ~12 frames of detection latency, well inside the 80-frame
+  `seedless_tx` guard band.
 - Restore runs on its **own worker thread** — never on the USB reader thread
   (console UART writes + 16 camera passthrough writes take ~1 s; blocking the
   reader would drop frames).
@@ -136,12 +141,18 @@ unchanged, so the `EE_RATE_LL` safety window is undisturbed.
 
 ### Phase 3 — teardown (always)
 
-The scan worker's `finally` and the `cancel_scan` path call
-`controller.restore(force=True)`. Idempotent (the Event latch makes a
-double-restore a no-op). **A SEEDLESS scan can never exit — complete, cancelled,
-or crashed — with the seed off or the safety limits widened.** If a restore
-write fails, retry once, then log at ERROR and surface via the scan's
-`on_error` callback; the values also self-heal on the next
+**As built:** `SeedlessController.restore()` is idempotent (latches on full
+success; a second call is a no-op) and is invoked from the scan worker on
+every exit path. Because `apply()` opens the widened-safety window *before*
+the inner `try` that wraps the runner, the restore is called from **two**
+places: the inner `finally` (fast-path close on normal / cancel / crash) and
+the **outer `finally`** (the guaranteed backstop — the only block certain to
+run once `apply()` has executed, so a re-raise from `set_trigger_json` /
+`start_trigger` on a console comm error still closes the window). A failed
+`apply()` also calls `restore()` before it re-raises. **A SEEDLESS scan can
+never exit — complete, cancelled, crashed, or aborted pre-trigger — with the
+seed off or the safety limits widened.** If a restore write itself fails, it
+retries once, logs at ERROR; the values also self-heal on the next
 `apply_laser_power()` (cold-start path), which rewrites the full baseline.
 
 ## Output: how scientists identify the frames

@@ -208,6 +208,7 @@ class ScanRequest:
     raw_save_max_duration_s: float | None = None     # cap raw output; 0 = no raw
     batch_size_frames: int = 10
     trigger_config: dict | None = None               # override; None = interface default
+    seedless_frames: int = 0                          # engineering test (#146); 0 = off
 ```
 
 `start_scan` (re)sends the resolved trigger config before starting the trigger,
@@ -217,6 +218,15 @@ aligned — so you normally never need to set `trigger_config`.
 **reduced mode** is the clinical path: the pipeline averages the active cameras
 into one left + one right BFI/BVI value per capture. In reduced mode the scan DB
 stores only the per-side average (`cam_id = -1` rows), not per-camera rows.
+
+**seedless frames** (`seedless_frames`, engineering test only — issue #146) runs
+the first N frames of a scan with the seed laser off, the TA pulsing 2 ms, and
+camera exposure 2295 µs, then restores normal parameters mid-scan. These frames
+are tagged `seedless` (1..N) and `seedless_tx` (an 80-frame guard band covering
+the exposure revert) in the CSV/DB `frame_type` column and are excluded from
+BFI/BVI like warmup frames. It deliberately widens the laser-safety pulse-width
+limits for the seedless window (restored on every scan exit path), so it is for
+bench/engineering use only — never clinical mode. Default `0` disables it.
 
 ### `start_scan`
 
