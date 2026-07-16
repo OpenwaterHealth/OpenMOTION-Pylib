@@ -14,6 +14,7 @@ def _meta():
         scan_id="20260615_000000", subject_id="subjX", operator="test",
         started_at_iso="2026-06-15T00:00:00+00:00", duration_sec=10,
         reduced_mode=True, left_camera_mask=195, right_camera_mask=195,
+        seedless_frames=0,
     )
 
 
@@ -64,6 +65,7 @@ def test_rows_written_reset_between_scans(tmp_path):
         scan_id="20260615_111111", subject_id="subjY", operator="test",
         started_at_iso="2026-06-15T11:11:11+00:00", duration_sec=10,
         reduced_mode=True, left_camera_mask=195, right_camera_mask=195,
+        seedless_frames=0,
     ))
     sink.on_complete()
     db = ScanDatabase(db_path)
