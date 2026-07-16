@@ -60,6 +60,17 @@ DARK_EVENT_GAP_S = 5.0                  # consecutive dark frames farther apart 
 PD_OFF_THRESHOLD_W = 10e-6              # photodiode below this = source off (noise floor ~0.3uW, on-state ~250uW+)
 PD_ON_FRACTION = 0.8                    # ratio only valid when photodiode >= this fraction of its median on-state
                                         # (guards against divide-by-small blowups on window-edge transition frames)
+# Dark-window edge guard. The camera toggles light<->dark in ~1 frame, so the
+# u1<=133 threshold separates dark/light cleanly and mean_dc is correct across a
+# window. But the Thorlabs photodiode lags/overshoots ~0.5-2 s after each toggle,
+# so dividing the (clean) camera mean_dc by that unsettled photodiode leaves a
+# small ~0.5% notch in mean_norm right after every window. Drop frames within
+# this guard of a recorded dark off/on time from the NORMALIZED trace ONLY --
+# mean_dc / the dark correction are untouched.
+GUARD_PRE_OFF_S = 0.75                  # exclude this long before a window's light-off
+GUARD_POST_ON_S = 2.5                   # exclude this long after a window's light-on (photodiode settling)
+PEDESTAL_SMOOTH_WINDOW = 5              # moving-median span (in dark windows) for the per-window dark
+                                        # pedestal -- kills the interpolation sawtooth on dim cameras
 
 
 def parse_cli() -> argparse.Namespace:
@@ -110,6 +121,20 @@ def cluster_dark_events(dark_t: np.ndarray, gap_s: float) -> list[np.ndarray]:
         return []
     boundaries = np.flatnonzero(np.diff(dark_t) > gap_s)
     return np.split(np.arange(dark_t.size), boundaries + 1)
+
+
+def moving_median(vals: np.ndarray, window: int) -> np.ndarray:
+    """Centered moving median with shrinking edges. Robust to lone spikes, and
+    preserves a monotonic trend (the median of a monotone run is its middle value)."""
+    vals = np.asarray(vals, dtype=float)
+    n = vals.size
+    if n == 0 or window <= 1:
+        return vals
+    h = window // 2
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        out[i] = np.median(vals[max(0, i - h):min(n, i + h + 1)])
+    return out
 
 
 def main() -> int:
@@ -170,6 +195,15 @@ def main() -> int:
         cam_mask_global = (frames["cam_id"] == cam_id) & (~frames["is_dark"])
         cam_df = frames.loc[cam_mask_global]
 
+        # Smooth the per-window dark pedestals before interpolating. Each window's
+        # pedestal is measured with ~0.1 DN of noise (plus occasional lone spikes);
+        # interpolating straight between those noisy anchors turns the noise into a
+        # per-window sawtooth in mean_dc -- negligible on bright cameras, ~1-2% on
+        # the dim ones. A short moving median removes the zig-zag and lone spikes
+        # while preserving the real warm-up pedestal rise.
+        ped_u1 = moving_median(np.array([d["u1"] for d in events_for_cam]), PEDESTAL_SMOOTH_WINDOW)
+        ped_var = moving_median(np.array([d["var"] for d in events_for_cam]), PEDESTAL_SMOOTH_WINDOW)
+
         for k in range(len(events_for_cam) - 1):
             d_prev, d_next = events_for_cam[k], events_for_cam[k + 1]
             in_between = (cam_df["timestamp_s"] > d_prev["t"]) & (cam_df["timestamp_s"] < d_next["t"])
@@ -180,8 +214,8 @@ def main() -> int:
             span = d_next["t"] - d_prev["t"]
             t_frac = (t - d_prev["t"]) / span if span > 0 else np.zeros_like(t)
 
-            baseline_u1 = d_prev["u1"] + t_frac * (d_next["u1"] - d_prev["u1"])
-            baseline_var = d_prev["var"] + t_frac * (d_next["var"] - d_prev["var"])
+            baseline_u1 = ped_u1[k] + t_frac * (ped_u1[k + 1] - ped_u1[k])
+            baseline_var = ped_var[k] + t_frac * (ped_var[k + 1] - ped_var[k])
 
             raw_u1 = frames.loc[idx, "u1"].to_numpy()
             raw_u2 = frames.loc[idx, "u2"].to_numpy()
@@ -218,14 +252,31 @@ def main() -> int:
         on_samples = pd_w[pd_w >= PD_OFF_THRESHOLD_W]
         pd_on_median = float(np.median(on_samples)) if on_samples.size else np.nan
         fully_on = pd_w >= PD_ON_FRACTION * pd_on_median
-        light_ok = (~is_dark_arr) & fully_on
+        # Time guard around each recorded dark window: exclude the photodiode's
+        # lag/overshoot edge from the divide (mean_dc is left untouched). off/on
+        # times are scan-relative in meta["dark_events"]; the tail window has
+        # on=None (light stays off to scan end), the front window has off=0.
+        ts = frames["timestamp_s"].to_numpy()
+        in_guard = np.zeros(len(frames), dtype=bool)
+        for ev in meta["dark_events"]:
+            off = ev.get("elapsed_off_sec")
+            if off is None:
+                continue
+            on = ev.get("elapsed_on_sec")
+            lo = off - GUARD_PRE_OFF_S
+            hi = (on + GUARD_POST_ON_S) if on is not None else np.inf
+            in_guard |= (ts >= lo) & (ts <= hi)
+        frames["in_guard"] = in_guard
+        light_ok = (~is_dark_arr) & fully_on & (~in_guard)
         mean_norm[light_ok] = mean_dc_arr[light_ok] / (pd_w[light_ok] * 1e6)  # DN per uW
-        # Everything else -- dark frames, source-off stragglers, transition
-        # frames -- is forced to exactly 0.
-        mean_norm[is_dark_arr | ~fully_on] = 0.0
+        # Everything else -- dark frames, source-off stragglers, and photodiode
+        # edge-transition frames -- is forced to exactly 0.
+        mean_norm[~light_ok] = 0.0
         frames["mean_norm"] = mean_norm
+        n_guard = int((in_guard & ~is_dark_arr).sum())
         print(f"[+] Photodiode normalization applied (mean_norm, DN/uW; "
-              f"median on-state {pd_on_median * 1e6:.1f} uW)")
+              f"median on-state {pd_on_median * 1e6:.1f} uW; "
+              f"guarded {n_guard} photodiode-edge frames)")
     else:
         print("[!] No Thorlabs CSV available -- skipping photodiode normalization")
 
