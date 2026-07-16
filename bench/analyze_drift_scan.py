@@ -69,8 +69,6 @@ PD_ON_FRACTION = 0.8                    # ratio only valid when photodiode >= th
 # mean_dc / the dark correction are untouched.
 GUARD_PRE_OFF_S = 0.75                  # exclude this long before a window's light-off
 GUARD_POST_ON_S = 2.5                   # exclude this long after a window's light-on (photodiode settling)
-PEDESTAL_SMOOTH_WINDOW = 5              # moving-median span (in dark windows) for the per-window dark
-                                        # pedestal -- kills the interpolation sawtooth on dim cameras
 
 
 def parse_cli() -> argparse.Namespace:
@@ -123,20 +121,6 @@ def cluster_dark_events(dark_t: np.ndarray, gap_s: float) -> list[np.ndarray]:
     return np.split(np.arange(dark_t.size), boundaries + 1)
 
 
-def moving_median(vals: np.ndarray, window: int) -> np.ndarray:
-    """Centered moving median with shrinking edges. Robust to lone spikes, and
-    preserves a monotonic trend (the median of a monotone run is its middle value)."""
-    vals = np.asarray(vals, dtype=float)
-    n = vals.size
-    if n == 0 or window <= 1:
-        return vals
-    h = window // 2
-    out = np.empty(n, dtype=float)
-    for i in range(n):
-        out[i] = np.median(vals[max(0, i - h):min(n, i + h + 1)])
-    return out
-
-
 def main() -> int:
     args = parse_cli()
     meta = load_meta(args.data_dir, args.subject_id)
@@ -167,11 +151,16 @@ def main() -> int:
         for k, ev_pos in enumerate(events):
             sub = dark_df.iloc[ev_pos]
             frames.loc[sub.index, "dark_event_idx"] = k
-            w = sub["total"].to_numpy()
-            w_sum = w.sum()
-            dark_u1 = float((sub["u1"].to_numpy() * w).sum() / w_sum)
-            dark_u2 = float((sub["u2"].to_numpy() * w).sum() / w_sum)
-            dark_var = max(0.0, dark_u2 - dark_u1 ** 2)
+            # Per-window pedestal via MEDIAN (not weighted mean): the light<->dark
+            # toggle beats against the 40 fps frame clock, so ~40% of windows catch
+            # 1-2 partial-transition frames at ~131-133 DN (still <=133, so counted
+            # dark). A mean lets those 2 frames spike the pedestal ~0.2 DN; the median
+            # ignores them -- removing the spike at its source (no cross-window
+            # smoothing needed) while preserving the real warm-up dark-current drift.
+            u1_arr = sub["u1"].to_numpy()
+            u2_arr = sub["u2"].to_numpy()
+            dark_u1 = float(np.median(u1_arr))
+            dark_var = float(np.median(np.maximum(u2_arr - u1_arr ** 2, 0.0)))
             dark_stats[cam_id].append({
                 "event_index": k,
                 "t": float(sub["timestamp_s"].mean()),
@@ -195,15 +184,9 @@ def main() -> int:
         cam_mask_global = (frames["cam_id"] == cam_id) & (~frames["is_dark"])
         cam_df = frames.loc[cam_mask_global]
 
-        # Smooth the per-window dark pedestals before interpolating. Each window's
-        # pedestal is measured with ~0.1 DN of noise (plus occasional lone spikes);
-        # interpolating straight between those noisy anchors turns the noise into a
-        # per-window sawtooth in mean_dc -- negligible on bright cameras, ~1-2% on
-        # the dim ones. A short moving median removes the zig-zag and lone spikes
-        # while preserving the real warm-up pedestal rise.
-        ped_u1 = moving_median(np.array([d["u1"] for d in events_for_cam]), PEDESTAL_SMOOTH_WINDOW)
-        ped_var = moving_median(np.array([d["var"] for d in events_for_cam]), PEDESTAL_SMOOTH_WINDOW)
-
+        # Interpolate the (robust, per-window-median) pedestal linearly between
+        # consecutive windows. No cross-window smoothing needed -- the median
+        # already removes the timing-beat spikes at their source.
         for k in range(len(events_for_cam) - 1):
             d_prev, d_next = events_for_cam[k], events_for_cam[k + 1]
             in_between = (cam_df["timestamp_s"] > d_prev["t"]) & (cam_df["timestamp_s"] < d_next["t"])
@@ -214,8 +197,8 @@ def main() -> int:
             span = d_next["t"] - d_prev["t"]
             t_frac = (t - d_prev["t"]) / span if span > 0 else np.zeros_like(t)
 
-            baseline_u1 = ped_u1[k] + t_frac * (ped_u1[k + 1] - ped_u1[k])
-            baseline_var = ped_var[k] + t_frac * (ped_var[k + 1] - ped_var[k])
+            baseline_u1 = d_prev["u1"] + t_frac * (d_next["u1"] - d_prev["u1"])
+            baseline_var = d_prev["var"] + t_frac * (d_next["var"] - d_prev["var"])
 
             raw_u1 = frames.loc[idx, "u1"].to_numpy()
             raw_u2 = frames.loc[idx, "u2"].to_numpy()
