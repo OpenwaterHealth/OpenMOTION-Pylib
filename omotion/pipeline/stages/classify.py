@@ -2,7 +2,10 @@
 
 Per (side, cam_id) pair, the stage maintains a FrameUnwrapper (8-bit →
 monotonic absolute index) and a "first frame seen" guard. Each row is
-labeled with one of: "warmup", "dark", "light", "stale".
+labeled with one of: "warmup", "dark", "light", "stale", "seedless",
+"seedless_tx". The "seedless"/"seedless_tx" labels are only emitted when
+the SEEDLESS engineering test is active (constructor param
+seedless_frames > 0); see SDK issue #146.
 
 Dark frames are determined strictly by position — matching the firmware's
 LaserPulseSkipInterval schedule. Content-based detection is not used;

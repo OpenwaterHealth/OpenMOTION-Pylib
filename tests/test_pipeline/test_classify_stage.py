@@ -206,13 +206,15 @@ def test_seedless_overrides_warmup_inside_region():
 
 
 def test_stale_still_wins_over_seedless():
-    # A stream not starting at 1 marks the leading frame stale even in a
-    # seedless scan — garbage is garbage in any regime.
+    # A stream not starting at 1 marks every frame in the first epoch stale
+    # (leading-stale logic) — so stale, evaluated before the seedless branches
+    # in the elif chain, wins throughout. The seedless_frames=5 arg must not
+    # override that.
     batch = _batch_with_raw_ids({(0, 0): [42, 43, 44]})
     FrameClassificationStage(
         discard_count=9, dark_interval=600, seedless_frames=5
     ).process(batch)
-    assert batch.frame_type[0] == "stale"
+    assert list(batch.frame_type) == ["stale", "stale", "stale"]
 
 
 def test_seedless_disabled_by_default():
