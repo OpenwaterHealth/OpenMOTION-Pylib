@@ -172,10 +172,10 @@ class ScanRequest:
 def _seedless_trigger_overrides() -> dict:
     """Trigger-config overrides for a seedless scan.
 
-    Dark frames shift the laser pulse LaserPulseSkipDelayUsec past its
-    normal 100 us delay so it lands outside the camera exposure. 1800 us
-    was sized for the 648 us exposure; the seedless 2295 us exposure needs
-    the pulse start (100 + skip) pushed past 2295 us with margin.
+    Dark frames delay the laser pulse by LaserPulseSkipDelayUsec so it lands
+    outside the camera exposure. The pulse starts at (100 us base delay +
+    LaserPulseSkipDelayUsec), and that start must clear the 2295 us seedless
+    exposure. 2500 us puts the pulse start at 2600 us > 2295 us, with margin.
     """
     return {"LaserPulseSkipDelayUsec": 2500}
 
@@ -796,9 +796,12 @@ class ScanWorkflow:
                     except Exception:
                         pass
 
-                    # SEEDLESS: no exit path may leave the seed off or the
-                    # safety limits widened. Idempotent (no-op if the
-                    # frame-N restore already ran).
+                    # SEEDLESS fast-path close on the common exit paths
+                    # (complete/cancel/crash of the runner); the outer finally
+                    # is the guaranteed backstop for pre-inner-try exceptions
+                    # (e.g. set_trigger_json/start_trigger re-raising on a
+                    # console comm error). Idempotent (no-op if the frame-N
+                    # schedule_restore already ran).
                     if seedless_ctrl is not None:
                         try:
                             seedless_ctrl.restore()
@@ -826,6 +829,19 @@ class ScanWorkflow:
                     except Exception:
                         logger.exception("ScanRequest.on_error handler raised")
             finally:
+                # SEEDLESS safety backstop (issue #146). apply() opens the
+                # widened-safety / seed-off window BEFORE the inner try, so an
+                # exception from set_trigger_json/start_trigger (which re-raise
+                # on console comm error) would bypass the inner-finally restore.
+                # This outer finally is the only block guaranteed to run once
+                # apply() has executed. Idempotent — a no-op if the frame-N
+                # schedule_restore or the inner-finally restore already closed
+                # the window.
+                if seedless_ctrl is not None:
+                    try:
+                        seedless_ctrl.restore()
+                    except Exception:
+                        logger.exception("seedless outer-finally restore raised")
                 if telemetry_writer is not None:
                     telemetry_writer.close()
                 if telemetry_feeder is not None:
