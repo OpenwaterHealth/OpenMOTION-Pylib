@@ -161,6 +161,23 @@ class ScanRequest:
     # value can no longer carry. Fires on the worker thread, so the handler
     # must be thread-safe. See bloodflow-app issue #213.
     on_error: Callable[[BaseException], None] | None = None
+    # SEEDLESS engineering test (SDK issue #146, app issue #361): run the
+    # first N frames with the seed laser OFF, TA pulse width 2 ms, and
+    # camera exposure 2295 us, restoring normal parameters at frame N.
+    # Deliberately widens the laser-safety pulse-width limits for the
+    # seedless window (laser-engineer approved). 0 = disabled.
+    seedless_frames: int = 0
+
+
+def _seedless_trigger_overrides() -> dict:
+    """Trigger-config overrides for a seedless scan.
+
+    Dark frames shift the laser pulse LaserPulseSkipDelayUsec past its
+    normal 100 us delay so it lands outside the camera exposure. 1800 us
+    was sized for the 648 us exposure; the seedless 2295 us exposure needs
+    the pulse start (100 + skip) pushed past 2295 us with margin.
+    """
+    return {"LaserPulseSkipDelayUsec": 2500}
 
 
 @dataclass
@@ -259,6 +276,9 @@ class ScanWorkflow:
         # on _runner are valid immediately after start_scan returns).
         self._runner = None
         self._scan_thread: threading.Thread | None = None
+
+        # SEEDLESS controller for the current scan (issue #146), or None.
+        self._seedless_ctrl = None
 
         # Per-scan state for the disconnect-abort subscription. Reset at
         # each scan start by _scan_subscribe_state.
@@ -426,6 +446,7 @@ class ScanWorkflow:
             left_camera_mask=request.left_camera_mask,
             right_camera_mask=request.right_camera_mask,
             reduced_mode=request.reduced_mode,
+            seedless_frames=request.seedless_frames,
         )
         # Mirror ScanDBSink.on_scan_start's label so callers can bind to this
         # exact session row (must match f"{scan_id}_{subject_id}" there).
@@ -464,6 +485,20 @@ class ScanWorkflow:
                 telemetry_aggregator = None
                 telemetry_feeder = None
 
+        # ── SEEDLESS engineering test (issue #146) ────────────────────────
+        seedless_ctrl = None
+        if request.seedless_frames > 0:
+            from omotion.seedless import SeedlessController
+            seedless_ctrl = SeedlessController(
+                console=self._interface.console,
+                sensors=[
+                    ("left", self._interface.left, request.left_camera_mask),
+                    ("right", self._interface.right, request.right_camera_mask),
+                ],
+                n_frames=request.seedless_frames,
+            )
+        self._seedless_ctrl = seedless_ctrl
+
         # ── Build pipeline ────────────────────────────────────────────────
         calibration = self._calibration
         pipeline = default_pipeline(
@@ -472,6 +507,10 @@ class ScanWorkflow:
             pedestals=pedestals,
             raw_save_max_duration_s=request.raw_save_max_duration_s,
             telemetry=telemetry_aggregator,
+            seedless_frames=request.seedless_frames,
+            seedless_transition_cb=(
+                seedless_ctrl.schedule_restore if seedless_ctrl else None
+            ),
         )
 
         # ── Auto-inject default sinks ──────────────────────────────────────
@@ -648,9 +687,18 @@ class ScanWorkflow:
                     # bloodflow app does this via QML; doing it here makes any
                     # direct SDK caller (contact-quality, examples) correct too.
                     # Idempotent for the app: its trigger ≈ this resolved config.
+                    if seedless_ctrl is not None and not seedless_ctrl.apply():
+                        seedless_ctrl.restore()
+                        raise RuntimeError(
+                            "SEEDLESS apply failed — aborting before trigger "
+                            "start (laser never fired)"
+                        )
                     trigger_cfg = self._interface.resolve_trigger_config(
                         request.trigger_config
                     )
+                    if seedless_ctrl is not None:
+                        trigger_cfg = {**trigger_cfg,
+                                       **_seedless_trigger_overrides()}
                     self._interface.console.set_trigger_json(data=trigger_cfg)
                     self._interface.console.start_trigger()
                     self._emit_trigger_event("ON")
@@ -747,6 +795,15 @@ class ScanWorkflow:
                         self._interface.console.stop_trigger()
                     except Exception:
                         pass
+
+                    # SEEDLESS: no exit path may leave the seed off or the
+                    # safety limits widened. Idempotent (no-op if the
+                    # frame-N restore already ran).
+                    if seedless_ctrl is not None:
+                        try:
+                            seedless_ctrl.restore()
+                        except Exception:
+                            logger.exception("seedless teardown restore raised")
 
                     if active_sides:
                         self._scan_unsubscribe_state()
