@@ -166,37 +166,60 @@ def fan_cooling_probe(fan: ShellyOutlet, minutes: float, out_csv: Path) -> None:
     log("fan cooling probe complete")
 
 
+def _parse_ladder(spec: str) -> "list[tuple[float, bool]]":
+    """Parse '120:1,120:1,180:0,20:1' -> [(120.0,True),(120.0,True),(180.0,False),(20.0,True)]."""
+    out = []
+    for tok in spec.split(","):
+        cd, fan = tok.split(":")
+        out.append((float(cd), bool(int(fan))))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--skip-phase1", action="store_true", help="skip the warm-up scan + fan cooling probe")
+    ap.add_argument("--ladder", default=None,
+                    help="override the Phase-2 ladder: comma list of cooldownMin:fanOn pairs, "
+                         "e.g. '120:1,120:1,180:0,20:1' (fanOn = 1/0). Deep soaks (2-3 h) reach "
+                         "the cold-ASSEMBLY regime that the fan-floored short cooldowns cannot -- "
+                         "the fan floors the board near ~29 C in ~10 min, but the deep dip needs "
+                         "the slow thermal mass to equilibrate cold (last night: 3 h -> 18%% dip).")
+    ap.add_argument("--subject-prefix", default="CDDIP",
+                    help="subject/file prefix (use a distinct one to avoid clobbering a prior run's files)")
+    ap.add_argument("--start-index", type=int, default=2,
+                    help="index of the first ladder scan (Phase 1, when run, uses _01)")
     args = ap.parse_args()
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     stop_file = data_dir / "STOP"
+    ladder = _parse_ladder(args.ladder) if args.ladder else LADDER
+    prefix = args.subject_prefix
 
     rig = ShellyOutlet(RIG_HOST)
     fan = ShellyOutlet(FAN_HOST)
 
-    log(f"=== cooldown-dip experiment: Phase1 + {len(LADDER)} ladder scans -> {data_dir} ===")
+    log(f"=== cooldown-dip experiment: {'Phase1 + ' if not args.skip_phase1 else ''}"
+        f"{len(ladder)} ladder scans (prefix {prefix}) -> {data_dir} ===")
     source_on()
 
     # Phase 1: a cold-start scan (module is cold from the day; also heats it),
     # then the continuous fan cooling curve.
     if not args.skip_phase1 and not stop_file.exists():
         log("--- Phase 1: cold-start scan (heats module) + fan cooling probe ---")
-        run_scan(rig, fan, "CDDIP_01", data_dir)
+        run_scan(rig, fan, f"{prefix}_01", data_dir)
         fan_cooling_probe(fan, FAN_PROBE_MIN, data_dir / "fan_cooling_probe.csv")
 
     # Phase 2: cooldown ladder.
     log("--- Phase 2: cooldown ladder ---")
-    for k, (cd_min, fan_on) in enumerate(LADDER):
+    for k, (cd_min, fan_on) in enumerate(ladder):
         if stop_file.exists():
             log("STOP file present -> exiting"); break
-        idx = k + 2  # CDDIP_01 was Phase 1
-        log(f"=== ladder {k+1}/{len(LADDER)}: {cd_min:g} min cooldown (fan {'ON' if fan_on else 'OFF'}) -> CDDIP_{idx:02d} ===")
+        idx = args.start_index + k
+        log(f"=== ladder {k+1}/{len(ladder)}: {cd_min:g} min cooldown "
+            f"(fan {'ON' if fan_on else 'OFF'}) -> {prefix}_{idx:02d} ===")
         cooldown(rig, fan, cd_min, fan_on)
-        run_scan(rig, fan, f"CDDIP_{idx:02d}", data_dir)
+        run_scan(rig, fan, f"{prefix}_{idx:02d}", data_dir)
 
     _shelly(rig, False, "rig")     # leave rig off (module cool) at the end
     _shelly(fan, False, "fan")
