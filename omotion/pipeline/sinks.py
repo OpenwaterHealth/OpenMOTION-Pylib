@@ -33,6 +33,9 @@ class ScanMetadata:
     left_camera_mask:  int
     right_camera_mask: int
     reduced_mode:      bool
+    # SEEDLESS engineering test (issue #146): number of leading frames run
+    # with seed off / TA 2 ms / exposure 2295 us. 0 = normal scan.
+    seedless_frames:   int = 0
 
 
 @runtime_checkable
@@ -623,6 +626,7 @@ class ScanDBSink:
                 "reduced_mode": meta.reduced_mode,
                 "left_camera_mask": meta.left_camera_mask,
                 "right_camera_mask": meta.right_camera_mask,
+                "seedless_frames": meta.seedless_frames,
             },
         }
         self._session_id = self._db.create_session(

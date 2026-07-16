@@ -276,3 +276,23 @@ def test_session_data_has_quality_column(tmp_path):
     columns = {row[1] for row in cursor.fetchall()}
     assert "quality" in columns
     db.close()
+
+
+def test_session_meta_records_seedless_frames(tmp_path):
+    db_path = str(tmp_path / "scan.db")
+    meta = ScanMetadata(
+        scan_id="s1", subject_id="subj", operator="op",
+        started_at_iso="2026-07-16T00:00:00Z", duration_sec=10,
+        left_camera_mask=0x66, right_camera_mask=0x66, reduced_mode=False,
+        seedless_frames=200,
+    )
+    sink = ScanDBSink(db_path=db_path)
+    sink.on_scan_start(meta)
+    # One row so the session persists (empty scans are deleted).
+    sink.consume("final", _interval([_frame(42)]))
+    sink.on_complete()
+
+    conn = sqlite3.connect(db_path)
+    meta_json = conn.execute("SELECT session_meta FROM sessions").fetchone()[0]
+    conn.close()
+    assert json.loads(meta_json)["sdk_flags"]["seedless_frames"] == 200
