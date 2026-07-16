@@ -33,6 +33,43 @@ def test_read_safety_logs_named_se_so_faults(caplog):
     assert "Safety interlock SO faults" in caplog.text
     assert "PULSE_UPPER_LIMIT_FAIL_OR_PULSE_LOWER_LIMIT_FAIL" in caplog.text
     assert "RATE_LOWER_LIMIT_FAIL" in caplog.text
+    # Decoded labels are also surfaced on the snapshot for consumers (issue #56):
+    # SE=0x01 (peak) + SO=0x06 (pulse|rate), combined in first-seen order.
+    assert snap.safety_faults == [
+        "POWER_PEAK_CURRENT_LIMIT_FAIL",
+        "PULSE_UPPER_LIMIT_FAIL_OR_PULSE_LOWER_LIMIT_FAIL",
+        "RATE_LOWER_LIMIT_FAIL",
+    ]
+
+
+def test_read_safety_clear_has_empty_faults():
+    poller = ConsoleTelemetryPoller(_FakeConsole(se_raw=0x00, so_raw=0x00))
+    snap = ConsoleTelemetry()
+    poller._read_safety(snap)
+    assert snap.safety_ok is True
+    assert snap.safety_known is True
+    assert snap.safety_faults == []
+
+
+def test_read_safety_dedups_faults_across_channels():
+    # Both channels report the same peak-current fault -> one label, not two.
+    poller = ConsoleTelemetryPoller(_FakeConsole(se_raw=0x01, so_raw=0x01))
+    snap = ConsoleTelemetry()
+    poller._read_safety(snap)
+    assert snap.safety_faults == ["POWER_PEAK_CURRENT_LIMIT_FAIL"]
+
+
+def test_read_safety_unknown_leaves_faults_empty():
+    # Chip not responding (empty read) -> safety_known False, no faults asserted.
+    class _NoData:
+        def read_i2c_packet(self, *a, **k):
+            return None, None
+
+    poller = ConsoleTelemetryPoller(_NoData())
+    snap = ConsoleTelemetry()
+    poller._read_safety(snap)
+    assert snap.safety_known is False
+    assert snap.safety_faults == []
 
 
 from omotion.ConsoleTelemetry import PdcSample, PDC_MA_PER_LSB
