@@ -19,6 +19,12 @@ SAFETY PROPERTIES this module must preserve:
    then the seed comes back on, then exposure. Re-tightening the ULs while
    the TA still fires 2 ms pulses latches TA_shutdown in the safety FPGA
    (pulse_upper_limit_fail), killing the TA for the rest of the scan.
+   On the normal (success) path this ordering means the ULs are tightened
+   only once the TA is confirmed back at 500 us, so no shutdown trips. But
+   if the TA-narrow write itself FAILS, restore re-tightens the ULs anyway
+   rather than leaving the widened-safety window open -- closing that window
+   is the higher priority, and the worst case is a protective TA_shutdown
+   (laser off = failsafe), not an unbounded pulse.
 3. apply() snapshots live register values first (I2C read-back) so restore
    writes back what was actually there; the bundled laser_params.json
    baseline is only a fallback when a read fails.
@@ -126,8 +132,10 @@ class SeedlessController:
                     continue
                 try:
                     sensor.switch_camera(cam)
-                    sensor.camera_i2c_write(I2C_Packet(
-                        device_address=0x36, register_address=0x3501, data=0x00))
+                    if not sensor.camera_i2c_write(I2C_Packet(
+                            device_address=0x36, register_address=0x3501,
+                            data=0x00)):
+                        ok = False
                     if self._settle_s:
                         time.sleep(self._settle_s)
                     if not sensor.camera_i2c_write(I2C_Packet(
@@ -184,8 +192,12 @@ class SeedlessController:
     def restore(self) -> bool:
         """Write everything back. Idempotent; safe from any thread.
 
-        ORDER MATTERS -- see module docstring. Never re-tighten the safety
-        ULs while TA_PULSE_WIDTH is still at the seedless value.
+        ORDER MATTERS -- see module docstring. The TA-narrow is attempted
+        first (with a settle delay) so on the success path the safety ULs
+        are tightened only against a 500 us pulse and no shutdown trips. If
+        the TA-narrow write fails, the ULs are tightened anyway to guarantee
+        the widened-safety window closes, at the cost of a possible failsafe
+        TA_shutdown.
         """
         with self._lock:
             if not self._applied or self._restored.is_set():

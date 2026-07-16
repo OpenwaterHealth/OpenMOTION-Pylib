@@ -166,3 +166,34 @@ def test_apply_failure_returns_false():
     console = FakeConsole(fail_writes=True)
     ctrl = _controller(console=console)
     assert ctrl.apply() is False
+
+
+def test_failed_restore_does_not_latch_and_is_retried():
+    # Safety property: the widened-safety window must eventually close. A
+    # restore that fails its writes must NOT latch _restored, so a later
+    # restore (e.g. from ScanWorkflow teardown) retries and closes it.
+    console = FakeConsole()
+    ctrl = _controller(console=console)
+    ctrl.apply()
+    console.writes.clear()
+    console.fail_writes = True
+    assert ctrl.restore() is False
+    assert not ctrl._restored.is_set()
+    console.fail_writes = False
+    assert ctrl.restore() is True
+    assert (4, 0x00, tuple(TA_PULSE_WIDTH_BASELINE)) in console.writes
+    assert (6, 0x04, tuple(PULSE_WIDTH_UL_BASELINE)) in console.writes
+
+
+def test_partial_apply_still_restores():
+    # apply() sets _applied=True BEFORE the writes, so even a failed/partial
+    # apply leaves the controller in a state where restore() runs and puts
+    # the registers back to baseline.
+    console = FakeConsole(fail_writes=True)
+    ctrl = _controller(console=console)
+    assert ctrl.apply() is False
+    assert ctrl._applied is True
+    console.fail_writes = False
+    console.writes.clear()
+    assert ctrl.restore() is True
+    assert (4, 0x00, tuple(TA_PULSE_WIDTH_BASELINE)) in console.writes
