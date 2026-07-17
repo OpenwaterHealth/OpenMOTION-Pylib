@@ -8,6 +8,20 @@ logger = logging.getLogger(
 )
 
 
+def is_usb_timeout(exc: usb.core.USBError) -> bool:
+    """True if a USBError is a plain transfer timeout (no data this window).
+
+    errno differs per platform: 110 ETIMEDOUT (Linux), 10060 WSAETIMEDOUT
+    (Windows), 60 ETIMEDOUT (macOS/BSD). pyusb also raises the
+    USBTimeoutError subclass for libusb LIBUSB_ERROR_TIMEOUT.
+    """
+    return isinstance(exc, usb.core.USBTimeoutError) or exc.errno in (
+        110,
+        10060,
+        60,
+    )
+
+
 # =========================================
 # Base Interface Class
 # =========================================

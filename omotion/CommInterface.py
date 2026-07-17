@@ -14,7 +14,7 @@ import usb.util
 import time
 import threading
 import queue
-from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion.USBInterfaceBase import USBInterfaceBase, is_usb_timeout
 from omotion import _log_root
 
 # Max data_len we accept (sanity check to avoid runaway buffer)
@@ -218,7 +218,7 @@ class CommInterface(USBInterfaceBase):
                     # Firmware back-pressure: the device's OUT FIFO is temporarily
                     # full.  Back off briefly and retry so callers don't have to
                     # care about transient busy periods (e.g. after program_fpga).
-                    if e.errno in (110, 10060):  # ETIMEDOUT / WSAETIMEDOUT
+                    if is_usb_timeout(e):
                         if attempt < _retries:
                             delay = 0.05 * (attempt + 1)  # 50 ms, 100 ms, 150 ms …
                             logger.warning(
@@ -304,7 +304,7 @@ class CommInterface(USBInterfaceBase):
                 # errors as the transport is closed; suppress them silently.
                 if self.stop_event.is_set():
                     break
-                if e.errno in (110, 10060):
+                if is_usb_timeout(e):
                     # Read timeout — no data this window. Keep looping.
                     continue
                 # errno 32 = EPIPE (stalled/disconnected endpoint)
