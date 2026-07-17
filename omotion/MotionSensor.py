@@ -38,6 +38,7 @@ from omotion.config import (
     OW_FACTORY_I2C_WR,
     OW_FACTORY_I2C_WRRD,
     OW_FACTORY_NVCM_CHECK,
+    OW_FACTORY_NVCM_BOOT,
     OW_FPGA,
     OW_FPGA_ACTIVATE,
     OW_FPGA_BITSTREAM,
@@ -896,6 +897,40 @@ class MotionSensor(SignalWrapper):
                          r.packetType)
             return b""
         return bytes(r.data[:r.data_len]) if r.data and r.data_len else b""
+
+    def nvcm_boot_test(self, camera_idx: int) -> bool | None:
+        """Fast read-only NVCM bootability probe (firmware pin-drive test).
+
+        Runs the firmware's ``fpga_detect_nvcm()`` on one camera (~105 ms):
+        keyless CRESETB release, then check that the booted user design
+        drives the camera-bus clk/data pins low. Behavioral — unlike the
+        ``nvcm_check`` status-register probe it detects a *bootable* image,
+        not just a burned Done fuse (openmotion-test-app#44). Mux-state
+        independent; the camera must be powered. No SRAM write, but the
+        FPGA is reset: a design running from SRAM is stopped, and a
+        non-booting part is left unconfigured until the next program.
+
+        Args:
+            camera_idx: Camera index 0-7.
+
+        Returns:
+            True if the NVCM design booted, False if it did not, or None
+            when the probe could not run — firmware without the command
+            (OW_UNKNOWN, pre-#91 releases) or a refused/unpowered camera
+            (OW_ERROR). Callers should treat None as "fall back to the
+            reset + timed non-forced program method".
+        """
+        if not 0 <= camera_idx <= 7:
+            raise ValueError(f"camera_idx must be 0-7, got {camera_idx}")
+        r = self._send(packetType=OW_FPGA_PROG,
+                       command=OW_FACTORY_NVCM_BOOT,
+                       data=bytearray([camera_idx]),
+                       timeout=8)
+        if r.packetType in _ERROR_TYPES or not r.data or r.data_len < 1:
+            logger.warning("nvcm_boot_test: no verdict (packetType=0x%02X)",
+                           r.packetType)
+            return None
+        return bool(r.data[0])
 
     # ------------------------------------------------------------------
     # Debug flags
