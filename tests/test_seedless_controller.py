@@ -12,6 +12,7 @@ from omotion.seedless import (
     SeedlessController,
     TA_PULSE_WIDTH_SEEDLESS, TA_PULSE_WIDTH_BASELINE,
     PULSE_WIDTH_UL_SEEDLESS, PULSE_WIDTH_UL_BASELINE,
+    RATE_LL_SEEDLESS, RATE_LL_BASELINE,
     SEED_CW_GAIN_BASELINE,
     EXPOSURE_SEEDLESS_BYTE, EXPOSURE_RESTORE_BYTE,
 )
@@ -29,6 +30,8 @@ class FakeConsole:
             (5, 0x04): bytes(SEED_CW_GAIN_BASELINE),
             (6, 0x04): bytes(PULSE_WIDTH_UL_BASELINE),
             (7, 0x04): bytes(PULSE_WIDTH_UL_BASELINE),
+            (6, 0x08): bytes(RATE_LL_BASELINE),   # EE_RATE_LL
+            (7, 0x08): bytes(RATE_LL_BASELINE),   # OPT_RATE_LL
         }
 
     def read_i2c_packet(self, mux_index, channel, device_addr, reg_addr, read_len):
@@ -76,12 +79,18 @@ def test_apply_writes_seedless_values():
     w = console.writes
     assert (6, 0x04, tuple(PULSE_WIDTH_UL_SEEDLESS)) in w   # EE UL widened
     assert (7, 0x04, tuple(PULSE_WIDTH_UL_SEEDLESS)) in w   # OPT UL widened
+    assert (6, 0x08, tuple(RATE_LL_SEEDLESS)) in w         # EE rate LL -> 0
+    assert (7, 0x08, tuple(RATE_LL_SEEDLESS)) in w         # OPT rate LL -> 0
     assert (5, 0x04, (0x00, 0x00)) in w                     # seed CW gain -> 0
     assert (5, 0x02, (0x00, 0x00)) in w                     # seed DDS gain -> 0
     assert (4, 0x00, tuple(TA_PULSE_WIDTH_SEEDLESS)) in w   # TA -> 2 ms
     # Safety ULs must be widened BEFORE the TA width is raised.
     assert w.index((6, 0x04, tuple(PULSE_WIDTH_UL_SEEDLESS))) \
          < w.index((4, 0x00, tuple(TA_PULSE_WIDTH_SEEDLESS)))
+    # Rate LL must be relaxed BEFORE the seed is turned off (else the seed-off
+    # dim output trips rate_lower_limit_fail before the check is disabled).
+    assert w.index((6, 0x08, tuple(RATE_LL_SEEDLESS))) \
+         < w.index((5, 0x04, (0x00, 0x00)))
 
 
 def test_apply_sets_exposure_on_masked_cameras_only():
@@ -108,8 +117,13 @@ def test_restore_order_is_ta_then_uls_then_seed_then_exposure():
     i_ee  = w.index((6, 0x04, tuple(PULSE_WIDTH_UL_BASELINE)))
     i_opt = w.index((7, 0x04, tuple(PULSE_WIDTH_UL_BASELINE)))
     i_cw  = w.index((5, 0x04, tuple(SEED_CW_GAIN_BASELINE)))
+    i_rate_ee = w.index((6, 0x08, tuple(RATE_LL_BASELINE)))
+    i_rate_opt = w.index((7, 0x08, tuple(RATE_LL_BASELINE)))
     assert i_ta < i_ee and i_ta < i_opt        # TA narrowed FIRST
-    assert i_ee < i_cw and i_opt < i_cw        # limits before seed back on
+    assert i_ee < i_cw and i_opt < i_cw        # pulse-width ULs before seed back on
+    # Rate LL restored AFTER the seed is back on (so normal pulses are flowing
+    # when rate monitoring resumes; else it would immediately re-trip).
+    assert i_cw < i_rate_ee and i_cw < i_rate_opt
     assert ("write", 0x3502, EXPOSURE_RESTORE_BYTE) in left.calls
 
 
