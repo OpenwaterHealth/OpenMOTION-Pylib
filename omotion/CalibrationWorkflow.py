@@ -226,27 +226,28 @@ def _compute_calibration_from_samples(
                     f"active camera ({side}, cam={cam_id + 1}) produced "
                     f"no corrected samples; calibration aborted."
                 )
-            # Ratio-of-means contrast, not mean-of-ratios.
-            # mean(std/mean) is statistically biased upward whenever
-            # per-frame mean varies; mean(std)/mean(mean) matches the
-            # live UI's "speckle contrast" and stays bounded by 1 for a
-            # well-conditioned signal.
+            # C_max is a contrast averaged over time, so it uses
+            # average-of-ratios — the mean of each frame's std/mean —
+            # never ratio-of-averages (mean(std)/mean(mean)). The two
+            # disagree whenever the per-frame mean varies across the
+            # window. Average-of-ratios is the project-wide standard for
+            # any time-averaged contrast and matches the validation
+            # scan's avg_contrast, so the two are directly comparable
+            # (issue #148).
             mean_avg = float(np.mean([s.mean for s in cam_samples]))
             std_avg = float(np.mean([s.std_dev for s in cam_samples]))
-            new_c_max = (std_avg / mean_avg) if mean_avg > 0.0 else 0.0
+            new_c_max = float(np.mean([s.contrast for s in cam_samples]))
             new_i_max = CALIBRATION_I_MAX_MULTIPLIER * mean_avg
-            # The biased per-frame average is logged for diagnosis: a
+            # Ratio-of-averages is logged alongside for diagnosis: a
             # large divergence between the two estimators is the smoking
             # gun for a flaky / partially-occluded camera.
-            per_frame_contrast_avg = float(
-                np.mean([s.contrast for s in cam_samples])
-            )
+            ratio_of_averages = (std_avg / mean_avg) if mean_avg > 0.0 else 0.0
             logger.info(
                 "  cam (%s, cam=%d): n=%d  mean=%.2f  std=%.2f  "
-                "C_max(ratio-of-means)=%.4f  C_max(mean-of-ratios)=%.4f  "
+                "C_max(avg-of-ratios)=%.4f  ratio-of-averages=%.4f  "
                 "I_max=%.2f",
                 side, cam_id + 1, len(cam_samples),
-                mean_avg, std_avg, new_c_max, per_frame_contrast_avg,
+                mean_avg, std_avg, new_c_max, ratio_of_averages,
                 new_i_max,
             )
             if new_c_max <= 0.0 or new_i_max <= 0.0:
