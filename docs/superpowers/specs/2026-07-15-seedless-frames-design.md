@@ -3,7 +3,27 @@
 **Date:** 2026-07-15
 **Ticket:** [openmotion-bloodflow-app#361](https://github.com/OpenwaterHealth/openmotion-bloodflow-app/issues/361)
 **Requested by:** @bahartl — engineering testing only
-**Status:** approved — laser engineer sign-off relayed by Ethan, 2026-07-16
+**Status:** **bench-validated 2026-07-17** (N=25, mask 0x66) — laser engineer sign-off relayed by Ethan 2026-07-16
+
+## Bench validation (2026-07-17)
+
+Ran on real hardware (N=25). Full scan completed: **603 frames** — exactly 25
+`seedless` + 120 `seedless_tx` + the rest `light` — with all registers restored
+(TA, seed gains, pulse-width ULs, rate LLs) verified by read-back, and back-to-back
+scans robust (no manual intervention). The **TA self-lasing ramp is visible** in
+the seedless frames (mean histogram bin 128 → ~328 over ~15 frames). Two additions
+were required that only surfaced on hardware — **neither catchable in software**:
+
+1. **Rate lower limit must be relaxed too.** With the seed off, the EE/OPT safety
+   monitor sees only faint sub-threshold pulses arriving too soon and trips
+   `rate_lower_limit_fail` (safety-fpga `logic_check.v:179`: `count < rate_lower_limit`),
+   shutting the TA down at ~12 frames. Fix: set `EE/OPT_RATE_LL` to **0** during the
+   window (0 disables it because `count < 0` is never true; a MAX value would trip on
+   every real pulse). Restored after the seed is back on.
+2. **The latched fault must be cleared at scan start.** `rate_lower_limit_fail`
+   latches (clears only via `dynamic_control[0]`), so a fault left by one run keeps
+   TA_shutdown asserted and starves the *next* scan to 0 frames. Fix: pulse
+   `EE/OPT_DYNAMIC_CTRL[0]` (reg 0x22) at `apply()` start.
 
 ## Purpose
 
@@ -18,7 +38,9 @@ Per-frame regime for frames 1..N:
 | Seed | CW, `SEED_CW_GAIN` ≈ 142 mV | **off** (`SEED_CW_GAIN=0`, `SEED_DDS_GAIN=0`) |
 | TA pulse width | 500 µs (raw 1563) | **2 ms** (raw 6250) |
 | Camera exposure | 648 µs (`0x3502=0x48`) | **2295 µs** (`0x3502=0xFF`) |
-| Safety `EE/OPT_PULSE_WIDTH_UL` | 1.000 ms (raw 3125) | **widened** to clear 2 ms |
+| Safety `EE/OPT_PULSE_WIDTH_UL` | 1.000 ms (raw 3125) | **widened** to clear 2 ms (raw 7813) |
+| Safety `EE/OPT_RATE_LL` | raw ~72266 (period ≈ 23 ms) | **0** (rate check disabled) |
+| Safety fault latch | — | **cleared** at apply() via `EE/OPT_DYNAMIC_CTRL[0]` |
 | Safety `EE/OPT_PULSE_WIDTH_LL` | 0 | 0 (unchanged) |
 
 Notes on the numbers:
