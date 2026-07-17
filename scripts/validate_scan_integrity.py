@@ -4,8 +4,9 @@
 Runs the full scan bring-up (power -> FPGA program -> sensor config ->
 stream -> trigger) on one sensor side, parses the live HISTO stream with
 the production parser, and reports how many samples passed or failed the
-histogram-sum invariant (every valid frame must sum to
-EXPECTED_HISTOGRAM_SUM = 1920*1280 + metadata).
+histogram-sum invariant (every valid frame must sum to one of the known
+geometry totals in EXPECTED_HISTOGRAM_SUMS - full 1920*1280 or a debug-cropped
+frame - each = width*height + 6).
 
 A bit-shifted serial link (e.g. stray bits clocked into a USART before
 the scan) multiplies every bin by a power of two, so failures are
@@ -29,6 +30,7 @@ from collections import Counter, defaultdict
 from omotion import MotionInterface
 from omotion.MotionProcessing import (
     EXPECTED_HISTOGRAM_SUM,
+    EXPECTED_HISTOGRAM_SUMS,
     HISTOGRAM_BYTES,
     parse_histogram_stream,
 )
@@ -53,9 +55,18 @@ class MismatchCounter(logging.Handler):
             return
         self.count += 1
         try:
-            # args: (cam_id, frame_id, row_sum, expected)
-            got, expected = record.args[2], record.args[3]
-            self.ratios[round(got / expected, 3)] += 1
+            # args: (cam_id, frame_id, row_sum, accepted_sums)
+            # accepted_sums is a list of valid geometry totals (or, for a
+            # legacy single-value caller, a scalar). A bit-shifted link
+            # multiplies the true total by a power of two, so report the ratio
+            # against the nearest valid total to keep the 2^k signature obvious.
+            got, accepted = record.args[2], record.args[3]
+            if isinstance(accepted, (list, tuple, set, frozenset)):
+                base = min(accepted, key=lambda v: abs(got - v)) if accepted else None
+            else:
+                base = accepted
+            if base:
+                self.ratios[round(got / base, 3)] += 1
         except Exception:
             pass
 
@@ -138,7 +149,7 @@ def main() -> int:
             target=parse_histogram_stream,
             args=(q, stop_evt, buf),
             kwargs={"on_row_fn": on_row,
-                    "expected_row_sum": EXPECTED_HISTOGRAM_SUM},
+                    "expected_row_sum": EXPECTED_HISTOGRAM_SUMS},
             daemon=True,
         )
         parser_thread.start()
