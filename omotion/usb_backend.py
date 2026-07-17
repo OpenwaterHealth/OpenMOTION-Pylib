@@ -48,4 +48,32 @@ def get_libusb1_backend():
         return libusb1.get_backend(find_library=lambda _: str(dll_path))
 
     # Non-Windows: use system libusb via the loader
-    return libusb1.get_backend()
+    backend = libusb1.get_backend()
+    if backend is not None:
+        return backend
+
+    # ctypes.util.find_library misses Homebrew's /opt/homebrew prefix on
+    # Apple Silicon and can resolve a wrong-arch dylib (e.g. a stale x86_64
+    # copy in /usr/local/lib). Probe known locations and use the first one
+    # that actually loads.
+    for cand in _darwin_libusb_candidates():
+        if not cand.exists():
+            continue
+        try:
+            ctypes.CDLL(str(cand))
+        except OSError:
+            continue  # wrong arch / unloadable — keep probing
+        return libusb1.get_backend(find_library=lambda _n, _p=cand: str(_p))
+    return None
+
+
+def _darwin_libusb_candidates() -> list[Path]:
+    if sys.platform != "darwin":
+        return []
+    return [
+        _base_dir() / "libusb-1.0.0.dylib",  # PyInstaller-bundled
+        Path("/opt/homebrew/opt/libusb/lib/libusb-1.0.dylib"),
+        Path("/opt/homebrew/lib/libusb-1.0.dylib"),
+        Path("/usr/local/opt/libusb/lib/libusb-1.0.dylib"),
+        Path("/usr/local/lib/libusb-1.0.dylib"),
+    ]

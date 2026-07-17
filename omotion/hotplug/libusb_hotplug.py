@@ -83,7 +83,7 @@ class LibusbHotplugProvider:
         # stop event is checked promptly without consuming CPU.
         while not self._stop.is_set():
             try:
-                self._context.handleEventsTimeout(tv_sec=0, tv_usec=200000)
+                self._context.handleEventsTimeout(tv=0.2)
             except Exception:
                 logger.exception("libusb handleEventsTimeout failed")
                 break
