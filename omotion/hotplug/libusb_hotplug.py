@@ -11,6 +11,7 @@ which causes ``detect_hotplug()`` to fall back to ``PollOnlyHotplugProvider``.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import threading
 
@@ -33,6 +34,7 @@ class LibusbHotplugProvider:
         self._handle = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._closed = False
 
     def subscribe(self, on_change):
         if self._thread is not None:
@@ -62,6 +64,10 @@ class LibusbHotplugProvider:
         self._thread.start()
 
         def _unsubscribe():
+            if self._closed:
+                return
+            self._closed = True
+            atexit.unregister(_unsubscribe)
             self._stop.set()
             if self._thread is not None:
                 self._thread.join(timeout=2.0)
@@ -76,6 +82,12 @@ class LibusbHotplugProvider:
             except Exception:
                 logger.exception("USBContext.close failed")
 
+        # If the caller never unsubscribes, stop the pump thread before the
+        # interpreter starts tearing libusb down. atexit runs LIFO, so this
+        # (registered after usb1's import-time cleanup hooks) runs first —
+        # otherwise libusb_exit races the still-running pump thread and
+        # aborts on an internal libusb assertion (SIGABRT at shutdown).
+        atexit.register(_unsubscribe)
         return _unsubscribe
 
     def _pump(self):
