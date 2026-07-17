@@ -125,6 +125,7 @@ from omotion.config import (
     DEBUG_FLAG_FAKE_DATA,
     DEBUG_FLAG_COMM_VERBOSE,
     DEBUG_FLAG_CMD_VERBOSE,
+    DEBUG_FLAG_CAMERA_RAW,
 )
 
 _ALL_DEBUG_FLAGS = (
@@ -246,6 +247,36 @@ def test_debug_flag_cmd_verbose(any_sensor):
         readback = any_sensor.get_debug_flags()
         assert not (readback & DEBUG_FLAG_CMD_VERBOSE), (
             f"CMD_VERBOSE bit still set after clear; readback=0x{readback:08X}"
+        )
+    finally:
+        any_sensor.set_debug_flags(original)
+
+
+def test_debug_flag_camera_raw(any_sensor):
+    """Bit 10 — DEBUG_FLAG_CAMERA_RAW via the set_camera_raw_mode() wrapper.
+
+    Only the flag bit is exercised (non-destructive): the register overrides
+    apply at the next camera configure, which this test never triggers. Also
+    verifies the wrapper preserves unrelated bits.
+    """
+    original = any_sensor.get_debug_flags()
+    try:
+        any_sensor.set_debug_flags(DEBUG_FLAG_USB_PRINTF)
+        assert any_sensor.set_camera_raw_mode(True) is True
+        readback = any_sensor.get_debug_flags()
+        assert readback & DEBUG_FLAG_CAMERA_RAW, (
+            f"CAMERA_RAW bit not set; readback=0x{readback:08X}"
+        )
+        assert readback & DEBUG_FLAG_USB_PRINTF, (
+            f"set_camera_raw_mode clobbered other bits; readback=0x{readback:08X}"
+        )
+        assert any_sensor.set_camera_raw_mode(False) is True
+        readback = any_sensor.get_debug_flags()
+        assert not (readback & DEBUG_FLAG_CAMERA_RAW), (
+            f"CAMERA_RAW bit still set after clear; readback=0x{readback:08X}"
+        )
+        assert readback & DEBUG_FLAG_USB_PRINTF, (
+            f"clearing raw mode clobbered other bits; readback=0x{readback:08X}"
         )
     finally:
         any_sensor.set_debug_flags(original)
