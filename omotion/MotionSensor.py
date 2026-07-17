@@ -864,12 +864,21 @@ class MotionSensor(SignalWrapper):
                    boot_test: bool = True) -> bytes:
         """Probe the active camera's CrossLink NVCM state.
 
-        Reads NVCM discriminators over I2C (config-mode read-back).  The
-        programmed/blank discriminator is the STATUS register Done bit
-        (response byte 8, bit 0): the Done fuse is the last step burned
-        during NVCM programming and gates auto-boot.  Neither phase touches
-        camera power.  Select the camera first with switch_camera() and make
-        sure it is powered.
+        Dumps the ISC register discriminators over I2C for diagnostics and —
+        on firmware with sensor-fw#92 — appends the pin-drive boot verdict
+        byte, the ONLY field that answers "is it programmed": 1 = the NVCM
+        design booted and drove the camera bus, 0 = no boot, 0xFF = probe
+        refused (camera unpowered). The register reads cannot answer it:
+        STATUS bit 19 ("SDM Enable") merely mirrors the NVCM Done fuse — a
+        part can have the fuse burned yet never boot (openmotion-test-app#44)
+        — the content reads float 0xFF (the NVCM array is not read-enabled
+        in this flow), and the SRAM Done bit reads 0 on every part. Older
+        firmware returns the blob without the trailing byte; for a verdict
+        there, use the behavioral fallback (reset_camera_sensor + timed
+        non-forced program_fpga; see scripts/nvcm_probe.py).
+
+        Select the camera first with switch_camera() — checking its response
+        — and make sure it is powered.
 
         Args:
             isc_operand: ISC_ENABLE operand1 — 0x08 = NVCM access (default),
@@ -883,7 +892,7 @@ class MotionSensor(SignalWrapper):
 
         Returns:
             Raw fixed-layout response blob (see scripts/nvcm_probe.py for the
-            field layout), or b"" on error.
+            field layout incl. the trailing verdict byte), or b"" on error.
         """
         payload = bytearray([isc_operand & 0xFF, num_rows & 0xFF,
                              1 if boot_test else 0])
