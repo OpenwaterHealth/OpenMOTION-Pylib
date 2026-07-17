@@ -93,6 +93,22 @@ def test_apply_writes_seedless_values():
          < w.index((5, 0x04, (0x00, 0x00)))
 
 
+def test_apply_clears_latched_faults_first():
+    # A latched safety fault from a prior run blocks the next scan's trigger.
+    # apply() must pulse EE/OPT dynamic_control[0] (reg 0x22) to clear it,
+    # BEFORE writing the seedless config.
+    console = FakeConsole()
+    ctrl = _controller(console=console)
+    assert ctrl.apply() is True
+    w = console.writes
+    assert (6, 0x22, (0x01, 0x00)) in w        # EE clear_fail asserted
+    assert (7, 0x22, (0x01, 0x00)) in w        # OPT clear_fail asserted
+    assert (6, 0x22, (0x00, 0x00)) in w        # de-asserted
+    # Fault clear happens before the first seedless config write.
+    assert w.index((6, 0x22, (0x01, 0x00))) \
+         < w.index((6, 0x04, tuple(PULSE_WIDTH_UL_SEEDLESS)))
+
+
 def test_apply_sets_exposure_on_masked_cameras_only():
     left = FakeSensor()
     ctrl = _controller(left=left)

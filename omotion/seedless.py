@@ -55,6 +55,7 @@ _TA_CH, _TA_PW_REG, _TA_PW_LEN = 4, 0x00, 3
 _SEED_CH, _SEED_DDS_REG, _SEED_CW_REG, _SEED_GAIN_LEN = 5, 0x02, 0x04, 2
 _EE_CH, _OPT_CH, _UL_REG, _UL_LEN = 6, 7, 0x04, 4
 _RATE_LL_REG, _RATE_LL_LEN = 0x08, 4  # EE/OPT RATE lower limit
+_DYN_CTRL_REG = 0x22                  # EE/OPT dynamic control; bit0 = clear_fail
 
 # Values. Baselines mirror omotion/data/laser_params.json (locked data).
 TA_PULSE_WIDTH_BASELINE = bytes([0x1B, 0x06, 0x00])   # 1563 * 0.32us = 500 us
@@ -172,6 +173,30 @@ class SeedlessController:
                     ok = False
         return ok
 
+    def _clear_safety_faults(self) -> None:
+        """Pulse EE/OPT dynamic_control[0] to clear any LATCHED safety fault.
+
+        A latched fault (e.g. rate_lower_limit_fail from a prior aborted or
+        pre-relaxation seedless run) keeps TA_shutdown asserted, which blocks
+        the NEXT scan's trigger -- on the bench (2026-07-16) a stale latched
+        fault gave the following scan 0 frames. Clearing at apply() start
+        makes each seedless scan begin from a known-armed state. Best-effort:
+        a clear failure is logged but does not abort the scan.
+        """
+        try:
+            for ch in (_EE_CH, _OPT_CH):
+                self._console.write_i2c_packet(
+                    mux_index=_MUX, channel=ch, device_addr=_DEV,
+                    reg_addr=_DYN_CTRL_REG, data=bytearray([0x01, 0x00]))
+            if self._settle_s:
+                time.sleep(self._settle_s)
+            for ch in (_EE_CH, _OPT_CH):
+                self._console.write_i2c_packet(
+                    mux_index=_MUX, channel=ch, device_addr=_DEV,
+                    reg_addr=_DYN_CTRL_REG, data=bytearray([0x00, 0x00]))
+        except Exception:
+            logger.exception("seedless: clear_safety_faults raised (non-fatal)")
+
     # -- lifecycle --
 
     def apply(self) -> bool:
@@ -180,6 +205,9 @@ class SeedlessController:
         Returns False on any console write failure -- the caller must abort
         the scan BEFORE starting the trigger (and call restore()).
         """
+        # Clear any latched safety fault first so a stale fault from a prior
+        # run does not keep TA_shutdown asserted and starve this scan.
+        self._clear_safety_faults()
         for name, ch, reg, length, _, baseline in _APPLY_SEQUENCE:
             live = self._read(name, ch, reg, length)
             if live is None:
