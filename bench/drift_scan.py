@@ -114,6 +114,20 @@ def parse_cli() -> argparse.Namespace:
                         help="Which cameras to power + configure + stream, as hex (0xC3) or int (195). Only "
                              "these cameras are powered on. Default 0xFF (all 8). The clinical 'far 4' config "
                              "= 0xC3 (cams 1,2,7,8); research default = 0x99 (cams 1,4,5,8).")
+    parser.add_argument("--sensor-fan-off-until-temp", type=float, default=0.0,
+                        help="Accelerated warm-up: if >0, turn the sensor MODULE fan OFF at scan start so the "
+                             "sensor self-heats through the cold-start dip faster, then turn it back ON when the "
+                             "sentinel camera's die reaches this temp (deg C). 0 = leave the sensor fan in its "
+                             "firmware default state (the control condition).")
+    parser.add_argument("--sensor-fan-cap-temp", type=float, default=110.0,
+                        help="Safety: force the sensor fan back ON immediately if the sentinel die exceeds this "
+                             "(deg C). Default 110 (camera cutoff is ~115).")
+    parser.add_argument("--sensor-fan-off-max-sec", type=float, default=360.0,
+                        help="Time fail-safe: force the sensor fan back ON this many seconds after scan start "
+                             "regardless of temperature (guards against a stuck/unreadable monitor). Default 360.")
+    parser.add_argument("--fan-sentinel-cam", type=int, default=6,
+                        help="cam_id (0-7) whose live die temp gates the fan restore. Default 6 (= cam 7, the "
+                             "deepest responder and hottest clinical camera).")
     return parser.parse_args()
 
 
@@ -277,6 +291,67 @@ def read_imu_temp(sensor, label: str = "") -> "float | None":
         return None
 
 
+def _tail_sentinel_temp(raw_path: Path, cam_id: int) -> "float | None":
+    """Latest die temp (deg C) for cam_id from the tail of the LIVE raw CSV. Raw columns:
+    cam_id(0), frame_id, timestamp_s, type, <1024 bins>, temperature([-5]), sum, tcm, tcl, pdc."""
+    try:
+        sz = raw_path.stat().st_size
+        with open(raw_path, "rb") as f:
+            f.seek(max(0, sz - 65536))
+            chunk = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+    prefix = f"{cam_id},"
+    for line in reversed(chunk.split("\n")[1:]):   # drop first (partial) line
+        if not line.startswith(prefix):
+            continue
+        parts = line.split(",")
+        if len(parts) < 1033:
+            continue
+        try:
+            return float(parts[-5])
+        except ValueError:
+            continue
+    return None
+
+
+def sensor_fan_warmup_monitor(sensor, raw_glob, cam_id, target_c, cap_c, max_off_s, stop_evt, result):
+    """The sensor fan was turned OFF at scan start to accelerate warm-up through the dip.
+    Tail the live raw CSV, read the sentinel camera's die temp, and turn the fan back ON
+    at the target temp, a safety cap, or a time fail-safe -- whichever comes first.
+    NOTE: set_fan_control here fires an I2C/controller command DURING streaming."""
+    import glob as _glob
+    t0 = time.time()
+    raw_path = None
+    peak = None
+    while not stop_evt.is_set():
+        if raw_path is None:
+            cands = sorted(_glob.glob(raw_glob))
+            raw_path = Path(cands[-1]) if cands else None
+        temp = _tail_sentinel_temp(raw_path, cam_id) if raw_path is not None else None
+        if temp is not None:
+            peak = temp if peak is None else max(peak, temp)
+        elapsed = time.time() - t0
+        reason = None
+        if temp is not None and temp >= cap_c:
+            reason = f"SAFETY CAP {cap_c:.0f}C (cam {cam_id + 1} die {temp:.1f}C)"
+        elif temp is not None and temp >= target_c:
+            reason = f"target {target_c:.0f}C reached (cam {cam_id + 1} die {temp:.1f}C)"
+        elif elapsed >= max_off_s:
+            reason = f"time fail-safe {max_off_s:.0f}s (peak die {peak})"
+        if reason is not None:
+            ok = sensor.set_fan_control(True)
+            result.update(restored=True, at_sec=round(elapsed, 1), at_temp=temp, reason=reason, set_ok=ok)
+            print(f"[+] Sensor fan RE-ENABLED at t={elapsed:.0f}s -- {reason} (set_ok={ok})", flush=True)
+            return
+        stop_evt.wait(2.0)
+    # scan ended before any trigger -> make sure the fan is back on
+    ok = sensor.set_fan_control(True)
+    result.update(restored=True, at_sec=round(time.time() - t0, 1), at_temp=peak,
+                  reason="scan ended before target", set_ok=ok)
+    print("[+] Sensor fan re-enabled (scan ended before target reached)", flush=True)
+
+
 def main() -> int:
     args = parse_cli()
     global CAMERA_MASK
@@ -356,6 +431,10 @@ def main() -> int:
     thorlabs_stop = threading.Event()
     thorlabs_thread = None
 
+    fan_stop = threading.Event()
+    fan_monitor_thread = None
+    fan_restore: dict = {}
+
     try:
         if args.front_dark_sec > 0:
             # Light off BEFORE the trigger starts, so the scan's very first
@@ -367,6 +446,24 @@ def main() -> int:
             raise RuntimeError("start_scan refused (bad request or a scan already running).")
         print(f"[*] Scan started (subject={args.subject_id}, duration={args.duration_sec}s). "
               f"Running for {args.duration_sec:.0f}s with {len(schedule)} dark windows ...")
+
+        # Accelerated warm-up: cut the sensor fan at scan start so the module self-heats
+        # through the cold-start dip faster; a monitor thread restores it at the target
+        # die temp (or a safety cap / time fail-safe). set_fan_control fires an I2C command
+        # while streaming -- smoke-tested to not wedge HISTO in the 4-camera config.
+        if args.sensor_fan_off_until_temp > 0:
+            ok = sensor.set_fan_control(False)
+            print(f"[*] Sensor fan OFF at scan start (accelerated warm-up); restore when cam "
+                  f"{args.fan_sentinel_cam + 1} die hits {args.sensor_fan_off_until_temp:.0f}C "
+                  f"(cap {args.sensor_fan_cap_temp:.0f}C, fail-safe {args.sensor_fan_off_max_sec:.0f}s). "
+                  f"set_ok={ok}", flush=True)
+            raw_glob = str(args.data_dir / f"*_{args.subject_id}_{side}_mask{CAMERA_MASK:02X}_raw.csv")
+            fan_monitor_thread = threading.Thread(
+                target=sensor_fan_warmup_monitor,
+                args=(sensor, raw_glob, args.fan_sentinel_cam, args.sensor_fan_off_until_temp,
+                      args.sensor_fan_cap_temp, args.sensor_fan_off_max_sec, fan_stop, fan_restore),
+                daemon=True)
+            fan_monitor_thread.start()
 
         if meter is not None:
             thorlabs_thread = threading.Thread(
@@ -436,6 +533,17 @@ def main() -> int:
         iface.scan_workflow.await_complete(timeout_sec=args.duration_sec + 60)
 
     finally:
+        # Stop the sensor-fan monitor and GUARANTEE the fan is back ON, however the
+        # scan ended (target reached, exception, or early exit).
+        fan_stop.set()
+        if fan_monitor_thread is not None:
+            fan_monitor_thread.join(timeout=6)
+        if args.sensor_fan_off_until_temp > 0 and not fan_restore.get("restored"):
+            try:
+                sensor.set_fan_control(True)
+                print("[*] Sensor fan restored ON in cleanup.")
+            except Exception as _e:
+                print(f"[!] Sensor fan cleanup restore failed: {_e}")
         # Module temperature at scan end (streaming has stopped, so the IMU
         # read is safe again) -- the warm end-state of the deep assembly.
         imu_temp_end = read_imu_temp(sensor, "end (post-scan)")
@@ -521,6 +629,9 @@ def main() -> int:
         "imu_temp_start_c": imu_temp_start,
         "imu_temp_end_c": imu_temp_end,
         "leave_source_on": args.leave_source_on,
+        "sensor_fan_off_until_temp_c": args.sensor_fan_off_until_temp or None,
+        "sensor_fan_sentinel_cam": args.fan_sentinel_cam if args.sensor_fan_off_until_temp > 0 else None,
+        "sensor_fan_restore": fan_restore or None,   # {restored, at_sec, at_temp, reason, set_ok}
     }
     meta_path = args.data_dir / f"{args.subject_id}_drift_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))
