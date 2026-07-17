@@ -17,6 +17,7 @@ from omotion.config import (
     OW_CAMERA_GET_HISTOGRAM,
     OW_CAMERA_SET_TESTPATTERN,
     OW_CAMERA_SINGLE_HISTOGRAM,
+    DEBUG_FLAG_CAMERA_RAW,
     OW_CAMERA_SET_CONFIG,
     OW_CMD,
     OW_CMD_DIAG_STATS,
@@ -912,6 +913,11 @@ class MotionSensor(SignalWrapper):
         Bit 8 (DEBUG_FLAG_HISTO_STALL) stops histogram sends after ~45 s of
         streaming while USB stays alive — deterministic camera-stall repro
         (sensor-fw#75).
+        Bit 9 (DEBUG_FLAG_CAMERA_CROP) crops camera output to 1720x1280 at
+        camera (re)configuration (sensor-fw#86).
+        Bit 10 (DEBUG_FLAG_CAMERA_RAW) disables all on-sensor pixel
+        corrections at camera (re)configuration (sensor-fw#89) — prefer
+        :meth:`set_camera_raw_mode`.
         """
         if self.demo_mode:
             return True
@@ -937,6 +943,30 @@ class MotionSensor(SignalWrapper):
         flags = struct.unpack("<I", r.data)[0]
         logger.info("Debug flags: 0x%08X", flags)
         return flags
+
+    def set_camera_raw_mode(self, enable: bool) -> bool:
+        """Enable/disable the raw "scientific sensor" camera mode (sensor-fw#89).
+
+        Sets or clears DEBUG_FLAG_CAMERA_RAW (bit 10), preserving all other
+        debug flags. While the flag is set, camera (re)configuration disables
+        every on-sensor pixel correction — BLC, DC-BLC, BLC dither and OTP
+        defect-pixel correction — so pixels are bare ADC codes.
+
+        The flag is read at camera-configure time only: power-cycle the
+        cameras (or the sensor) and re-run the configure workflow for it to
+        take effect — OW_CAMERA_SET_CONFIG skips cameras it considers
+        already configured. In raw mode the dark level sits at the raw
+        per-channel pedestal (roughly 255 DN at 1x analog gain, 495 DN at
+        16x) instead of the servoed target, so PEDESTAL_HEIGHT-based dark
+        handling is invalid — engineering/scientific captures only, not
+        production scans.
+        """
+        flags = self.get_debug_flags()
+        if enable:
+            flags |= DEBUG_FLAG_CAMERA_RAW
+        else:
+            flags &= ~DEBUG_FLAG_CAMERA_RAW
+        return self.set_debug_flags(flags)
 
     # ------------------------------------------------------------------
     # IMU
