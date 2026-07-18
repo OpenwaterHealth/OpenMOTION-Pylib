@@ -95,10 +95,11 @@ from omotion.firmware_update import parse_version as _parse_firmware_version
 # packed 78-byte per-camera records (little-endian). The firmware sends raw
 # register values; this parser owns every engineering-unit conversion.
 CAM_TELEMETRY_VERSION = 1
-_CAM_TELEM_HDR_FMT = "<BBBB"
-_CAM_TELEM_CAM_FMT = "<III22H22B"
-_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 78
-_CAM_TELEM_SIZE = struct.calcsize(_CAM_TELEM_HDR_FMT) + 8 * _CAM_TELEM_CAM_SIZE  # 628
+_CAM_TELEM_HDR_FMT = "<BBBBII"  # version, valid_mask, struct_size, rsvd, fsin_pulse_count, uptime_ms
+_CAM_TELEM_CAM_FMT = "<II22H22B"
+_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 74
+_CAM_TELEM_HDR_SIZE = struct.calcsize(_CAM_TELEM_HDR_FMT)  # 12
+_CAM_TELEM_SIZE = _CAM_TELEM_HDR_SIZE + 8 * _CAM_TELEM_CAM_SIZE  # 604
 
 
 def _vm_volts(raw: int) -> float:
@@ -116,16 +117,22 @@ def _tpm_celsius(raw: int) -> float:
 def parse_camera_telemetry(data: bytes) -> dict | None:
     """Parse a cam_telemetry_response_t blob; None if malformed or version-mismatched.
 
-    Returned dict: ``{"version", "valid_mask", "cameras": [dict * 8]}`` where each
-    camera dict carries converted values (``avdd_v``/``dovdd_v``/``dvdd_v`` volts,
-    ``tpm_avg_c``/``tpm0_c``/``tpm1_c`` degC, ``again_x``/``dgain_x`` gain factors)
-    alongside the raw fault/state/counter bytes. ``valid`` is False for a camera
-    the firmware has never completed a sweep on (fields all zero); ``updated_ms``
-    (firmware HAL_GetTick) reveals staleness, ``sweep_count`` liveness.
+    Returned dict: ``{"version", "valid_mask", "fsin_pulse_count", "uptime_ms",
+    "cameras": [dict * 8]}`` where each camera dict carries converted values
+    (``avdd_v``/``dovdd_v``/``dvdd_v`` volts, ``tpm_avg_c``/``tpm0_c``/``tpm1_c``
+    degC, ``again_x``/``dgain_x`` gain factors) alongside the raw
+    fault/state/counter bytes. ``fsin_pulse_count`` is the firmware's frame
+    trigger counter — external (console-driven) FSIN edges only; the sensor's
+    own frame counter has no readable SCCB value register, and internal-FSIN
+    frames don't increment this. ``valid`` is False for a camera the firmware
+    has never completed
+    a sweep on (fields all zero); ``updated_ms`` (firmware HAL_GetTick, compare
+    against ``uptime_ms``) reveals staleness, ``sweep_count`` liveness.
     """
     if data is None or len(data) < _CAM_TELEM_SIZE:
         return None
-    version, valid_mask, struct_size, _ = struct.unpack_from(_CAM_TELEM_HDR_FMT, data, 0)
+    (version, valid_mask, struct_size, _,
+     fsin_pulse_count, uptime_ms) = struct.unpack_from(_CAM_TELEM_HDR_FMT, data, 0)
     if version != CAM_TELEMETRY_VERSION or struct_size != _CAM_TELEM_CAM_SIZE:
         logger.warning(
             "camera telemetry format mismatch (version %d size %d, expected %d/%d)",
@@ -134,15 +141,16 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
 
     cameras = []
     for i in range(8):
-        f = struct.unpack_from(_CAM_TELEM_CAM_FMT, data, 4 + i * _CAM_TELEM_CAM_SIZE)
-        updated_ms, frame_counter, dgain_raw = f[0:3]
+        f = struct.unpack_from(
+            _CAM_TELEM_CAM_FMT, data, _CAM_TELEM_HDR_SIZE + i * _CAM_TELEM_CAM_SIZE)
+        updated_ms, dgain_raw = f[0:2]
         (avdd, dovdd, dvdd, tpm_avg, tpm0, tpm1, tc_row, expo_cmd, expo_applied,
-         again_raw, isp_real_gain, isp_dig_gain, isp_blc, isp_expo) = f[3:17]
-        blc_offsets = [v & 0x7FFF for v in f[17:25]]
+         again_raw, isp_real_gain, isp_dig_gain, isp_blc, isp_expo) = f[2:16]
+        blc_offsets = [v & 0x7FFF for v in f[16:24]]
         (tpm_status, vm_live, vm_cp, vm_latched, vm_cp_latched,
          wd_a, wd_b, wd_sticky, _wd_tpm_hi, _wd_tpm_lo, wd_state,
          sc_state, otp_crc0, otp_crc1, trig_error, yavg, aec_mode,
-         dcg_state, blc_ctrl, isp_ctrl, i2c_err_count, sweep_count) = f[25:47]
+         dcg_state, blc_ctrl, isp_ctrl, i2c_err_count, sweep_count) = f[24:46]
 
         # Analog gain: 0x3508[4:0] = code[8:4], 0x3509[7:4] = code[3:0]; x = code/16.
         again_code = (((again_raw >> 8) & 0x1F) << 4) | ((again_raw >> 4) & 0x0F)
@@ -175,7 +183,6 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
             "otp_crc": (otp_crc0, otp_crc1),
             "trig_error": trig_error,
             "yavg": yavg,
-            "frame_counter": frame_counter,
             "tc_row": tc_row,
             "expo_cmd": expo_cmd,
             "expo_applied": expo_applied,
@@ -192,7 +199,9 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
             "isp_expo": isp_expo,
             "blc_offsets": blc_offsets,
         })
-    return {"version": version, "valid_mask": valid_mask, "cameras": cameras}
+    return {"version": version, "valid_mask": valid_mask,
+            "fsin_pulse_count": fsin_pulse_count, "uptime_ms": uptime_ms,
+            "cameras": cameras}
 
 
 class MotionSensor(SignalWrapper):
@@ -736,7 +745,7 @@ class MotionSensor(SignalWrapper):
                 "vm_latched": 0, "vm_cp_latched": 0,
                 "wd_fault_a": 0, "wd_fault_b": 0, "wd_sticky": 0,
                 "wd_state": 0, "sc_state": 0x9, "otp_crc": (0, 0),
-                "trig_error": 0, "yavg": 128, "frame_counter": 0,
+                "trig_error": 0, "yavg": 128,
                 "tc_row": 0, "expo_cmd": 0x48, "expo_applied": 0x48,
                 "again_cmd": 0x0100, "again_x": 1.0, "dgain_x": 1.0,
                 "aec_mode": 0xA8, "dcg_state": 0x40,
@@ -746,6 +755,7 @@ class MotionSensor(SignalWrapper):
                 "blc_offsets": [0] * 8,
             }
             return {"version": CAM_TELEMETRY_VERSION, "valid_mask": 0xFF,
+                    "fsin_pulse_count": 0, "uptime_ms": 1000,
                     "cameras": [dict(cam) for _ in range(8)]}
         r = self._send(packetType=OW_CAMERA, command=OW_CAMERA_GET_TELEMETRY)
         if r is None or r.packetType in _ERROR_TYPES or r.data_len < _CAM_TELEM_SIZE:

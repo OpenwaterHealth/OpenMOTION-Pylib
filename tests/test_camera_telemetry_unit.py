@@ -15,7 +15,7 @@ from omotion.MotionSensor import (
 )
 
 NOMINAL = dict(
-    updated_ms=123456, frame_counter=100, dgain_raw=0x010000,
+    updated_ms=123456, dgain_raw=0x010000,
     avdd=1911, dovdd=1229, dvdd=819,          # 2.799 / 1.800 / 1.200 V
     tpm_avg=0x2D80, tpm0=0x2D00, tpm1=0x2E00,  # 45.5 / 45.0 / 46.0 C
     tc_row=0x0123, expo_cmd=0x0048, expo_applied=0x0048,
@@ -34,7 +34,7 @@ def make_cam(**overrides):
     v.update(overrides)
     return struct.pack(
         _CAM_TELEM_CAM_FMT,
-        v["updated_ms"], v["frame_counter"], v["dgain_raw"],
+        v["updated_ms"], v["dgain_raw"],
         v["avdd"], v["dovdd"], v["dvdd"],
         v["tpm_avg"], v["tpm0"], v["tpm1"],
         v["tc_row"], v["expo_cmd"], v["expo_applied"], v["again_raw"],
@@ -47,21 +47,24 @@ def make_cam(**overrides):
     )
 
 
-def make_blob(cams=None, version=CAM_TELEMETRY_VERSION, valid=0xFF, size=None):
+def make_blob(cams=None, version=CAM_TELEMETRY_VERSION, valid=0xFF, size=None,
+              pulse_count=42, uptime_ms=99000):
     cams = cams if cams is not None else [make_cam() for _ in range(8)]
     size = _CAM_TELEM_CAM_SIZE if size is None else size
-    return struct.pack("<BBBB", version, valid, size, 0) + b"".join(cams)
+    return struct.pack("<BBBBII", version, valid, size, 0,
+                       pulse_count, uptime_ms) + b"".join(cams)
 
 
 def test_wire_sizes_match_firmware():
-    assert _CAM_TELEM_CAM_SIZE == 78
-    assert _CAM_TELEM_SIZE == 628
+    assert _CAM_TELEM_CAM_SIZE == 74
+    assert _CAM_TELEM_SIZE == 604
 
 
 def test_nominal_conversions():
     t = parse_camera_telemetry(make_blob())
     assert t is not None
     assert t["version"] == 1 and t["valid_mask"] == 0xFF
+    assert t["fsin_pulse_count"] == 42 and t["uptime_ms"] == 99000
     c = t["cameras"][0]
     assert c["valid"] is True
     assert abs(c["avdd_v"] - 2.7993) < 0.001
@@ -77,7 +80,7 @@ def test_nominal_conversions():
     assert c["blc_ctrl"] == 0x23 and c["isp_ctrl"] == 0x34
     assert c["blc_offsets"] == [0x0100] * 8
     assert c["sweep_count"] == 5 and c["i2c_err_count"] == 0
-    assert c["frame_counter"] == 100 and c["updated_ms"] == 123456
+    assert c["updated_ms"] == 123456
 
 
 def test_negative_temperature_rule():
@@ -124,4 +127,4 @@ def test_rejects_malformed():
     assert parse_camera_telemetry(b"") is None
     assert parse_camera_telemetry(make_blob()[:-1]) is None          # short
     assert parse_camera_telemetry(make_blob(version=2)) is None      # future version
-    assert parse_camera_telemetry(make_blob(size=77)) is None        # struct drift
+    assert parse_camera_telemetry(make_blob(size=73)) is None        # struct drift
