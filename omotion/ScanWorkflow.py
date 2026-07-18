@@ -130,6 +130,13 @@ class ScanRequest:
     # pipeline avoids unnecessary disk I/O.
     write_corrected_csv: bool = True
     write_telemetry_csv: bool = True
+    # Per-camera sensor telemetry CSVs (sensor-fw#94: rails, die temps, fault
+    # latches, applied config — 1 Hz sampled via OW_CAMERA_GET_TELEMETRY,
+    # which serves a firmware-side cache so polling mid-scan does no camera
+    # I2C). One file per camera per connected side:
+    # {scan_id}_{subject_id}_{side}_cam{N}_telemetry.csv. Off by default —
+    # opt in for drift/thermal/power investigations.
+    write_camera_telemetry_csv: bool = False
     # When True, the pipeline averages all active cameras per side into
     # single left/right BFI/BVI values.  The corrected CSV contains only
     # bfi_left, bfi_right, bvi_left, bvi_right columns.  Uncorrected
@@ -480,6 +487,7 @@ class ScanWorkflow:
         # sink persists the matching summary when a DB is configured).
         default_sinks: list = [DiagnosticsLogSink()]
         telemetry_writer: Optional[_TelemetryCsvWriter] = None
+        camera_telemetry_logger = None  # CameraTelemetryCsvLogger, opt-in (#162)
         if not request.skip_default_storage:
             data_dir = getattr(self._interface, "data_dir", None)
             scan_db_path = getattr(self._interface, "scan_db_path", None)
@@ -547,6 +555,28 @@ class ScanWorkflow:
                 except Exception:
                     logger.exception("failed to open telemetry CSV %s", telemetry_path)
                     telemetry_writer = None
+            # Camera telemetry CSVs (opt-in, default off): 1 Hz sampler over
+            # each requested-and-connected sensor. Same lifecycle as the
+            # console telemetry writer — closed in _worker's finally.
+            if request.write_camera_telemetry_csv and data_dir is not None:
+                cam_telem_sensors = [
+                    (side, s) for side, s, mask in (
+                        ("left", self._interface.left, request.left_camera_mask),
+                        ("right", self._interface.right, request.right_camera_mask),
+                    )
+                    if int(mask) != 0 and s is not None and s.is_connected()
+                ]
+                if cam_telem_sensors:
+                    try:
+                        from omotion.camera_telemetry_csv import CameraTelemetryCsvLogger
+                        camera_telemetry_logger = CameraTelemetryCsvLogger(
+                            cam_telem_sensors, data_dir,
+                            f"{scan_id}_{request.subject_id}",
+                        )
+                        camera_telemetry_logger.start()
+                    except Exception:
+                        logger.exception("failed to start camera telemetry CSVs")
+                        camera_telemetry_logger = None
         all_sinks = default_sinks + list(request.sinks)
 
         # ── Build source + runner (set self._runner synchronously) ─────────
@@ -771,6 +801,8 @@ class ScanWorkflow:
             finally:
                 if telemetry_writer is not None:
                     telemetry_writer.close()
+                if camera_telemetry_logger is not None:
+                    camera_telemetry_logger.close()
                 if telemetry_feeder is not None:
                     telemetry_feeder.close()
                 with self._lock:
