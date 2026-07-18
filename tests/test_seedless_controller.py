@@ -32,6 +32,8 @@ class FakeConsole:
             (7, 0x04): bytes(PULSE_WIDTH_UL_BASELINE),
             (6, 0x08): bytes(RATE_LL_BASELINE),   # EE_RATE_LL
             (7, 0x08): bytes(RATE_LL_BASELINE),   # OPT_RATE_LL
+            (6, 0x24): bytes([0x00]),             # EE_STATUS (no latched fault)
+            (7, 0x24): bytes([0x00]),             # OPT_STATUS
         }
 
     def read_i2c_packet(self, mux_index, channel, device_addr, reg_addr, read_len):
@@ -187,9 +189,45 @@ def test_schedule_restore_fires_thread_once():
     console.writes.clear()
     ctrl.schedule_restore()
     ctrl.schedule_restore()                     # duplicate — must not double-fire
-    assert ctrl.wait_restored(timeout=5.0)
+    assert ctrl._mid_restored.wait(5.0)         # mid-scan (partial) restore done
     assert (4, 0x00, tuple(TA_PULSE_WIDTH_BASELINE)) in console.writes
     assert console.writes.count((4, 0x00, tuple(TA_PULSE_WIDTH_BASELINE))) == 1
+
+
+def test_mid_scan_restore_defers_rate_ll_rearm():
+    # Bench 2026-07-17: the seedless trigger override (skip delay 2500 us)
+    # makes every dark frame's return interval 22.5 ms < the 23.125 ms
+    # baseline rate LL, so re-arming the rate check mid-scan deterministically
+    # latches rate_lower_limit_fail at the next dark frame. The frame-N
+    # (mid-scan) restore must therefore SKIP the rate-LL re-arm; the teardown
+    # (final) restore re-arms it after stop_trigger.
+    console = FakeConsole()
+    ctrl = _controller(console=console)
+    ctrl.apply()
+    console.writes.clear()
+    assert ctrl.restore(final=False) is True
+    rate_writes = [w for w in console.writes if w[1] == 0x08]
+    assert rate_writes == []                    # rate LLs untouched mid-scan
+    assert (4, 0x00, tuple(TA_PULSE_WIDTH_BASELINE)) in console.writes
+    assert (5, 0x04, tuple(SEED_CW_GAIN_BASELINE)) in console.writes
+    assert not ctrl._restored.is_set()          # completion not latched yet
+
+    console.writes.clear()
+    assert ctrl.restore() is True               # teardown: full restore
+    assert (6, 0x08, tuple(RATE_LL_BASELINE)) in console.writes
+    assert (7, 0x08, tuple(RATE_LL_BASELINE)) in console.writes
+    assert ctrl._restored.is_set()
+
+
+def test_apply_aborts_when_latched_fault_will_not_clear():
+    # A latched fault that survives the clear pulses guarantees a 0-frame
+    # scan (TA_shutdown held). apply() must verify STATUS and refuse to run.
+    console = FakeConsole()
+    console.regs[(6, 0x24)] = bytes([0x04])     # EE rate fault, stuck
+    ctrl = _controller(console=console)
+    assert ctrl.apply() is False
+    # No seedless config was written after the failed clear.
+    assert (4, 0x00, tuple(TA_PULSE_WIDTH_SEEDLESS)) not in console.writes
 
 
 def test_apply_failure_returns_false():

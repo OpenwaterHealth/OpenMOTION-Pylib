@@ -56,6 +56,7 @@ _SEED_CH, _SEED_DDS_REG, _SEED_CW_REG, _SEED_GAIN_LEN = 5, 0x02, 0x04, 2
 _EE_CH, _OPT_CH, _UL_REG, _UL_LEN = 6, 7, 0x04, 4
 _RATE_LL_REG, _RATE_LL_LEN = 0x08, 4  # EE/OPT RATE lower limit
 _DYN_CTRL_REG = 0x22                  # EE/OPT dynamic control; bit0 = clear_fail
+_STATUS_REG = 0x24                    # EE/OPT status; bits 2..0 = rate/pulse/power fail
 
 # Values. Baselines mirror omotion/data/laser_params.json (locked data).
 TA_PULSE_WIDTH_BASELINE = bytes([0x1B, 0x06, 0x00])   # 1563 * 0.32us = 500 us
@@ -119,7 +120,8 @@ class SeedlessController:
         self._settle_s = float(settle_s)
         self._snapshot: dict[str, bytes] = {}
         self._applied = False
-        self._restored = threading.Event()
+        self._restored = threading.Event()      # final restore done
+        self._mid_restored = threading.Event()  # mid-scan (partial) restore done
         self._restore_started = False
         self._lock = threading.Lock()
 
@@ -173,29 +175,53 @@ class SeedlessController:
                     ok = False
         return ok
 
-    def _clear_safety_faults(self) -> None:
-        """Pulse EE/OPT dynamic_control[0] to clear any LATCHED safety fault.
+    def _clear_safety_faults(self) -> bool:
+        """Clear any LATCHED EE/OPT safety fault; verify by STATUS read-back.
 
-        A latched fault (e.g. rate_lower_limit_fail from a prior aborted or
-        pre-relaxation seedless run) keeps TA_shutdown asserted, which blocks
-        the NEXT scan's trigger -- on the bench (2026-07-16) a stale latched
-        fault gave the following scan 0 frames. Clearing at apply() start
-        makes each seedless scan begin from a known-armed state. Best-effort:
-        a clear failure is logged but does not abort the scan.
+        A latched fault (e.g. rate_lower_limit_fail from a prior seedless
+        scan's terminal dark frame) keeps TA_shutdown asserted, which starves
+        the NEXT scan to 0 frames (bench 2026-07-16/17). Clear = pulse
+        dynamic_control[0]. The EE FPGA needs a LONG assert: a 50 ms pulse
+        cleared it only intermittently on the bench; 300 ms was reliable.
+        Verify each channel's STATUS (reg 0x24) fault bits actually cleared
+        and retry up to 3x. Returns True when both channels read clear (or
+        when settle_s == 0, i.e. unit tests with fakes that don't model the
+        latch).
         """
-        try:
-            for ch in (_EE_CH, _OPT_CH):
-                self._console.write_i2c_packet(
-                    mux_index=_MUX, channel=ch, device_addr=_DEV,
-                    reg_addr=_DYN_CTRL_REG, data=bytearray([0x01, 0x00]))
-            if self._settle_s:
-                time.sleep(self._settle_s)
-            for ch in (_EE_CH, _OPT_CH):
-                self._console.write_i2c_packet(
-                    mux_index=_MUX, channel=ch, device_addr=_DEV,
-                    reg_addr=_DYN_CTRL_REG, data=bytearray([0x00, 0x00]))
-        except Exception:
-            logger.exception("seedless: clear_safety_faults raised (non-fatal)")
+        assert_s = max(self._settle_s * 6, 0.3) if self._settle_s else 0.0
+        for attempt in range(1, 4):
+            try:
+                for ch in (_EE_CH, _OPT_CH):
+                    self._console.write_i2c_packet(
+                        mux_index=_MUX, channel=ch, device_addr=_DEV,
+                        reg_addr=_DYN_CTRL_REG, data=bytearray([0x01, 0x00]))
+                if assert_s:
+                    time.sleep(assert_s)
+                for ch in (_EE_CH, _OPT_CH):
+                    self._console.write_i2c_packet(
+                        mux_index=_MUX, channel=ch, device_addr=_DEV,
+                        reg_addr=_DYN_CTRL_REG, data=bytearray([0x00, 0x00]))
+                if assert_s:
+                    time.sleep(assert_s / 3)
+            except Exception:
+                logger.exception("seedless: clear_safety_faults raised")
+                return False
+            # Verify: STATUS fault bits (rate/pulse/power = bits 2..0) clear.
+            still = []
+            for name, ch in (("EE", _EE_CH), ("OPT", _OPT_CH)):
+                st = self._read(f"{name}_STATUS", ch, _STATUS_REG, 1)
+                if st is not None and (st[0] & 0x07):
+                    still.append(f"{name}=0x{st[0]:02X}")
+            if not still:
+                if attempt > 1:
+                    logger.info("seedless: safety faults cleared on attempt %d",
+                                attempt)
+                return True
+            logger.warning("seedless: safety fault still latched after clear "
+                           "attempt %d: %s", attempt, ", ".join(still))
+        logger.error("seedless: could not clear latched safety fault -- the "
+                     "scan would get 0 frames (TA_shutdown held)")
+        return False
 
     # -- lifecycle --
 
@@ -215,8 +241,10 @@ class SeedlessController:
         with self._lock:
             # Clear any latched safety fault first so a stale fault from a
             # prior run does not keep TA_shutdown asserted and starve this
-            # scan.
-            self._clear_safety_faults()
+            # scan. A fault that will not clear means the scan is guaranteed
+            # to get 0 frames -- abort rather than fire pointlessly.
+            if not self._clear_safety_faults():
+                return False
             for name, ch, reg, length, _, baseline in _APPLY_SEQUENCE:
                 live = self._read(name, ch, reg, length)
                 if live is None:
@@ -239,16 +267,21 @@ class SeedlessController:
             return True
 
     def schedule_restore(self) -> None:
-        """Fire-and-forget restore on a dedicated thread (called by
-        SeedlessWatchStage from the pipeline runner thread)."""
+        """Fire-and-forget MID-SCAN restore on a dedicated thread (called by
+        SeedlessWatchStage from the pipeline runner thread).
+
+        The mid-scan restore is PARTIAL (final=False): it restores TA, the
+        pulse-width ULs, the seed and the exposure, but leaves the rate LLs
+        relaxed. The teardown restore (final=True, after stop_trigger)
+        re-arms them."""
         with self._lock:
             if self._restore_started:
                 return
             self._restore_started = True
-        threading.Thread(target=self.restore, daemon=True,
+        threading.Thread(target=lambda: self.restore(final=False), daemon=True,
                          name="SeedlessRestore").start()
 
-    def restore(self) -> bool:
+    def restore(self, final: bool = True) -> bool:
         """Write everything back. Idempotent; safe from any thread.
 
         ORDER MATTERS -- see module docstring. The TA-narrow is attempted
@@ -257,9 +290,22 @@ class SeedlessController:
         the TA-narrow write fails, the ULs are tightened anyway to guarantee
         the widened-safety window closes, at the cost of a possible failsafe
         TA_shutdown.
+
+        final=False (the mid-scan frame-N restore) SKIPS the rate-LL re-arm
+        and does not latch completion. The rate check cannot be validly armed
+        while the scan's seedless trigger override (LaserPulseSkipDelayUsec=
+        2500) is active: every dark frame's return interval is 25-2.5 =
+        22.5 ms, below the 23.125 ms baseline limit, so re-arming mid-scan
+        deterministically latches rate_lower_limit_fail at the next dark
+        frame (bench 2026-07-17 -- every seedless scan ended latched, and a
+        stale latch starves the next scan to 0 frames). Only the teardown
+        restore (final=True, which ScanWorkflow calls after stop_trigger,
+        when no pulses are flowing) re-arms the rate LLs.
         """
         with self._lock:
             if not self._applied or self._restored.is_set():
+                return True
+            if not final and self._mid_restored.is_set():
                 return True
             ok = True
             snap = self._snapshot
@@ -275,18 +321,23 @@ class SeedlessController:
                               snap.get("SEED_DDS_GAIN", SEED_DDS_GAIN_BASELINE))
             ok &= self._write("SEED_CW_GAIN", _SEED_CH, _SEED_CW_REG,
                               snap.get("SEED_CW_GAIN", SEED_CW_GAIN_BASELINE))
-            # Re-enable the rate check only AFTER the seed is back on, so
-            # normal pulses are flowing again when rate monitoring resumes;
-            # re-tightening the rate LL while the seed is still off would
-            # re-trip rate_lower_limit_fail.
-            ok &= self._write("EE_RATE_LL", _EE_CH, _RATE_LL_REG,
-                              snap.get("EE_RATE_LL", RATE_LL_BASELINE))
-            ok &= self._write("OPT_RATE_LL", _OPT_CH, _RATE_LL_REG,
-                              snap.get("OPT_RATE_LL", RATE_LL_BASELINE))
+            if final:
+                # Re-arm the rate check only at teardown (trigger stopped):
+                # see docstring -- mid-scan re-arm trips on the seedless dark
+                # slot's shortened return interval.
+                ok &= self._write("EE_RATE_LL", _EE_CH, _RATE_LL_REG,
+                                  snap.get("EE_RATE_LL", RATE_LL_BASELINE))
+                ok &= self._write("OPT_RATE_LL", _OPT_CH, _RATE_LL_REG,
+                                  snap.get("OPT_RATE_LL", RATE_LL_BASELINE))
             ok &= self._set_exposure(EXPOSURE_RESTORE_BYTE)
             if ok:
-                self._restored.set()
-                logger.info("seedless: restore complete")
+                if final:
+                    self._restored.set()
+                    logger.info("seedless: restore complete (final)")
+                else:
+                    self._mid_restored.set()
+                    logger.info("seedless: mid-scan restore complete "
+                                "(rate LLs re-arm at teardown)")
             else:
                 logger.error(
                     "seedless: restore INCOMPLETE -- laser/safety registers "
