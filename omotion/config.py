@@ -98,6 +98,7 @@ OW_CAMERA_POWER_ON = 0x50
 OW_CAMERA_POWER_OFF = 0x51
 OW_CAMERA_POWER_STATUS = 0x52
 OW_CAMERA_READ_SECURITY_UID = 0x53
+OW_CAMERA_GET_TELEMETRY = 0x54  # sensor-fw#94: cached cam_telemetry_response_t snapshot
 OW_CAMERA_STREAM = 0x07
 
 
@@ -159,6 +160,9 @@ DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_
 DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
 DEBUG_FLAG_SEND_DEFER = 0x80  # Defer per-frame histogram send out of the FSIN ISR into the main loop (sensor-fw#68)
 DEBUG_FLAG_HISTO_STALL = 0x100  # Stop sending histogram frames after ~45 s while USB stays alive — deterministic camera-stall repro (sensor-fw#75)
+DEBUG_FLAG_HISTO_SPARSE = 0x08  # Send histogram data in small chunks over ~15 s to reduce EMI
+DEBUG_FLAG_CAMERA_CROP = 0x200  # Crop camera output to 1720x1280 (drop right 200 columns) at camera (re)configure — misaligned-optic test (sensor-fw#86)
+DEBUG_FLAG_CAMERA_RAW = 0x400  # Raw "scientific sensor" mode: disable all on-sensor pixel corrections (BLC/DC-BLC/dither/OTP DPC) at camera (re)configure (sensor-fw#89)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
