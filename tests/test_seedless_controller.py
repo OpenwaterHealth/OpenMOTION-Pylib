@@ -198,6 +198,48 @@ def test_apply_failure_returns_false():
     assert ctrl.apply() is False
 
 
+def test_restore_racing_apply_serializes_to_baseline():
+    # Bench 2026-07-17: a restore() fired while apply() was mid-flight
+    # interleaved with it -- restore wrote TA baseline early, apply wrote TA
+    # seedless LAST, and restore's latch made every later restore a no-op:
+    # TA left at 2 ms with tight safety ULs (safety FPGA latched
+    # pulse_upper_limit_fail on the first pulse). apply() now holds the same
+    # lock as restore(), so a racing restore must serialize BEHIND apply and
+    # leave every register at baseline.
+    import time as _time
+
+    console = FakeConsole()
+    gate = threading.Event()
+    orig_write = console.write_i2c_packet
+
+    def gated_write(*args, **kwargs):
+        gate.wait(5.0)   # hold apply mid-write until the racing restore exists
+        return orig_write(*args, **kwargs)
+
+    console.write_i2c_packet = gated_write
+    ctrl = _controller(console=console)
+
+    t_apply = threading.Thread(target=ctrl.apply)
+    t_apply.start()
+    _time.sleep(0.1)                 # apply holds the lock, blocked at gate
+    t_restore = threading.Thread(target=ctrl.restore)
+    t_restore.start()
+    _time.sleep(0.1)                 # restore is queued on the lock
+    gate.set()                       # let apply finish; restore runs after
+    t_apply.join(5.0)
+    t_restore.join(5.0)
+    assert not t_apply.is_alive() and not t_restore.is_alive()
+
+    # Final register state must be BASELINE everywhere -- the restore ran
+    # strictly after apply completed, not interleaved with it.
+    assert console.regs[(4, 0x00)] == bytes(TA_PULSE_WIDTH_BASELINE)
+    assert console.regs[(6, 0x04)] == bytes(PULSE_WIDTH_UL_BASELINE)
+    assert console.regs[(7, 0x04)] == bytes(PULSE_WIDTH_UL_BASELINE)
+    assert console.regs[(5, 0x04)] == bytes(SEED_CW_GAIN_BASELINE)
+    assert console.regs[(6, 0x08)] == bytes(RATE_LL_BASELINE)
+    assert ctrl._restored.is_set()
+
+
 def test_failed_restore_does_not_latch_and_is_retried():
     # Safety property: the widened-safety window must eventually close. A
     # restore that fails its writes must NOT latch _restored, so a later

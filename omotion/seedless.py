@@ -204,30 +204,39 @@ class SeedlessController:
 
         Returns False on any console write failure -- the caller must abort
         the scan BEFORE starting the trigger (and call restore()).
-        """
-        # Clear any latched safety fault first so a stale fault from a prior
-        # run does not keep TA_shutdown asserted and starve this scan.
-        self._clear_safety_faults()
-        for name, ch, reg, length, _, baseline in _APPLY_SEQUENCE:
-            live = self._read(name, ch, reg, length)
-            if live is None:
-                logger.warning(
-                    "seedless: snapshot read of %s failed; restore will use "
-                    "the bundled baseline", name)
-                live = baseline
-            self._snapshot[name] = live
-        self._applied = True   # before writes: any partial apply must restore
 
-        logger.info("seedless: applying (N=%d): seed OFF, TA 2 ms, safety "
-                    "ULs widened, exposure 2295 us", self.n_frames)
-        for name, ch, reg, _, seedless_val, _ in _APPLY_SEQUENCE:
-            if not self._write(name, ch, reg, seedless_val):
-                logger.error("seedless: apply failed at %s -- aborting", name)
+        Runs under the same lock as restore(): a restore() racing a mid-flight
+        apply() must serialize BEHIND it, then put everything back -- never
+        interleave. (Bench 2026-07-17: an interleaved external restore left
+        TA at 2 ms with the safety ULs already re-tightened; the safety FPGA
+        latched pulse_upper_limit_fail on the first pulse -- failsafe, but a
+        dead scan and a dirty console.)
+        """
+        with self._lock:
+            # Clear any latched safety fault first so a stale fault from a
+            # prior run does not keep TA_shutdown asserted and starve this
+            # scan.
+            self._clear_safety_faults()
+            for name, ch, reg, length, _, baseline in _APPLY_SEQUENCE:
+                live = self._read(name, ch, reg, length)
+                if live is None:
+                    logger.warning(
+                        "seedless: snapshot read of %s failed; restore will "
+                        "use the bundled baseline", name)
+                    live = baseline
+                self._snapshot[name] = live
+            self._applied = True   # before writes: any partial apply must restore
+
+            logger.info("seedless: applying (N=%d): seed OFF, TA 2 ms, safety "
+                        "ULs widened, exposure 2295 us", self.n_frames)
+            for name, ch, reg, _, seedless_val, _ in _APPLY_SEQUENCE:
+                if not self._write(name, ch, reg, seedless_val):
+                    logger.error("seedless: apply failed at %s -- aborting", name)
+                    return False
+            if not self._set_exposure(EXPOSURE_SEEDLESS_BYTE):
+                logger.error("seedless: exposure apply failed -- aborting")
                 return False
-        if not self._set_exposure(EXPOSURE_SEEDLESS_BYTE):
-            logger.error("seedless: exposure apply failed -- aborting")
-            return False
-        return True
+            return True
 
     def schedule_restore(self) -> None:
         """Fire-and-forget restore on a dedicated thread (called by
