@@ -128,6 +128,12 @@ def parse_cli() -> argparse.Namespace:
     parser.add_argument("--fan-sentinel-cam", type=int, default=6,
                         help="cam_id (0-7) whose live die temp gates the fan restore. Default 6 (= cam 7, the "
                              "deepest responder and hottest clinical camera).")
+    parser.add_argument("--camera-telemetry", action="store_true",
+                        help="Log 1 Hz per-camera condition telemetry (sensor-fw#94: on-die rails, dual die "
+                             "temps, yavg frame mean, commanded/applied exposure + gains, DCG/BLC/ISP state, "
+                             "fault latches) to {subject}_{side}_camN_telemetry.csv for the whole scan. "
+                             "Firmware-cached, no camera I2C at query time -- safe mid-scan. Needs sensor-fw "
+                             "with OW_CAMERA_GET_TELEMETRY (next / >1.8.2-dev.1).")
     return parser.parse_args()
 
 
@@ -381,6 +387,17 @@ def main() -> int:
     imu_temp_start = read_imu_temp(sensor, "start (cold-soak, pre-stream)")
     imu_temp_end = None
 
+    # 1 Hz per-camera condition telemetry (sensor-fw#94). Started BEFORE the scan so
+    # the cold pre-stream state and the entire warm-up are captured; firmware serves a
+    # cached snapshot (no camera I2C at query time), so polling mid-scan is safe.
+    cam_telem_logger = None
+    if args.camera_telemetry:
+        from omotion.camera_telemetry_csv import CameraTelemetryCsvLogger
+        cam_telem_logger = CameraTelemetryCsvLogger(
+            [(side, sensor)], str(args.data_dir), args.subject_id)
+        cam_telem_logger.start()
+        print(f"[*] Camera telemetry logging started (1 Hz, {len(cam_telem_logger.paths)} files)")
+
     from omotion.ScanWorkflow import ScanRequest
 
     schedule = build_dark_schedule(args.duration_sec, args.dark_start_offset_sec,
@@ -544,6 +561,12 @@ def main() -> int:
                 print("[*] Sensor fan restored ON in cleanup.")
             except Exception as _e:
                 print(f"[!] Sensor fan cleanup restore failed: {_e}")
+        if cam_telem_logger is not None:
+            try:
+                cam_telem_logger.stop()
+                print("[*] Camera telemetry logging stopped.")
+            except Exception as _e:
+                print(f"[!] Camera telemetry stop failed: {_e}")
         # Module temperature at scan end (streaming has stopped, so the IMU
         # read is safe again) -- the warm end-state of the deep assembly.
         imu_temp_end = read_imu_temp(sensor, "end (post-scan)")
@@ -632,6 +655,7 @@ def main() -> int:
         "sensor_fan_off_until_temp_c": args.sensor_fan_off_until_temp or None,
         "sensor_fan_sentinel_cam": args.fan_sentinel_cam if args.sensor_fan_off_until_temp > 0 else None,
         "sensor_fan_restore": fan_restore or None,   # {restored, at_sec, at_temp, reason, set_ok}
+        "camera_telemetry_csvs": (cam_telem_logger.paths if cam_telem_logger is not None else None),
     }
     meta_path = args.data_dir / f"{args.subject_id}_drift_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))

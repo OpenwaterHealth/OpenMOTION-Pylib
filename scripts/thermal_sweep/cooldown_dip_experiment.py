@@ -106,6 +106,9 @@ def source_on() -> None:
         log(f"source_on FAILED (continuing): {e}")
 
 
+CAMERA_TELEMETRY = False   # set by main() from --camera-telemetry; passed to every scan
+
+
 def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path,
              mask: int, warmup_temp: float = 0.0) -> int:
     """Fan OFF, rig ON (cold boot), enumerate, run one 30-min drift scan on the given
@@ -125,8 +128,11 @@ def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path,
            "--subject-id", subject, "--data-dir", str(data_dir)]
     if warmup_temp > 0:
         cmd += ["--sensor-fan-off-until-temp", str(warmup_temp)]
+    if CAMERA_TELEMETRY:
+        cmd += ["--camera-telemetry"]
     wu = f", sensor-fan-off->{warmup_temp:g}C" if warmup_temp > 0 else ""
-    log(f"launch drift_scan {subject}: {SCAN_MIN:g} min, mask 0x{mask:02X}{wu}")
+    log(f"launch drift_scan {subject}: {SCAN_MIN:g} min, mask 0x{mask:02X}{wu}"
+        f"{', cam-telemetry' if CAMERA_TELEMETRY else ''}")
     t0 = time.time()
     try:
         rc = subprocess.run(cmd, cwd=str(WORKTREE)).returncode
@@ -207,7 +213,12 @@ def main() -> int:
     ap.add_argument("--camera-mask", default="0xFF",
                     help="default camera mask (hex 0xC3 or int) for scans; per-ladder-step masks override it. "
                          "Clinical 'far 4' = 0xC3 (cams 1,2,7,8); all-8 = 0xFF.")
+    ap.add_argument("--camera-telemetry", action="store_true",
+                    help="pass --camera-telemetry to every drift_scan (1 Hz per-camera condition CSVs; "
+                         "needs the sensor-fw#94 telemetry firmware).")
     args = ap.parse_args()
+    global CAMERA_TELEMETRY
+    CAMERA_TELEMETRY = args.camera_telemetry
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     stop_file = data_dir / "STOP"
