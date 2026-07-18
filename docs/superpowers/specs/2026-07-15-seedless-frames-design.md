@@ -7,12 +7,21 @@
 
 ## Bench validation (2026-07-17)
 
-Ran on real hardware (N=25). Full scan completed: **603 frames** — exactly 25
-`seedless` + 120 `seedless_tx` + the rest `light` — with all registers restored
-(TA, seed gains, pulse-width ULs, rate LLs) verified by read-back, and back-to-back
-scans robust (no manual intervention). The **TA self-lasing ramp is visible** in
-the seedless frames (mean histogram bin 128 → ~328 over ~15 frames). Two additions
-were required that only surfaced on hardware — **neither catchable in software**:
+Ran on real hardware (N=25, mask 0x66; re-validated 2026-07-17 on sensor-fw
+1.8.2-dev.1). Full scan completed: **603 frames** — exactly 25 `seedless` +
+120 `seedless_tx` + the rest `light` — with all registers restored (TA, seed
+gains, pulse-width ULs, rate LLs) verified by read-back, and back-to-back scans
+robust (no manual intervention). Science result: boosted seedless frames land at
+**0.974–0.977× the normal light-frame intensity** with speckle contrast collapsed
+to **K≈0.09 vs K≈0.40** seeded (~4.3×). A stock-settings seedless control scan
+(seed off, TA 500 µs, exposure 648 µs) measured the NRM→boosted intensity gain at
+**3.70×** vs the pulse-ratio theory of 4.0× — for pulsed light the exposure
+extension does not multiply intensity, it only makes room for the 2 ms pulse.
+NOTE: frames 1..10 of any scan are the console's scheduled dark preamble
+(`NUM_DARK_FRAMES_AT_START`), so the usable seedless window is frames **11..N**
+(an earlier read of the first run mistook this preamble for a multi-frame
+self-lase ramp; self-lasing is per-pulse). Two additions were required that only
+surfaced on hardware — **neither catchable in software**:
 
 1. **Rate lower limit must be relaxed too.** With the seed off, the EE/OPT safety
    monitor sees only faint sub-threshold pulses arriving too soon and trips
