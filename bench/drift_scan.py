@@ -66,6 +66,7 @@ from keysight_psu import KeysightE36300, PSUError
 SUPPLY_CHANNEL = 2
 CONTROL_CHANNEL = 3
 CAMERA_MASK = 0xFF
+CAMERA_CROP = False   # set from --camera-crop; crops output to 1720x1280 at configure (sensor-fw#86)
 CONFIGURE_TIMEOUT_S = 240.0
 END_MARGIN_S = 5.0  # don't schedule a dark window this close to scan end
 THORLABS_SAMPLE_INTERVAL_S = 0.1  # ~10 Hz -- plenty to resolve a 1s dark window
@@ -128,6 +129,10 @@ def parse_cli() -> argparse.Namespace:
     parser.add_argument("--fan-sentinel-cam", type=int, default=6,
                         help="cam_id (0-7) whose live die temp gates the fan restore. Default 6 (= cam 7, the "
                              "deepest responder and hottest clinical camera).")
+    parser.add_argument("--camera-crop", action="store_true",
+                        help="Set DEBUG_FLAG_CAMERA_CROP before camera configure: output cropped to "
+                             "1720x1280 (rightmost 200 columns dropped; sensor-fw#86). Histogram sums "
+                             "read ~2201600 instead of ~2457600. Needs the crop-capable firmware (next).")
     parser.add_argument("--camera-telemetry", action="store_true",
                         help="Log 1 Hz per-camera condition telemetry (sensor-fw#94: on-die rails, dual die "
                              "temps, yavg frame mean, commanded/applied exposure + gains, DCG/BLC/ISP state, "
@@ -167,6 +172,17 @@ def connect_and_configure_sensor(data_dir: Path):
     side = "left" if sensor is iface.left else "right"
     serial = sensor.read_serial_number()
     print(f"[+] Console connected. Sensor module on {side}, serial={serial!r}.")
+
+    if CAMERA_CROP:
+        # Crop is applied AT camera configure (sensor-fw#86), so the debug flag must
+        # be set before ConfigureRequest. Cold boots default to flags=0, so control
+        # runs need no explicit clear.
+        from omotion.config import DEBUG_FLAG_CAMERA_CROP
+        if not sensor.set_debug_flags(DEBUG_FLAG_CAMERA_CROP):
+            iface.stop()
+            raise RuntimeError("set_debug_flags(CAMERA_CROP) failed")
+        print(f"[*] DEBUG_FLAG_CAMERA_CROP set (0x{DEBUG_FLAG_CAMERA_CROP:03X}): "
+              "cameras will configure cropped to 1720x1280 (right 200 columns dropped)")
 
     sensor.enable_camera_power(CAMERA_MASK)
     left_mask = CAMERA_MASK if side == "left" else 0x00
@@ -360,8 +376,9 @@ def sensor_fan_warmup_monitor(sensor, raw_glob, cam_id, target_c, cap_c, max_off
 
 def main() -> int:
     args = parse_cli()
-    global CAMERA_MASK
+    global CAMERA_MASK, CAMERA_CROP
     CAMERA_MASK = int(args.camera_mask, 0)   # hex (0xC3) or int (195); powers/streams only these cameras
+    CAMERA_CROP = bool(args.camera_crop)
     args.data_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = args.data_dir / f"{args.subject_id}_run.log"
@@ -656,6 +673,7 @@ def main() -> int:
         "sensor_fan_sentinel_cam": args.fan_sentinel_cam if args.sensor_fan_off_until_temp > 0 else None,
         "sensor_fan_restore": fan_restore or None,   # {restored, at_sec, at_temp, reason, set_ok}
         "camera_telemetry_csvs": (cam_telem_logger.paths if cam_telem_logger is not None else None),
+        "camera_crop": CAMERA_CROP,
     }
     meta_path = args.data_dir / f"{args.subject_id}_drift_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))

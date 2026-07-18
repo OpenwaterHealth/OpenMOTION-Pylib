@@ -110,12 +110,13 @@ CAMERA_TELEMETRY = False   # set by main() from --camera-telemetry; passed to ev
 
 
 def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path,
-             mask: int, warmup_temp: float = 0.0) -> int:
+             mask: int, warmup_temp: float = 0.0, crop: bool = False) -> int:
     """Fan OFF, rig ON (cold boot), enumerate, run one 30-min drift scan on the given
     camera mask with the source held on. drift_scan reads the IMU temp at start + end.
     Only the masked cameras are powered, so the thermal load matches that config.
     warmup_temp > 0 = accelerated warm-up: drift_scan cuts the SENSOR fan at scan start
-    and restores it when cam 7's die reaches warmup_temp (deg C)."""
+    and restores it when cam 7's die reaches warmup_temp (deg C).
+    crop = configure the cameras cropped to 1720x1280 (DEBUG_FLAG_CAMERA_CROP)."""
     _shelly(fan, False, "fan")            # never cool the cameras during a scan (external .214 fan)
     _shelly(rig, True, "rig")
     log(f"rig ON (cold boot); waiting {ENUM_WAIT_S:.0f}s for enumeration")
@@ -128,11 +129,13 @@ def run_scan(rig: ShellyOutlet, fan: ShellyOutlet, subject: str, data_dir: Path,
            "--subject-id", subject, "--data-dir", str(data_dir)]
     if warmup_temp > 0:
         cmd += ["--sensor-fan-off-until-temp", str(warmup_temp)]
+    if crop:
+        cmd += ["--camera-crop"]
     if CAMERA_TELEMETRY:
         cmd += ["--camera-telemetry"]
     wu = f", sensor-fan-off->{warmup_temp:g}C" if warmup_temp > 0 else ""
     log(f"launch drift_scan {subject}: {SCAN_MIN:g} min, mask 0x{mask:02X}{wu}"
-        f"{', cam-telemetry' if CAMERA_TELEMETRY else ''}")
+        f"{', CROP 1720x1280' if crop else ''}{', cam-telemetry' if CAMERA_TELEMETRY else ''}")
     t0 = time.time()
     try:
         rc = subprocess.run(cmd, cwd=str(WORKTREE)).returncode
@@ -180,19 +183,21 @@ def fan_cooling_probe(fan: ShellyOutlet, minutes: float, out_csv: Path) -> None:
     log("fan cooling probe complete")
 
 
-def _parse_ladder(spec: str) -> "list[tuple[float, bool, int | None, float]]":
-    """Parse 'cooldownMin:fanOn[:mask[:warmupC]]' tokens, e.g.
-    '120:1:0xC3:0,120:1:0xC3:80' -> [(120.0,True,195,0.0),(120.0,True,195,80.0)].
-    mask (hex/int) and warmupC are optional per step; mask omitted -> --camera-mask
+def _parse_ladder(spec: str) -> "list[tuple[float, bool, int | None, float, bool]]":
+    """Parse 'cooldownMin:fanOn[:mask[:warmupC[:crop]]]' tokens, e.g.
+    '120:1:0xC3:0:0,120:1:0xC3:0:1' -> [(120.0,True,195,0.0,False),(120.0,True,195,0.0,True)].
+    mask (hex/int), warmupC and crop are optional per step; mask omitted -> --camera-mask
     default; warmupC 0/omitted -> control (sensor fan left at firmware default), >0 ->
-    accelerated warm-up (sensor fan off until cam 7 die reaches warmupC)."""
+    accelerated warm-up (sensor fan off until cam 7 die reaches warmupC); crop 1 ->
+    DEBUG_FLAG_CAMERA_CROP (1720x1280) for that scan."""
     out = []
     for tok in spec.split(","):
         parts = tok.split(":")
         cd, fan = parts[0], parts[1]
         mask = int(parts[2], 0) if len(parts) > 2 and parts[2] else None
         warmup = float(parts[3]) if len(parts) > 3 and parts[3] else 0.0
-        out.append((float(cd), bool(int(fan)), mask, warmup))
+        crop = bool(int(parts[4])) if len(parts) > 4 and parts[4] else False
+        out.append((float(cd), bool(int(fan)), mask, warmup, crop))
     return out
 
 
@@ -223,7 +228,7 @@ def main() -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     stop_file = data_dir / "STOP"
     default_mask = int(args.camera_mask, 0)
-    ladder = _parse_ladder(args.ladder) if args.ladder else [(cd, fan, None, 0.0) for cd, fan in LADDER]
+    ladder = _parse_ladder(args.ladder) if args.ladder else [(cd, fan, None, 0.0, False) for cd, fan in LADDER]
     prefix = args.subject_prefix
 
     rig = ShellyOutlet(RIG_HOST)
@@ -242,16 +247,17 @@ def main() -> int:
 
     # Phase 2: cooldown ladder.
     log("--- Phase 2: cooldown ladder ---")
-    for k, (cd_min, fan_on, step_mask, warmup) in enumerate(ladder):
+    for k, (cd_min, fan_on, step_mask, warmup, crop) in enumerate(ladder):
         if stop_file.exists():
             log("STOP file present -> exiting"); break
         idx = args.start_index + k
         mask = step_mask if step_mask is not None else default_mask
-        wu = f", warm-up->{warmup:g}C" if warmup > 0 else " (control)"
+        wu = (f", warm-up->{warmup:g}C" if warmup > 0 else "") + \
+             (", CROP" if crop else "") or " (control)"
         log(f"=== ladder {k+1}/{len(ladder)}: {cd_min:g} min cooldown "
             f"(fan {'ON' if fan_on else 'OFF'}), mask 0x{mask:02X}{wu} -> {prefix}_{idx:02d} ===")
         cooldown(rig, fan, cd_min, fan_on)
-        run_scan(rig, fan, f"{prefix}_{idx:02d}", data_dir, mask, warmup)
+        run_scan(rig, fan, f"{prefix}_{idx:02d}", data_dir, mask, warmup, crop)
 
     _shelly(rig, False, "rig")     # leave rig off (module cool) at the end
     _shelly(fan, False, "fan")
