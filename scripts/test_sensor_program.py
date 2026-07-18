@@ -126,38 +126,47 @@ def main() -> int:
     interface.start()
 
     try:
+        # Wait for device to be ready before checking connection
+        print("[*] Waiting for device to be ready …")
+        # Wait for at least one sensor if no specific sensor requested,
+        # otherwise wait for the specific sensor
+        sensors_to_wait = 1 if args.sensor is None else 0
+        if not interface.wait_for_ready(console=False, sensors=sensors_to_wait, timeout=20.0):
+            print("[!]  Timeout waiting for device to be ready.")
+            # Continue anyway to check connection status
+
         _console_connected, left_connected, right_connected = interface.is_device_connected()
 
         # Ensure at least one sensor module is present.
         if not (left_connected or right_connected):
-            print("❌  No sensor modules connected – cannot continue.")
+            print("[FAIL]  No sensor modules connected – cannot continue.")
             return 1
 
         selected_sensor = None
         # If the user requested a specific side, honor it (fail if not present).
         if args.sensor == "left":
             if not left_connected:
-                print("❌  LEFT sensor not connected – cannot continue.")
+                print("[FAIL]  LEFT sensor not connected – cannot continue.")
                 return 1
-            print("Running firmware update on LEFT sensor")
+            print("[INFO]  Running firmware update on LEFT sensor")
             selected_sensor = interface.left
         elif args.sensor == "right":
             if not right_connected:
-                print("❌  RIGHT sensor not connected – cannot continue.")
+                print("[FAIL]  RIGHT sensor not connected – cannot continue.")
                 return 1
-            print("Running firmware update on RIGHT sensor")
+            print("[INFO]  Running firmware update on RIGHT sensor")
             selected_sensor = interface.right
         else:
             # Auto-select: prefer left if present, otherwise right.
             if left_connected:
-                print("Running firmware update on LEFT sensor (auto-selected)")
+                print("[INFO]  Running firmware update on LEFT sensor (auto-selected)")
                 selected_sensor = interface.left
             elif right_connected:
-                print("Running firmware update on RIGHT sensor (auto-selected)")
+                print("[INFO]  Running firmware update on RIGHT sensor (auto-selected)")
                 selected_sensor = interface.right
 
         if selected_sensor is None:
-            print("❌  Sensor module not connected – cannot continue.")
+            print("[FAIL]  Sensor module not connected – cannot continue.")
             return 1
 
         dfu = DFUProgrammer(vidpid=args.vidpid)
@@ -173,24 +182,24 @@ def main() -> int:
         try:
             ok = selected_sensor.enter_dfu()
         except Exception as exc:  # pragma: no cover
-            print(f"   ❌  Exception while calling enter_dfu(): {exc}")
+            print(f"   [FAIL]  Exception while calling enter_dfu(): {exc}")
             ok = False
 
         if ok:
-            print("   ✅  Sensor module reported success.")
+            print("   [OK]  Sensor module reported success.")
         else:
-            print("   ❌  Sensor module reported failure.")
-            print("❌  Failed to request DFU mode – aborting.")
+            print("   [FAIL]  Sensor module reported failure.")
+            print("[FAIL]  Failed to request DFU mode – aborting.")
             return 1
 
-        print(f"\n[*] Sleeping {args.wait:.1f}s to give the bootloader time to re‑enumerate …")
+        print(f"\n[*] Sleeping {args.wait:.1f}s to give the bootloader time to re-enumerate …")
         time.sleep(args.wait)
 
         print(f"[+] Waiting up to {args.timeout:.0f}s for DFU device …")
         if not dfu.wait_for_dfu_device(timeout_s=args.timeout):
-            print("❌  DFU device never appeared – aborting.")
+            print("[FAIL]  DFU device never appeared – aborting.")
             return 1
-        print("   ✅  DFU device detected.")
+        print("   [OK]  DFU device detected.")
 
         def on_line(line: str) -> None:
             # Ensure the status line doesn't collide with printed output.
@@ -213,7 +222,7 @@ def main() -> int:
 
         status.clear()
         if not result.success:
-            print(f"❌  Flash failed (exit code {result.returncode}).")
+            print(f"[FAIL]  Flash failed (exit code {result.returncode}).")
             # Print any non-progress lines from captured stdout for debugging.
             for ln in (result.stdout or "").splitlines():
                 t = ln.strip()
@@ -222,9 +231,53 @@ def main() -> int:
                 print("   |", ln)
             return 1
 
-        print("   ✅  Flash successful.")
-        print("   ℹ️  DFU bootloader already left – device should be running now.")
-        print("\n🎉  All done! The STM32 should now be running the newly‑flashed firmware.\n")
+        print("   [OK]  Flash successful.")
+        print("   [INFO]  DFU bootloader already left – device should be running now.")
+
+        # Post-flash verification: wait for device re-enumeration and get version
+        print("\n[+] Waiting for device to re-enumerate after flash …")
+        time.sleep(1.0)  # Brief pause before starting to check
+
+        # Wait for device to reappear in normal mode (not DFU)
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            try:
+                # Check if device is back in normal mode
+                _console_connected, left_connected, right_connected = interface.is_device_connected()
+                if args.sensor == "left" and left_connected:
+                    selected_sensor = interface.left
+                    break
+                elif args.sensor == "right" and right_connected:
+                    selected_sensor = interface.right
+                    break
+                elif args.sensor is None and (left_connected or right_connected):
+                    # Auto-select: prefer left if present, otherwise right
+                    if left_connected:
+                        selected_sensor = interface.left
+                    else:
+                        selected_sensor = interface.right
+                    break
+            except Exception:
+                pass  # Device might not be responding yet
+
+            if attempt < max_attempts - 1:
+                time.sleep(1.0)  # Wait before retrying
+            else:
+                print("[WARN]  Timeout waiting for device to re-enumerate in normal mode.")
+                # Continue anyway - the flash might have succeeded even if we can't re-connect quickly
+                break
+
+        # Try to get version if device is available
+        if selected_sensor is not None:
+            try:
+                version = selected_sensor.get_version()
+                print(f"[INFO]  Device version: {version}")
+            except Exception as exc:
+                print(f"[WARN]  Could not read device version: {exc}")
+        else:
+            print("[WARN]  Could not verify device - no sensor detected after flash.")
+
+        print("\n[INFO]  All done! The STM32 should now be running the newly-flashed firmware.\n")
         return 0
     finally:
         interface.stop()
