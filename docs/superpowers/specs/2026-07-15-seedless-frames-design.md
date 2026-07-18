@@ -32,7 +32,16 @@ surfaced on hardware — **neither catchable in software**:
 2. **The latched fault must be cleared at scan start.** `rate_lower_limit_fail`
    latches (clears only via `dynamic_control[0]`), so a fault left by one run keeps
    TA_shutdown asserted and starves the *next* scan to 0 frames. Fix: pulse
-   `EE/OPT_DYNAMIC_CTRL[0]` (reg 0x22) at `apply()` start.
+   `EE/OPT_DYNAMIC_CTRL[0]` (reg 0x22) at `apply()` start — with a **300 ms assert,
+   STATUS read-back verification and 3× retry** (a 50 ms pulse cleared the EE FPGA
+   only intermittently); `apply()` aborts pre-trigger if the fault will not clear.
+3. **The rate LL must NOT be re-armed mid-scan.** The seedless trigger override
+   (`LaserPulseSkipDelayUsec=2500`) makes every dark frame's *return* interval
+   25−2.5 = 22.5 ms, below the 23.125 ms baseline rate LL — so the original
+   frame-N restore deterministically latched `rate_lower_limit_fail` at the next
+   dark frame of every seedless scan (normal scans clear the limit by only ~75 µs
+   with their 1800 µs delay). The mid-scan restore now leaves the rate LLs relaxed;
+   the teardown restore (after `stop_trigger`, no pulses flowing) re-arms them.
 
 ## Purpose
 
