@@ -16,6 +16,13 @@ from pathlib import Path
 from omotion import MotionInterface
 from omotion.DFUProgrammer import DFUProgrammer, DFUProgress
 
+# Sensors enumerate asynchronously after MotionInterface.start(); how long to
+# wait before declaring them absent.
+STARTUP_TIMEOUT_S = 20.0
+# How long the flashed sensor gets to re-enumerate after the DFU bootloader
+# leaves. It occasionally never comes back without a DUT mains power-cycle.
+REENUM_TIMEOUT_S = 30.0
+
 
 class _LiveStatus:
     def __init__(self, *, enabled: bool = True):
@@ -51,7 +58,7 @@ class _LiveStatus:
         ch = self._spinner[self._spinner_index % len(self._spinner)]
         self._spinner_index += 1
         pct = f" {self._percent:3d}%" if self._percent is not None else ""
-        sys.stderr.write(f"\r   … {self._phase} {ch}{pct}  ({p.elapsed_s:0.1f}s)")
+        sys.stderr.write(f"\r   ... {self._phase} {ch}{pct}  ({p.elapsed_s:0.1f}s)")
         sys.stderr.flush()
         self._last_render = now
 
@@ -118,46 +125,76 @@ def parse_cli() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _wait_for_sensor(interface, side: str | None, timeout_s: float) -> bool:
+    """Block until the requested sensor side is connected, or ``timeout_s``.
+
+    ``side`` is "left", "right", or None for either side. Unlike
+    ``MotionInterface.wait_for_ready(sensors=1)``, a specific side is not
+    satisfied by the other module being present.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        _console, left, right = interface.is_device_connected()
+        if side == "left":
+            if left:
+                return True
+        elif side == "right":
+            if right:
+                return True
+        elif left or right:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
 def main() -> int:
     args = parse_cli()
 
-    print("[*] Starting MOTION interface …")
+    print("[*] Starting MOTION interface ...")
     interface = MotionInterface()
     interface.start()
 
     try:
+        # Enumeration is asynchronous - checking straight after start() races
+        # the connection monitor and reports healthy sensors as absent.
+        want = f"the {args.sensor.upper()} sensor" if args.sensor else "a sensor module"
+        print(f"[*] Waiting up to {STARTUP_TIMEOUT_S:.0f}s for {want} to connect ...")
+        _wait_for_sensor(interface, args.sensor, STARTUP_TIMEOUT_S)
+
         _console_connected, left_connected, right_connected = interface.is_device_connected()
 
         # Ensure at least one sensor module is present.
         if not (left_connected or right_connected):
-            print("❌  No sensor modules connected – cannot continue.")
+            print("[FAIL]  No sensor modules connected - cannot continue.")
             return 1
 
         selected_sensor = None
+        selected_side = None
         # If the user requested a specific side, honor it (fail if not present).
         if args.sensor == "left":
             if not left_connected:
-                print("❌  LEFT sensor not connected – cannot continue.")
+                print("[FAIL]  LEFT sensor not connected - cannot continue.")
                 return 1
             print("Running firmware update on LEFT sensor")
-            selected_sensor = interface.left
+            selected_sensor, selected_side = interface.left, "left"
         elif args.sensor == "right":
             if not right_connected:
-                print("❌  RIGHT sensor not connected – cannot continue.")
+                print("[FAIL]  RIGHT sensor not connected - cannot continue.")
                 return 1
             print("Running firmware update on RIGHT sensor")
-            selected_sensor = interface.right
+            selected_sensor, selected_side = interface.right, "right"
         else:
             # Auto-select: prefer left if present, otherwise right.
             if left_connected:
                 print("Running firmware update on LEFT sensor (auto-selected)")
-                selected_sensor = interface.left
+                selected_sensor, selected_side = interface.left, "left"
             elif right_connected:
                 print("Running firmware update on RIGHT sensor (auto-selected)")
-                selected_sensor = interface.right
+                selected_sensor, selected_side = interface.right, "right"
 
         if selected_sensor is None:
-            print("❌  Sensor module not connected – cannot continue.")
+            print("[FAIL]  Sensor module not connected - cannot continue.")
             return 1
 
         dfu = DFUProgrammer(vidpid=args.vidpid)
@@ -169,28 +206,28 @@ def main() -> int:
                 print("Aborted by user.")
                 return 0
 
-        print("\n[+] Requesting DFU mode from the Sensor module …")
+        print("\n[+] Requesting DFU mode from the Sensor module ...")
         try:
             ok = selected_sensor.enter_dfu()
         except Exception as exc:  # pragma: no cover
-            print(f"   ❌  Exception while calling enter_dfu(): {exc}")
+            print(f"   [FAIL]  Exception while calling enter_dfu(): {exc}")
             ok = False
 
         if ok:
-            print("   ✅  Sensor module reported success.")
+            print("   [OK]  Sensor module reported success.")
         else:
-            print("   ❌  Sensor module reported failure.")
-            print("❌  Failed to request DFU mode – aborting.")
+            print("   [FAIL]  Sensor module reported failure.")
+            print("[FAIL]  Failed to request DFU mode - aborting.")
             return 1
 
-        print(f"\n[*] Sleeping {args.wait:.1f}s to give the bootloader time to re‑enumerate …")
+        print(f"\n[*] Sleeping {args.wait:.1f}s to give the bootloader time to re-enumerate ...")
         time.sleep(args.wait)
 
-        print(f"[+] Waiting up to {args.timeout:.0f}s for DFU device …")
+        print(f"[+] Waiting up to {args.timeout:.0f}s for DFU device ...")
         if not dfu.wait_for_dfu_device(timeout_s=args.timeout):
-            print("❌  DFU device never appeared – aborting.")
+            print("[FAIL]  DFU device never appeared - aborting.")
             return 1
-        print("   ✅  DFU device detected.")
+        print("   [OK]  DFU device detected.")
 
         def on_line(line: str) -> None:
             # Ensure the status line doesn't collide with printed output.
@@ -198,7 +235,7 @@ def main() -> int:
             print("   |", line)
             status._last_render = 0.0
 
-        print("\n[+] Flashing with dfu-util …")
+        print("\n[+] Flashing with dfu-util ...")
         result = dfu.flash_bin(
             args.bin_file,
             address=args.addr,
@@ -213,7 +250,7 @@ def main() -> int:
 
         status.clear()
         if not result.success:
-            print(f"❌  Flash failed (exit code {result.returncode}).")
+            print(f"[FAIL]  Flash failed (exit code {result.returncode}).")
             # Print any non-progress lines from captured stdout for debugging.
             for ln in (result.stdout or "").splitlines():
                 t = ln.strip()
@@ -222,9 +259,23 @@ def main() -> int:
                 print("   |", ln)
             return 1
 
-        print("   ✅  Flash successful.")
-        print("   ℹ️  DFU bootloader already left – device should be running now.")
-        print("\n🎉  All done! The STM32 should now be running the newly‑flashed firmware.\n")
+        print("   [OK]  Flash successful.")
+        print("   [i]  DFU bootloader already left - device should be running now.")
+
+        side_label = selected_side.upper()
+        print(f"\n[+] Waiting up to {REENUM_TIMEOUT_S:.0f}s for the {side_label} sensor to re-enumerate ...")
+        if _wait_for_sensor(interface, selected_side, REENUM_TIMEOUT_S):
+            try:
+                version = selected_sensor.get_version()
+                print(f"   [OK]  {side_label} sensor is back on USB, firmware version {version}.")
+            except Exception as exc:
+                print(f"   [WARN]  {side_label} sensor re-enumerated but get_version() failed: {exc}")
+        else:
+            print(f"   [WARN]  {side_label} sensor did not re-enumerate within {REENUM_TIMEOUT_S:.0f}s.")
+            print("           If it stays missing from USB, power-cycle the DUT mains supply")
+            print("           (known STM32 DFU-leave quirk), then check the device re-appears.")
+
+        print("\n[OK]  All done! The STM32 should now be running the newly-flashed firmware.\n")
         return 0
     finally:
         interface.stop()
