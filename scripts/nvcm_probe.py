@@ -8,9 +8,9 @@ record. The *verdict*, however, comes from the pin-drive boot byte that
 sensor-fw#92 appends to the blob (1 = NVCM design booted, 0 = no boot,
 0xFF = camera unpowered): the register reads cannot answer the programmed
 question — STATUS bit 19 ("SDM Enable") only mirrors the NVCM Done fuse, and
-a part can have the fuse burned yet never boot (openmotion-test-app#44,
-2026-07-17). bit19=1 with no boot is reported explicitly as
-burned-but-unbootable: that OTP part can never be NVCM-flashed bootable.
+a part can read bit19=1 yet never boot (openmotion-test-app#44,
+2026-07-17). bit19 is printed as fuse-indicator info only — its exact
+semantics are not established well enough to base claims on.
 
 On firmware without the trailing byte (pre sensor-fw#92) the script falls
 back to the behavioral timing test: OW_FPGA_RESET (clears the firmware's
@@ -123,7 +123,7 @@ def interpret(d: dict) -> None:
     # ---- signals -------------------------------------------------------
     # NOTE: none of the register reads can answer "is it programmed":
     #  - STATUS bit 19 ("SDM Enable") only mirrors the NVCM Done *fuse* — a
-    #    part can have the fuse burned yet never boot (openmotion-test-app#44,
+    #    part can read bit19=1 yet never boot (openmotion-test-app#44,
     #    right cam 8, 2026-07-17). Fuse info only.
     #  - The content reads (feature_row / NVCM array) float 0xFF because a
     #    bare ISC_ENABLE 0x08 doesn't read-enable the NVCM array.
@@ -160,17 +160,12 @@ def interpret(d: dict) -> None:
         print("  VERDICT: *** NVCM PROGRAMMED *** — the NVCM design booted "
               "and drove the camera bus (firmware pin probe).")
         verdict = "PROGRAMMED"
-    elif boot_verdict == 0 and fuse_bit and status_read:
-        print("  VERDICT: NOT BOOTABLE — the Done fuse is burned (STATUS "
-              "bit 19) but the image does NOT boot. This OTP part can never "
-              "be NVCM-flashed to a bootable state; it needs SRAM loads (or "
-              "replacement) permanently.")
-        verdict = "NOT BOOTABLE"
     elif boot_verdict == 0:
-        print("  VERDICT: BLANK — no NVCM boot (firmware pin probe)."
-              + ("" if status_read else "  (STATUS read failed, so the Done "
-                 "fuse state is unknown — blank vs burned-but-unbootable "
-                 "undetermined.)"))
+        note = ""
+        if fuse_bit and status_read:
+            note = ("  (STATUS bit 19 is set — the Done-fuse indicator — "
+                    "even though nothing boots.)")
+        print("  VERDICT: BLANK — no NVCM boot (firmware pin probe)." + note)
         verdict = "BLANK"
     elif boot_verdict == 0xFF:
         print("  VERDICT: INCONCLUSIVE — firmware refused the boot probe "
@@ -218,13 +213,11 @@ def fallback_boot_probe(sensor, cam_idx: int, fuse_bit: bool) -> None:
     elif dt < SRAM_LOAD_THRESHOLD_S:
         print(f"  VERDICT: *** NVCM PROGRAMMED *** — firmware skipped the "
               f"SRAM load ({dt:.2f} s): its pin test saw the design boot.")
-    elif fuse_bit:
-        print(f"  VERDICT: NOT BOOTABLE — firmware SRAM-loaded the FPGA "
-              f"({dt:.1f} s) although the Done fuse is burned (STATUS "
-              "bit 19): burned-but-unbootable OTP part.")
     else:
+        note = (" (STATUS bit 19 — the Done-fuse indicator — was set)"
+                if fuse_bit else "")
         print(f"  VERDICT: BLANK — firmware SRAM-loaded the FPGA ({dt:.1f} s); "
-              "NVCM did not boot and the Done fuse is not burned.")
+              f"NVCM did not boot.{note}")
 
 
 def main():

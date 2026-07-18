@@ -870,7 +870,7 @@ class MotionSensor(SignalWrapper):
         design booted and drove the camera bus, 0 = no boot, 0xFF = probe
         refused (camera unpowered). The register reads cannot answer it:
         STATUS bit 19 ("SDM Enable") merely mirrors the NVCM Done fuse — a
-        part can have the fuse burned yet never boot (openmotion-test-app#44)
+        part can read bit19=1 yet never boot (openmotion-test-app#44)
         — the content reads float 0xFF (the NVCM array is not read-enabled
         in this flow), and the SRAM Done bit reads 0 on every part. Older
         firmware returns the blob without the trailing byte; for a verdict
