@@ -142,15 +142,41 @@ def main() -> int:
     # Fallback (no recorded event times): the legacy value threshold.
     events_timed = [ev for ev in meta["dark_events"] if ev.get("elapsed_off_sec") is not None]
     if events_timed:
+        # Schedule-LOCATED, content-RESOLVED: the frame clock can be skewed from the
+        # recorded wall-clock off/on times by a per-run ~0.5 s (observed -0.43 to
+        # -0.5 s), so a pure schedule window catches a light/dark mix. Instead, take a
+        # generous neighborhood around each recorded window and split it by its OWN
+        # bimodal u1 levels (per camera) -- self-aligning, and pedestal-agnostic (works
+        # at BLC's 128 and at RAW mode's ~507 alike).
+        SKEW_MARGIN_S = 1.5
+        MIN_CONTRAST_DN = 10.0
         ts_arr = frames["timestamp_s"].to_numpy()
+        u1_arr = frames["u1"].to_numpy()
+        cam_arr = frames["cam_id"].to_numpy()
         is_dark = np.zeros(len(frames), dtype=bool)
+        n_resolved = 0
         for ev in events_timed:
             off = float(ev["elapsed_off_sec"])
             on = ev.get("elapsed_on_sec")
-            hi = (float(on) - 0.05) if on is not None else np.inf
-            is_dark |= (ts_arr >= off + 0.15) & (ts_arr <= hi)
+            hi = (float(on) if on is not None else float(frames["timestamp_s"].max()))
+            near = (ts_arr >= off - SKEW_MARGIN_S) & (ts_arr <= hi + SKEW_MARGIN_S)
+            resolved_any = False
+            for cam_id in np.unique(cam_arr[near]):
+                m = near & (cam_arr == cam_id)
+                vals = u1_arr[m]
+                vals = vals[~np.isnan(vals)]
+                if vals.size < 8:
+                    continue
+                lo, hi_v = np.percentile(vals, 5), np.percentile(vals, 95)
+                if hi_v - lo < MIN_CONTRAST_DN:
+                    continue  # window has no light/dark contrast for this camera
+                thresh = lo + 0.35 * (hi_v - lo)
+                is_dark |= m & (u1_arr < thresh)
+                resolved_any = True
+            n_resolved += int(resolved_any)
         frames["is_dark"] = is_dark
-        print(f"[*] Dark classification: schedule-based ({len(events_timed)} timed windows)")
+        print(f"[*] Dark classification: schedule-located + content-resolved "
+              f"({n_resolved}/{len(events_timed)} windows resolved)")
     else:
         frames["is_dark"] = frames["u1"] <= DARK_THRESHOLD_DN
         print("[*] Dark classification: value-threshold fallback (no timed dark events in meta)")
