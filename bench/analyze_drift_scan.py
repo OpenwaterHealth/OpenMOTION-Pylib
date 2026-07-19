@@ -133,9 +133,27 @@ def main() -> int:
 
     n_scheduled = len(meta["dark_events"])
 
-    # Per-frame classification: a frame is LIGHT iff its mean exceeds
-    # pedestal + 5 DN; everything at or below the threshold is DARK.
-    frames["is_dark"] = frames["u1"] <= DARK_THRESHOLD_DN
+    # Per-frame dark classification. Preferred: SCHEDULE-based — a frame is DARK iff
+    # its timestamp falls inside a recorded dark window [off+0.15, on-0.05] (the
+    # wall-clock/frame-clock alignment is sub-100 ms, proven by the guard-band work).
+    # This is pedestal-agnostic, which matters in CAMERA_RAW mode where BLC is off and
+    # the black level sits at the raw ADC pedestal (~255+ DN) and may drift with
+    # temperature — the old value threshold (u1 <= 133) would classify nothing dark.
+    # Fallback (no recorded event times): the legacy value threshold.
+    events_timed = [ev for ev in meta["dark_events"] if ev.get("elapsed_off_sec") is not None]
+    if events_timed:
+        ts_arr = frames["timestamp_s"].to_numpy()
+        is_dark = np.zeros(len(frames), dtype=bool)
+        for ev in events_timed:
+            off = float(ev["elapsed_off_sec"])
+            on = ev.get("elapsed_on_sec")
+            hi = (float(on) - 0.05) if on is not None else np.inf
+            is_dark |= (ts_arr >= off + 0.15) & (ts_arr <= hi)
+        frames["is_dark"] = is_dark
+        print(f"[*] Dark classification: schedule-based ({len(events_timed)} timed windows)")
+    else:
+        frames["is_dark"] = frames["u1"] <= DARK_THRESHOLD_DN
+        print("[*] Dark classification: value-threshold fallback (no timed dark events in meta)")
     frames["dark_event_idx"] = -1
 
     dark_stats = {cam: [] for cam in range(N_CAMERAS)}  # cam -> list of dicts per event

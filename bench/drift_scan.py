@@ -67,6 +67,7 @@ SUPPLY_CHANNEL = 2
 CONTROL_CHANNEL = 3
 CAMERA_MASK = 0xFF
 CAMERA_CROP = False   # set from --camera-crop; crops output to 1720x1280 at configure (sensor-fw#86)
+CAMERA_RAW = False    # set from --camera-raw; disables on-sensor corrections at configure (sensor-fw#89)
 CONFIGURE_TIMEOUT_S = 240.0
 END_MARGIN_S = 5.0  # don't schedule a dark window this close to scan end
 THORLABS_SAMPLE_INTERVAL_S = 0.1  # ~10 Hz -- plenty to resolve a 1s dark window
@@ -133,6 +134,10 @@ def parse_cli() -> argparse.Namespace:
                         help="Set DEBUG_FLAG_CAMERA_CROP before camera configure: output cropped to "
                              "1720x1280 (rightmost 200 columns dropped; sensor-fw#86). Histogram sums "
                              "read ~2201600 instead of ~2457600. Needs the crop-capable firmware (next).")
+    parser.add_argument("--camera-raw", action="store_true",
+                        help="Set DEBUG_FLAG_CAMERA_RAW before camera configure: raw scientific-sensor mode, "
+                             "all on-sensor pixel corrections off (BLC, DC-BLC, dither, OTP-DPC; sensor-fw#89). "
+                             "Dark level sits at the raw ADC pedestal (~255+ DN) and may drift with temperature.")
     parser.add_argument("--camera-telemetry", action="store_true",
                         help="Log 1 Hz per-camera condition telemetry (sensor-fw#94: on-die rails, dual die "
                              "temps, yavg frame mean, commanded/applied exposure + gains, DCG/BLC/ISP state, "
@@ -173,16 +178,22 @@ def connect_and_configure_sensor(data_dir: Path):
     serial = sensor.read_serial_number()
     print(f"[+] Console connected. Sensor module on {side}, serial={serial!r}.")
 
-    if CAMERA_CROP:
-        # Crop is applied AT camera configure (sensor-fw#86), so the debug flag must
+    if CAMERA_CROP or CAMERA_RAW:
+        # Both flags are applied AT camera configure (sensor-fw#86/#89), so they must
         # be set before ConfigureRequest. Cold boots default to flags=0, so control
         # runs need no explicit clear.
-        from omotion.config import DEBUG_FLAG_CAMERA_CROP
-        if not sensor.set_debug_flags(DEBUG_FLAG_CAMERA_CROP):
+        from omotion.config import DEBUG_FLAG_CAMERA_CROP, DEBUG_FLAG_CAMERA_RAW
+        flags = (DEBUG_FLAG_CAMERA_CROP if CAMERA_CROP else 0) | \
+                (DEBUG_FLAG_CAMERA_RAW if CAMERA_RAW else 0)
+        if not sensor.set_debug_flags(flags):
             iface.stop()
-            raise RuntimeError("set_debug_flags(CAMERA_CROP) failed")
-        print(f"[*] DEBUG_FLAG_CAMERA_CROP set (0x{DEBUG_FLAG_CAMERA_CROP:03X}): "
-              "cameras will configure cropped to 1720x1280 (right 200 columns dropped)")
+            raise RuntimeError(f"set_debug_flags(0x{flags:03X}) failed")
+        what = []
+        if CAMERA_CROP:
+            what.append("CROP 1720x1280 (right 200 columns dropped)")
+        if CAMERA_RAW:
+            what.append("RAW scientific mode (BLC/DC-BLC/dither/OTP-DPC OFF; pedestal = raw ADC level)")
+        print(f"[*] Camera debug flags 0x{flags:03X} set: " + "; ".join(what))
 
     sensor.enable_camera_power(CAMERA_MASK)
     left_mask = CAMERA_MASK if side == "left" else 0x00
@@ -376,9 +387,10 @@ def sensor_fan_warmup_monitor(sensor, raw_glob, cam_id, target_c, cap_c, max_off
 
 def main() -> int:
     args = parse_cli()
-    global CAMERA_MASK, CAMERA_CROP
+    global CAMERA_MASK, CAMERA_CROP, CAMERA_RAW
     CAMERA_MASK = int(args.camera_mask, 0)   # hex (0xC3) or int (195); powers/streams only these cameras
     CAMERA_CROP = bool(args.camera_crop)
+    CAMERA_RAW = bool(args.camera_raw)
     args.data_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = args.data_dir / f"{args.subject_id}_run.log"
@@ -674,6 +686,7 @@ def main() -> int:
         "sensor_fan_restore": fan_restore or None,   # {restored, at_sec, at_temp, reason, set_ok}
         "camera_telemetry_csvs": (cam_telem_logger.paths if cam_telem_logger is not None else None),
         "camera_crop": CAMERA_CROP,
+        "camera_raw": CAMERA_RAW,
     }
     meta_path = args.data_dir / f"{args.subject_id}_drift_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))
