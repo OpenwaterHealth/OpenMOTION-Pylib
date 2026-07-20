@@ -89,17 +89,18 @@ _ERROR_TYPES = frozenset({OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN})
 from omotion.firmware_update import parse_version as _parse_firmware_version
 
 
-# --- Camera telemetry (sensor-fw#94) ---------------------------------------
+# --- Camera telemetry (sensor-fw#94, OB/black-level block sensor-fw#103) ---
 # Wire format: cam_telemetry_response_t in sensor-fw Core/Inc/camera_telemetry.h
-# — 4-byte header {version, valid_mask, struct_size, reserved} followed by 8
-# packed 78-byte per-camera records (little-endian). The firmware sends raw
-# register values; this parser owns every engineering-unit conversion.
-CAM_TELEMETRY_VERSION = 1
+# — 12-byte header {version, valid_mask, struct_size, reserved,
+# fsin_pulse_count, uptime_ms} followed by 8 packed 110-byte per-camera
+# records (little-endian). The firmware sends raw register values; this parser
+# owns every engineering-unit conversion.
+CAM_TELEMETRY_VERSION = 2
 _CAM_TELEM_HDR_FMT = "<BBBBII"  # version, valid_mask, struct_size, rsvd, fsin_pulse_count, uptime_ms
-_CAM_TELEM_CAM_FMT = "<II22H22B"
-_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 74
+_CAM_TELEM_CAM_FMT = "<II22H22B11H14B"
+_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 110
 _CAM_TELEM_HDR_SIZE = struct.calcsize(_CAM_TELEM_HDR_FMT)  # 12
-_CAM_TELEM_SIZE = _CAM_TELEM_HDR_SIZE + 8 * _CAM_TELEM_CAM_SIZE  # 604
+_CAM_TELEM_SIZE = _CAM_TELEM_HDR_SIZE + 8 * _CAM_TELEM_CAM_SIZE  # 892
 
 
 def _vm_volts(raw: int) -> float:
@@ -121,7 +122,19 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
     "cameras": [dict * 8]}`` where each camera dict carries converted values
     (``avdd_v``/``dovdd_v``/``dvdd_v`` volts, ``tpm_avg_c``/``tpm0_c``/``tpm1_c``
     degC, ``again_x``/``dgain_x`` gain factors) alongside the raw
-    fault/state/counter bytes. ``fsin_pulse_count`` is the firmware's frame
+    fault/state/counter bytes.
+
+    The optical-black block (sensor-fw#103) adds ``z_avg`` — the four
+    zero-line (dark row) averages, Bayer positions 00/01/10/11 — plus the
+    derived ``z_avg_mean``/``z_avg_spread`` and the window, target, trigger
+    and fault context that produced them (``zl_start``/``zl_end``,
+    ``blk_lvl_target``, ``blc_trig_ctrl``, ``blc_fault_latch``, ...). On this
+    mono sensor all four ``z_avg`` values sample the same physical dark rows,
+    so a nonzero ``z_avg_spread`` is itself the diagnostic. Note the BLC servo
+    only runs while ``blc_ctrl`` bit 0 (``blc_en``) is set: in raw mode
+    (sensor-fw#89 writes 0x4001 = 0x00) ``blc_offsets`` are frozen.
+
+    ``fsin_pulse_count`` is the firmware's frame
     trigger counter — external (console-driven) FSIN edges only; the sensor's
     own frame counter has no readable SCCB value register, and internal-FSIN
     frames don't increment this. ``valid`` is False for a camera the firmware
@@ -151,6 +164,14 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
          wd_a, wd_b, wd_sticky, _wd_tpm_hi, _wd_tpm_lo, wd_state,
          sc_state, otp_crc0, otp_crc1, trig_error, yavg, aec_mode,
          dcg_state, blc_ctrl, isp_ctrl, i2c_err_count, sweep_count) = f[24:46]
+        # OB / black-level block (sensor-fw#103, DS table A-25). z_avg and the
+        # offsets are 15-bit in a 16-bit register; bit 15 is reserved.
+        z_avg = [v & 0x7FFF for v in f[46:50]]
+        blc_offsets_z = [v & 0x7FFF for v in f[50:54]]
+        blc_thres, blk_lvl_target, zero_ln_num = f[54:57]
+        (blc_trig_ctrl, bl_start, bl_end, blk_ln_num, blc_ln_mode,
+         zl_start, zl_end, zavg_ctrl, zl_start2, zl_end2,
+         blc_fault_latch, blc_fault_state, dig_test_fail, dtr_fault) = f[57:71]
 
         # Analog gain: 0x3508[4:0] = code[8:4], 0x3509[7:4] = code[3:0]; x = code/16.
         again_code = (((again_raw >> 8) & 0x1F) << 4) | ((again_raw >> 4) & 0x0F)
@@ -198,6 +219,33 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
             "isp_blc": isp_blc,
             "isp_expo": isp_expo,
             "blc_offsets": blc_offsets,
+            # --- OB / black-level block (sensor-fw#103) ---
+            # z_avg_00/01/10/11 are the zero-line (dark row) averages per
+            # Bayer position. The OX02C1B is mono here, so all four sample the
+            # same physical dark rows and should agree — z_avg_spread is the
+            # per-camera sanity metric, z_avg_mean the dark pedestal estimate.
+            "z_avg": z_avg,
+            "z_avg_mean": sum(z_avg) / 4.0,
+            "z_avg_spread": max(z_avg) - min(z_avg),
+            "blc_offsets_z": blc_offsets_z,
+            "blc_thres": blc_thres & 0x07FF,
+            "blk_lvl_target": blk_lvl_target & 0x07FF,
+            "zero_ln_num": zero_ln_num & 0x03FF,
+            "blc_trig_ctrl": blc_trig_ctrl,
+            "bl_start": bl_start & 0x3F,
+            "bl_end": bl_end & 0x3F,
+            "blk_ln_num": blk_ln_num,
+            "blc_ln_mode": blc_ln_mode,
+            "zl_start": zl_start,
+            "zl_end": zl_end,
+            "zavg_ctrl": zavg_ctrl,
+            "z_avg_sel": zavg_ctrl & 0x03,
+            "zl_start2": zl_start2,
+            "zl_end2": zl_end2,
+            "blc_fault_latch": blc_fault_latch,
+            "blc_fault_state": blc_fault_state & 0x01,
+            "dig_test_fail": dig_test_fail,
+            "dtr_fault": dtr_fault,
         })
     return {"version": version, "valid_mask": valid_mask,
             "fsin_pulse_count": fsin_pulse_count, "uptime_ms": uptime_ms,
@@ -729,7 +777,9 @@ class MotionSensor(SignalWrapper):
         background (rails from the on-die voltage monitor, dual die temps,
         VM/watchdog fault latches, sensor state machine, OTP CRC status, MIPI
         frame counter, FSIN trigger errors, on-chip frame mean, commanded vs
-        applied exposure/gain, applied BLC offsets) and this command returns
+        applied exposure/gain, applied BLC offsets, and the optical-black
+        block: dark-row averages plus their window/target/fault context) and
+        this command returns
         the cached snapshot — no camera I2C happens at query time, so it is
         safe to poll during scans. Fleet refresh is ~1 s; per-camera
         ``updated_ms``/``sweep_count`` reveal staleness. See
@@ -753,6 +803,15 @@ class MotionSensor(SignalWrapper):
                 "isp_real_gain": 0x10, "isp_dig_gain": 0x400,
                 "isp_blc": 0x80, "isp_expo": 0x48,
                 "blc_offsets": [0] * 8,
+                "z_avg": [128] * 4, "z_avg_mean": 128.0, "z_avg_spread": 0,
+                "blc_offsets_z": [0] * 4,
+                "blc_thres": 0, "blk_lvl_target": 128, "zero_ln_num": 2,
+                "blc_trig_ctrl": 0xF9, "bl_start": 4, "bl_end": 0x1B,
+                "blk_ln_num": 4, "blc_ln_mode": 0x50,
+                "zl_start": 2, "zl_end": 0x0D,
+                "zavg_ctrl": 0, "z_avg_sel": 0, "zl_start2": 8, "zl_end2": 0x0D,
+                "blc_fault_latch": 0, "blc_fault_state": 0,
+                "dig_test_fail": 0, "dtr_fault": 0,
             }
             return {"version": CAM_TELEMETRY_VERSION, "valid_mask": 0xFF,
                     "fsin_pulse_count": 0, "uptime_ms": 1000,
