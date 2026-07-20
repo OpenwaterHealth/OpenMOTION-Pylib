@@ -20,20 +20,18 @@ def test_config_constants_pinned_values():
     assert config.TYPE_IMAGE == 0x03
     assert config.OW_IMAGE_PACKET == 0x03          # pre-existing, same value, different namespace
     assert config.OW_CAMERA_IMAGE_MODE == 0x30
-    assert config.SWEEP_FSIN_HZ == 0.8
+    assert config.SWEEP_FSIN_HZ == 1.0
     assert config.PRODUCTION_FSIN_HZ == 40.0
     # Sweep profile: HTS=38400, VTS=1312, tc_r_initial=1308, exposure=1 row.
     assert config.SWEEP_TIMING_PROFILE == (
-        (0x380C, 0x96), (0x380D, 0x00),
+        (0x380C, 0x8C), (0x380D, 0xA0),
         (0x380E, 0x05), (0x380F, 0x20),
-        (0x3826, 0x05), (0x3827, 0x1C),
         (0x3501, 0x00), (0x3502, 0x01),
     )
     # Restore profile: shipped production values from X02C1B_Sensor_Config.h.
     assert config.PRODUCTION_TIMING_PROFILE == (
         (0x380C, 0x01), (0x380D, 0xB0),
         (0x380E, 0x0A), (0x380F, 0xD0),
-        (0x3826, 0x00), (0x3827, 0x00),
         (0x3501, 0x00), (0x3502, 0x48),
     )
 
@@ -491,9 +489,8 @@ def test_write_timing_profile_group_hold_sequence():
     assert all(op[1] == 0x36 for op in s.ops[1:])   # OX02C1B device address
     assert writes == [
         (0x3208, 0x00),
-        (0x380C, 0x96), (0x380D, 0x00),
+        (0x380C, 0x8C), (0x380D, 0xA0),
         (0x380E, 0x05), (0x380F, 0x20),
-        (0x3826, 0x05), (0x3827, 0x1C),
         (0x3501, 0x00), (0x3502, 0x01),
         (0x3208, 0x10),
         (0x3208, 0xA0),

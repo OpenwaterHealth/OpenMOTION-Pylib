@@ -586,6 +586,11 @@ def capture_full_frames(
 
         slow = dict(saved_trigger)
         slow["TriggerFrequencyHz"] = SWEEP_FSIN_HZ
+        # Bench-pinned: the console BOOTS with EnableSyncOut=false (console-fw
+        # main.c) — without it no FSIN reaches the sensors and every sweep
+        # returns zero lines. The restore path writes back saved_trigger
+        # verbatim, so the inherited setting is preserved on exit.
+        slow["EnableSyncOut"] = True
         if not console.set_trigger_json(data=slow):
             raise RuntimeError("set_trigger_json (sweep rate) failed")
         if not sensor.enable_camera_fsin_ext():

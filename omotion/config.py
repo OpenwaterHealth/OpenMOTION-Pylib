@@ -373,29 +373,42 @@ OX02C1B_I2C_ADDR = 0x36
 """7-bit I2C address of the OX02C1B image sensor (see MotionSensor.camera_set_gain)."""
 
 SWEEP_TIMING_PROFILE: tuple = (
-    (0x380C, 0x96), (0x380D, 0x00),   # HTS = 38400  (~0.80 ms/row: row drain margin)
-    (0x380E, 0x05), (0x380F, 0x20),   # VTS = 1312   (1280 active + minimal blanking)
-    (0x3826, 0x05), (0x3827, 0x1C),   # tc_r_initial = 1308 (FSIN slave timing is VTS-coupled)
-    (0x3501, 0x00), (0x3502, 0x01),   # exposure = 1 row (~0.80 ms shutter window)
+    (0x380C, 0x8C), (0x380D, 0xA0),   # HTS = 36000 (~0.75 ms/row: drain margin ~9%; frame fits the console's 1.00 Hz trigger floor)
+    (0x380E, 0x05), (0x380F, 0x20),   # VTS = 1312   (1280 active + minimal blanking; frame 0.987 s)
+    (0x3501, 0x00), (0x3502, 0x01),   # exposure = 1 row (~0.75 ms shutter window)
 )
-"""Sweep (drip-scan) sensor timing. One atomic group-hold write."""
+"""Sweep (drip-scan) sensor timing (HTS/VTS/exposure — bench-verified values).
+
+BENCH STATUS (2026-07-20, first HIL campaign): these timing values are correct
+and the sensor accepts them, but the frame CADENCE mechanism at stretched
+timing is still open: in the shipped trigger_mod streaming mode, changing VTS
+stops FSIN-triggered frames (unresolved VTS-coupled register set — NB
+0x3881-0x3883 is max_expo_a, NOT a sync point); the datasheet §3.7 snapshot
+mode (0x3050=0x06) produces correct slow frames but gaps the MIPI clock,
+which resets the camera FPGA (PLL-loss observed via STATUS bit0) and disarms
+the sweep after one line. Resolution candidates: a clock-continuous trigger
+register set, or a one-shot reset bridge in the FPGA so state survives clock
+gaps. Do not expect capture_full_frames to complete until one lands."""
 
 PRODUCTION_TIMING_PROFILE: tuple = (
     (0x380C, 0x01), (0x380D, 0xB0),   # HTS = 432
     (0x380E, 0x0A), (0x380F, 0xD0),   # VTS = 2768
-    (0x3826, 0x00), (0x3827, 0x00),   # tc_r_initial = 0 as SHIPPED (not the spec's "VTS-4")
     (0x3501, 0x00), (0x3502, 0x48),   # exposure = 72 rows
 )
 """Shipped production timing (X02C1B_Sensor_Config.h) — restore after a capture.
 
-Note: the design spec §4.2 quotes production tc_r_initial as "VTS-4", but the
-shipped firmware config actually writes 0x0000. This restores the real hardware
-value, not the spec formula. The sweep profile above does use tc_r=VTS-4 (1308)
-per the datasheet FSIN-slave recommendation — that choice is a bench-validation
-item (spec §5): confirm FSIN sync holds under the stretched VTS."""
+tc_r_initial/0x388x registers are deliberately NOT touched in either profile:
+production runs auto-tc_r (0x3823 bit4=0) and 0x3881-83 is max_expo_a
+(bench-verified 2026-07-20; earlier spec/plan references to a "VTS-4 sync
+point" were wrong)."""
 
-SWEEP_FSIN_HZ: float = 0.8
-"""FSIN trigger rate during a drip-scan capture (period > 1312 x 0.80 ms readout)."""
+SWEEP_FSIN_HZ: float = 1.0
+"""FSIN trigger rate during a drip-scan capture.
+
+Bench-pinned: the console firmware validates TriggerFrequencyHz to
+1.00-100.00 Hz (console-fw trigger.c) and silently rejects lower, so 1.0 Hz
+is the slowest possible external FSIN. The sweep profile (HTS=36000,
+VTS=1312) gives a 0.987 s frame readout, inside the 1.000 s period."""
 
 PRODUCTION_FSIN_HZ: float = 40.0
 """Normal histogram-mode FSIN rate (DEFAULT_TRIGGER_CONFIG TriggerFrequencyHz)."""
