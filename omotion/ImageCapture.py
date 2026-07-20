@@ -532,6 +532,10 @@ def capture_full_frames(
     stop_evt = threading.Event()
 
     saved_trigger = console.get_trigger_json()
+    if saved_trigger is None:
+        raise RuntimeError(
+            f"{side}: get_trigger_json() returned None — cannot capture "
+            f"without the console trigger config")
     if isinstance(saved_trigger, str):
         saved_trigger = json.loads(saved_trigger)
 
@@ -635,43 +639,69 @@ def capture_full_frames(
             )
     finally:
         # --- Restore, tolerating partial bring-up ------------------------
+        # Every device-restore step is attempted independently, and the
+        # thread/stream teardown in the inner ``finally`` ALWAYS runs — even if
+        # a mid-capture disconnect makes a device call raise (a lost transport
+        # raises ValueError from _send, and stop_trigger re-raises). Without
+        # this guarantee an escaping raise here would orphan the daemon
+        # collector thread and leave histo streaming armed.
         try:
-            for c in sorted(assemblers):
-                write_timing_profile(sensor, c, PRODUCTION_TIMING_PROFILE)
-            # Group launch happens at the next frame boundary — at the sweep
-            # rate that is up to one 1.25 s period away.
-            time.sleep(_SWEEP_PERIOD_S + 0.25)
-            for c in sorted(assemblers):
+            try:
+                for c in sorted(assemblers):
+                    write_timing_profile(sensor, c, PRODUCTION_TIMING_PROFILE)
+                # Group launch happens at the next frame boundary — at the
+                # sweep rate that is up to one 1.25 s period away.
+                time.sleep(_SWEEP_PERIOD_S + 0.25)
+                for c in sorted(assemblers):
+                    try:
+                        FpgaRegs(sensor, c).exit_image_mode()
+                    except IOError:
+                        pass
+            except Exception:
+                logger.exception("%s: timing/FPGA restore failed", side)
+            if trigger_started:
                 try:
-                    FpgaRegs(sensor, c).exit_image_mode()
-                except IOError:
-                    pass
-        except Exception:
-            logger.exception("%s: timing/FPGA restore failed", side)
-        if trigger_started:
-            console.stop_trigger()
-        try:
-            console.set_trigger_json(data=saved_trigger)
-        except Exception:
-            logger.exception("restoring trigger config failed")
-        if image_mode_on:
-            sensor.set_camera_image_mode(False, mask)
-        sensor.disable_camera_fsin_ext()
-        sensor.disable_camera(mask)
-        stop_evt.set()
-        histo_if.stop_streaming()
-        # The first histogram frame after an image session carries counts
-        # accumulated across the whole session (spec §4.4) — drain and
-        # discard anything already in flight so the next scan starts clean.
-        try:
-            discarded = histo_if.drain_final(expected_size=_STREAM_READ_SIZE)
-            if discarded:
-                logger.info("%s: discarded %d post-image-session chunk(s) "
-                            "(first histogram frame after image mode is "
-                            "garbage)", side, len(discarded))
-        except Exception:
-            pass
-        collector.join(timeout=3.0)
+                    console.stop_trigger()
+                except Exception:
+                    logger.exception("%s: stop_trigger failed", side)
+            try:
+                console.set_trigger_json(data=saved_trigger)
+            except Exception:
+                logger.exception("restoring trigger config failed")
+            if image_mode_on:
+                try:
+                    sensor.set_camera_image_mode(False, mask)
+                except Exception:
+                    logger.exception("%s: exit image mode failed", side)
+            try:
+                sensor.disable_camera_fsin_ext()
+            except Exception:
+                logger.exception("%s: disable_camera_fsin_ext failed", side)
+            try:
+                sensor.disable_camera(mask)
+            except Exception:
+                logger.exception("%s: disable_camera failed", side)
+        finally:
+            # Resource teardown MUST run regardless of any device-call failure
+            # above: stop the collector and streaming so the daemon thread can
+            # never be orphaned and the histo endpoint is never left armed.
+            stop_evt.set()
+            try:
+                histo_if.stop_streaming()
+            except Exception:
+                logger.exception("%s: stop_streaming failed", side)
+            # The first histogram frame after an image session carries counts
+            # accumulated across the whole session (spec §4.4) — drain and
+            # discard anything already in flight so the next scan starts clean.
+            try:
+                discarded = histo_if.drain_final(expected_size=_STREAM_READ_SIZE)
+                if discarded:
+                    logger.info("%s: discarded %d post-image-session chunk(s) "
+                                "(first histogram frame after image mode is "
+                                "garbage)", side, len(discarded))
+            except Exception:
+                pass
+            collector.join(timeout=3.0)
 
     if out_dir is not None:
         _save_outputs(results, Path(out_dir), side)
