@@ -50,7 +50,8 @@ IMAGE_LINE_MAGIC = 0xB6
 IMAGE_LINE_VERSION = 0x01
 IMAGE_LINE_PIXEL_BYTES = IMAGE_WIDTH * 5 // 4          # 2400
 IMAGE_LINE_SIZE = 6 + IMAGE_LINE_PIXEL_BYTES + 2       # 2408
-FLAG_OVERRUN = 0x1
+FLAG_OVERRUN = 0x1                                     # header flags bit0
+FLAG_WEDGE = 0x2                                       # header flags bit1 — pusher-watchdog wedge
 
 # --- USB envelope (contract B) ---------------------------------------------
 _ENV_SOF, _ENV_SOH, _ENV_EOH, _ENV_EOF = 0xAA, 0xFF, 0xEE, 0xDD
@@ -260,3 +261,99 @@ class FrameAssembler:
             self.frame_cnt = None
             self.rejected_lines = 0
             self.overrun_seen = False
+
+
+# ---------------------------------------------------------------------------
+# Camera-FPGA register access (I2C 0x5A, register map v2)
+#
+# Ported from openmotion-camera-fpga tools/full_frame_capture/fpga_link.py.
+# Reads use MotionSensor.i2c_read_register directly; writes use the same
+# passthrough with the 16-bit-register-address trick (reg_addr_size=2: the
+# slave interprets the high byte as the register pointer and the low byte as
+# a data write — see the feature/5 design spec).
+#
+# NOTE: the FPGA control plane is clocked from the MIPI-derived pixel clock —
+# register access only works while the camera is streaming (enable first).
+# ---------------------------------------------------------------------------
+
+FPGA_I2C_ADDR = 0x5A
+REG_ID, REG_VERSION, REG_SCRATCH, REG_CTRL = 0x00, 0x01, 0x02, 0x03
+REG_LINE_L, REG_LINE_H, REG_LINE_CUR_L, REG_LINE_CUR_H = 0x04, 0x05, 0x06, 0x07
+REG_FRAME_CNT, REG_STATUS = 0x08, 0x09
+FPGA_ID_VAL = 0x5A
+FPGA_MAP_VERSION_MIN = 0x02      # map v2 = drip-scan capable
+CTRL_IMAGE_MODE = 0x01           # CTRL bit0
+CTRL_SWEEP = 0x02                # CTRL bit1 — valid only with bit0, sampled at fv
+STATUS_OVERRUN = 0x04            # STATUS bit2 — overrun latch, cleared on sweep arm
+STATUS_WEDGE = 0x08             # STATUS bit3 — pusher-watchdog wedge latch
+
+
+class FpgaRegs:
+    """Register access to one camera FPGA through the sensor firmware's
+    I2C passthrough (MotionSensor.i2c_read_register)."""
+
+    def __init__(self, sensor, cam: int):
+        self.sensor = sensor
+        self.cam = cam
+
+    def read(self, reg: int) -> int:
+        r = self.sensor.i2c_read_register(
+            FPGA_I2C_ADDR, reg, read_len=1, reg_addr_size=1,
+            mux_channel=self.cam)
+        if r is False or r is None:
+            raise IOError(f"cam{self.cam}: I2C read reg 0x{reg:02X} failed")
+        return r[0]
+
+    def write(self, reg: int, value: int) -> None:
+        r = self.sensor.i2c_read_register(
+            FPGA_I2C_ADDR, ((reg & 0xFF) << 8) | (value & 0xFF),
+            read_len=1, reg_addr_size=2, mux_channel=self.cam)
+        if r is False or r is None:
+            raise IOError(f"cam{self.cam}: I2C write reg 0x{reg:02X} failed")
+
+    def check_id(self) -> bool:
+        try:
+            return self.read(REG_ID) == FPGA_ID_VAL
+        except IOError:
+            return False
+
+    def check_version(self) -> bool:
+        """True if the loaded bitstream speaks register map v2 (drip-scan)."""
+        try:
+            return self.read(REG_VERSION) >= FPGA_MAP_VERSION_MIN
+        except IOError:
+            return False
+
+    def set_start_line(self, line: int) -> None:
+        """Map v2: LINE_L/H hold the sweep start line (12-bit)."""
+        self.write(REG_LINE_L, line & 0xFF)
+        self.write(REG_LINE_H, (line >> 8) & 0x0F)
+
+    def arm_sweep(self, start_line: int = 0) -> None:
+        """Program the start line, then set CTRL = image|sweep. The FPGA
+        samples CTRL at the frame-valid boundary and clears the overrun latch
+        on arm; every subsequent frame pushes all lines >= start_line."""
+        self.set_start_line(start_line)
+        self.write(REG_CTRL, CTRL_IMAGE_MODE | CTRL_SWEEP)
+
+    def stop_sweep(self) -> None:
+        """Stop sweeping but stay in image mode (no further line pushes)."""
+        self.write(REG_CTRL, CTRL_IMAGE_MODE)
+
+    def exit_image_mode(self) -> None:
+        """Back to histogram mode. Host rule (feature/5, unchanged): the first
+        histogram frame after leaving image mode is garbage — discard it."""
+        self.write(REG_CTRL, 0x00)
+
+    def frame_count(self) -> int:
+        return self.read(REG_FRAME_CNT)
+
+    def overrun(self) -> bool:
+        """STATUS bit2: a line was dropped since the last sweep arm."""
+        return bool(self.read(REG_STATUS) & STATUS_OVERRUN)
+
+    def wedge(self) -> bool:
+        """STATUS bit3 (map v2, spec §4.3): the pusher watchdog aborted a push
+        with no serializer progress since the last sweep arm — an
+        electrical/SEU wedge, distinct from a timing overrun (bit2)."""
+        return bool(self.read(REG_STATUS) & STATUS_WEDGE)

@@ -293,3 +293,130 @@ def test_assembler_reset_and_overrun_tracking():
     assert asm.frame_cnt is None
     assert asm.add(_mk_line(0, frame_cnt=0x22)) is True
     assert asm.frame_cnt == 0x22
+
+
+# ---------------------------------------------------------------------------
+# OW_CAMERA_IMAGE_MODE sender + FPGA sweep registers
+# ---------------------------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, packetType):
+        self.packetType = packetType
+
+
+class _FakeComm:
+    def __init__(self, resp_type):
+        self.calls = []
+        self._resp_type = resp_type
+
+    def send_packet(self, **kwargs):
+        self.calls.append(kwargs)
+        return _FakeResp(self._resp_type)
+
+
+def _bare_sensor(resp_type):
+    """MotionSensor without running __init__ (it wires USB/hotplug state we
+    don't need): _send only touches self.uart.comm.send_packet, demo_mode,
+    and _check_camera_mask — set exactly those."""
+    from types import SimpleNamespace
+    from omotion.MotionSensor import MotionSensor
+
+    ms = MotionSensor.__new__(MotionSensor)
+    ms.demo_mode = False
+    ms.uart = SimpleNamespace(comm=_FakeComm(resp_type))
+    return ms
+
+
+def test_set_camera_image_mode_wire_format():
+    """Pinned opcode contract: OW_CAMERA packet, command 0x30, reserved byte
+    carries enable, data[0] carries the camera bitmask."""
+    from omotion.config import OW_CAMERA, OW_CAMERA_IMAGE_MODE, OW_RESP
+
+    ms = _bare_sensor(OW_RESP)
+    assert ms.set_camera_image_mode(True, 0x42) is True
+    call = ms.uart.comm.calls[-1]
+    assert call["packetType"] == OW_CAMERA
+    assert call["command"] == OW_CAMERA_IMAGE_MODE == 0x30
+    assert call["reserved"] == 1
+    assert call["data"] == bytes([0x42])
+
+    assert ms.set_camera_image_mode(False, 0x01) is True
+    assert ms.uart.comm.calls[-1]["reserved"] == 0
+
+
+def test_set_camera_image_mode_error_response():
+    from omotion.config import OW_ERROR
+
+    ms = _bare_sensor(OW_ERROR)
+    assert ms.set_camera_image_mode(True, 0xFF) is False
+
+
+def test_set_camera_image_mode_rejects_bad_mask():
+    from omotion.config import OW_RESP
+
+    ms = _bare_sensor(OW_RESP)
+    with pytest.raises(ValueError):
+        ms.set_camera_image_mode(True, 0x1FF)
+
+
+class _FakeRegSensor:
+    """Records FpgaRegs traffic through the i2c_read_register passthrough."""
+
+    def __init__(self):
+        self.ops = []
+        self.regs = {0x00: 0x5A, 0x01: 0x02, 0x09: 0x00}   # ID, VERSION v2, STATUS
+
+    def i2c_read_register(self, dev_addr, reg_addr, read_len=1,
+                          reg_addr_size=1, mux_channel=None):
+        assert dev_addr == 0x5A
+        if reg_addr_size == 1:            # read
+            self.ops.append(("rd", mux_channel, reg_addr))
+            return bytes([self.regs.get(reg_addr, 0x00)])
+        reg, val = (reg_addr >> 8) & 0xFF, reg_addr & 0xFF   # write trick
+        self.ops.append(("wr", mux_channel, reg, val))
+        self.regs[reg] = val
+        return b"\x00"
+
+
+def test_fpga_regs_v2_sweep_arm():
+    """arm_sweep programs the start line then CTRL = image|sweep (0x03);
+    stop_sweep drops back to image-only; exit clears CTRL. LINE_L/H are the
+    sweep start line in map v2."""
+    from omotion.ImageCapture import CTRL_IMAGE_MODE, CTRL_SWEEP, FpgaRegs
+
+    s = _FakeRegSensor()
+    r = FpgaRegs(s, cam=3)
+    assert r.check_id() is True
+    assert r.check_version() is True
+
+    r.arm_sweep(start_line=0x2A5)
+    assert ("wr", 3, 0x04, 0xA5) in s.ops          # LINE_L
+    assert ("wr", 3, 0x05, 0x02) in s.ops          # LINE_H (line[11:8])
+    assert s.ops[-1] == ("wr", 3, 0x03, CTRL_IMAGE_MODE | CTRL_SWEEP)
+
+    r.stop_sweep()
+    assert s.ops[-1] == ("wr", 3, 0x03, CTRL_IMAGE_MODE)
+    r.exit_image_mode()
+    assert s.ops[-1] == ("wr", 3, 0x03, 0x00)
+
+
+def test_fpga_regs_overrun_latch():
+    from omotion.ImageCapture import STATUS_OVERRUN, FpgaRegs
+
+    s = _FakeRegSensor()
+    r = FpgaRegs(s, cam=0)
+    assert r.overrun() is False
+    s.regs[0x09] = STATUS_OVERRUN
+    assert r.overrun() is True
+
+
+def test_fpga_regs_wedge_latch():
+    """STATUS bit3 is the pusher-watchdog wedge latch (map v2, spec §4.3),
+    distinct from the bit2 overrun latch."""
+    from omotion.ImageCapture import STATUS_WEDGE, FpgaRegs
+
+    s = _FakeRegSensor()
+    r = FpgaRegs(s, cam=0)
+    assert r.wedge() is False
+    s.regs[0x09] = STATUS_WEDGE
+    assert r.wedge() is True
