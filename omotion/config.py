@@ -383,10 +383,16 @@ SWEEP_TIMING_PROFILE: tuple = (
 PRODUCTION_TIMING_PROFILE: tuple = (
     (0x380C, 0x01), (0x380D, 0xB0),   # HTS = 432
     (0x380E, 0x0A), (0x380F, 0xD0),   # VTS = 2768
-    (0x3826, 0x00), (0x3827, 0x00),   # tc_r_initial shipped value
+    (0x3826, 0x00), (0x3827, 0x00),   # tc_r_initial = 0 as SHIPPED (not the spec's "VTS-4")
     (0x3501, 0x00), (0x3502, 0x48),   # exposure = 72 rows
 )
-"""Shipped production timing (X02C1B_Sensor_Config.h) — restore after a capture."""
+"""Shipped production timing (X02C1B_Sensor_Config.h) — restore after a capture.
+
+Note: the design spec §4.2 quotes production tc_r_initial as "VTS-4", but the
+shipped firmware config actually writes 0x0000. This restores the real hardware
+value, not the spec formula. The sweep profile above does use tc_r=VTS-4 (1308)
+per the datasheet FSIN-slave recommendation — that choice is a bench-validation
+item (spec §5): confirm FSIN sync holds under the stretched VTS."""
 
 SWEEP_FSIN_HZ: float = 0.8
 """FSIN trigger rate during a drip-scan capture (period > 1312 x 0.80 ms readout)."""

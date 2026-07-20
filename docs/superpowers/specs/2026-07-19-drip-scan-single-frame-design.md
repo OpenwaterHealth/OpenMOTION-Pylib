@@ -77,7 +77,7 @@ path using sensor group-hold so it latches atomically at a frame boundary:
 |---|---|---|---|
 | HTS `0x380C/D` | 432 (9.03 µs) | **38,400** (~0.80 ms) | ≥16% margin over 0.69 ms drain |
 | VTS `0x380E/F` | 2768 | **1312** | Don't pay for 1488 blank rows at stretched pace |
-| `tc_r_initial 0x3826/27` | VTS−4 | 1308 | FSIN slave timing is VTS-coupled — must move together |
+| `tc_r_initial 0x3826/27` | 0x0000 (shipped) | 1308 (=VTS−4) | FSIN slave timing is VTS-coupled. NB: the shipped production config writes tc_r=0, not VTS−4; the sweep value uses the datasheet FSIN-slave VTS−4 recommendation — confirm FSIN sync on the bench (§5). Restore writes the real shipped 0x0000. |
 | Exposure `0x3501/02` | 72 rows | **1 row** (~0.80 ms) | Row unit stretched; shutter window minimal |
 | FSIN rate (console/TIM4) | 40 Hz | **0.8 Hz** | Period ≥ frame readout 1312 × 0.80 ms ≈ 1.05 s |
 
