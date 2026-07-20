@@ -140,7 +140,7 @@ Tee("live", filter=ft not in {"warmup","stale"})
 
 ## 4. Hardware context
 
-- **Cameras:** up to 8 OV2312 cameras per sensor module, up to 2 sensor modules (left + right), 16 cameras max.
+- **Cameras:** up to 8 OX02C1B cameras per sensor module, up to 2 sensor modules (left + right), 16 cameras max.
 - **Frame rate:** 40 Hz, frame sync controlled by the console MCU.
 - **Histogram:** 1024 bins per camera per frame, 32-bit counts. A valid frame's bin sum equals its pixel count plus a constant 6-count sentinel — **2,457,606** for the full 1920 × 1280 frame, or **2,201,606** for the debug-cropped 1720 × 1280 frame (`DEBUG_FLAG_CAMERA_CROP`, sensor-fw #86). The parser validates against the set `EXPECTED_HISTOGRAM_SUMS` in `omotion/MotionProcessing.py` (`EXPECTED_HISTOGRAM_SUM` remains the full-frame single value); frames matching none of the valid totals are dropped before they reach the pipeline. Science moments are normalized by the per-frame pixel count, so they are unaffected by which geometry is streaming.
 - **Dark frame protocol:** the firmware deterministically cuts laser illumination on a fixed schedule (see §5.2). The pipeline never has to infer dark/light from the data.

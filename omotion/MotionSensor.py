@@ -622,7 +622,7 @@ class MotionSensor(SignalWrapper):
 
         The firmware verifies, at startup, that every expected I2C device is
         present: the TCA9548A mux, the ICM-20948 IMU, and all 8 cameras
-        (OV2312) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
+        (OX02C1B) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
         I2C (ULPI) and is excluded.
 
         Args:
@@ -636,7 +636,7 @@ class MotionSensor(SignalWrapper):
                 "version": int,
                 "mux": bool,             # TCA9548A 0x70
                 "imu": bool,             # ICM-20948 0x68
-                "cameras": [bool] * 8,   # OV2312 0x36 per mux channel
+                "cameras": [bool] * 8,   # OX02C1B 0x36 per mux channel
                 "fpgas":   [bool] * 8,   # CrossLink 0x40 per mux channel
                 "cameras_expected": int, # bitmask, 0xFF = all 8
                 "all_present": bool,
