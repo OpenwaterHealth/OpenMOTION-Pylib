@@ -363,3 +363,53 @@ class FpgaRegs:
         with no serializer progress since the last sweep arm — an
         electrical/SEU wedge, distinct from a timing overrun (bit2)."""
         return bool(self.read(REG_STATUS) & STATUS_WEDGE)
+
+
+# ---------------------------------------------------------------------------
+# Sensor sweep retiming (group-hold, spec §4.2)
+# ---------------------------------------------------------------------------
+
+# OX02C1B group access register (OmniVision datasheet idiom; the shipped
+# config table X02C1B_Sensor_Config.h never touches it — drip-scan is the
+# first user in this system). Writes bracketed by HOLD_START/HOLD_END land in
+# group 0's shadow bank; DELAYED_LAUNCH latches the whole group atomically at
+# the next frame boundary. Atomicity matters: tc_r_initial (FSIN slave
+# timing) is VTS-coupled and must never be visible with a mismatched VTS.
+GROUP_ACCESS_REG = 0x3208
+GROUP0_HOLD_START = 0x00
+GROUP0_HOLD_END = 0x10
+GROUP0_DELAYED_LAUNCH = 0xA0
+
+# Settle delay between passthrough writes — same pacing MotionSensor uses for
+# its own multi-write register sequences (camera_set_gain / camera_set_exposure).
+_I2C_WRITE_SETTLE_S = 0.02
+
+
+def write_timing_profile(sensor, cam: int, profile) -> bool:
+    """Write one timing profile (config.SWEEP_TIMING_PROFILE or
+    config.PRODUCTION_TIMING_PROFILE) to one camera as a single atomic
+    group-hold, via the OW_I2C_PASSTHRU path (MotionSensor.camera_i2c_write).
+
+    The new timing takes effect at the camera's NEXT frame boundary — after a
+    restore at the 0.8 Hz sweep rate, wait up to one sweep period (1.25 s)
+    before assuming production timing is live.
+
+    Returns True only if every write acknowledged.
+    """
+    sensor.switch_camera(cam)
+    sequence = (
+        (GROUP_ACCESS_REG, GROUP0_HOLD_START),
+        *profile,
+        (GROUP_ACCESS_REG, GROUP0_HOLD_END),
+        (GROUP_ACCESS_REG, GROUP0_DELAYED_LAUNCH),
+    )
+    ok = True
+    for reg, val in sequence:
+        ok = sensor.camera_i2c_write(
+            I2C_Packet(device_address=OX02C1B_I2C_ADDR,
+                       register_address=reg, data=val)
+        ) and ok
+        time.sleep(_I2C_WRITE_SETTLE_S)
+    if not ok:
+        logger.error("cam %d: timing-profile group write failed", cam)
+    return ok

@@ -450,3 +450,57 @@ def test_fpga_regs_wedge_latch():
     assert r.wedge() is False
     s.regs[0x09] = STATUS_WEDGE
     assert r.wedge() is True
+
+
+# ---------------------------------------------------------------------------
+# Group-hold sweep retiming
+# ---------------------------------------------------------------------------
+
+class _FakeI2CSensor:
+    """Records switch_camera / camera_i2c_write traffic for one camera."""
+
+    def __init__(self):
+        self.ops = []
+
+    def switch_camera(self, cam):
+        self.ops.append(("switch", cam))
+
+    def camera_i2c_write(self, packet):
+        self.ops.append(("wr", packet.device_address,
+                         packet.register_address, packet.data))
+        return True
+
+
+def test_write_timing_profile_group_hold_sequence():
+    """The whole profile must land inside ONE group-hold: 0x3208=0x00 opens
+    group 0, the timing registers follow in pinned order, 0x3208=0x10 closes
+    the group, and 0x3208=0xA0 (delayed launch) latches everything atomically
+    at the next frame boundary — the atomicity spec §4.2 requires because
+    tc_r_initial is VTS-coupled."""
+    from omotion.ImageCapture import write_timing_profile
+    from omotion.config import SWEEP_TIMING_PROFILE
+
+    s = _FakeI2CSensor()
+    assert write_timing_profile(s, cam=6, profile=SWEEP_TIMING_PROFILE) is True
+
+    assert s.ops[0] == ("switch", 6)
+    writes = [(op[2], op[3]) for op in s.ops[1:]]
+    assert all(op[1] == 0x36 for op in s.ops[1:])   # OX02C1B device address
+    assert writes == [
+        (0x3208, 0x00),
+        (0x380C, 0x96), (0x380D, 0x00),
+        (0x380E, 0x05), (0x380F, 0x20),
+        (0x3826, 0x05), (0x3827, 0x1C),
+        (0x3501, 0x00), (0x3502, 0x01),
+        (0x3208, 0x10),
+        (0x3208, 0xA0),
+    ]
+
+
+def test_write_timing_profile_reports_failure():
+    from omotion.ImageCapture import write_timing_profile
+    from omotion.config import PRODUCTION_TIMING_PROFILE
+
+    s = _FakeI2CSensor()
+    s.camera_i2c_write = lambda packet: False
+    assert write_timing_profile(s, cam=0, profile=PRODUCTION_TIMING_PROFILE) is False
