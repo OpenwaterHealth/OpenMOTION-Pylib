@@ -27,15 +27,23 @@ MotionProcessing.parse_histogram_packet_structured):
   line CRC above is the authoritative integrity check)  [2419]=EOF 0xDD
 """
 
+import json
 import logging
+import queue as _queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
 from omotion import _log_root
-from omotion.config import OX02C1B_I2C_ADDR
+from omotion.config import (
+    OX02C1B_I2C_ADDR,
+    PRODUCTION_TIMING_PROFILE,
+    SWEEP_FSIN_HZ,
+    SWEEP_TIMING_PROFILE,
+)
 from omotion.i2c_packet import I2C_Packet
 from omotion.utils import util_crc16
 
@@ -413,3 +421,295 @@ def write_timing_profile(sensor, cam: int, profile) -> bool:
     if not ok:
         logger.error("cam %d: timing-profile group write failed", cam)
     return ok
+
+
+# ---------------------------------------------------------------------------
+# Capture orchestration (graduates camera-fpga tools/full_frame_capture/)
+# ---------------------------------------------------------------------------
+
+# USB read size for the stream loop during an image session: the HISTO
+# endpoint's max transfer (USB_HISTO_MAX_SIZE in sensor-fw usbd_histo.h).
+# Image packets are 2420 B each; a single read may deliver one or several.
+_STREAM_READ_SIZE = 32837
+
+_SWEEP_PERIOD_S = 1.0 / SWEEP_FSIN_HZ   # 1.25 s per exposure at 0.8 Hz
+
+
+def next_sweep_action(missing, attempt, max_sweeps, mixed_fill_sweeps):
+    """Decide what the next sweep attempt should do for one camera.
+
+    Returns (action, start_line):
+      ("done", None)      — frame complete, stop.
+      ("restart", 0)      — strict single-exposure retry: discard partial
+                            assembly and re-sweep the whole frame.
+      ("fill", first_gap) — mixed-exposure fallback for the last
+                            ``mixed_fill_sweeps`` attempts: keep what we have,
+                            re-sweep from the first missing line only.
+      ("give_up", None)   — attempt budget exhausted.
+    """
+    if not missing:
+        return ("done", None)
+    if attempt > max_sweeps:
+        return ("give_up", None)
+    if attempt > max_sweeps - mixed_fill_sweeps:
+        return ("fill", missing[0])
+    return ("restart", 0)
+
+
+@dataclass
+class CameraCaptureResult:
+    cam_id: int
+    image: np.ndarray | None
+    complete: bool
+    mixed_exposure: bool
+    missing_lines: list[int] = field(default_factory=list)
+    frame_cnt: int | None = None
+    overrun: bool = False
+    rejected_lines: int = 0
+    attempts: int = 0
+
+
+def _collector_loop(image_queue, assemblers, stop_evt):
+    """Drain the image queue into per-camera assemblers until stopped AND
+    empty. Lines that fail CRC/framing are dropped and logged — the sweep
+    retry policy re-requests whatever ends up missing."""
+    while not stop_evt.is_set() or not image_queue.empty():
+        try:
+            pkt = image_queue.get(timeout=0.2)
+        except _queue.Empty:
+            continue
+        try:
+            line = parse_image_packet(pkt)
+        except ImageLineError as exc:
+            logger.warning("dropping bad image packet: %s", exc)
+            continue
+        asm = assemblers.get(line.cam_id)
+        if asm is not None:
+            asm.add(line)
+
+
+def capture_full_frames(
+    sensor,
+    console,
+    cams,
+    out_dir=None,
+    side: str = "left",
+    max_sweeps: int = 6,
+    mixed_fill_sweeps: int = 2,
+    settle_timeout_s: float = 3.0,
+) -> dict[int, CameraCaptureResult]:
+    """Capture one full-frame single-exposure image from each camera in
+    ``cams`` on one sensor module.
+
+    Sequence (spec §4.5): enable histogram streaming (brings up the MIPI
+    clock the FPGA control plane needs) -> enter image mode
+    (OW_CAMERA_IMAGE_MODE; firmware suspends histograms and arms 2408-B line
+    DMA) -> group-hold retime to the sweep profile -> slow FSIN to 0.8 Hz via
+    the console trigger config (MotionConsole.set_trigger_json,
+    TriggerFrequencyHz — the SDK's only FSIN-rate setter) -> collect with
+    per-frame retry via the FPGA sweep start-line register -> restore timing
+    and FSIN -> exit image mode -> discard the first (garbage) histogram
+    frame accumulated across the session.
+
+    ``console`` is required: SyncOut drives the sensors' FSIN on this
+    hardware, and laser per-pulse parameters ride the existing trigger config
+    untouched (only the repetition rate changes).
+
+    Outputs (when ``out_dir`` is given): ``{side}_cam{c}.npy`` (uint16
+    1280x1920) and, if PIL is importable (it ships transitively with the
+    declared matplotlib dependency), a 16-bit ``{side}_cam{c}.png``; plus
+    ``meta.json`` with per-camera capture status.
+    """
+    mask = 0
+    for c in cams:
+        mask |= 1 << c
+
+    histo_if = sensor.uart.histo
+    image_q: _queue.Queue = _queue.Queue()
+    discard_q: _queue.Queue = _queue.Queue()   # stray histogram packets, dropped
+    assemblers = {c: FrameAssembler() for c in cams}
+    results: dict[int, CameraCaptureResult] = {}
+    stop_evt = threading.Event()
+
+    saved_trigger = console.get_trigger_json()
+    if isinstance(saved_trigger, str):
+        saved_trigger = json.loads(saved_trigger)
+
+    histo_if.flush_stale_data(expected_size=_STREAM_READ_SIZE)
+    histo_if.start_streaming(discard_q, _STREAM_READ_SIZE, image_queue=image_q)
+    collector = threading.Thread(
+        target=_collector_loop, args=(image_q, assemblers, stop_evt),
+        daemon=True)
+    collector.start()
+
+    trigger_started = False
+    image_mode_on = False
+    try:
+        if not sensor.enable_camera(mask):
+            raise RuntimeError(f"{side}: enable_camera(0x{mask:02X}) failed")
+        time.sleep(1.0)   # MIPI clock + FPGA control plane come up with streaming
+
+        # Drop cameras whose FPGA is absent or not drip-scan capable.
+        regs = {}
+        for c in list(cams):
+            r = FpgaRegs(sensor, c)
+            if not r.check_id():
+                logger.warning("[%s] cam%d: FPGA control plane not answering "
+                               "— skipped", side, c)
+                del assemblers[c]
+                continue
+            if not r.check_version():
+                logger.warning("[%s] cam%d: FPGA register map < v2 (no "
+                               "drip-scan) — skipped", side, c)
+                del assemblers[c]
+                continue
+            regs[c] = r
+        active = sorted(regs)
+        if not active:
+            raise RuntimeError(f"{side}: no drip-scan-capable cameras")
+
+        if not sensor.set_camera_image_mode(True, mask):
+            raise RuntimeError(f"{side}: OW_CAMERA_IMAGE_MODE enable failed")
+        image_mode_on = True
+
+        for c in active:
+            if not write_timing_profile(sensor, c, SWEEP_TIMING_PROFILE):
+                raise RuntimeError(f"{side}: cam{c} sweep retime failed")
+
+        slow = dict(saved_trigger)
+        slow["TriggerFrequencyHz"] = SWEEP_FSIN_HZ
+        if not console.set_trigger_json(data=slow):
+            raise RuntimeError("set_trigger_json (sweep rate) failed")
+        if not sensor.enable_camera_fsin_ext():
+            raise RuntimeError(f"{side}: enable_camera_fsin_ext failed")
+        if not console.start_trigger():
+            raise RuntimeError("start_trigger failed")
+        trigger_started = True
+        # One frame at the old timing may still be in flight; the group-hold
+        # launches at its boundary. From here every FSIN is a sweep exposure.
+
+        attempts = {c: 0 for c in active}
+        pending = set(active)
+        while pending:
+            for c in sorted(pending):
+                attempts[c] += 1
+                action, start_line = next_sweep_action(
+                    assemblers[c].missing(), attempts[c],
+                    max_sweeps, mixed_fill_sweeps)
+                if action == "restart":
+                    assemblers[c].reset()
+                    regs[c].arm_sweep(0)
+                elif action == "fill":
+                    assemblers[c].allow_mixed = True
+                    regs[c].arm_sweep(start_line)
+                elif action == "give_up":
+                    logger.error("[%s] cam%d: incomplete after %d sweeps "
+                                 "(%d lines missing)", side, c, max_sweeps,
+                                 len(assemblers[c].missing()))
+                    regs[c].stop_sweep()
+                    pending.discard(c)
+            if not pending:
+                break
+            # One exposure + full drain per attempt, with settle margin.
+            deadline = time.monotonic() + 2 * _SWEEP_PERIOD_S + settle_timeout_s
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                if all(assemblers[c].complete for c in pending):
+                    break
+            for c in [c for c in pending if assemblers[c].complete]:
+                regs[c].stop_sweep()
+                pending.discard(c)
+
+        for c in active:
+            asm = assemblers[c]
+            results[c] = CameraCaptureResult(
+                cam_id=c,
+                image=asm.image(),
+                complete=asm.complete,
+                mixed_exposure=asm.mixed_exposure,
+                missing_lines=asm.missing(),
+                frame_cnt=asm.frame_cnt,
+                overrun=asm.overrun_seen,
+                rejected_lines=asm.rejected_lines,
+                attempts=attempts[c],
+            )
+    finally:
+        # --- Restore, tolerating partial bring-up ------------------------
+        try:
+            for c in sorted(assemblers):
+                write_timing_profile(sensor, c, PRODUCTION_TIMING_PROFILE)
+            # Group launch happens at the next frame boundary — at the sweep
+            # rate that is up to one 1.25 s period away.
+            time.sleep(_SWEEP_PERIOD_S + 0.25)
+            for c in sorted(assemblers):
+                try:
+                    FpgaRegs(sensor, c).exit_image_mode()
+                except IOError:
+                    pass
+        except Exception:
+            logger.exception("%s: timing/FPGA restore failed", side)
+        if trigger_started:
+            console.stop_trigger()
+        try:
+            console.set_trigger_json(data=saved_trigger)
+        except Exception:
+            logger.exception("restoring trigger config failed")
+        if image_mode_on:
+            sensor.set_camera_image_mode(False, mask)
+        sensor.disable_camera_fsin_ext()
+        sensor.disable_camera(mask)
+        stop_evt.set()
+        histo_if.stop_streaming()
+        # The first histogram frame after an image session carries counts
+        # accumulated across the whole session (spec §4.4) — drain and
+        # discard anything already in flight so the next scan starts clean.
+        try:
+            discarded = histo_if.drain_final(expected_size=_STREAM_READ_SIZE)
+            if discarded:
+                logger.info("%s: discarded %d post-image-session chunk(s) "
+                            "(first histogram frame after image mode is "
+                            "garbage)", side, len(discarded))
+        except Exception:
+            pass
+        collector.join(timeout=3.0)
+
+    if out_dir is not None:
+        _save_outputs(results, Path(out_dir), side)
+    return results
+
+
+def _save_outputs(results, out_dir: Path, side: str) -> None:
+    """Write {side}_cam{c}.npy (+16-bit PNG when PIL is available) and merge
+    per-camera status into meta.json — same shape as the retired
+    tools/full_frame_capture/capture.py outputs."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image          # transitively present via matplotlib
+    except ImportError:                # pragma: no cover - env-dependent
+        Image = None
+        logger.warning("PIL not importable — writing .npy only (PNG skipped)")
+
+    meta_path = out_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta.update({
+        "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "width": IMAGE_WIDTH, "height": IMAGE_HEIGHT, "bit_depth": 10,
+        "scaling": "none — raw 10-bit sensor values 0..1023 in 16-bit files",
+    })
+    meta.setdefault("cameras", {})
+    for c, res in sorted(results.items()):
+        key = f"{side}_cam{c}"
+        np.save(out_dir / f"{key}.npy", res.image)
+        if Image is not None:
+            Image.fromarray(res.image).save(out_dir / f"{key}.png")
+        meta["cameras"][key] = {
+            "complete": res.complete,
+            "single_exposure": res.complete and not res.mixed_exposure,
+            "mixed_exposure": res.mixed_exposure,
+            "frame_cnt": res.frame_cnt,
+            "missing_lines": res.missing_lines,
+            "overrun": res.overrun,
+            "rejected_lines": res.rejected_lines,
+            "sweep_attempts": res.attempts,
+        }
+    meta_path.write_text(json.dumps(meta, indent=2))

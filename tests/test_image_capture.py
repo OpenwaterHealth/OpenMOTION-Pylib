@@ -504,3 +504,32 @@ def test_write_timing_profile_reports_failure():
     s = _FakeI2CSensor()
     s.camera_i2c_write = lambda packet: False
     assert write_timing_profile(s, cam=0, profile=PRODUCTION_TIMING_PROFILE) is False
+
+
+# ---------------------------------------------------------------------------
+# Sweep retry policy (pure decision function driving the orchestrator loop)
+# ---------------------------------------------------------------------------
+
+def test_next_sweep_action_policy():
+    """Strict attempts restart from line 0 on a fresh exposure (preserving the
+    single-exposure guarantee); the last mixed_fill_sweeps attempts gap-fill
+    from the first missing line; done/give_up terminate."""
+    from omotion.ImageCapture import next_sweep_action
+
+    # complete -> done regardless of attempt
+    assert next_sweep_action([], attempt=1, max_sweeps=6, mixed_fill_sweeps=2) == ("done", None)
+    # attempts 1..4 of 6 (2 reserved for fill): strict restart
+    for a in (1, 2, 3, 4):
+        assert next_sweep_action([9, 40], a, 6, 2) == ("restart", 0)
+    # attempts 5..6: mixed gap-fill from first missing line
+    assert next_sweep_action([9, 40], 5, 6, 2) == ("fill", 9)
+    assert next_sweep_action([40], 6, 6, 2) == ("fill", 40)
+    # beyond budget
+    assert next_sweep_action([40], 7, 6, 2) == ("give_up", None)
+
+
+def test_next_sweep_action_no_fill_budget():
+    from omotion.ImageCapture import next_sweep_action
+
+    assert next_sweep_action([3], 2, 2, 0) == ("restart", 0)
+    assert next_sweep_action([3], 3, 2, 0) == ("give_up", None)
