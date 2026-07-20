@@ -165,6 +165,24 @@ def test_parse_image_line_overrun_flag():
     assert ln.overrun is True and ln.flags == 0x1 and ln.line == 1234
 
 
+def test_parse_image_line_wedge_flag():
+    """flags bit1 is the pusher-watchdog wedge (spec §4.3), distinct from the
+    bit0 overrun. Wedge-only (0x2) sets .wedge without .overrun; the combined
+    0x3 case matches the FPGA 'a wedge sets both bits' contract."""
+    from omotion.ImageCapture import parse_image_line
+
+    raw = _golden_line_bytes(flags=0x2)
+    assert raw[3] == 0x24                       # high nibble 0x2, line[11:8]=0x4
+    ln = parse_image_line(raw, cam_id=0)
+    assert ln.wedge is True and ln.overrun is False
+    assert ln.flags == 0x2 and ln.line == 1234
+
+    raw = _golden_line_bytes(flags=0x3)         # wedge + overrun together
+    assert raw[3] == 0x34
+    ln = parse_image_line(raw, cam_id=0)
+    assert ln.overrun is True and ln.wedge is True and ln.flags == 0x3
+
+
 # ---------------------------------------------------------------------------
 # USB envelope
 # ---------------------------------------------------------------------------
@@ -205,16 +223,16 @@ def test_parse_image_packet_bad_framing():
 # FrameAssembler
 # ---------------------------------------------------------------------------
 
-def _mk_line(line_no, frame_cnt=0x10, value=None, overrun=False):
+def _mk_line(line_no, frame_cnt=0x10, value=None, overrun=False, wedge=False):
     """Cheap ImageLine for assembler tests (bypasses byte packing — the wire
     path is proven by the parser tests above)."""
     from omotion.ImageCapture import IMAGE_WIDTH, ImageLine
 
     px = np.full(IMAGE_WIDTH, value if value is not None else line_no,
                  dtype=np.uint16)
-    flags = 0x1 if overrun else 0x0
+    flags = (0x1 if overrun else 0) | (0x2 if wedge else 0)
     return ImageLine(cam_id=0, line=line_no, flags=flags, overrun=overrun,
-                     frame_cnt=frame_cnt, pixels=px)
+                     wedge=wedge, frame_cnt=frame_cnt, pixels=px)
 
 
 def test_assembler_complete_frame():
@@ -293,6 +311,18 @@ def test_assembler_reset_and_overrun_tracking():
     assert asm.frame_cnt is None
     assert asm.add(_mk_line(0, frame_cnt=0x22)) is True
     assert asm.frame_cnt == 0x22
+
+
+def test_assembler_wedge_tracking():
+    """A pusher-watchdog wedge on any accepted line is latched for reporting
+    (parallel to overrun), and cleared on reset() for a strict retry."""
+    from omotion.ImageCapture import FrameAssembler
+
+    asm = FrameAssembler()
+    asm.add(_mk_line(0, frame_cnt=0x10, wedge=True))
+    assert asm.wedge_seen is True
+    asm.reset()
+    assert asm.wedge_seen is False
 
 
 # ---------------------------------------------------------------------------

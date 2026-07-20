@@ -116,6 +116,7 @@ class ImageLine:
     line: int
     flags: int
     overrun: bool
+    wedge: bool
     frame_cnt: int
     pixels: np.ndarray   # uint16[IMAGE_WIDTH]
 
@@ -145,6 +146,7 @@ def parse_image_line(line_bytes, cam_id: int = -1) -> ImageLine:
         line=line,
         flags=flags,
         overrun=bool(flags & FLAG_OVERRUN),
+        wedge=bool(flags & FLAG_WEDGE),
         frame_cnt=b[4],
         pixels=unpack_raw10(b[6 : 6 + IMAGE_LINE_PIXEL_BYTES]),
     )
@@ -208,6 +210,7 @@ class FrameAssembler:
         self.frame_cnt: int | None = None
         self.rejected_lines = 0
         self.overrun_seen = False
+        self.wedge_seen = False
 
     def add(self, line: ImageLine) -> bool:
         """Accept one parsed line. Returns True if it was placed."""
@@ -228,6 +231,8 @@ class FrameAssembler:
                 return False
             if line.overrun:
                 self.overrun_seen = True
+            if line.wedge:
+                self.wedge_seen = True
             self._frame_cnts.add(line.frame_cnt)
             self._img[line.line] = line.pixels
             self._filled[line.line] = True
@@ -261,6 +266,7 @@ class FrameAssembler:
             self.frame_cnt = None
             self.rejected_lines = 0
             self.overrun_seen = False
+            self.wedge_seen = False
 
 
 # ---------------------------------------------------------------------------
