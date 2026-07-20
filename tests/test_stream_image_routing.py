@@ -22,13 +22,13 @@ def _histo_pkt(payload=b"\x01\x02\x03\x04"):
 
 
 def _image_pkt(fill=0x55):
-    """Minimal well-framed TYPE_IMAGE envelope (2420 B). Routing does not
+    """Minimal well-framed TYPE_IMAGE envelope (2424 B). Routing does not
     parse the payload, so a constant fill body is sufficient here."""
-    body = bytes([fill]) * (1 + 1 + 2408 + 1)   # SOH..EOH region, framing only
+    body = bytes([fill]) * (4 + 1 + 1 + 2408 + 1)   # timestamp..EOH region, framing only
     total = 6 + len(body) + 3
     pkt = bytearray(bytes([0xAA, 0x03]) + total.to_bytes(4, "little")
                     + body + bytes([0x00, 0x00, 0xDD]))
-    pkt[6] = 0xFF                                # SOH
+    pkt[10] = 0xFF                                # SOH
     pkt[len(pkt) - 4] = 0xEE                     # EOH
     return bytes(pkt)
 

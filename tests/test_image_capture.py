@@ -188,11 +188,14 @@ def test_parse_image_line_wedge_flag():
 # ---------------------------------------------------------------------------
 
 def _envelope(line_bytes, cam_id=2):
-    """Wrap a 2408-B line in the 2420-B TYPE_IMAGE stream envelope (contract B).
+    """Wrap a 2408-B line in the 2424-B TYPE_IMAGE stream envelope (contract B).
     Transport CRC field is 0x0000 — the SDK does not verify it for image
-    packets (MCU forwards blind; the line CRC is authoritative)."""
-    total = 6 + 1 + 1 + len(line_bytes) + 1 + 3
+    packets (MCU forwards blind; the line CRC is authoritative). The 4-byte
+    FSIN timestamp is zeroed — the parser ignores it (same convention as the
+    histogram envelope)."""
+    total = 6 + 4 + 1 + 1 + len(line_bytes) + 1 + 3
     return (bytes([0xAA, 0x03]) + total.to_bytes(4, "little")
+            + bytes(4)                                    # FSIN timestamp (ignored)
             + bytes([0xFF, cam_id]) + line_bytes
             + bytes([0xEE, 0x00, 0x00, 0xDD]))
 
@@ -201,7 +204,7 @@ def test_parse_image_packet_envelope():
     from omotion.ImageCapture import IMAGE_PACKET_SIZE, parse_image_packet
 
     pkt = _envelope(_golden_line_bytes(), cam_id=5)
-    assert len(pkt) == IMAGE_PACKET_SIZE == 2420
+    assert len(pkt) == IMAGE_PACKET_SIZE == 2424
     ln = parse_image_packet(pkt)
     assert ln.cam_id == 5 and ln.line == 1234 and ln.frame_cnt == 0x5C
 

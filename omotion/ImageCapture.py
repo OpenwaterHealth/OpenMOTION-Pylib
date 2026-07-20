@@ -2,7 +2,7 @@
 
 Host side of the drip-scan feature: the FPGA pushes each sensor row as a
 2408-B packed-RAW10 line; sensor firmware forwards it blind on the HISTO USB
-endpoint as a 2420-B TYPE_IMAGE (0x03) stream packet; this module parses,
+endpoint as a 2424-B TYPE_IMAGE (0x03) stream packet; this module parses,
 CRC-verifies, and reassembles lines into 1280x1920 uint16 frames, retimes the
 OX02C1B for the slow sweep, and orchestrates a capture end to end.
 
@@ -19,12 +19,14 @@ Line push (2408 B, FPGA -> MCU -> host, opaque to the MCU):
 RAW10 packing: 4 px -> 5 B; pixel k (k=0..3, readout order) occupies bits
 [10k+9:10k] of a 40-bit little-endian group (low byte first on the wire).
 
-USB stream envelope (2420 B, mirrors the histogram envelope conventions in
-MotionProcessing.parse_histogram_packet_structured):
-  [0]=SOF 0xAA  [1]=TYPE_IMAGE 0x03  [2:6]=u32 LE total length (2420)
-  [6]=SOH 0xFF  [7]=cam_id  [8:2416]=line push  [2416]=EOH 0xEE
-  [2417:2419]=transport CRC (NOT verified here — the MCU forwards blind, the
-  line CRC above is the authoritative integrity check)  [2419]=EOF 0xDD
+USB stream envelope (2424 B, mirrors the histogram envelope conventions in
+MotionProcessing.parse_histogram_packet_structured — including the 4-byte
+FSIN timestamp):
+  [0]=SOF 0xAA  [1]=TYPE_IMAGE 0x03  [2:6]=u32 LE total length (2424)
+  [6:10]=FSIN timestamp (u32 LE, NOT parsed here)  [10]=SOH 0xFF  [11]=cam_id
+  [12:2420]=line push  [2420]=EOH 0xEE
+  [2421:2423]=transport CRC (NOT verified here — the MCU forwards blind, the
+  line CRC above is the authoritative integrity check)  [2423]=EOF 0xDD
 """
 
 import json
@@ -63,7 +65,7 @@ FLAG_WEDGE = 0x2                                       # header flags bit1 — p
 
 # --- USB envelope (contract B) ---------------------------------------------
 _ENV_SOF, _ENV_SOH, _ENV_EOH, _ENV_EOF = 0xAA, 0xFF, 0xEE, 0xDD
-IMAGE_PACKET_SIZE = 6 + 1 + 1 + IMAGE_LINE_SIZE + 1 + 3  # 2420
+IMAGE_PACKET_SIZE = 6 + 4 + 1 + 1 + IMAGE_LINE_SIZE + 1 + 3  # 2424
 
 
 class ImageLineError(ValueError):
@@ -161,11 +163,13 @@ def parse_image_line(line_bytes, cam_id: int = -1) -> ImageLine:
 
 
 def parse_image_packet(pkt) -> ImageLine:
-    """Validate the 2420-B USB envelope and decode the line inside.
+    """Validate the 2424-B USB envelope and decode the line inside.
 
     The envelope transport-CRC field is intentionally NOT verified: the MCU
     forwards image lines blind (spec §4.1/§4.4) and the FPGA-computed line CRC
-    inside the payload is the authoritative integrity check.
+    inside the payload is the authoritative integrity check. The 4-byte FSIN
+    timestamp at [6:10] (same convention as the histogram envelope this
+    mirrors) is likewise not surfaced here.
     """
     b = bytes(pkt)
     if len(b) != IMAGE_PACKET_SIZE:
@@ -179,13 +183,13 @@ def parse_image_packet(pkt) -> ImageLine:
     total = int.from_bytes(b[2:6], "little")
     if total != IMAGE_PACKET_SIZE:
         raise ImageLineError(f"envelope length field {total} != {IMAGE_PACKET_SIZE}")
-    if b[6] != _ENV_SOH:
+    if b[10] != _ENV_SOH:
         raise ImageLineError("missing SOH")
-    if b[8 + IMAGE_LINE_SIZE] != _ENV_EOH:
+    if b[12 + IMAGE_LINE_SIZE] != _ENV_EOH:
         raise ImageLineError("missing EOH")
     if b[-1] != _ENV_EOF:
         raise ImageLineError("missing EOF")
-    return parse_image_line(b[8 : 8 + IMAGE_LINE_SIZE], cam_id=b[7])
+    return parse_image_line(b[12 : 12 + IMAGE_LINE_SIZE], cam_id=b[11])
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +433,7 @@ def write_timing_profile(sensor, cam: int, profile) -> bool:
 
 # USB read size for the stream loop during an image session: the HISTO
 # endpoint's max transfer (USB_HISTO_MAX_SIZE in sensor-fw usbd_histo.h).
-# Image packets are 2420 B each; a single read may deliver one or several.
+# Image packets are 2424 B each; a single read may deliver one or several.
 _STREAM_READ_SIZE = 32837
 
 _SWEEP_PERIOD_S = 1.0 / SWEEP_FSIN_HZ   # 1.25 s per exposure at 0.8 Hz

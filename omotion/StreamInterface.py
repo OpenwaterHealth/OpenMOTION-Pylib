@@ -50,7 +50,7 @@ def _util_crc16(buf) -> int:
 
 
 # Largest legal stream envelope = USB_HISTO_MAX_SIZE in sensor-fw usbd_histo.h
-# (8-camera histogram packet). Image packets are 2420 B; both fit under this.
+# (8-camera histogram packet). Image packets are 2424 B; both fit under this.
 _MAX_STREAM_PACKET = 32837
 
 
