@@ -32,7 +32,7 @@ HISTO_BLOCK_SIZE = 1 + (HISTO_SIZE_WORDS * 4) + 1  # HID + HISTO + EOH
 HISTO_BINS: np.ndarray = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
 HISTO_BINS_SQ: np.ndarray = HISTO_BINS * HISTO_BINS
 
-# Full-well capacity of the OV2312 sensor in electrons. Used to compute
+# Full-well capacity of the OX02C1B sensor in electrons. Used to compute
 # ADC gain (DN per electron) for shot-noise correction:
 #   ADC_GAIN = (HISTO_SIZE_WORDS - pedestal) / ELECTRON_WELL_CAPACITY
 ELECTRON_WELL_CAPACITY: int = 11_000
@@ -261,7 +261,7 @@ MODULES: int = 2
 """Number of sensor modules per device (left + right)."""
 
 CAMS_PER_MODULE: int = 8
-"""Cameras per sensor module (OV2312 array)."""
+"""Cameras per sensor module (OX02C1B array)."""
 
 CAPTURE_HZ: float = 40.0
 """Histogram capture rate per camera, in Hz."""

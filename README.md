@@ -8,7 +8,7 @@ histogram streams into Blood Flow Index (BFI) / Blood Volume Index (BVI) plus a
 queryable scan database.
 
 It talks to an **Open-Motion Console** over UART and to up to **two sensor
-modules** (8 × OV2312 cameras each) over USB bulk. The console and sensor
+modules** (8 × OX02C1B cameras each) over USB bulk. The console and sensor
 firmware live in the `openmotion-console-fw` and `openmotion-sensor-fw` repos;
 this library just speaks their wire protocol.
 

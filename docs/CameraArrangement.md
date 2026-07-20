@@ -2,7 +2,7 @@
 
 ## Physical Layout
 
-Each sensor module contains 8 cameras (OV2312) arranged in a 4×2 grid. Cameras are numbered 1–8 (or 0–7 in software, i.e., `channel = camera_number - 1`).
+Each sensor module contains 8 cameras (OX02C1B) arranged in a 4×2 grid. Cameras are numbered 1–8 (or 0–7 in software, i.e., `channel = camera_number - 1`).
 
 The layout counts **down** the left column (1→4) then **hooks back up** the right column (5→8):
 
