@@ -28,6 +28,7 @@ MotionProcessing.parse_histogram_packet_structured):
 """
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -174,3 +175,88 @@ def parse_image_packet(pkt) -> ImageLine:
     if b[-1] != _ENV_EOF:
         raise ImageLineError("missing EOF")
     return parse_image_line(b[8 : 8 + IMAGE_LINE_SIZE], cam_id=b[7])
+
+
+# ---------------------------------------------------------------------------
+# Frame assembly
+# ---------------------------------------------------------------------------
+
+class FrameAssembler:
+    """Ordered reassembly of one 1280x1920 uint16 frame from ImageLines.
+
+    Thread-safe (the collector thread adds lines while the orchestrator polls
+    completeness — same cross-thread pattern as the rest of the SDK transport
+    layer).
+
+    Single-exposure enforcement: the first accepted line pins ``frame_cnt``;
+    lines carrying a different value are rejected (counted in
+    ``rejected_lines``) unless ``allow_mixed`` is set, in which case they fill
+    their gap and the result is flagged ``mixed_exposure`` — the frame is then
+    usable for focus inspection but is NOT a single-exposure speckle frame.
+    """
+
+    def __init__(self, height: int = IMAGE_HEIGHT, width: int = IMAGE_WIDTH,
+                 allow_mixed: bool = False):
+        self.height = height
+        self.width = width
+        self.allow_mixed = allow_mixed
+        self._lock = threading.Lock()
+        self._img = np.zeros((height, width), dtype=np.uint16)
+        self._filled = np.zeros(height, dtype=bool)
+        self._frame_cnts: set[int] = set()
+        self.frame_cnt: int | None = None
+        self.rejected_lines = 0
+        self.overrun_seen = False
+
+    def add(self, line: ImageLine) -> bool:
+        """Accept one parsed line. Returns True if it was placed."""
+        with self._lock:
+            if not (0 <= line.line < self.height):
+                self.rejected_lines += 1
+                logger.warning("cam %d: line %d out of range — rejected",
+                               line.cam_id, line.line)
+                return False
+            if self.frame_cnt is None:
+                self.frame_cnt = line.frame_cnt
+            elif line.frame_cnt != self.frame_cnt and not self.allow_mixed:
+                self.rejected_lines += 1
+                logger.warning(
+                    "cam %d: line %d frame_cnt 0x%02X != pinned 0x%02X — "
+                    "rejected (single-exposure enforcement)",
+                    line.cam_id, line.line, line.frame_cnt, self.frame_cnt)
+                return False
+            if line.overrun:
+                self.overrun_seen = True
+            self._frame_cnts.add(line.frame_cnt)
+            self._img[line.line] = line.pixels
+            self._filled[line.line] = True
+            return True
+
+    def missing(self) -> list[int]:
+        with self._lock:
+            return [int(i) for i in np.nonzero(~self._filled)[0]]
+
+    @property
+    def complete(self) -> bool:
+        with self._lock:
+            return bool(self._filled.all())
+
+    @property
+    def mixed_exposure(self) -> bool:
+        with self._lock:
+            return len(self._frame_cnts) > 1
+
+    def image(self) -> np.ndarray:
+        """Copy of the frame so far (unfilled rows are zero)."""
+        with self._lock:
+            return self._img.copy()
+
+    def reset(self) -> None:
+        """Discard everything and start a fresh exposure (strict retry)."""
+        with self._lock:
+            self._img.fill(0)
+            self._filled.fill(False)
+            self._frame_cnts.clear()
+            self.frame_cnt = None
+            self.rejected_lines = 0
+            self.overrun_seen = False

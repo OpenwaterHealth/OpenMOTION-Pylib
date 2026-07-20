@@ -199,3 +199,97 @@ def test_parse_image_packet_bad_framing():
     pkt[-1] = 0x00   # EOF
     with pytest.raises(ImageLineError):
         parse_image_packet(bytes(pkt))
+
+
+# ---------------------------------------------------------------------------
+# FrameAssembler
+# ---------------------------------------------------------------------------
+
+def _mk_line(line_no, frame_cnt=0x10, value=None, overrun=False):
+    """Cheap ImageLine for assembler tests (bypasses byte packing — the wire
+    path is proven by the parser tests above)."""
+    from omotion.ImageCapture import IMAGE_WIDTH, ImageLine
+
+    px = np.full(IMAGE_WIDTH, value if value is not None else line_no,
+                 dtype=np.uint16)
+    flags = 0x1 if overrun else 0x0
+    return ImageLine(cam_id=0, line=line_no, flags=flags, overrun=overrun,
+                     frame_cnt=frame_cnt, pixels=px)
+
+
+def test_assembler_complete_frame():
+    """All 1280 lines of one exposure -> complete, consistent, right shape,
+    rows land at their line index."""
+    from omotion.ImageCapture import IMAGE_HEIGHT, IMAGE_WIDTH, FrameAssembler
+
+    asm = FrameAssembler()
+    for i in range(IMAGE_HEIGHT):
+        assert asm.add(_mk_line(i)) is True
+    assert asm.complete is True
+    assert asm.missing() == []
+    assert asm.mixed_exposure is False
+    assert asm.frame_cnt == 0x10
+    img = asm.image()
+    assert img.shape == (IMAGE_HEIGHT, IMAGE_WIDTH) and img.dtype == np.uint16
+    assert img[7, 0] == 7 and img[1279, 100] == 1279
+
+
+def test_assembler_gap_list_and_incomplete():
+    from omotion.ImageCapture import IMAGE_HEIGHT, FrameAssembler
+
+    asm = FrameAssembler()
+    for i in range(IMAGE_HEIGHT):
+        if i not in (5, 900):
+            asm.add(_mk_line(i))
+    assert asm.complete is False
+    assert asm.missing() == [5, 900]
+
+
+def test_assembler_rejects_frame_cnt_mismatch_by_default():
+    """Single-exposure enforcement: a line from a different exposure is
+    rejected and counted, and the image stays attributable to one frame_cnt."""
+    from omotion.ImageCapture import FrameAssembler
+
+    asm = FrameAssembler()
+    assert asm.add(_mk_line(0, frame_cnt=0x10)) is True
+    assert asm.add(_mk_line(1, frame_cnt=0x11)) is False
+    assert asm.rejected_lines == 1
+    assert asm.frame_cnt == 0x10
+    assert asm.mixed_exposure is False
+    assert 1 in asm.missing()
+
+
+def test_assembler_allow_mixed_gap_fill():
+    """Retry fallback: with allow_mixed=True a different-exposure line fills
+    its gap but the result is flagged mixed_exposure."""
+    from omotion.ImageCapture import FrameAssembler
+
+    asm = FrameAssembler()
+    asm.add(_mk_line(0, frame_cnt=0x10))
+    asm.allow_mixed = True
+    assert asm.add(_mk_line(1, frame_cnt=0x11)) is True
+    assert asm.mixed_exposure is True
+    assert asm.rejected_lines == 0
+
+
+def test_assembler_rejects_out_of_range_line():
+    from omotion.ImageCapture import IMAGE_HEIGHT, FrameAssembler
+
+    asm = FrameAssembler()
+    assert asm.add(_mk_line(IMAGE_HEIGHT)) is False   # line 1280 of 0..1279
+    assert asm.rejected_lines == 1
+
+
+def test_assembler_reset_and_overrun_tracking():
+    """reset() starts a fresh exposure (used by the strict retry policy);
+    overrun on any accepted line is latched for reporting."""
+    from omotion.ImageCapture import FrameAssembler
+
+    asm = FrameAssembler()
+    asm.add(_mk_line(0, frame_cnt=0x10, overrun=True))
+    assert asm.overrun_seen is True
+    asm.reset()
+    assert asm.overrun_seen is False
+    assert asm.frame_cnt is None
+    assert asm.add(_mk_line(0, frame_cnt=0x22)) is True
+    assert asm.frame_cnt == 0x22
