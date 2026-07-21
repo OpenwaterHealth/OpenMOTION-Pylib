@@ -4,7 +4,7 @@ import time
 import usb.core
 import usb.util
 import threading
-from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion.USBInterfaceBase import USBInterfaceBase, is_usb_timeout
 from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP
 from omotion import _log_root
 
@@ -239,7 +239,7 @@ class StreamInterface(USBInterfaceBase):
                     # a timeout USBError. Treat as endpoint-empty and stop flush.
                     break
             except usb.core.USBError as e:
-                if e.errno in (110, 10060):
+                if is_usb_timeout(e):
                     # Timeout — endpoint buffer is now empty.
                     break
                 elif e.errno in (19, 5, 32):
@@ -307,7 +307,7 @@ class StreamInterface(USBInterfaceBase):
                         f"(chunk {len(chunks)})"
                     )
             except usb.core.USBError as e:
-                if e.errno in (110, 10060):
+                if is_usb_timeout(e):
                     # Timeout — endpoint is empty, nothing more to recover.
                     break
                 elif e.errno in (19, 5, 32):
@@ -409,7 +409,7 @@ class StreamInterface(USBInterfaceBase):
                             self.desc, len(data),
                         )
             except usb.core.USBError as e:
-                if e.errno in (110, 10060):
+                if is_usb_timeout(e):
                     # Timeout — no data arrived within the read window.
                     if self.stop_event.is_set():
                         # Stop requested and endpoint is now empty: exit cleanly.

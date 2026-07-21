@@ -97,6 +97,12 @@ class ConsoleTelemetry:
     # responded, faults absent" (trust safety_ok). See issue
     # OpenwaterHealth/openmotion-bloodflow-app#107.
     safety_known: bool = False
+    # Decoded fault labels across both channels (EE+OPT), de-duplicated,
+    # empty when the interlock is clear. Lets consumers show *which* fault
+    # tripped (peak-current / pulse / rate) without re-deriving from the raw
+    # bytes. Only meaningful when safety_known is True. See
+    # OpenwaterHealth/openmotion-test-app#56.
+    safety_faults: List[str] = field(default_factory=list)
 
     # --- Read health ---
     read_ok: bool = True            # False if any sub-read threw an exception
@@ -409,6 +415,9 @@ class ConsoleTelemetryPoller:
         so_faults = _decode_safety_faults(snap.safety_so & _SAFETY_FAULT_MASK)
         snap.safety_ok = not se_faults and not so_faults
         snap.safety_known = True
+        # Combined, de-duplicated fault labels for consumers (GUI "which fault").
+        # dict.fromkeys preserves first-seen order without duplicates.
+        snap.safety_faults = list(dict.fromkeys(se_faults + so_faults))
 
         if se_faults:
             logger.error(

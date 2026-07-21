@@ -17,6 +17,7 @@ from omotion.config import (
     OW_CAMERA_GET_HISTOGRAM,
     OW_CAMERA_SET_TESTPATTERN,
     OW_CAMERA_SINGLE_HISTOGRAM,
+    DEBUG_FLAG_CAMERA_RAW,
     OW_CAMERA_SET_CONFIG,
     OW_CMD,
     OW_CMD_DIAG_STATS,
@@ -68,6 +69,7 @@ from omotion.config import (
     OW_CAMERA_POWER_ON,
     OW_CAMERA_POWER_STATUS,
     OW_CAMERA_READ_SECURITY_UID,
+    OW_CAMERA_GET_TELEMETRY,
     OW_CMD_DFU,
     OW_CMD_SERIAL,
     is_valid_serial,
@@ -85,6 +87,121 @@ _ERROR_TYPES = frozenset({OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN})
 
 
 from omotion.firmware_update import parse_version as _parse_firmware_version
+
+
+# --- Camera telemetry (sensor-fw#94) ---------------------------------------
+# Wire format: cam_telemetry_response_t in sensor-fw Core/Inc/camera_telemetry.h
+# — 4-byte header {version, valid_mask, struct_size, reserved} followed by 8
+# packed 78-byte per-camera records (little-endian). The firmware sends raw
+# register values; this parser owns every engineering-unit conversion.
+CAM_TELEMETRY_VERSION = 1
+_CAM_TELEM_HDR_FMT = "<BBBBII"  # version, valid_mask, struct_size, rsvd, fsin_pulse_count, uptime_ms
+_CAM_TELEM_CAM_FMT = "<II22H22B"
+_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 74
+_CAM_TELEM_HDR_SIZE = struct.calcsize(_CAM_TELEM_HDR_FMT)  # 12
+_CAM_TELEM_SIZE = _CAM_TELEM_HDR_SIZE + 8 * _CAM_TELEM_CAM_SIZE  # 604
+
+
+def _vm_volts(raw: int) -> float:
+    """On-die voltage-monitor code -> volts (OX02C1B DS table A-39)."""
+    return (raw & 0x0FFF) * 6.0 / 4096.0
+
+
+def _tpm_celsius(raw: int) -> float:
+    """8.8 fixed-point die temperature; >0xC000 encodes negative (DS 10.5.23)."""
+    if raw > 0xC000:
+        return -((raw - 0xC000) / 256.0)
+    return raw / 256.0
+
+
+def parse_camera_telemetry(data: bytes) -> dict | None:
+    """Parse a cam_telemetry_response_t blob; None if malformed or version-mismatched.
+
+    Returned dict: ``{"version", "valid_mask", "fsin_pulse_count", "uptime_ms",
+    "cameras": [dict * 8]}`` where each camera dict carries converted values
+    (``avdd_v``/``dovdd_v``/``dvdd_v`` volts, ``tpm_avg_c``/``tpm0_c``/``tpm1_c``
+    degC, ``again_x``/``dgain_x`` gain factors) alongside the raw
+    fault/state/counter bytes. ``fsin_pulse_count`` is the firmware's frame
+    trigger counter — external (console-driven) FSIN edges only; the sensor's
+    own frame counter has no readable SCCB value register, and internal-FSIN
+    frames don't increment this. ``valid`` is False for a camera the firmware
+    has never completed
+    a sweep on (fields all zero); ``updated_ms`` (firmware HAL_GetTick, compare
+    against ``uptime_ms``) reveals staleness, ``sweep_count`` liveness.
+    """
+    if data is None or len(data) < _CAM_TELEM_SIZE:
+        return None
+    (version, valid_mask, struct_size, _,
+     fsin_pulse_count, uptime_ms) = struct.unpack_from(_CAM_TELEM_HDR_FMT, data, 0)
+    if version != CAM_TELEMETRY_VERSION or struct_size != _CAM_TELEM_CAM_SIZE:
+        logger.warning(
+            "camera telemetry format mismatch (version %d size %d, expected %d/%d)",
+            version, struct_size, CAM_TELEMETRY_VERSION, _CAM_TELEM_CAM_SIZE)
+        return None
+
+    cameras = []
+    for i in range(8):
+        f = struct.unpack_from(
+            _CAM_TELEM_CAM_FMT, data, _CAM_TELEM_HDR_SIZE + i * _CAM_TELEM_CAM_SIZE)
+        updated_ms, dgain_raw = f[0:2]
+        (avdd, dovdd, dvdd, tpm_avg, tpm0, tpm1, tc_row, expo_cmd, expo_applied,
+         again_raw, isp_real_gain, isp_dig_gain, isp_blc, isp_expo) = f[2:16]
+        blc_offsets = [v & 0x7FFF for v in f[16:24]]
+        (tpm_status, vm_live, vm_cp, vm_latched, vm_cp_latched,
+         wd_a, wd_b, wd_sticky, _wd_tpm_hi, _wd_tpm_lo, wd_state,
+         sc_state, otp_crc0, otp_crc1, trig_error, yavg, aec_mode,
+         dcg_state, blc_ctrl, isp_ctrl, i2c_err_count, sweep_count) = f[24:46]
+
+        # Analog gain: 0x3508[4:0] = code[8:4], 0x3509[7:4] = code[3:0]; x = code/16.
+        again_code = (((again_raw >> 8) & 0x1F) << 4) | ((again_raw >> 4) & 0x0F)
+        # Digital gain: 0x350A[3:0]=code[13:10], 0x350B=code[9:2], 0x350C[7:6]=code[1:0].
+        dgain_code = ((((dgain_raw >> 16) & 0x0F) << 10)
+                      | (((dgain_raw >> 8) & 0xFF) << 2)
+                      | ((dgain_raw & 0xFF) >> 6))
+
+        cameras.append({
+            "valid": bool(valid_mask & (1 << i)),
+            "updated_ms": updated_ms,
+            "sweep_count": sweep_count,
+            "i2c_err_count": i2c_err_count,
+            "avdd_v": _vm_volts(avdd),
+            "dovdd_v": _vm_volts(dovdd),
+            "dvdd_v": _vm_volts(dvdd),
+            "tpm_avg_c": _tpm_celsius(tpm_avg),
+            "tpm0_c": _tpm_celsius(tpm0),
+            "tpm1_c": _tpm_celsius(tpm1),
+            "tpm_status": tpm_status,
+            "vm_live": vm_live,
+            "vm_cp": vm_cp,
+            "vm_latched": vm_latched,
+            "vm_cp_latched": vm_cp_latched,
+            "wd_fault_a": wd_a,
+            "wd_fault_b": wd_b,
+            "wd_sticky": wd_sticky & 0x01,
+            "wd_state": wd_state,
+            "sc_state": sc_state & 0x0F,
+            "otp_crc": (otp_crc0, otp_crc1),
+            "trig_error": trig_error,
+            "yavg": yavg,
+            "tc_row": tc_row,
+            "expo_cmd": expo_cmd,
+            "expo_applied": expo_applied,
+            "again_cmd": again_raw,
+            "again_x": again_code / 16.0,
+            "dgain_x": dgain_code / 1024.0,
+            "aec_mode": aec_mode,
+            "dcg_state": dcg_state,
+            "blc_ctrl": blc_ctrl,
+            "isp_ctrl": isp_ctrl,
+            "isp_real_gain": isp_real_gain,
+            "isp_dig_gain": isp_dig_gain,
+            "isp_blc": isp_blc,
+            "isp_expo": isp_expo,
+            "blc_offsets": blc_offsets,
+        })
+    return {"version": version, "valid_mask": valid_mask,
+            "fsin_pulse_count": fsin_pulse_count, "uptime_ms": uptime_ms,
+            "cameras": cameras}
 
 
 class MotionSensor(SignalWrapper):
@@ -505,7 +622,7 @@ class MotionSensor(SignalWrapper):
 
         The firmware verifies, at startup, that every expected I2C device is
         present: the TCA9548A mux, the ICM-20948 IMU, and all 8 cameras
-        (OV2312) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
+        (OX02C1B) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
         I2C (ULPI) and is excluded.
 
         Args:
@@ -519,7 +636,7 @@ class MotionSensor(SignalWrapper):
                 "version": int,
                 "mux": bool,             # TCA9548A 0x70
                 "imu": bool,             # ICM-20948 0x68
-                "cameras": [bool] * 8,   # OV2312 0x36 per mux channel
+                "cameras": [bool] * 8,   # OX02C1B 0x36 per mux channel
                 "fpgas":   [bool] * 8,   # CrossLink 0x40 per mux channel
                 "cameras_expected": int, # bitmask, 0xFF = all 8
                 "all_present": bool,
@@ -604,6 +721,46 @@ class MotionSensor(SignalWrapper):
             "cmp_fallback_count": counts[10],
             "cmp_max_time_us": counts[11],
         }
+
+    def get_camera_telemetry(self) -> dict | None:
+        """Return the firmware's cached per-camera condition telemetry, or None.
+
+        sensor-fw#94: firmware continuously sweeps every powered OX02C1B in the
+        background (rails from the on-die voltage monitor, dual die temps,
+        VM/watchdog fault latches, sensor state machine, OTP CRC status, MIPI
+        frame counter, FSIN trigger errors, on-chip frame mean, commanded vs
+        applied exposure/gain, applied BLC offsets) and this command returns
+        the cached snapshot — no camera I2C happens at query time, so it is
+        safe to poll during scans. Fleet refresh is ~1 s; per-camera
+        ``updated_ms``/``sweep_count`` reveal staleness. See
+        ``parse_camera_telemetry`` for the returned structure.
+        """
+        if self.demo_mode:
+            cam = {
+                "valid": True, "updated_ms": 1000, "sweep_count": 1,
+                "i2c_err_count": 0,
+                "avdd_v": 2.8, "dovdd_v": 1.8, "dvdd_v": 1.2,
+                "tpm_avg_c": 45.0, "tpm0_c": 45.0, "tpm1_c": 45.0,
+                "tpm_status": 0, "vm_live": 0, "vm_cp": 0,
+                "vm_latched": 0, "vm_cp_latched": 0,
+                "wd_fault_a": 0, "wd_fault_b": 0, "wd_sticky": 0,
+                "wd_state": 0, "sc_state": 0x9, "otp_crc": (0, 0),
+                "trig_error": 0, "yavg": 128,
+                "tc_row": 0, "expo_cmd": 0x48, "expo_applied": 0x48,
+                "again_cmd": 0x0100, "again_x": 1.0, "dgain_x": 1.0,
+                "aec_mode": 0xA8, "dcg_state": 0x40,
+                "blc_ctrl": 0x23, "isp_ctrl": 0x34,
+                "isp_real_gain": 0x10, "isp_dig_gain": 0x400,
+                "isp_blc": 0x80, "isp_expo": 0x48,
+                "blc_offsets": [0] * 8,
+            }
+            return {"version": CAM_TELEMETRY_VERSION, "valid_mask": 0xFF,
+                    "fsin_pulse_count": 0, "uptime_ms": 1000,
+                    "cameras": [dict(cam) for _ in range(8)]}
+        r = self._send(packetType=OW_CAMERA, command=OW_CAMERA_GET_TELEMETRY)
+        if r is None or r.packetType in _ERROR_TYPES or r.data_len < _CAM_TELEM_SIZE:
+            return None
+        return parse_camera_telemetry(bytes(r.data[:_CAM_TELEM_SIZE]))
 
     def _check_i2c_health(self) -> None:
         """Read and cache the boot-time I2C health snapshot (connection step).
@@ -864,22 +1021,35 @@ class MotionSensor(SignalWrapper):
                    boot_test: bool = True) -> bytes:
         """Probe the active camera's CrossLink NVCM state.
 
-        Reads NVCM discriminators over I2C (config-mode read-back) and, if
-        boot_test is set, additionally performs a behaviorally-definitive
-        auto-boot test: releases CRESETB without the activation key and checks
-        whether the config port at 0x40 still answers.  Neither phase touches
-        camera power.  Select the camera first with switch_camera() and make
-        sure it is powered.
+        Dumps the ISC register discriminators over I2C for diagnostics and —
+        on firmware with sensor-fw#92 — appends the pin-drive boot verdict
+        byte, the ONLY field that answers "is it programmed": 1 = the NVCM
+        design booted and drove the camera bus, 0 = no boot, 0xFF = probe
+        refused (camera unpowered). The register reads cannot answer it:
+        STATUS bit 19 ("SDM Enable") merely mirrors the NVCM Done fuse — a
+        part can have the fuse burned yet never boot (openmotion-test-app#44)
+        — the content reads float 0xFF (the NVCM array is not read-enabled
+        in this flow), and the SRAM Done bit reads 0 on every part. Older
+        firmware returns the blob without the trailing byte; for a verdict
+        there, use the behavioral fallback (reset_camera_sensor + timed
+        non-forced program_fpga; see scripts/nvcm_probe.py).
+
+        Select the camera first with switch_camera() — checking its response
+        — and make sure it is powered.
 
         Args:
             isc_operand: ISC_ENABLE operand1 — 0x08 = NVCM access (default),
                          0x00 = SRAM access.
             num_rows:    Number of 16-byte NVCM array rows to read back (0-8).
-            boot_test:   Run the auto-boot 0x40-disappearance test (default True).
+            boot_test:   Also release CRESETB without the activation key and
+                         probe 0x40.  Informational only — NOT a programmed/
+                         blank discriminator: the config port needs the
+                         activation key to respond, so 0x40 never ACKs here
+                         regardless of NVCM state (openmotion-test-app#44).
 
         Returns:
             Raw fixed-layout response blob (see scripts/nvcm_probe.py for the
-            field layout), or b"" on error.
+            field layout incl. the trailing verdict byte), or b"" on error.
         """
         payload = bytearray([isc_operand & 0xFF, num_rows & 0xFF,
                              1 if boot_test else 0])
@@ -908,6 +1078,11 @@ class MotionSensor(SignalWrapper):
         Bit 8 (DEBUG_FLAG_HISTO_STALL) stops histogram sends after ~45 s of
         streaming while USB stays alive — deterministic camera-stall repro
         (sensor-fw#75).
+        Bit 9 (DEBUG_FLAG_CAMERA_CROP) crops camera output to 1720x1280 at
+        camera (re)configuration (sensor-fw#86).
+        Bit 10 (DEBUG_FLAG_CAMERA_RAW) disables all on-sensor pixel
+        corrections at camera (re)configuration (sensor-fw#89) — prefer
+        :meth:`set_camera_raw_mode`.
         """
         if self.demo_mode:
             return True
@@ -933,6 +1108,30 @@ class MotionSensor(SignalWrapper):
         flags = struct.unpack("<I", r.data)[0]
         logger.info("Debug flags: 0x%08X", flags)
         return flags
+
+    def set_camera_raw_mode(self, enable: bool) -> bool:
+        """Enable/disable the raw "scientific sensor" camera mode (sensor-fw#89).
+
+        Sets or clears DEBUG_FLAG_CAMERA_RAW (bit 10), preserving all other
+        debug flags. While the flag is set, camera (re)configuration disables
+        every on-sensor pixel correction — BLC, DC-BLC, BLC dither and OTP
+        defect-pixel correction — so pixels are bare ADC codes.
+
+        The flag is read at camera-configure time only: power-cycle the
+        cameras (or the sensor) and re-run the configure workflow for it to
+        take effect — OW_CAMERA_SET_CONFIG skips cameras it considers
+        already configured. In raw mode the dark level sits at the raw
+        per-channel pedestal (roughly 255 DN at 1x analog gain, 495 DN at
+        16x) instead of the servoed target, so PEDESTAL_HEIGHT-based dark
+        handling is invalid — engineering/scientific captures only, not
+        production scans.
+        """
+        flags = self.get_debug_flags()
+        if enable:
+            flags |= DEBUG_FLAG_CAMERA_RAW
+        else:
+            flags &= ~DEBUG_FLAG_CAMERA_RAW
+        return self.set_debug_flags(flags)
 
     # ------------------------------------------------------------------
     # IMU

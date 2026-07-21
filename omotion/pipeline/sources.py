@@ -343,7 +343,7 @@ class LiveUsbSource(_BaseSource):
         shared batch queue.
         """
         from omotion.MotionProcessing import (
-            parse_histogram_stream, EXPECTED_HISTOGRAM_SUM,
+            parse_histogram_stream, EXPECTED_HISTOGRAM_SUMS,
         )
 
         side_idx = 0 if side_name == "left" else 1
@@ -364,7 +364,7 @@ class LiveUsbSource(_BaseSource):
         parse_histogram_stream(
             self._packet_queues[side_name], self._stop, buf,
             on_row_fn=on_row,
-            expected_row_sum=EXPECTED_HISTOGRAM_SUM,
+            expected_row_sum=EXPECTED_HISTOGRAM_SUMS,
             t0_normalizer=partial(self._t0_normalize, side_name),
         )
         # Flush any remaining samples after parse_histogram_stream returns

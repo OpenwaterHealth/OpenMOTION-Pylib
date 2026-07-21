@@ -151,8 +151,9 @@ command/response on the sensor):
   `[header][compressed:M][uncmp_crc:2][crc:2][0xDD]`
 - Max packet size: **32 837 B** (~8 cameras + headers); typical scan: one
   camera per packet at 40 Hz.
-- Validation: each parsed sample's `Σ bins` is compared against
-  `EXPECTED_HISTOGRAM_SUM` (`2_457_606`) and dropped on mismatch.
+- Validation: each parsed sample's `Σ bins` must match one of
+  `EXPECTED_HISTOGRAM_SUMS` (`{2_457_606, 2_201_606}` — full and debug-crop
+  geometries, each = W×H + 6) and is dropped otherwise.
 
 ### Transport layer
 
@@ -197,7 +198,7 @@ Always creates `CommInterface` in async mode. Claims all three on `connect()`, r
 |---|---|
 | `parse_histogram_packet()` / `parse_histogram_stream()` | Extract `HistogramSample`s from raw USB bulk bytes; handle multi-camera packets and the `DEBUG_FLAG_HISTO_CMP` decompression path |
 | `bytes_to_integers()` | Converts 4096 histogram bytes to 1024 int bins + hidden figures |
-| `EXPECTED_HISTOGRAM_SUM`, `HISTOGRAM_BYTES` | Validation and framing constants used by `LiveUsbSource` and the firmware-side packet writer |
+| `EXPECTED_HISTOGRAM_SUMS` (+ `EXPECTED_HISTOGRAM_SUM` full-frame alias), `HISTOGRAM_BYTES` | Validation and framing constants used by `LiveUsbSource` and the firmware-side packet writer |
 
 **`omotion/pipeline/`** — the stage-based science pipeline package. Pure transformation over a typed `FrameBatch`; sinks subscribe to named channels for output. The default chain is built by `default_pipeline()`. Full reference: [`SciencePipeline.md`](SciencePipeline.md).
 

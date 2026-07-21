@@ -19,7 +19,9 @@ import serial.tools.list_ports
 from omotion.UartPacket import UartPacket
 from omotion.config import (
     OW_ACK,
+    OW_CMD_ECHO,
     OW_CMD_NOP,
+    OW_DATA,
     OW_END_BYTE,
     OW_ERROR,
     OW_START_BYTE,
@@ -55,6 +57,11 @@ class MotionUart:
         self.serial: Optional[serial.Serial] = None
         self._io_lock = threading.RLock()
         self.on_io_error = on_io_error
+        # Minimum spacing between the end of one command and the TX of the
+        # next — console firmware drops commands sent back-to-back (see
+        # send_packet).
+        self._min_cmd_gap = 0.02
+        self._last_cmd_ts = 0.0
 
     # ────────────────────────────────────────────────────────────────────
     # Lifecycle (driven by MotionConsole state machine)
@@ -65,8 +72,13 @@ class MotionUart:
         if self.demo_mode:
             self.port = port or "DEMO"
             return
+        # Short blocking-read timeout: read_packet waits for data with
+        # select()-backed read() calls in a deadline loop, so the per-read
+        # timeout just sets the poll granularity. (Long blocking reads would
+        # pin the io-lock; pure in_waiting polling proved unreliable on
+        # macOS CDC drivers.)
         self.serial = serial.Serial(
-            port=port, baudrate=self.baudrate, timeout=self.timeout
+            port=port, baudrate=self.baudrate, timeout=0.05
         )
         self.port = port
         logger.info("UART %s opened on %s", self.descriptor, port)
@@ -145,26 +157,59 @@ class MotionUart:
             )
         if self.serial is None:
             raise CommandError("UART not open")
+        # Frame on packet structure rather than read timing: OS serial
+        # drivers chunk CDC data arbitrarily (macOS especially), so "no new
+        # bytes for one poll tick" is not a packet boundary. Header is
+        # start(1) id(2) type(1) cmd(1) addr(1) reserved(1) len(2); trailer
+        # is crc(2) end(1).
+        HEADER_LEN = 9
+        TRAILER_LEN = 3
+        MAX_DATA_LEN = 8192
         with self._io_lock:
             start_time = time.monotonic()
             raw_data = b""
-            count = 0
+            expected = None
 
             while timeout == -1 or time.monotonic() - start_time < timeout:
-                time.sleep(0.05)
                 try:
-                    raw_data += self.serial.read_all()
+                    # Blocking single-byte read (select-backed, up to the
+                    # port's 50 ms timeout), then drain whatever else has
+                    # arrived. read_all()/in_waiting alone can miss arrivals
+                    # on macOS CDC drivers.
+                    chunk = self.serial.read(1)
+                    if chunk:
+                        waiting = self.serial.in_waiting
+                        if waiting:
+                            chunk += self.serial.read(waiting)
                 except serial.SerialException as se:
                     self._notify_io_error(getattr(se, "errno", None), str(se))
                     raise
-                if raw_data:
-                    count += 1
-                    if count > 1:
+                if chunk:
+                    raw_data += chunk
+                # Resync: drop any noise ahead of the start byte
+                if raw_data and raw_data[0] != OW_START_BYTE:
+                    idx = raw_data.find(bytes([OW_START_BYTE]))
+                    raw_data = raw_data[idx:] if idx >= 0 else b""
+                if len(raw_data) >= HEADER_LEN:
+                    data_len = int.from_bytes(raw_data[7:9], "big")
+                    if data_len > MAX_DATA_LEN:
+                        # Implausible length — we latched onto a stray start
+                        # byte. Shift one byte and re-seek.
+                        raw_data = raw_data[1:]
+                        expected = None
+                        continue
+                    expected = HEADER_LEN + data_len + TRAILER_LEN
+                    if len(raw_data) >= expected:
                         break
 
         if not raw_data:
             raise ValueError("No data received from UART within timeout")
-        return UartPacket(buffer=raw_data)
+        if expected is None or len(raw_data) < expected:
+            raise ValueError(
+                f"Incomplete packet from UART within timeout "
+                f"(got {len(raw_data)} bytes, expected {expected})"
+            )
+        return UartPacket(buffer=raw_data[:expected])
 
     def send_packet(
         self,
@@ -221,11 +266,21 @@ class MotionUart:
             packet.append(OW_END_BYTE)
 
             with self._io_lock:
-                self._tx(packet)
-                time.sleep(0.0005)
-                ret_packet = self.read_packet(timeout=timeout)
-                time.sleep(0.0005)
-                return ret_packet
+                # The console firmware drops commands that arrive too soon
+                # after it finished the previous response (measured on
+                # console fw 1.8.0: back-to-back loses ~50%, 5 ms gap loses
+                # ~3%, 10 ms loses none). Enforce a 20 ms floor between the
+                # previous command's completion and the next TX. The old
+                # polling read loop provided this gap by accident.
+                gap = self._min_cmd_gap - (time.monotonic() - self._last_cmd_ts)
+                if gap > 0:
+                    time.sleep(gap)
+                try:
+                    self._tx(packet)
+                    ret_packet = self._await_response(id, timeout)
+                    return ret_packet
+                finally:
+                    self._last_cmd_ts = time.monotonic()
 
         except ValueError as ve:
             logger.error("Validation error in send_packet: %s", ve)
@@ -238,6 +293,51 @@ class MotionUart:
             # re-raised so callers can react.
             logger.debug("Serial error in send_packet: %s", se)
             raise
+
+    def _await_response(self, id: int, timeout: int) -> UartPacket:
+        """Read packets until the response matching `id` arrives.
+
+        A response that arrives after its command already timed out sits in
+        the OS buffer and would otherwise be returned as the answer to the
+        *next* command, leaving the transport permanently off-by-one.
+        Discard mismatched ids until the matching response (or the deadline)
+        arrives — same policy as CommInterface on the USB path.
+        """
+        deadline = None if timeout == -1 else time.monotonic() + timeout
+        while True:
+            remaining = (
+                -1 if deadline is None
+                else max(0.001, deadline - time.monotonic())
+            )
+            ret_packet = self.read_packet(timeout=remaining)
+            if ret_packet.id != id:
+                if (
+                    ret_packet.id == 0
+                    and ret_packet.packetType == OW_DATA
+                    and ret_packet.command == OW_CMD_ECHO
+                ):
+                    # Unsolicited MCU printf packet — same shape the
+                    # sensor comm path logs and skips.
+                    text = (
+                        bytes(ret_packet.data)
+                        .decode("utf-8", errors="replace")
+                        .rstrip("\x00")
+                        .strip()
+                    )
+                    logger.info("[console PRINTF] %s", text)
+                else:
+                    logger.warning(
+                        "Discarding stale UART response id=0x%04X "
+                        "(expected 0x%04X)",
+                        ret_packet.id, id,
+                    )
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ValueError(
+                        f"No matching response for packet id 0x{id:04X} "
+                        f"within timeout"
+                    )
+                continue
+            return ret_packet
 
     def clear_buffer(self) -> None:
         if self.demo_mode or self.serial is None:
