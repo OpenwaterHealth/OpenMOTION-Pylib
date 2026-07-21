@@ -93,6 +93,7 @@ Stages produce events when something doesn't fit cleanly into per-frame arrays. 
 | `LiveEmit(channel, payload)` | `Tee` stages, `SideAverageStage` (realtime path, `"live_side"`) | The named channel's sinks |
 | `IntervalClosed(corrected_batch)` | `DarkCorrectionStage` (per-camera; enriched + stencilled downstream), `SideAverageStage` (reduced-mode `cam_id=-1` side averages) | `"final"` channel sinks |
 | `DarkIntegrityWarning(...)` | `DarkIntegrityGuard` (inside DarkCorrectionStage) | `"diagnostics"` |
+| `MissedDarkWarning(...)` | `DarkCorrectionStage` (on interval close) | `"diagnostics"` |
 | `StencilFallback(...)` | `DarkFrameQuadraticStencil` (inside DarkFrameHoldStage) | `"diagnostics"` |
 | `PipelineError(...)` | `ScanRunner` (a stage raised; the batch was dropped, state preserved) | `"diagnostics"` |
 | `TimestampMisalignmentWindow(...)` | `TimestampRepairStage` (per-side coalesced window; the terminal stop-frame artifact — the firmware's laser-off frame fires ~150 ms off-grid at every scan stop — is reclassified at INFO and NOT reported) | `"diagnostics"` |
@@ -182,6 +183,11 @@ A `delta > 128` (apparent large backward jump) is treated as a packet anomaly an
 | otherwise | `"light"` |
 
 Under the defaults, dark frames occur at `n = 10, 601, 1201, 1801, …`. Every other frame with `n > d` is `"light"`.
+
+The predicate lives in `omotion/pipeline/dark_schedule.py` and is imported by
+both `FrameClassificationStage` (typing frames) and `DarkCorrectionStage`
+(detecting scheduled darks that never arrived). It is defined once — two copies
+would drift and silently corrupt dark correction.
 
 ### 5.2 TelemetryIngestStage
 
@@ -578,6 +584,33 @@ On `on_complete`, any partial accumulator rows are flushed verbatim (with blanks
 **Channels:** `{"final"}`.
 
 SQLite endpoint — **the corrected (final-branch) record only**. On `on_scan_start`, opens a `ScanDatabase` and creates a session row labelled `{scan_id}_{subject_id}`, stamping `session_meta` with `scan_id`, `subject_id`, `operator`, `started_at_iso`, `duration_sec`, `data_semantics: "final"`, and `sdk_flags` (`reduced_mode`, camera masks). Sessions without `data_semantics` were written by older SDKs and hold realtime (live-branch) values in `session_data`.
+
+#### Per-frame quality values
+
+`quality` is a single string per corrected frame, defined once in
+`omotion/pipeline/quality.py`. In increasing severity:
+
+| Value | Meaning |
+|---|---|
+| `ok` | Nothing wrong. |
+| `ts_corrected` | Timestamp replaced by re-anchoring interpolation. |
+| `nan_filled` | Synthetic row standing in for a frame that never arrived. |
+| `wide_interval` | Real measurement, but its dark baseline was interpolated across an interval spanning one or more darks that never arrived. |
+
+Frames are aggregated worst-wins: `SideAverageStage` gives a side-average row
+the most severe quality of any camera that contributed to it.
+
+`wide_interval` frames are **kept, not discarded** — valid darks still bound the
+widened interval on both sides, so the data is degraded rather than
+uncorrectable. One missed dark degrades roughly `2 x dark_interval` frames,
+about 30 s at the defaults. It ranks above `nan_filled` because it is the only
+value that silently biases an aggregate: a NaN frame drops out of the side
+average on its own, whereas this one contributes real-looking numbers built on a
+stretched baseline.
+
+Note the value reaches only `session_data.quality` in the scan DB — the
+corrected CSV's quality column was removed in `5c3e107`. The `MissedDarkWarning`
+diagnostic event and the scan-summary tally are the surfaces independent of that.
 
 - **Normal mode** — one `session_data` row per per-camera `EnrichedCorrectedFrame` (`cam_id` 0..7, `side` 0/1, `frame_id` = absolute frame id) carrying `bfi`, `bvi`, `mean`, `contrast`, `quality`. The stencilled leading dark frame of each interval is included, so the record is gapless at 40 Hz (except warmup frames 1..`discard_count` and the scan's terminal dark frame).
 - **Reduced mode** — only the `cam_id=-1` side-average frames emitted by `SideAverageStage` are persisted; per-camera frames are skipped.
