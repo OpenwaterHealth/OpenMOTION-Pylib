@@ -27,16 +27,8 @@ QUALITY_RANK: dict[str, int] = {
 def worse_of(a: str, b: str) -> str:
     """Return whichever quality value is more severe (ties return `a`).
 
-    If one value is unknown (not in QUALITY_RANK), return the known one.
+    An unrecognised value ranks 0, so it ties with "ok" and is returned in
+    preference to it — an unknown flag must never be silently overwritten
+    with "ok", since we cannot know its severity.
     """
-    a_in_map = a in QUALITY_RANK
-    b_in_map = b in QUALITY_RANK
-
-    # If one is known and one is unknown, return the known one
-    if a_in_map and not b_in_map:
-        return a
-    if b_in_map and not a_in_map:
-        return b
-
-    # Both known or both unknown: use ranks (defaulting unknown to 0)
     return a if QUALITY_RANK.get(a, 0) >= QUALITY_RANK.get(b, 0) else b

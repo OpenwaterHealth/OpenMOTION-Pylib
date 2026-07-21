@@ -29,8 +29,15 @@ def test_worse_of_is_stable_for_equal_values():
     assert worse_of("wide_interval", "wide_interval") == "wide_interval"
 
 
-def test_unknown_values_rank_as_ok():
-    """Documented hazard: an unrecognised string ranks 0. Any consumer holding
-    its own copy of the rank map would treat a newer value as the BEST quality.
-    This is why the rank lives here and is imported, never re-declared."""
-    assert worse_of("something_new", "ok") == "ok"
+def test_unknown_value_is_preserved_over_ok():
+    """An unrecognised string ranks 0 and so ties with "ok", and a tie returns
+    the first argument. That ordering matters: escalating an unknown flag with
+    "ok" must not erase it, because we cannot know its severity.
+
+    This is also the documented hazard of the rank table — a stale consumer
+    holding its own copy would rank a NEWER known value (like wide_interval)
+    as 0, i.e. as the best quality rather than the worst. That is why the rank
+    lives in one place and is imported, never re-declared.
+    """
+    assert worse_of("something_new", "ok") == "something_new"
+    assert worse_of("ok", "something_new") == "ok"
