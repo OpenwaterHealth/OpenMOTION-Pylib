@@ -128,11 +128,22 @@ def parse_camera_telemetry(data: bytes) -> dict | None:
     zero-line (dark row) averages, Bayer positions 00/01/10/11 — plus the
     derived ``z_avg_mean``/``z_avg_spread`` and the window, target, trigger
     and fault context that produced them (``zl_start``/``zl_end``,
-    ``blk_lvl_target``, ``blc_trig_ctrl``, ``blc_fault_latch``, ...). On this
-    mono sensor all four ``z_avg`` values sample the same physical dark rows,
-    so a nonzero ``z_avg_spread`` is itself the diagnostic. Note the BLC servo
-    only runs while ``blc_ctrl`` bit 0 (``blc_en``) is set: in raw mode
-    (sensor-fw#89 writes 0x4001 = 0x00) ``blc_offsets`` are frozen.
+    ``blk_lvl_target``, ``blc_trig_ctrl``, ``blc_fault_latch``, ...).
+
+    Bench-established (2026-07-20, left sensor): ``z_avg`` and ``blc_offsets``
+    update **only while the sensor is scanning rows** — they read 0 at idle
+    and populate within a sweep of stream-on, so judge them against
+    ``sc_state`` (0x9 = streaming), not ``updated_ms``. They are *not* gated
+    by ``blc_en``: raw mode (sensor-fw#89, ``blc_ctrl`` 0x00) yields the same
+    values, because the statistics engine runs whether or not the correction
+    is applied. ``z_avg`` carries 6 fractional bits — ``z_avg / 64`` is DN
+    (measured 121.7 DN against the sensor's own raw-mode ``yavg`` of 121).
+
+    The sensor is mono, so all four ``z_avg`` values average the same physical
+    dark rows, but they do **not** agree: Bayer positions 10/11 sit ~60 LSB
+    (~0.8 %) above 00/01 on every camera, a reproducible row-parity split.
+    ``z_avg_spread`` therefore has a nonzero floor — track it against that
+    baseline rather than against 0.
 
     ``fsin_pulse_count`` is the firmware's frame
     trigger counter — external (console-driven) FSIN edges only; the sensor's
