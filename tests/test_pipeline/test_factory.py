@@ -141,3 +141,24 @@ def test_pipeline_order_raw_tee_before_timestamp_repair():
         f"Tee('raw') at index {raw_tee_idx} must come before "
         f"TimestampRepairStage at index {repair_idx}"
     )
+
+
+def test_dark_correction_receives_the_dark_schedule():
+    """DarkCorrectionStage must see the same schedule as the classifier, or it
+    cannot tell a missed dark from a nominal interval."""
+    from omotion.pipeline.stages.dark import DarkCorrectionStage
+
+    meta = ScanMetadata(
+        scan_id="x", subject_id="y", operator="z",
+        started_at_iso="2026-05-22T00:00:00Z", duration_sec=60,
+        left_camera_mask=0xFF, right_camera_mask=0xFF, reduced_mode=False,
+    )
+    pipeline = default_pipeline(
+        metadata=meta, calibration=_trivial_calibration(),
+        pedestals=SensorPedestals(left=64.0, right=64.0),
+        discard_count=9, dark_interval=123,
+    )
+    dark = next(s for s in pipeline.stages
+                if isinstance(s, DarkCorrectionStage))
+    assert dark._discard_count == 9
+    assert dark._dark_interval == 123

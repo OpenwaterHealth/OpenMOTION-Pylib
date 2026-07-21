@@ -466,13 +466,11 @@ class DarkCorrectionStage:
             ))
             logger.warning(
                 "missed dark: side=%s cam=%d — scheduled dark(s) at %s never "
-                "arrived; interval %d..%d spans the gap, baseline interpolated "
-                "across %d frames instead of the nominal %d. Frames flagged "
-                "wide_interval.",
+                "arrived; interval %d..%d spans the gap, so the baseline was "
+                "interpolated across %d frames. Frames flagged wide_interval.",
                 side, int(cam_id), missed,
                 int(interval.left_abs), int(interval.right_abs),
                 int(interval.right_abs) - int(interval.left_abs),
-                self._dark_interval,
             )
 
         events.append(IntervalClosed(corrected_batch=corrected))
