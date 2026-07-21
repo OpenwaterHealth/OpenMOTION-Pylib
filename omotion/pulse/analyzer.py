@@ -35,7 +35,7 @@ from typing import Optional
 
 import numpy as np
 
-from .types import PulseAnalysis, PulseFeatures
+from .types import PulseAnalysis, PulseFeatures, PulseCoverage
 
 
 def _movavg(x: np.ndarray, win: int) -> np.ndarray:
@@ -385,6 +385,55 @@ class PulseWaveformAnalyzer:
         )
         self._append_live(snap, t, v, onsets, fs, rr=rr)
         return snap
+
+    def beat_coverage(self, total_duration_s: float, *,
+                      min_coverage: float = 0.75) -> PulseCoverage:
+        """Fraction of ``total_duration_s`` spanned by in-band cardiac beats.
+
+        Reuses the same band-limit + autocorrelation + foot segmentation as
+        ``snapshot`` but deliberately skips the per-beat morphology QC
+        (``_beat_passes_qc``): for a contact-quality *presence* gate that QC
+        wrongly rejects individual beats on noisier channels, punching gaps in
+        the coverage. Noise rejection is instead delegated to ``periodicity``
+        (the autocorrelation strength), exactly as the ``reliable`` flag does.
+
+        ``total_duration_s`` must be the scan light-capture span (supplied by
+        the caller), NOT the analyzer's own buffer span — otherwise a channel
+        that drops out mid-scan is measured only against its short buffer and
+        passes spuriously.
+
+        Returns a :class:`~omotion.pulse.types.PulseCoverage`. Never raises on
+        degenerate input (too few samples, no beats, non-positive duration).
+        """
+        t = self._t
+        v = self._v
+        if t.size < 8 or not (total_duration_s > 0):
+            return PulseCoverage(coverage=0.0, periodicity=0.0,
+                                 hr_bpm=float("nan"), beat_count=0, valid=False)
+        fs = self._estimate_fs()
+        vfill = _nan_interp(v)
+        sm = self._band_limit(vfill, fs)
+        period, periodicity = _autocorr_period(
+            sm, fs, self.min_bpm, self.max_bpm)
+        if period is None:
+            refractory = int(fs * 60.0 / self.max_bpm)
+        else:
+            refractory = max(1, int(0.6 * period))
+        onsets = _segment_feet(sm, vfill, refractory)
+        if onsets.size < 2:
+            return PulseCoverage(coverage=0.0, periodicity=float(periodicity),
+                                 hr_bpm=float("nan"), beat_count=0, valid=False)
+        onset_t = t[onsets]
+        lo = 60.0 / self.max_bpm
+        hi = 60.0 / self.min_bpm
+        rr = [float(t1 - t0) for t0, t1 in zip(onset_t[:-1], onset_t[1:])
+              if lo <= (t1 - t0) <= hi]
+        coverage = float(sum(rr)) / float(total_duration_s)
+        hr_bpm = 60.0 / float(np.median(rr)) if rr else float("nan")
+        valid = coverage > min_coverage and periodicity >= self.PERIODICITY_MIN
+        return PulseCoverage(coverage=coverage, periodicity=float(periodicity),
+                             hr_bpm=hr_bpm, beat_count=len(rr),
+                             valid=bool(valid))
 
     def _features(self, template: np.ndarray, stack: np.ndarray,
                   rr: list[float], periodicity: float) -> PulseFeatures:

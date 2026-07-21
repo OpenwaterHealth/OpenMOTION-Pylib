@@ -5,6 +5,8 @@ results are in **background-subtracted DN** scale (subtracted_mean), matching
 the legacy ContactQuality module semantics.
 """
 
+import math
+
 import numpy as np
 import pytest
 from unittest.mock import MagicMock
@@ -16,6 +18,7 @@ from omotion.ContactQualityWorkflow import (
     _ContactQualitySink,
 )
 from omotion.pipeline.batch import FrameBatch
+from omotion.pulse.synth import synth_bfi
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +324,147 @@ def test_cq_workflow_fails_when_below_light_threshold():
     )
 
     assert result.passed is False
+
+
+# ---------------------------------------------------------------------------
+# Pulse-validity criterion (issue #126)
+# ---------------------------------------------------------------------------
+
+def test_cam_cq_result_has_pulse_fields_defaulting_unevaluated():
+    r = CamCQResult(
+        side="left", cam_id=0, passed=True,
+        light_avg_dn=20.0, light_std_dn=2.5, dark_max_dn=1.0, dark_std_dn=2.5,
+        reason="ok",
+    )
+    assert r.pulse_valid is False
+    assert math.isnan(r.pulse_coverage)
+    assert math.isnan(r.pulse_hr_bpm)
+    assert math.isnan(r.pulse_periodicity)
+
+
+def _pulse_light_batch(t, bfi_2x8, mean_dc=20.0):
+    """FrameBatch of len(t) light frames.
+
+    ``bfi_2x8`` is (n_frames, 2, 8) per-(side,cam) bfi_live. mean_dc_rt and
+    subtracted_mean are set to a constant that passes the signal-level checks,
+    so the pulse criterion is what decides the verdict.
+    """
+    n = len(t)
+    rows = n * 16
+    row_frame = np.repeat(np.arange(n), 16)
+    cam_ids = np.tile(np.arange(8, dtype=np.int8), n * 2)
+    side_ids = np.tile(np.repeat(np.array([0, 1], dtype=np.int8), 8), n)
+    mean = np.full((rows, 2, 8), mean_dc, dtype=np.float32)
+    bfi_rows = bfi_2x8[row_frame].astype(np.float32)      # (rows, 2, 8)
+    return FrameBatch(
+        cam_ids=cam_ids,
+        frame_ids=np.repeat(np.arange(n, dtype=np.uint8), 16),
+        side_ids=side_ids,
+        raw_histograms=None, temperature_c=None,
+        timestamp_s=np.repeat(np.asarray(t, dtype=np.float64), 16),
+        pdc=None, tcm=None, tcl=None,
+        frame_type=np.repeat(np.array(["light"], dtype="<U8"), rows),
+        subtracted_mean=mean.copy(),
+        mean_dc_rt=mean.copy(),
+        bfi_live=bfi_rows,
+        std_raw=np.full((rows, 2, 8), 2.5, dtype=np.float32),
+    )
+
+
+def _pulse_bfi_2x8(duration_s=15.0, seed=0):
+    t, v = synth_bfi(duration_s=duration_s, bpm=72, amp=2.0, baseline=5.0,
+                     noise=0.05, seed=seed)
+    bfi = np.repeat(v[:, None, None], 8, axis=2)          # broadcast to (n,1,8)
+    bfi = np.repeat(bfi, 2, axis=1)                        # (n, 2, 8)
+    return t, bfi
+
+
+def test_cq_sink_marks_channel_ok_with_valid_pulse():
+    sink = _ContactQualitySink(
+        dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8,
+        evaluate_pulse=True, pulse_min_coverage=0.75,
+    )
+    sink.on_scan_start(None)
+    t, bfi = _pulse_bfi_2x8()
+    sink.consume("live", _pulse_light_batch(t, bfi))
+    res = sink.result(left_mask=0x01, right_mask=0, duration_sec=15.0)
+    cam = res.per_camera[("left", 0)]
+    assert cam.reason == "ok"
+    assert cam.passed is True
+    assert cam.pulse_valid is True
+    assert cam.pulse_coverage > 0.75
+
+
+def test_cq_sink_marks_no_pulse_when_signal_ok_but_flat():
+    sink = _ContactQualitySink(
+        dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8,
+        evaluate_pulse=True, pulse_min_coverage=0.75,
+    )
+    sink.on_scan_start(None)
+    n = 600
+    t = np.arange(n) * 0.025
+    flat = np.full((n, 2, 8), 5.0)                        # signal ok, no pulse
+    sink.consume("live", _pulse_light_batch(t, flat))
+    res = sink.result(left_mask=0x01, right_mask=0, duration_sec=15.0)
+    cam = res.per_camera[("left", 0)]
+    assert cam.reason == "no_pulse"
+    assert cam.passed is False
+    assert cam.pulse_valid is False
+
+
+def test_cq_sink_poor_contact_takes_precedence_over_pulse():
+    sink = _ContactQualitySink(
+        dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8,
+        evaluate_pulse=True, pulse_min_coverage=0.75,
+    )
+    sink.on_scan_start(None)
+    t, bfi = _pulse_bfi_2x8()
+    # mean_dc below the light threshold -> poor_contact, regardless of pulse.
+    sink.consume("live", _pulse_light_batch(t, bfi, mean_dc=5.0))
+    res = sink.result(left_mask=0x01, right_mask=0, duration_sec=15.0)
+    cam = res.per_camera[("left", 0)]
+    assert cam.reason == "poor_contact"
+    assert math.isnan(cam.pulse_coverage)   # pulse not evaluated on a failed channel
+
+
+def test_cq_sink_evaluate_pulse_off_leaves_pulse_unevaluated():
+    sink = _ContactQualitySink(
+        dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8,
+    )  # evaluate_pulse defaults False
+    sink.on_scan_start(None)
+    n = 600
+    t = np.arange(n) * 0.025
+    flat = np.full((n, 2, 8), 5.0)
+    sink.consume("live", _pulse_light_batch(t, flat))
+    res = sink.result(left_mask=0x01, right_mask=0, duration_sec=15.0)
+    cam = res.per_camera[("left", 0)]
+    assert cam.reason == "ok"                # unchanged legacy behavior
+    assert cam.passed is True
+    assert cam.pulse_valid is False
+    assert math.isnan(cam.pulse_coverage)
+
+
+def test_cq_workflow_check_evaluate_pulse_end_to_end():
+    t, bfi = _pulse_bfi_2x8()
+
+    def _drive(request):
+        sink = request.sinks[0]
+        sink.on_scan_start(None)
+        sink.consume("live", _pulse_light_batch(t, bfi))
+        sink.on_complete()
+        return True
+
+    fake = MagicMock()
+    fake.await_complete = MagicMock()
+    fake.start_scan.side_effect = _drive
+    cq = ContactQualityWorkflow(scan_workflow=fake)
+    res = cq.check(
+        duration_sec=15.0, rolling_window=10,
+        dark_threshold_per_camera=[3.0] * 8,
+        light_threshold_per_camera=[15.0] * 8,
+        left_camera_mask=0x01, right_camera_mask=0,
+        evaluate_pulse=True,
+    )
+    cam = res.per_camera[("left", 0)]
+    assert cam.pulse_valid is True
+    assert cam.reason == "ok"
