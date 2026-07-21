@@ -93,7 +93,33 @@ def test_missed_dark_ids_reports_every_gap():
     with dark_interval=3, darks fall at 10, 13, 16, 19."""
     cfg = {"discard_count": 9, "dark_interval": 3}
     assert missed_dark_ids(10, 19, **cfg) == [13, 16]
+
+
+def test_adjacent_boundaries_have_nothing_between():
+    assert missed_dark_ids(10, 11, **DEFAULTS) == []
+
+
+def test_non_advancing_range_is_empty():
+    """Stated contract, not an accident of range() — a swapped-argument bug at
+    a call site would otherwise silently report 'nothing missed'."""
+    assert missed_dark_ids(1201, 10, **DEFAULTS) == []
+
+
+def test_zero_discard_count_puts_the_first_dark_at_frame_one():
+    assert is_dark_frame(1, discard_count=0, dark_interval=600)
+    assert not is_dark_frame(0, discard_count=0, dark_interval=600)
+
+
+def test_non_positive_dark_interval_is_rejected():
+    """Fail loudly: a bare ZeroDivisionError from inside a list comprehension
+    is a poor diagnostic for a config error, and a negative interval would be
+    silently wrong rather than an error at all."""
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            is_dark_frame(10, discard_count=9, dark_interval=bad)
 ```
+
+Note the test module needs `import pytest` for the last test.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -122,7 +148,15 @@ def is_dark_frame(abs_id: int, *, discard_count: int, dark_interval: int) -> boo
     Per SciencePipeline.md §4.2:
         n == discard_count + 1
         OR (n > discard_count + 1 AND (n - 1) mod dark_interval == 0)
+
+    Raises ValueError for a non-positive dark_interval — this module is the
+    single source of truth for two stages, so a bad config must fail loudly
+    rather than as a ZeroDivisionError inside a list comprehension (or, for a
+    negative value, as silently wrong output: Python's % takes the sign of the
+    divisor).
     """
+    if dark_interval <= 0:
+        raise ValueError(f"dark_interval must be positive, got {dark_interval}")
     if abs_id == discard_count + 1:
         return True
     if abs_id <= discard_count + 1:
@@ -139,6 +173,10 @@ def missed_dark_ids(left_abs: int, right_abs: int, *,
     the interval spans wider than nominal and its baseline interpolation is
     stretched across the gap. Both endpoints are excluded — they are the
     darks that did arrive.
+
+    A non-advancing range (left_abs >= right_abs) yields an empty list. That
+    is the correct answer, and is stated here so it reads as a contract rather
+    than an accident of range() semantics.
     """
     return [
         n for n in range(int(left_abs) + 1, int(right_abs))
@@ -150,7 +188,7 @@ def missed_dark_ids(left_abs: int, right_abs: int, *,
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_pipeline/test_dark_schedule.py -q`
-Expected: PASS, 8 passed
+Expected: PASS, 12 passed
 
 - [ ] **Step 5: Commit**
 
