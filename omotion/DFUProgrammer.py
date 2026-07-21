@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from omotion.boot_mode import BootMode, parse_boot_mode
+
 
 @dataclass(frozen=True)
 class DFUProgress:
@@ -120,6 +122,16 @@ class DFUProgrammer:
             check=False,
         )
         return r.stdout or ""
+
+    def detect_boot_mode(self) -> BootMode:
+        """Is the attached DFU device the ST ROM loader, or openmotion-bl?
+
+        Both enumerate as 0483:df11, so this reads the DFU alt-setting layout
+        instead. Returns :data:`BootMode.UNKNOWN` when nothing is attached or
+        the listing is unrecognisable — callers must refuse to flash on that,
+        since the two modes take different flash addresses.
+        """
+        return parse_boot_mode(self.list_devices())
 
     def wait_for_dfu_device(
         self,
