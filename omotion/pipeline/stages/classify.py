@@ -19,6 +19,7 @@ import logging
 import numpy as np
 
 from ..batch import FrameBatch
+from ..dark_schedule import is_dark_frame
 
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.frame_classification")
@@ -173,14 +174,11 @@ class FrameClassificationStage:
             )
 
     def _is_dark(self, abs_id: int) -> bool:
-        """Per SciencePipeline.md §4.2:
-            n == discard_count + 1 OR (n > discard_count + 1 AND (n-1) mod dark_interval == 0)
-        """
-        if abs_id == self.discard_count + 1:
-            return True
-        if abs_id <= self.discard_count + 1:
-            return False
-        return (abs_id - 1) % self.dark_interval == 0
+        """Per SciencePipeline.md §4.2 — delegated to the shared schedule so
+        DarkCorrectionStage cannot drift from this definition."""
+        return is_dark_frame(abs_id,
+                             discard_count=self.discard_count,
+                             dark_interval=self.dark_interval)
 
     def reset(self) -> None:
         self._unwrappers.clear()
