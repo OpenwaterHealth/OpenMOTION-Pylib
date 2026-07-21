@@ -65,13 +65,13 @@ class ShotNoiseCorrectionStage:
         corrected_var = np.maximum(0.0, corrected_var)
         std_sn = np.sqrt(corrected_var).astype(np.float32)
 
+        # mean > 0 is False for NaN as well as for a non-positive mean, so both
+        # "no frame" and "no signal above the dark baseline" fall through to
+        # NaN. Contrast is undefined there — emitting 0.0 would make the
+        # calibration map read it as a perfectly coherent speckle field and
+        # report super-maximal flow (issue #114).
         with np.errstate(divide='ignore', invalid='ignore'):
-            mean_valid = np.isfinite(mean)
-            contrast = np.where(
-                mean_valid & (mean > 0),
-                std_sn / mean,
-                np.where(mean_valid, np.float32(0.0), np.float32("nan")),
-            )
+            contrast = np.where(mean > 0, std_sn / mean, np.float32("nan"))
 
         batch.std_sn_rt      = std_sn
         batch.contrast_sn_rt = contrast.astype(np.float32)
@@ -90,7 +90,18 @@ class ShotNoiseCorrectionStage:
                 adc_gain = self._adc_gain_scalar[side_idx]
                 g_cam = float(self._gain_map_flat[cam_pos])
 
-                shot_var = adc_gain * max(0.0, f.mean) * g_cam
+                mean = float(f.mean)
+                if not np.isfinite(mean):
+                    # NaN-fill row for a dropped frame: there is no
+                    # measurement. The builtin max(0.0, NaN) returns 0.0
+                    # (NaN comparisons are False), which used to launder the
+                    # gap into a zero-shot-noise frame; propagate NaN like the
+                    # realtime path's np.maximum does (issue #114).
+                    f.std = float("nan")
+                    f.contrast = float("nan")
+                    continue
+
+                shot_var = adc_gain * max(0.0, mean) * g_cam
                 corrected_var = f.std ** 2 - shot_var
                 if corrected_var < 0:
                     logger.debug(
@@ -102,7 +113,9 @@ class ShotNoiseCorrectionStage:
                     )
                     corrected_var = 0.0
                 f.std = corrected_var ** 0.5
-                f.contrast = f.std / f.mean if f.mean > 0 else 0.0
+                # mean <= 0: the camera saw nothing above its dark baseline
+                # (covered sensor, signal-starved periphery). Undefined, not 0.
+                f.contrast = f.std / mean if mean > 0 else float("nan")
 
     def on_scan_stop(self, batch: FrameBatch) -> None:
         """Process events from DarkCorrectionStage's terminal flush."""

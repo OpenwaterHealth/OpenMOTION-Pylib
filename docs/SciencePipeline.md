@@ -79,7 +79,7 @@ Three things characterise this design and make it auditable:
 | `mean_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | `mean_raw − û₁` (best-effort dark-subtracted mean) |
 | `std_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | √(std_raw² − σ̂²) (best-effort dark-subtracted std) |
 | `std_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | std after Poisson shot-noise removal |
-| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, 0 where mean ≤ 0 |
+| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, **NaN** where mean ≤ 0 or non-finite (no measurement — see §5.8) |
 | `bfi_live` | `(N, 2, 8)` float32 | BfiBviStage | BFI from realtime corrected (K, μ₁) via calibration |
 | `bvi_live` | `(N, 2, 8)` float32 | BfiBviStage | BVI from realtime corrected mean via calibration |
 | `events` | `list[BatchEvent]` | Stages append | Out-of-band events: `LiveEmit`, `IntervalClosed`, diagnostics. Reduced-mode side averages ride here too: realtime as `LiveEmit(channel="live_side", SideAverageSample)`, corrected as synthetic `IntervalClosed` intervals whose frames carry `cam_id=-1` (see §5.10) |
@@ -354,16 +354,22 @@ For one corrected frame `f`:
 
 ```
 g_cam         = CAMERA_GAIN_MAP[cam_id % 8]
-shot_var      = ADC_GAIN · max(0, f.mean) · g_cam
-corr_var      = max(0, f.std² − shot_var)
-shot_std      = √corr_var
 
-contrast      = shot_std / f.mean       if f.mean > 0 else 0
+if not isfinite(f.mean):                          # no measurement — NaN-fill row
+    f.std, contrast = NaN, NaN                    # (see "invalid input" below)
+else:
+    shot_var  = ADC_GAIN · max(0, f.mean) · g_cam
+    corr_var  = max(0, f.std² − shot_var)
+    shot_std  = √corr_var
+    contrast  = shot_std / f.mean   if f.mean > 0 else NaN
+
 bfi           = (1 − (contrast − c_min) / (c_max − c_min)) · 10
 bvi           = (1 − (f.mean   − i_min) / (i_max − i_min)) · 10
 ```
 
-When `c_min == c_max` (degenerate calibration), the fallback is identity scaling: `bfi = contrast · 10`, `bvi = mean · 10`. Constants:
+When `c_min == c_max` (degenerate calibration), the fallback is identity scaling: `bfi = contrast · 10`, `bvi = mean · 10`.
+
+**Invalid input never becomes a finite reading.** A frame with no usable signal — a NaN-fill row standing in for a dropped frame, or a covered / signal-starved camera whose dark-subtracted mean is `≤ 0` — yields `contrast = NaN`, so `bfi` and `bvi` come out NaN and `ScanDBSink` stores them as NULL. Emitting `0.0` instead (as the batch path did before issue #114) placed the frame at `C_min`, i.e. the *calibrated maximum*: `bfi = (1 + c_min/c_span) · 10` — 10.0 at default calibration, indistinguishable from real top-of-scale flow and silently averaged into the reduced-mode side average by `SideAverageStage`'s `nanmean`. A *measured* contrast of exactly 0 is still a real observation and still maps to BFI 10.0; only missing/undefined values are NaN. Constants:
 
 | Symbol | Value | Defined in |
 |---|---|---|
@@ -430,8 +436,10 @@ var          = std_dc_rt²
 shot_var     = ADC_GAIN · max(0, mean_dc_rt) · gain_map           # broadcast (1, 1, 8)
 corr_var     = max(0, var − shot_var)
 std_sn_rt    = √corr_var
-contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, 0)
+contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, NaN)
 ```
+
+`mean_dc_rt > 0` is False for NaN as well as for a non-positive mean, so a frame that never arrived and a camera with no signal above its dark baseline both fall through to NaN — contrast is undefined, not zero (§5.7.5).
 
 `ADC_GAIN` and `CAMERA_GAIN_MAP` are the same constants used in the batched enrichment (§5.7.5). After dark subtraction the remaining variance still contains photon shot noise; subtracting the expected shot-noise contribution isolates the speckle variance, yielding a contrast `K̃` that is independent of mean photon flux. Without this correction, higher-intensity frames would appear to have artificially lower contrast.
 
