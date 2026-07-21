@@ -359,9 +359,12 @@ if not isfinite(f.mean):                          # no measurement — NaN-fill 
     f.std, contrast = NaN, NaN                    # (see "invalid input" below)
 else:
     shot_var  = ADC_GAIN · max(0, f.mean) · g_cam
-    corr_var  = max(0, f.std² − shot_var)
-    shot_std  = √corr_var
-    contrast  = shot_std / f.mean   if f.mean > 0 else NaN
+    corr_var  = f.std² − shot_var
+    if corr_var < 0:                              # below the Poisson floor
+        f.std, contrast = NaN, NaN                # speckle var unresolvable
+    else:
+        shot_std  = √corr_var
+        contrast  = shot_std / f.mean   if f.mean > 0 else NaN
 
 bfi           = (1 − (contrast − c_min) / (c_max − c_min)) · 10
 bvi           = (1 − (f.mean   − i_min) / (i_max − i_min)) · 10
@@ -369,7 +372,13 @@ bvi           = (1 − (f.mean   − i_min) / (i_max − i_min)) · 10
 
 When `c_min == c_max` (degenerate calibration), the fallback is identity scaling: `bfi = contrast · 10`, `bvi = mean · 10`.
 
-**Invalid input never becomes a finite reading.** A frame with no usable signal — a NaN-fill row standing in for a dropped frame, or a covered / signal-starved camera whose dark-subtracted mean is `≤ 0` — yields `contrast = NaN`, so `bfi` and `bvi` come out NaN and `ScanDBSink` stores them as NULL. Emitting `0.0` instead (as the batch path did before issue #114) placed the frame at `C_min`, i.e. the *calibrated maximum*: `bfi = (1 + c_min/c_span) · 10` — 10.0 at default calibration, indistinguishable from real top-of-scale flow and silently averaged into the reduced-mode side average by `SideAverageStage`'s `nanmean`. A *measured* contrast of exactly 0 is still a real observation and still maps to BFI 10.0; only missing/undefined values are NaN. Constants:
+**Invalid input never becomes a finite reading.** A frame with no usable signal yields `contrast = NaN`, so `bfi` and `bvi` come out NaN and `ScanDBSink` stores them as NULL. Three distinct inputs reach that state:
+
+1. a NaN-fill row standing in for a dropped frame (non-finite mean),
+2. a covered / signal-starved camera whose dark-subtracted mean is `≤ 0`,
+3. a frame whose measured variance falls **below the Poisson floor** (`f.std² < shot_var`). That is unphysical — the speckle variance cannot be resolved, so it is reported unresolvable rather than clamped to zero.
+
+Case 3 matters as much as the other two: clamping to `√0 = 0` produced `contrast = 0.0` from a *positive* mean, sailing past any `mean <= 0` guard. On a pitch-dark bench scan (fiber unplugged, 9456 corrected frames) cases 1+2 accounted for 3200 frames and case 3 for a further **4151** — 44% of the scan reported as maximal flow. Emitting `0.0` instead (as the batch path did before issue #114) placed the frame at `C_min`, i.e. the *calibrated maximum*: `bfi = (1 + c_min/c_span) · 10` — 10.0 at default calibration, indistinguishable from real top-of-scale flow and silently averaged into the reduced-mode side average by `SideAverageStage`'s `nanmean`. A *measured* contrast of exactly 0 is still a real observation and still maps to BFI 10.0; only missing/undefined values are NaN. Constants:
 
 | Symbol | Value | Defined in |
 |---|---|---|
@@ -434,8 +443,8 @@ Vectorised Poisson-variance subtraction on the realtime path. Operates on `mean_
 ```
 var          = std_dc_rt²
 shot_var     = ADC_GAIN · max(0, mean_dc_rt) · gain_map           # broadcast (1, 1, 8)
-corr_var     = max(0, var − shot_var)
-std_sn_rt    = √corr_var
+corr_var     = var − shot_var
+std_sn_rt    = where(corr_var < 0, NaN, √max(0, corr_var))        # below Poisson floor → unresolvable
 contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, NaN)
 ```
 

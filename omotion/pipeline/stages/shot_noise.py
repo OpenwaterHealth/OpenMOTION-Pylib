@@ -55,15 +55,20 @@ class ShotNoiseCorrectionStage:
 
         shot_var = self._adc_gain * np.maximum(0.0, mean.astype(np.float64)) * self._gain_map
         corrected_var = var - shot_var
-        neg_mask = corrected_var < 0
-        n_neg = int(np.sum(neg_mask & np.isfinite(corrected_var)))
+        # A measured variance below the Poisson floor is unphysical: the
+        # speckle variance is unresolvable, NOT zero. Reporting √0 = 0 here
+        # made contrast exactly 0.0, which the calibration map reads as a
+        # perfectly coherent speckle field — maximal flow (issue #114).
+        unresolved = corrected_var < 0
+        n_neg = int(np.sum(unresolved & np.isfinite(corrected_var)))
         if n_neg > 0:
             logger.debug(
-                "realtime shot-noise clamped %d/%d negative variance slots",
+                "realtime shot-noise: %d/%d slots below the Poisson floor "
+                "(speckle variance unresolvable, emitted as NaN)",
                 n_neg, int(np.sum(np.isfinite(corrected_var))),
             )
-        corrected_var = np.maximum(0.0, corrected_var)
-        std_sn = np.sqrt(corrected_var).astype(np.float32)
+        std_sn = np.where(unresolved, np.float32("nan"),
+                          np.sqrt(np.maximum(0.0, corrected_var))).astype(np.float32)
 
         # mean > 0 is False for NaN as well as for a non-positive mean, so both
         # "no frame" and "no signal above the dark baseline" fall through to
@@ -104,14 +109,20 @@ class ShotNoiseCorrectionStage:
                 shot_var = adc_gain * max(0.0, mean) * g_cam
                 corrected_var = f.std ** 2 - shot_var
                 if corrected_var < 0:
+                    # Below the Poisson floor — unphysical, so the speckle
+                    # variance cannot be resolved. Clamping to 0 here yielded
+                    # contrast 0.0 and therefore a finite maximal BFI; a
+                    # pitch-dark scan produced 4151 such frames (issue #114).
                     logger.debug(
-                        "batch shot-noise clamped negative variance: "
+                        "batch shot-noise below Poisson floor: "
                         "side=%s cam=%d abs_id=%d signal_var=%.3f "
-                        "shot_var=%.3f deficit=%.3f",
+                        "shot_var=%.3f deficit=%.3f — unresolvable, NaN",
                         f.side, f.cam_id, f.abs_frame_id,
                         f.std ** 2, shot_var, -corrected_var,
                     )
-                    corrected_var = 0.0
+                    f.std = float("nan")
+                    f.contrast = float("nan")
+                    continue
                 f.std = corrected_var ** 0.5
                 # mean <= 0: the camera saw nothing above its dark baseline
                 # (covered sensor, signal-starved periphery). Undefined, not 0.
