@@ -28,15 +28,12 @@ from typing import Optional
 import numpy as np
 
 from ..batch import FrameBatch, IntervalClosed, LiveEmit, SideAverageSample
+from ..quality import worse_of
 from .dark import EnrichedCorrectedFrame, EnrichedCorrectedInterval
 
 
 _SIDE_STR_TO_INT = {"left": 0, "right": 1}
 _SIDE_INT_TO_STR = ("left", "right")
-
-# Higher rank = worse quality; the side average inherits the worst quality
-# of any camera that contributed to it. Mirrors sinks._QUALITY_RANK.
-_QUALITY_RANK = {"ok": 0, "ts_corrected": 1, "nan_filled": 2}
 
 
 def _mask_to_cam_indices(mask: int) -> np.ndarray:
@@ -236,9 +233,10 @@ class SideAverageStage:
         rec["bvi"][cam] = float(getattr(f, "bvi", np.nan))
         rec["mean"][cam] = float(getattr(f, "mean", np.nan))
         rec["contrast"][cam] = float(getattr(f, "contrast", np.nan))
+        # The side average inherits the worst quality of any camera that
+        # contributed to it.
         fq = str(getattr(f, "quality", "ok") or "ok")
-        if _QUALITY_RANK.get(fq, 0) > _QUALITY_RANK.get(rec["quality"], 0):
-            rec["quality"] = fq
+        rec["quality"] = worse_of(rec["quality"], fq)
 
     def _emit_frames(self, side: int, fids: list, batch: FrameBatch,
                      *, right_abs: int) -> None:
