@@ -3,7 +3,7 @@
 Single source of truth, imported by both FrameClassificationStage (which
 types incoming frames) and DarkCorrectionStage (which detects scheduled
 darks that never arrived). Two independent copies of this rule would drift
-and silently corrupt dark correction — see docs/SciencePipeline.md §4.2.
+and silently corrupt dark correction — see docs/SciencePipeline.md §5.1.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 def is_dark_frame(abs_id: int, *, discard_count: int, dark_interval: int) -> bool:
     """True when abs_id lands on a scheduled dark position.
 
-    Per SciencePipeline.md §4.2:
+    Per SciencePipeline.md §5.1:
         n == discard_count + 1
         OR (n > discard_count + 1 AND (n - 1) mod dark_interval == 0)
     """

@@ -174,7 +174,7 @@ class FrameClassificationStage:
             )
 
     def _is_dark(self, abs_id: int) -> bool:
-        """Per SciencePipeline.md §4.2 — delegated to the shared schedule so
+        """Per SciencePipeline.md §5.1 — delegated to the shared schedule so
         DarkCorrectionStage cannot drift from this definition."""
         return is_dark_frame(abs_id,
                              discard_count=self.discard_count,

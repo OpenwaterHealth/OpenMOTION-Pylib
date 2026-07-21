@@ -585,7 +585,7 @@ On `on_complete`, any partial accumulator rows are flushed verbatim (with blanks
 
 SQLite endpoint — **the corrected (final-branch) record only**. On `on_scan_start`, opens a `ScanDatabase` and creates a session row labelled `{scan_id}_{subject_id}`, stamping `session_meta` with `scan_id`, `subject_id`, `operator`, `started_at_iso`, `duration_sec`, `data_semantics: "final"`, and `sdk_flags` (`reduced_mode`, camera masks). Sessions without `data_semantics` were written by older SDKs and hold realtime (live-branch) values in `session_data`.
 
-#### Per-frame quality values
+#### 8.2.1 Per-frame quality values
 
 `quality` is a single string per corrected frame, defined once in
 `omotion/pipeline/quality.py`. In increasing severity:
