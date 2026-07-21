@@ -94,3 +94,15 @@ def _trivial_batch(n: int) -> FrameBatch:
         timestamp_s=np.zeros(n, dtype=np.float64),
         pdc=None, tcm=None, tcl=None,
     )
+
+
+def test_missed_dark_warning_carries_the_gap():
+    from omotion.pipeline.batch import BatchEvent, MissedDarkWarning
+
+    ev = MissedDarkWarning(
+        side="left", cam_id=3, expected_abs_ids=[601],
+        left_abs=10, right_abs=1201, n_missed=1,
+    )
+    assert isinstance(ev, BatchEvent)
+    assert ev.expected_abs_ids == [601]
+    assert ev.n_missed == 1
