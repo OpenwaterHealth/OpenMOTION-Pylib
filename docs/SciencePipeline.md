@@ -410,6 +410,8 @@ After producing the stencil value, the stage updates `_prev_interval_tail` with 
 
 By dispatch time the `IntervalClosed` carries an `EnrichedCorrectedInterval` with frames in chronological order: `[D_prev_stencilled, L_1, L_2, …, L_k]`. The closing dark `D_next` is **not** in this interval — it becomes `D_prev` of the next interval and gets its stencil value then. (The scan's terminal dark therefore never receives a corrected row — the one by-design gap besides warmup.)
 
+On interval close, the boundaries are checked against the dark schedule: any scheduled dark position falling strictly inside `[left_abs, right_abs]` means a dark never arrived, so the baseline was interpolated across a gap roughly double the nominal interval width. When that happens every frame in the interval — including the stencilled `D_prev` row — is flagged `wide_interval`, and a `MissedDarkWarning` is emitted on the `"diagnostics"` channel. See §8.2.1 for the full quality vocabulary and severity ordering.
+
 #### 5.7.8 Terminal-dark flush — `on_scan_stop(batch)`
 
 The firmware guarantees the **last frame of every scan is a dark frame**, regardless of when the scan was stopped. For scans shorter than one full dark interval, that terminal dark won't fall on a scheduled dark position, so the pipeline receives it as the last buffered light frame in `pi._light`.
