@@ -156,9 +156,9 @@ def test_dark_correction_receives_the_dark_schedule():
     pipeline = default_pipeline(
         metadata=meta, calibration=_trivial_calibration(),
         pedestals=SensorPedestals(left=64.0, right=64.0),
-        discard_count=9, dark_interval=123,
+        discard_count=5, dark_interval=123,
     )
     dark = next(s for s in pipeline.stages
                 if isinstance(s, DarkCorrectionStage))
-    assert dark._discard_count == 9
+    assert dark._discard_count == 5
     assert dark._dark_interval == 123
