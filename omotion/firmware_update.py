@@ -369,6 +369,11 @@ class FirmwareUpdater:
     ):
         self._dfu = programmer or DFUProgrammer(vidpid=_STM32_DFU_VIDPID)
         self._wait_timeout_s = dfu_wait_timeout_s
+        #: Boot mode observed by the most recent :meth:`update` call, or None
+        #: if it has not run (or never got as far as detecting). A device is
+        #: only classifiable while it sits in DFU, so this is the one chance a
+        #: UI gets to learn what it is talking to.
+        self.last_boot_mode: BootMode | None = None
 
     def update(
         self,
@@ -389,6 +394,7 @@ class FirmwareUpdater:
             raise FirmwareUpdateError("DFU device did not appear after enter_dfu()")
 
         mode = self._dfu.detect_boot_mode()
+        self.last_boot_mode = mode
         if mode is BootMode.UNKNOWN:
             raise FirmwareUpdateError(
                 "could not tell whether this device has the bootloader installed; "

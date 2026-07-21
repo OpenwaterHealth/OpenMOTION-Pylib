@@ -177,3 +177,30 @@ def test_unregistered_unrecognisable_file_flashes_at_the_mode_address(tmp_path):
     FirmwareUpdater(programmer=prog).update(FakeHandle(), stray)
 
     assert prog.flashed == [(stray, "0x08020000")]
+
+
+def test_updater_records_the_mode_it_detected(release_dir):
+    """UIs need to show what the device turned out to be, and the only moment
+    it is observable is inside update() while the device sits in DFU."""
+    prog = FakeProgrammer(mode=BootMode.BOOTLOADER)
+    updater = FirmwareUpdater(programmer=prog)
+    primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
+    register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+
+    assert updater.last_boot_mode is None
+    updater.update(FakeHandle(), primary)
+    assert updater.last_boot_mode is BootMode.BOOTLOADER
+
+
+def test_updater_records_mode_even_when_the_flash_is_refused(release_dir):
+    """A refusal is still information about the device — don't discard it."""
+    legacy = release_dir / "motion-sensor-fw.bin"
+    legacy.write_bytes(b"\x00" * 16)
+    for stale in ("motion-sensor-fw-baremetal-fpga.bin", "motion-sensor-fw-signed.bin"):
+        (release_dir / stale).unlink()
+    register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
+    updater = FirmwareUpdater(programmer=FakeProgrammer(mode=BootMode.BOOTLOADER))
+
+    with pytest.raises(UnsupportedReleaseError):
+        updater.update(FakeHandle(), legacy)
+    assert updater.last_boot_mode is BootMode.BOOTLOADER
