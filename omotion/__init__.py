@@ -59,6 +59,7 @@ from .CalibrationWorkflow import (
     CalibrationThresholds,
 )
 from .connection_state import ConnectionState
+from .boot_mode import BootMode
 from .firmware_update import (
     FirmwareKind,
     FirmwareUpdater,
@@ -66,9 +67,15 @@ from .firmware_update import (
     LatestInfo,
     check_latest,
     download_firmware,
+    UnsupportedReleaseError,
     is_update_available,
     parse_version,
+    production_asset,
 )
+# NOTE: omotion.bootloader_install is deliberately NOT imported here. Converting
+# a device to bootloader mode is irreversible over USB, so reaching that code
+# must be a conscious submodule import, not something `from omotion import *`
+# hands you. See tests/test_bootloader_install.py.
 # Top-level handles + interface (deferred until after the leaf modules above
 # so MotionConsole/MotionSensor can do `from omotion import _log_root` during
 # their own module load without hitting the partially-loaded package).
@@ -101,6 +108,9 @@ __all__ = [
     "LatestInfo",
     "check_latest",
     "download_firmware",
+    "BootMode",
+    "UnsupportedReleaseError",
     "is_update_available",
     "parse_version",
+    "production_asset",
 ]

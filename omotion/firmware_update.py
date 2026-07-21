@@ -6,10 +6,11 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from omotion.GitHubReleases import GitHubReleases
 from omotion.DFUProgrammer import DFUProgrammer, DFUProgress, DFUResult
+from omotion.boot_mode import BootMode, flash_address_for
 
 # ---------------------------------------------------------------------------
 # Version parsing
@@ -90,10 +91,140 @@ _REPO = {
     FirmwareKind.CONSOLE: ("OpenwaterHealth", "openmotion-console-fw"),
     FirmwareKind.SENSOR: ("OpenwaterHealth", "openmotion-sensor-fw"),
 }
-_ASSET = {
-    FirmwareKind.CONSOLE: "motion-console-fw.bin",
-    FirmwareKind.SENSOR: "motion-sensor-fw.bin",
+
+# ---------------------------------------------------------------------------
+# Release assets
+#
+# CI renamed every firmware asset on 2026-07-09, when the bootloader-slot build
+# was added alongside the bare-metal one. Releases before that carry a single
+# `motion-{sensor,console}-fw.bin`; releases after carry separate bare-metal,
+# signed and production images. Both eras have to keep working, so each slot
+# below is a preference list: newest name first, legacy name last.
+# ---------------------------------------------------------------------------
+
+# Bare-metal units. Sensor prefers the FPGA-merged image so the bitstream always
+# matches the firmware it shipped with — that is what the legacy single asset
+# was, so behaviour is unchanged for existing callers. Console has no merged
+# variant.
+_BARE_METAL_ASSETS = {
+    FirmwareKind.SENSOR: ("motion-sensor-fw-baremetal-fpga.bin", "motion-sensor-fw.bin"),
+    FirmwareKind.CONSOLE: ("motion-console-fw-baremetal.bin", "motion-console-fw.bin"),
 }
+
+# Bootloader units. Signed slot image only — there is no legacy equivalent,
+# which is why a pre-bootloader release cannot be installed on one.
+_SIGNED_ASSETS = {
+    FirmwareKind.SENSOR: ("motion-sensor-fw-signed.bin",),
+    FirmwareKind.CONSOLE: ("motion-console-fw-signed.bin",),
+}
+
+# bootloader + signed app, for converting a bare-metal unit. Never part of an
+# ordinary update — see omotion.bootloader_install.
+_PRODUCTION_ASSETS = {
+    FirmwareKind.SENSOR: "motion-sensor-production.bin",
+    FirmwareKind.CONSOLE: "motion-console-production.bin",
+}
+
+# First release of each firmware that ships a signed slot image.
+_MIN_BOOTLOADER_TAG = {
+    FirmwareKind.SENSOR: "1.8.2",
+    FirmwareKind.CONSOLE: "1.8.1",
+}
+
+_MODE_ASSETS = {
+    BootMode.BARE_METAL: _BARE_METAL_ASSETS,
+    BootMode.BOOTLOADER: _SIGNED_ASSETS,
+}
+
+
+class UnsupportedReleaseError(RuntimeError):
+    """The selected release has no asset that suits the device's boot mode."""
+
+
+def _first_present(preferences, available) -> str | None:
+    return next((name for name in preferences if name in available), None)
+
+
+def resolve_asset(
+    kind: FirmwareKind,
+    mode: BootMode,
+    asset_names: Iterable[str],
+) -> str:
+    """Pick the asset to flash onto a ``mode`` device from ``asset_names``.
+
+    Raises ``ValueError`` for :data:`BootMode.UNKNOWN` (guessing bricks devices)
+    and ``UnsupportedReleaseError`` when the release predates what the device
+    needs.
+    """
+    try:
+        preferences = _MODE_ASSETS[mode][kind]
+    except KeyError:
+        raise ValueError(
+            f"cannot choose a firmware asset for boot mode {mode.value!r}; "
+            "refusing to guess"
+        ) from None
+
+    available = set(asset_names)
+    name = _first_present(preferences, available)
+    if name is not None:
+        return name
+
+    if mode is BootMode.BOOTLOADER:
+        raise UnsupportedReleaseError(
+            f"this release has no signed image ({preferences[0]}), so it predates "
+            f"bootloader support; {kind.value} needs {_MIN_BOOTLOADER_TAG[kind]} "
+            "or newer to update a device that has the bootloader installed"
+        )
+    raise UnsupportedReleaseError(
+        f"this release has none of {', '.join(preferences)}; cannot update a "
+        f"bare-metal {kind.value}"
+    )
+
+
+def production_asset(kind: FirmwareKind) -> str:
+    """Name of the bootloader + signed app image used to convert a device."""
+    return _PRODUCTION_ASSETS[kind]
+
+
+def is_production_asset(name: str) -> bool:
+    """Does this filename look like a bootloader + signed app image?"""
+    return "production" in Path(name).name.lower()
+
+
+def classify_asset_name(name: str) -> BootMode | None:
+    """Boot mode an asset *filename* implies, or ``None`` if unrecognisable.
+
+    Used to sanity-check files the SDK did not download itself (the test app's
+    "Upload File..." path). A name we do not recognise yields ``None`` — the
+    caller then takes the file at face value rather than refusing outright.
+    Production images are not a boot mode; see :func:`is_production_asset`.
+    """
+    stem = Path(name).name.lower()
+    if "signed" in stem:
+        return BootMode.BOOTLOADER
+    if "baremetal" in stem:
+        return BootMode.BARE_METAL
+    # Legacy single-asset era: bare metal was the only thing that existed.
+    if stem in {"motion-sensor-fw.bin", "motion-console-fw.bin",
+                "motion-sensor-fw-raw.bin", "motion-console-fw-raw.bin"}:
+        return BootMode.BARE_METAL
+    return None
+
+
+def candidate_assets(kind: FirmwareKind, asset_names: Iterable[str]) -> list[str]:
+    """Every asset that might be flashed for an update, in any boot mode.
+
+    Boot mode cannot be known until the device is already in DFU, and by then
+    downloading is inconvenient — so the whole candidate set is fetched up front
+    and the right one picked at flash time. Excludes the production image.
+    """
+    available = set(asset_names)
+    names: list[str] = []
+    for table in (_BARE_METAL_ASSETS, _SIGNED_ASSETS):
+        name = _first_present(table[kind], available)
+        if name is not None and name not in names:
+            names.append(name)
+    return names
 
 
 @dataclass(frozen=True)
@@ -133,12 +264,17 @@ def check_latest(
         if not tag:
             return None
         names = [a.get("name", "") for a in gh.get_asset_list(release=rel, extension=".bin")]
-        if _ASSET[kind] in names:
-            asset_name = _ASSET[kind]
-        elif names:
-            asset_name = names[0]
-        else:
+        if not names:
             return None
+        # The bare-metal image is the primary: it is what the legacy single
+        # asset was, so this keeps LatestInfo.asset_name meaning what it always
+        # meant. download_firmware() fetches the signed sibling alongside it,
+        # and update() swaps to that if the device turns out to have the
+        # bootloader. An unrecognised release falls back to its first .bin.
+        try:
+            asset_name = resolve_asset(kind, BootMode.BARE_METAL, names)
+        except UnsupportedReleaseError:
+            asset_name = names[0]
         return LatestInfo(kind=kind, tag=tag, asset_name=asset_name,
                           published_at=rel.get("published_at"))
     except Exception:
@@ -156,17 +292,65 @@ class FirmwareUpdateError(RuntimeError):
     """Raised when a firmware flash cannot proceed (DFU entry/enumeration)."""
 
 
+# Downloaded-file provenance, so update() can find a sibling asset for whatever
+# boot mode the device turns out to be in. In-process only: callers download and
+# flash within one session, and a stale entry is harmless because the sibling
+# lookup is a directory listing, not a cache.
+_DOWNLOADS: dict[str, tuple[FirmwareKind, str]] = {}
+
+
+def register_download(path: Path, kind: FirmwareKind, tag: str) -> None:
+    """Record that ``path`` came from ``kind``'s release ``tag``."""
+    _DOWNLOADS[str(Path(path).resolve())] = (kind, tag)
+
+
+def _provenance(path: Path) -> tuple[FirmwareKind, str] | None:
+    return _DOWNLOADS.get(str(Path(path).resolve()))
+
+
 def download_firmware(
     info: LatestInfo,
     dest_dir: Path,
     *,
     releases: GitHubReleases | None = None,
 ) -> Path:
-    """Download ``info``'s ``.bin`` asset into ``dest_dir``; returns the path."""
+    """Download ``info``'s release into ``dest_dir``; returns the primary path.
+
+    Fetches **every** asset that could be flashed in any boot mode, not just
+    ``info.asset_name``. The device's mode is unknowable until it is already in
+    DFU, by which point downloading is inconvenient — so the candidate set comes
+    down up front and :meth:`FirmwareUpdater.update` picks from it.
+
+    The return value is unchanged (the primary asset), so existing callers are
+    unaffected.
+    """
     owner, repo = _REPO[info.kind]
     gh = releases or GitHubReleases(owner, repo)
     rel = gh.get_release_by_tag(info.tag)
-    return gh.download_asset(rel, info.asset_name, output_dir=Path(dest_dir))
+    dest_dir = Path(dest_dir)
+
+    available = [a.get("name", "") for a in gh.get_asset_list(release=rel, extension=".bin")]
+    wanted = candidate_assets(info.kind, available)
+    if info.asset_name not in wanted:
+        wanted.insert(0, info.asset_name)
+
+    primary: Path | None = None
+    for name in wanted:
+        try:
+            path = Path(gh.download_asset(rel, name, output_dir=dest_dir))
+        except Exception:
+            # A missing sibling is not fatal: only the primary has to arrive.
+            # update() re-checks what is actually on disk before flashing.
+            continue
+        register_download(path, info.kind, info.tag)
+        if name == info.asset_name:
+            primary = path
+
+    if primary is None:
+        raise FirmwareUpdateError(
+            f"could not download {info.asset_name} from {info.kind.value} release {info.tag}"
+        )
+    return primary
 
 
 class FirmwareUpdater:
@@ -192,8 +376,54 @@ class FirmwareUpdater:
         bin_path: Path,
         progress_cb: Callable[[DFUProgress], None] | None = None,
     ) -> DFUResult:
+        """Flash ``bin_path``, or its sibling suited to the device's boot mode.
+
+        Enters DFU, classifies the device, then flashes the right image at the
+        right address. Never installs a bootloader — see
+        :func:`omotion.bootloader_install.install_bootloader`.
+        """
+        bin_path = Path(bin_path)
         if not handle.enter_dfu():
             raise FirmwareUpdateError("device did not accept enter_dfu()")
         if not self._dfu.wait_for_dfu_device(timeout_s=self._wait_timeout_s):
             raise FirmwareUpdateError("DFU device did not appear after enter_dfu()")
-        return self._dfu.flash_bin(Path(bin_path), progress=progress_cb)
+
+        mode = self._dfu.detect_boot_mode()
+        if mode is BootMode.UNKNOWN:
+            raise FirmwareUpdateError(
+                "could not tell whether this device has the bootloader installed; "
+                "refusing to flash, because the wrong address would brick it"
+            )
+
+        target = self._select_image(bin_path, mode)
+        return self._dfu.flash_bin(
+            target, address=flash_address_for(mode), progress=progress_cb
+        )
+
+    def _select_image(self, bin_path: Path, mode: BootMode) -> Path:
+        if is_production_asset(bin_path.name):
+            raise FirmwareUpdateError(
+                f"{bin_path.name} is a production image (bootloader + signed app). "
+                "Updating cannot install a bootloader — use install_bootloader() "
+                "if that is what you want."
+            )
+
+        provenance = _provenance(bin_path)
+        if provenance is not None:
+            kind, _tag = provenance
+            siblings = [p.name for p in bin_path.parent.iterdir() if p.is_file()]
+            # Raises UnsupportedReleaseError if this release has nothing for
+            # the mode — e.g. a bootloader unit pointed at a legacy release.
+            return bin_path.parent / resolve_asset(kind, mode, siblings)
+
+        # Not something we downloaded (the test app's "Upload File..." path).
+        # We cannot look up siblings, but we can refuse an image whose name says
+        # it belongs at a different address.
+        implied = classify_asset_name(bin_path.name)
+        if implied is not None and implied is not mode:
+            raise FirmwareUpdateError(
+                f"{bin_path.name} looks like a {implied.value} image, but this "
+                f"device is in {mode.value} mode. Flashing it at "
+                f"{flash_address_for(mode)} would corrupt the device."
+            )
+        return bin_path
