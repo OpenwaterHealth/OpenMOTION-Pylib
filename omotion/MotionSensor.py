@@ -25,6 +25,7 @@ from omotion.config import (
     OW_CMD_HWID,
     OW_CMD_I2C_REG_READ,
     OW_CMD_I2C_STATUS,
+    OW_CMD_BOOT_INFO,
     OW_CMD_PING,
     OW_CMD_RESET,
     OW_CMD_TOGGLE_LED,
@@ -75,6 +76,7 @@ from omotion.config import (
     is_valid_serial,
 )
 from omotion.i2c_packet import I2C_Packet
+from omotion.boot_mode import BootMode, parse_boot_info
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionProcessing import bytes_to_integers
 from omotion.utils import calculate_file_crc, log_i2c_health
@@ -570,6 +572,26 @@ class MotionSensor(SignalWrapper):
             )
             return ver_str or "v0.0.0"
         return "v0.0.0"
+
+    def get_boot_mode(self) -> BootMode:
+        """Whether this sensor runs a bare-metal or bootloader-slot image.
+
+        Queries OW_CMD_BOOT_INFO over the normal command interface — no DFU
+        cycle — and classifies the reported ``SCB->VTOR``. Firmware without the
+        command replies OW_UNKNOWN, which yields :data:`BootMode.UNKNOWN`; so
+        does any garbled/short reply. Never raises: callers treat UNKNOWN as
+        "couldn't determine" and must not make flashing decisions on it (the DFU
+        alt-setting check remains the authoritative gate before any write).
+        """
+        if self.demo_mode:
+            return BootMode.BARE_METAL
+        try:
+            r = self._send(packetType=OW_CMD, command=OW_CMD_BOOT_INFO)
+        except Exception:
+            return BootMode.UNKNOWN
+        if r is None or r.packetType in _ERROR_TYPES:
+            return BootMode.UNKNOWN
+        return parse_boot_info(bytes(r.data[: r.data_len]) if r.data else b"")
 
     def read_serial_number(self) -> str | None:
         """Read the sensor module hardware serial number (None if unprogrammed/error)."""

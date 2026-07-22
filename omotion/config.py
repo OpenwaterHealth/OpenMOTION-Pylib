@@ -139,6 +139,11 @@ OW_CMD_HWID = 0x05
 OW_CMD_SERIAL = 0x07
 OW_CMD_I2C_REG_READ = 0x08
 OW_CMD_MESSAGES = 0x09
+# Sensor-module 0x09 (NOT console — there 0x09 is OW_CMD_MESSAGES above). Reports
+# runtime SCB->VTOR so a host can tell bare-metal from bootloader-slot without a
+# DFU cycle. The console equivalent will use a different ID (console-fw #45),
+# since 0x09 is taken there. See openmotion-sensor-fw #110.
+OW_CMD_BOOT_INFO = 0x09
 OW_CMD_USR_CFG = 0x0A
 OW_CMD_DFU = 0x0D
 OW_CMD_NOP = 0x0E
