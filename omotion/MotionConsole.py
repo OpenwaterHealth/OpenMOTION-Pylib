@@ -11,6 +11,7 @@ import numpy as np
 
 from omotion import _log_root
 from omotion.MotionUart import MotionUart
+from omotion.boot_mode import BootMode, parse_boot_info
 from omotion.ConsoleTelemetry import ConsoleTelemetryPoller
 from omotion.connection_state import ConnectionState
 from omotion.signal_wrapper import SignalWrapper
@@ -42,7 +43,9 @@ from omotion.config import (
     OW_CMD_TOGGLE_LED,
     OW_CMD_USR_CFG,
     OW_CMD_VERSION,
+    OW_CMD_BOOT_INFO_CONSOLE,
     OW_CMD_MESSAGES,
+    OW_RESP,
     OW_CONTROLLER,
     OW_CTRL_BOARDID,
     OW_CTRL_GET_FAN,
@@ -480,6 +483,32 @@ class MotionConsole(SignalWrapper):
         except Exception as e:
             self._log_command_error("get_version", e)
             raise  # Re-raise the exception for the caller to handle
+
+    def get_boot_mode(self) -> BootMode:
+        """Whether this console runs a bare-metal or bootloader-slot image.
+
+        Queries OW_CMD_BOOT_INFO (0x0B on the console) over the normal command
+        interface — no DFU cycle — and classifies the reported ``SCB->VTOR``.
+        Firmware without the command replies with an error/NAK, which yields
+        :data:`BootMode.UNKNOWN`; so does any garbled/short reply or a
+        disconnected console. Never raises: callers treat UNKNOWN as "couldn't
+        determine" and must not make flashing decisions on it (the DFU
+        alt-setting check remains the authoritative gate before any write).
+        """
+        try:
+            if self.uart.demo_mode:
+                return BootMode.BARE_METAL
+            if not self.is_connected():
+                return BootMode.UNKNOWN
+            r = self.uart.send_packet(
+                id=None, packetType=OW_CMD, command=OW_CMD_BOOT_INFO_CONSOLE
+            )
+            self.uart.clear_buffer()
+        except Exception:
+            return BootMode.UNKNOWN
+        if r is None or r.packetType != OW_RESP:
+            return BootMode.UNKNOWN
+        return parse_boot_info(bytes(r.data[: r.data_len]) if r.data else b"")
 
     def echo(self, echo_data=None) -> tuple[bytes, int]:
         """
