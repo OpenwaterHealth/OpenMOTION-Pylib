@@ -90,3 +90,50 @@ def test_flash_address_for_unknown_mode_raises():
 
     with pytest.raises(ValueError):
         flash_address_for(BootMode.UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# parse_boot_info: OW_CMD_BOOT_INFO reply -> BootMode, over normal comms
+# (no DFU cycle). Payload is packed little-endian:
+#   u8 struct_version=1; u8 reserved[3]; u32 vtor; u32 flash_base
+# ---------------------------------------------------------------------------
+import struct
+
+from omotion.boot_mode import parse_boot_info
+
+
+def _payload(vtor, *, version=1, flash_base=None):
+    return struct.pack("<B3sII", version, b"\x00\x00\x00", vtor,
+                       vtor if flash_base is None else flash_base)
+
+
+def test_boot_info_vtor_at_flash_base_is_bare_metal():
+    assert parse_boot_info(_payload(0x08000000)) is BootMode.BARE_METAL
+
+
+def test_boot_info_vtor_at_slot_vectors_is_bootloader():
+    assert parse_boot_info(_payload(0x08020400)) is BootMode.BOOTLOADER
+
+
+def test_boot_info_unrecognised_vtor_is_unknown():
+    assert parse_boot_info(_payload(0x24000000)) is BootMode.UNKNOWN  # RAM_D1, nonsense
+
+
+def test_boot_info_too_short_is_unknown():
+    assert parse_boot_info(b"\x01\x00\x00") is BootMode.UNKNOWN
+
+
+def test_boot_info_empty_is_unknown():
+    assert parse_boot_info(b"") is BootMode.UNKNOWN
+    assert parse_boot_info(None) is BootMode.UNKNOWN
+
+
+def test_boot_info_ignores_flash_base_and_uses_vtor():
+    # A future firmware might report a distinct flash_base; classification is on vtor.
+    assert parse_boot_info(_payload(0x08000000, flash_base=0x08000000)) is BootMode.BARE_METAL
+    assert parse_boot_info(_payload(0x08020400, flash_base=0x08020000)) is BootMode.BOOTLOADER
+
+
+def test_boot_info_unknown_struct_version_still_classifies_by_vtor():
+    # Be lenient on the struct version so a v2 that only appends fields still works.
+    assert parse_boot_info(_payload(0x08020400, version=2)) is BootMode.BOOTLOADER

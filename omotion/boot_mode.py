@@ -21,9 +21,10 @@ flash rather than guess.
 from __future__ import annotations
 
 import re
+import struct
 from enum import Enum
 
-__all__ = ["BootMode", "parse_boot_mode", "flash_address_for"]
+__all__ = ["BootMode", "parse_boot_mode", "parse_boot_info", "flash_address_for"]
 
 
 class BootMode(Enum):
@@ -47,6 +48,34 @@ _FLASH_ADDRESS = {
     BootMode.BARE_METAL: BARE_METAL_FLASH_ADDRESS,
     BootMode.BOOTLOADER: BOOTLOADER_SLOT_ADDRESS,
 }
+
+# Runtime vector-table base (SCB->VTOR) each build reports via OW_CMD_BOOT_INFO.
+# These are the VECT_TAB_BASE_ADDRESS values system_stm32h7xx.c sets per build.
+_VTOR_BARE_METAL = 0x08000000
+_VTOR_BOOTLOADER_SLOT = 0x08020400   # slot base 0x08020000 + 0x400 image header
+
+_BOOT_MODE_BY_VTOR = {
+    _VTOR_BARE_METAL: BootMode.BARE_METAL,
+    _VTOR_BOOTLOADER_SLOT: BootMode.BOOTLOADER,
+}
+
+# OW_CMD_BOOT_INFO reply: u8 struct_version; u8 reserved[3]; u32 vtor; u32 flash_base
+_BOOT_INFO = struct.Struct("<B3sII")
+
+
+def parse_boot_info(payload) -> BootMode:
+    """Classify an ``OW_CMD_BOOT_INFO`` reply by its reported ``vtor``.
+
+    Never raises. Returns :data:`BootMode.UNKNOWN` for a missing/short/garbled
+    reply, or one whose vtor is neither the bare-metal base nor the slot vectors
+    — which is also what old firmware effectively yields, since it answers
+    OW_UNKNOWN (no payload) to command 0x09. The struct version is not enforced,
+    so a future reply that only appends fields still classifies.
+    """
+    if not payload or len(payload) < _BOOT_INFO.size:
+        return BootMode.UNKNOWN
+    _ver, _rsvd, vtor, _flash_base = _BOOT_INFO.unpack_from(payload)
+    return _BOOT_MODE_BY_VTOR.get(vtor, BootMode.UNKNOWN)
 
 # `Found DFU: [0483:df11] ver=..., ..., alt=0, name="@Internal Flash/...", serial="..."`
 _ALT_RE = re.compile(r"\balt=(\d+)\b")

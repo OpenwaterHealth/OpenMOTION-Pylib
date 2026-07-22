@@ -59,7 +59,7 @@ from .CalibrationWorkflow import (
     CalibrationThresholds,
 )
 from .connection_state import ConnectionState
-from .boot_mode import BootMode
+from .boot_mode import BootMode, parse_boot_info
 from .firmware_update import (
     FirmwareKind,
     FirmwareUpdater,
@@ -109,6 +109,7 @@ __all__ = [
     "check_latest",
     "download_firmware",
     "BootMode",
+    "parse_boot_info",
     "UnsupportedReleaseError",
     "is_update_available",
     "parse_version",
