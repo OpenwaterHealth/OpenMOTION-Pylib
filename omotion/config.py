@@ -144,6 +144,10 @@ OW_CMD_MESSAGES = 0x09
 # DFU cycle. The console equivalent will use a different ID (console-fw #45),
 # since 0x09 is taken there. See openmotion-sensor-fw #110.
 OW_CMD_BOOT_INFO = 0x09
+# Console-module BOOT_INFO. 0x0B because 0x09 is OW_CMD_MESSAGES on the console.
+# Same reply payload as the sensor's, so parse_boot_info covers both. See
+# openmotion-console-fw #45.
+OW_CMD_BOOT_INFO_CONSOLE = 0x0B
 OW_CMD_USR_CFG = 0x0A
 OW_CMD_DFU = 0x0D
 OW_CMD_NOP = 0x0E
