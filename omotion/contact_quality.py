@@ -67,11 +67,18 @@ class CQThresholds:
         dark_t = tuple(float(v) for v in dark)
         light_t = tuple(float(v) for v in light)
         for name, seq in (("dark", dark_t), ("light", light_t)):
-            if len(seq) != 8:
+            n = len(seq)
+            if n < 8:
                 logger.warning(
                     "CQ %s thresholds have %d entries, expected 8 — cameras "
                     "%d-7 will fail open (never flagged)",
-                    name, len(seq), len(seq),
+                    name, n, n,
+                )
+            elif n > 8:
+                logger.warning(
+                    "CQ %s thresholds have %d entries, expected 8 — entries "
+                    "past index 7 are ignored",
+                    name, n,
                 )
         return cls(dark=dark_t, light=light_t)
 
@@ -113,3 +120,43 @@ def evaluate_reason(
     if is_poor_contact(light_avg, thresholds, cam_id):
         return REASON_POOR_CONTACT
     return REASON_OK
+
+
+class CameraLatch:
+    """Debounced edge detector for one camera / one condition.
+
+    Flips only after ``debounce`` consecutive agreeing observations; any
+    disagreeing observation resets the counter. ``debounce=1`` reproduces
+    the legacy immediate latch/clear behavior.
+
+    Returns a transition only on an edge — steady state returns
+    ``TRANSITION_NONE`` so callers emit one event per genuine change
+    rather than once per frame.
+    """
+
+    __slots__ = ("_debounce", "_active", "_streak")
+
+    def __init__(self, debounce: int = 1) -> None:
+        self._debounce = max(1, int(debounce))
+        self._active = False
+        self._streak = 0
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def reset(self) -> None:
+        self._active = False
+        self._streak = 0
+
+    def observe(self, bad: bool) -> str:
+        """Feed one observation; return activated / cleared / none."""
+        if bool(bad) == self._active:
+            self._streak = 0
+            return TRANSITION_NONE
+        self._streak += 1
+        if self._streak < self._debounce:
+            return TRANSITION_NONE
+        self._active = bool(bad)
+        self._streak = 0
+        return TRANSITION_ACTIVATED if self._active else TRANSITION_CLEARED

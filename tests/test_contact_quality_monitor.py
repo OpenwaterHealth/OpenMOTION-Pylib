@@ -15,6 +15,10 @@ from omotion.contact_quality import (
     REASON_NO_SIGNAL,
     REASON_OK,
     REASON_POOR_CONTACT,
+    TRANSITION_ACTIVATED,
+    TRANSITION_CLEARED,
+    TRANSITION_NONE,
+    CameraLatch,
     CQThresholds,
     evaluate_reason,
     is_ambient_light,
@@ -57,23 +61,54 @@ def test_from_sequences_warns_on_wrong_length_but_fails_open(caplog):
         t = CQThresholds.from_sequences([1.0] * 6, [10.0] * 6)
     assert "6 entries" in caplog.text
     assert "expected 8" in caplog.text
+    assert "fail open" in caplog.text
     assert t.dark_for(7) == math.inf
     assert t.light_for(7) == 0.0
 
 
-def test_thresholds_empty_sequences_fail_open_for_every_camera():
+def test_from_sequences_warns_on_long_length_but_ignores_extras(caplog):
+    """A 16-element array has nothing that fails open — cameras 0-7 all get
+    a real threshold and the extra entries are simply unused — so the
+    warning must say the extras are ignored, and must NOT claim anything
+    fails open (that claim would be false for this branch)."""
+    with caplog.at_level(logging.WARNING, logger="openmotion.sdk.contact_quality"):
+        t = CQThresholds.from_sequences([1.0] * 16, [10.0] * 16)
+    assert "16 entries" in caplog.text
+    assert "expected 8" in caplog.text
+    assert "ignored" in caplog.text
+    assert "fail open" not in caplog.text
+    assert t.dark_for(7) == 1.0
+    assert t.light_for(7) == 10.0
+
+
+def test_thresholds_empty_sequences_fail_open_for_every_camera(caplog):
     """Degenerate case: empty arrays are the documented fail-open contract
-    taken to its limit — every camera reads back as ok."""
-    t = CQThresholds.from_sequences([], [])
+    taken to its limit — every camera reads back as ok.
+
+    This isn't testing the wrong-length warning, so silence it. Note the
+    level is CRITICAL, not WARNING: this logger's ambient level is already
+    WARNING, so at_level(WARNING) is a no-op that still lets the warning
+    reach pytest's log_cli reporter — only raising above WARNING actually
+    keeps it out of CI output.
+    """
+    with caplog.at_level(logging.CRITICAL, logger="openmotion.sdk.contact_quality"):
+        t = CQThresholds.from_sequences([], [])
     assert evaluate_reason(
         light_avg=1.0, dark_max=99.0, thresholds=t, cam_id=0
     ) == REASON_OK
 
 
-def test_thresholds_from_sequences_coerces_ints_to_float():
+def test_thresholds_from_sequences_coerces_ints_to_float(caplog):
     """Config arrives from JSON as ints; from_sequences must coerce to
-    float so comparisons behave consistently downstream."""
-    t = CQThresholds.from_sequences([1, 2], [10, 20])
+    float so comparisons behave consistently downstream.
+
+    2 entries also triggers the wrong-length warning; silence it (see the
+    comment on test_thresholds_empty_sequences_fail_open_for_every_camera
+    for why CRITICAL, not WARNING, is the level that actually suppresses
+    it in log_cli output).
+    """
+    with caplog.at_level(logging.CRITICAL, logger="openmotion.sdk.contact_quality"):
+        t = CQThresholds.from_sequences([1, 2], [10, 20])
     assert isinstance(t.dark, tuple)
     assert t.dark_for(0) == 1.0
     assert isinstance(t.dark_for(0), float)
@@ -135,3 +170,51 @@ def test_evaluate_reason_precedence_matches_legacy_order():
     assert evaluate_reason(
         light_avg=60.0, dark_max=0.0, thresholds=THRESHOLDS, cam_id=0
     ) == REASON_OK
+
+
+def test_latch_debounce_one_is_immediate():
+    latch = CameraLatch(debounce=1)
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+    assert latch.observe(True) == TRANSITION_NONE      # steady state, no repeat
+    assert latch.observe(False) == TRANSITION_CLEARED
+
+
+def test_latch_requires_consecutive_agreeing_observations():
+    latch = CameraLatch(debounce=3)
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+def test_latch_streak_resets_on_disagreement():
+    """A dip shorter than the debounce must produce no transition at all."""
+    latch = CameraLatch(debounce=3)
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_NONE     # streak broken
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+def test_latch_clear_edge_also_debounced():
+    latch = CameraLatch(debounce=2)
+    latch.observe(True)
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_CLEARED
+
+
+def test_latch_reset_returns_to_inactive():
+    latch = CameraLatch(debounce=1)
+    latch.observe(True)
+    assert latch.active is True
+    latch.reset()
+    assert latch.active is False
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+def test_latch_debounce_floor_is_one():
+    """Zero or negative debounce must not disable transitions entirely."""
+    latch = CameraLatch(debounce=0)
+    assert latch.observe(True) == TRANSITION_ACTIVATED
