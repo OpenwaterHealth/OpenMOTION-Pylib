@@ -62,6 +62,8 @@ def test_from_sequences_warns_on_wrong_length_but_fails_open(caplog):
     assert "6 entries" in caplog.text
     assert "expected 8" in caplog.text
     assert "fail open" in caplog.text
+    assert "cq_dark_threshold_per_camera" in caplog.text
+    assert "cq_light_threshold_per_camera" in caplog.text
     assert t.dark_for(7) == math.inf
     assert t.light_for(7) == 0.0
 
@@ -77,6 +79,8 @@ def test_from_sequences_warns_on_long_length_but_ignores_extras(caplog):
     assert "expected 8" in caplog.text
     assert "ignored" in caplog.text
     assert "fail open" not in caplog.text
+    assert "cq_dark_threshold_per_camera" in caplog.text
+    assert "cq_light_threshold_per_camera" in caplog.text
     assert t.dark_for(7) == 1.0
     assert t.light_for(7) == 10.0
 
@@ -179,9 +183,17 @@ def test_latch_debounce_one_is_immediate():
     assert latch.observe(False) == TRANSITION_CLEARED
 
 
+def test_latch_default_debounce_is_one():
+    """debounce=1 is the default, not just a value tests happen to pass."""
+    latch = CameraLatch()
+    assert latch.debounce == 1
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
 def test_latch_requires_consecutive_agreeing_observations():
     latch = CameraLatch(debounce=3)
     assert latch.observe(True) == TRANSITION_NONE
+    assert latch.active is False   # pending evidence, not yet latched
     assert latch.observe(True) == TRANSITION_NONE
     assert latch.observe(True) == TRANSITION_ACTIVATED
 
@@ -205,6 +217,22 @@ def test_latch_clear_edge_also_debounced():
     assert latch.observe(False) == TRANSITION_CLEARED
 
 
+def test_latch_full_activate_clear_reactivate_round_trip():
+    """Activate -> clear -> re-activate at debounce > 1.
+
+    test_latch_clear_edge_also_debounced stops at the first clear, but this
+    exact cycle repeats thousands of times over a 12 h scan — a state leak
+    from one edge into the next would surface here, not in a single-edge
+    test."""
+    latch = CameraLatch(debounce=2)
+    latch.observe(True)
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_CLEARED
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
 def test_latch_reset_returns_to_inactive():
     latch = CameraLatch(debounce=1)
     latch.observe(True)
@@ -214,7 +242,21 @@ def test_latch_reset_returns_to_inactive():
     assert latch.observe(True) == TRANSITION_ACTIVATED
 
 
-def test_latch_debounce_floor_is_one():
-    """Zero or negative debounce must not disable transitions entirely."""
-    latch = CameraLatch(debounce=0)
+def test_latch_reset_clears_a_partial_streak():
+    """reset() must discard accumulated evidence, not just the flag —
+    Task 3 calls it per-scan for every latch."""
+    latch = CameraLatch(debounce=3)
+    latch.observe(True)
+    latch.observe(True)          # 2/3 toward activation
+    latch.reset()
+    assert latch.observe(True) == TRANSITION_NONE   # streak restarted at 0
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+@pytest.mark.parametrize("debounce", [0, -1, -5])
+def test_latch_debounce_floor_is_one(debounce):
+    """Zero or negative debounce behaves as debounce=1."""
+    latch = CameraLatch(debounce=debounce)
+    assert latch.debounce == 1
     assert latch.observe(True) == TRANSITION_ACTIVATED

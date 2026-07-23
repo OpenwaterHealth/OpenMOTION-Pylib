@@ -45,6 +45,13 @@ TRANSITION_CLEARED   = "cleared"
 
 _SIDE_NAMES = ("left", "right")
 
+# Camera count per sensor module, and the app_config.json keys that supply
+# CQThresholds.from_sequences its two arrays — named here so the
+# wrong-length warning can point a log reader straight at the config file.
+_CAMERAS_PER_SENSOR = 8
+_DARK_CONFIG_KEY = "cq_dark_threshold_per_camera"
+_LIGHT_CONFIG_KEY = "cq_light_threshold_per_camera"
+
 
 @dataclass(frozen=True)
 class CQThresholds:
@@ -66,19 +73,22 @@ class CQThresholds:
     def from_sequences(cls, dark: Sequence[float], light: Sequence[float]) -> CQThresholds:
         dark_t = tuple(float(v) for v in dark)
         light_t = tuple(float(v) for v in light)
-        for name, seq in (("dark", dark_t), ("light", light_t)):
+        for name, config_key, seq in (
+            ("dark", _DARK_CONFIG_KEY, dark_t),
+            ("light", _LIGHT_CONFIG_KEY, light_t),
+        ):
             n = len(seq)
-            if n < 8:
+            if n < _CAMERAS_PER_SENSOR:
                 logger.warning(
-                    "CQ %s thresholds have %d entries, expected 8 — cameras "
-                    "%d-7 will fail open (never flagged)",
-                    name, n, n,
+                    "CQ %s thresholds (%s) have %d entries, expected %d — "
+                    "cameras with index >= %d will fail open (never flagged)",
+                    name, config_key, n, _CAMERAS_PER_SENSOR, n,
                 )
-            elif n > 8:
+            elif n > _CAMERAS_PER_SENSOR:
                 logger.warning(
-                    "CQ %s thresholds have %d entries, expected 8 — entries "
-                    "past index 7 are ignored",
-                    name, n,
+                    "CQ %s thresholds (%s) have %d entries, expected %d — "
+                    "entries past index %d are ignored",
+                    name, config_key, n, _CAMERAS_PER_SENSOR, _CAMERAS_PER_SENSOR - 1,
                 )
         return cls(dark=dark_t, light=light_t)
 
@@ -129,6 +139,10 @@ class CameraLatch:
     disagreeing observation resets the counter. ``debounce=1`` reproduces
     the legacy immediate latch/clear behavior.
 
+    Consequence: time-to-transition is unbounded — a spurious disagreeing
+    observation arriving more often than once per ``debounce`` postpones the
+    edge indefinitely. This matters most on the clear edge.
+
     Returns a transition only on an edge — steady state returns
     ``TRANSITION_NONE`` so callers emit one event per genuine change
     rather than once per frame.
@@ -145,18 +159,26 @@ class CameraLatch:
     def active(self) -> bool:
         return self._active
 
+    @property
+    def debounce(self) -> int:
+        """Effective debounce — always >= 1, whatever was passed in."""
+        return self._debounce
+
     def reset(self) -> None:
+        """Silent — no transition is returned. Callers mirroring latch
+        state must clear their own view."""
         self._active = False
         self._streak = 0
 
     def observe(self, bad: bool) -> str:
         """Feed one observation; return activated / cleared / none."""
-        if bool(bad) == self._active:
+        bad = bool(bad)
+        if bad == self._active:
             self._streak = 0
             return TRANSITION_NONE
         self._streak += 1
         if self._streak < self._debounce:
             return TRANSITION_NONE
-        self._active = bool(bad)
+        self._active = bad
         self._streak = 0
         return TRANSITION_ACTIVATED if self._active else TRANSITION_CLEARED
