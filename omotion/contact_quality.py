@@ -10,9 +10,12 @@ Two consumers share this module:
   Tracks the *current* value per camera, debounces each condition
   independently, and reports edges through a callback.
 
-Both read the same two DN-scale signals off the ``"live"`` channel and
-compare them with the same two predicates, so a camera can never be judged
-one way by the preflight check and another by the live monitor.
+Both read the same two DN-scale signals off the ``"live"`` channel and apply
+the same two predicates, so the *ambient-light* and *poor-contact* verdicts
+cannot drift apart between the preflight check and the live monitor.
+``REASON_NO_SIGNAL`` is deliberately preflight-only: the live monitor skips
+non-finite readings, because total loss of frames belongs to the consumer's
+camera-dropout watchdog rather than to contact quality.
 
 Thresholds are background-subtracted DN. See docs/SciencePipeline.md §11.2
 and §11.3.
@@ -24,6 +27,7 @@ import collections
 import logging
 import math
 from dataclasses import dataclass
+from typing import Sequence
 
 logger = logging.getLogger("openmotion.sdk.contact_quality")
 
@@ -50,19 +54,26 @@ class CQThresholds:
     onto the sensor. ``light`` is a lower bound — falling below it means the
     laser is not coupling into tissue.
 
-    Indices past the end of a sequence return a value that can never trip,
-    reproducing the legacy ``_ContactQualitySink`` lookup exactly.
+    Out-of-range indices — including negatives, which the legacy
+    ``_ContactQualitySink`` lookup silently wrapped to the end of the list —
+    return a value that can never trip.
     """
 
     dark:  tuple[float, ...]
     light: tuple[float, ...]
 
     @classmethod
-    def from_sequences(cls, dark, light) -> "CQThresholds":
-        return cls(
-            dark=tuple(float(v) for v in dark),
-            light=tuple(float(v) for v in light),
-        )
+    def from_sequences(cls, dark: Sequence[float], light: Sequence[float]) -> CQThresholds:
+        dark_t = tuple(float(v) for v in dark)
+        light_t = tuple(float(v) for v in light)
+        for name, seq in (("dark", dark_t), ("light", light_t)):
+            if len(seq) != 8:
+                logger.warning(
+                    "CQ %s thresholds have %d entries, expected 8 — cameras "
+                    "%d-7 will fail open (never flagged)",
+                    name, len(seq), len(seq),
+                )
+        return cls(dark=dark_t, light=light_t)
 
     def dark_for(self, cam_id: int) -> float:
         return self.dark[cam_id] if 0 <= cam_id < len(self.dark) else math.inf
@@ -71,14 +82,14 @@ class CQThresholds:
         return self.light[cam_id] if 0 <= cam_id < len(self.light) else 0.0
 
 
-def is_ambient_light(dark_max: float, thresholds: CQThresholds, cam_id: int) -> bool:
-    """True when a dark frame's DN exceeds the camera's dark threshold."""
-    return math.isfinite(dark_max) and dark_max > thresholds.dark_for(cam_id)
+def is_ambient_light(dark_dn: float, thresholds: CQThresholds, cam_id: int) -> bool:
+    """True when a dark-frame DN reading exceeds the camera's dark threshold."""
+    return math.isfinite(dark_dn) and dark_dn > thresholds.dark_for(cam_id)
 
 
-def is_poor_contact(light_avg: float, thresholds: CQThresholds, cam_id: int) -> bool:
-    """True when the light DN average falls below the camera's light threshold."""
-    return math.isfinite(light_avg) and light_avg < thresholds.light_for(cam_id)
+def is_poor_contact(light_dn: float, thresholds: CQThresholds, cam_id: int) -> bool:
+    """True when a light-frame DN reading falls below the camera's light threshold."""
+    return math.isfinite(light_dn) and light_dn < thresholds.light_for(cam_id)
 
 
 def evaluate_reason(
