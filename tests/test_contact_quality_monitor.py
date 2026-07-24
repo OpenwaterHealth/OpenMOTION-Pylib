@@ -28,6 +28,7 @@ from omotion.contact_quality import (
 )
 from omotion.pipeline.batch import FrameBatch
 from omotion.pipeline.pedestal import SensorPedestals
+from omotion.pipeline.sinks import Sink
 from omotion.pipeline.stages.dark import (
     DarkCorrectionStage,
     HybridRealtimePredictor,
@@ -254,8 +255,17 @@ def test_latch_reset_returns_to_inactive():
 
 
 def test_latch_reset_clears_a_partial_streak():
-    """reset() must discard accumulated evidence, not just the flag —
-    Task 3 calls it per-scan for every latch."""
+    """reset() must discard accumulated evidence, not just the flag.
+
+    No in-tree caller uses reset() today: ContactQualityMonitor.on_scan_start
+    clears the whole _latches dict outright rather than resetting each
+    entry, which is equally correct — a freshly-constructed CameraLatch
+    starts in the exact state reset() produces. Kept anyway as tested,
+    documented API: a reusable debounced-latch primitive should let a
+    caller silently force one latch back to inactive without discarding it
+    (e.g. a future per-camera dismiss action), and this pins the
+    non-obvious half of that contract — reset() clears the partial streak
+    too, not just the active flag."""
     latch = CameraLatch(debounce=3)
     latch.observe(True)
     latch.observe(True)          # 2/3 toward activation
@@ -325,6 +335,19 @@ def _monitor(events, **kwargs):
     )
 
 
+def test_monitor_satisfies_sink_protocol_on_the_live_channel():
+    """channels is otherwise completely untested: a class-attribute typo —
+    e.g. frozenset({"final"}) instead of frozenset({"live"}) — leaves every
+    other test in this file green, because every other test constructs the
+    monitor and calls consume("live", ...) directly, bypassing the runner's
+    channel-based dispatch entirely. In a real scan the runner would simply
+    never route a single batch to the monitor. This is exactly the
+    never-wired-up failure shape the whole feature exists to correct."""
+    mon = _monitor([])
+    assert isinstance(mon, Sink)
+    assert "live" in mon.channels
+
+
 def test_monitor_reports_poor_contact_when_light_drops():
     events = []
     mon = _monitor(events)
@@ -354,6 +377,20 @@ def test_monitor_debounce_suppresses_short_dip():
     assert events == []
     mon.consume("live", _dn_batch(1, 60.0))   # recovered, streak resets
     assert events == []
+
+
+def test_monitor_dark_debounce_is_independent_of_light_debounce():
+    """Every other test in this file sets both debounces to 1, so a
+    dark_debounce <-> light_debounce mix-up in the dark branch survives
+    unnoticed. Production leaves dark_debounce=1 (the scheduled ~15 s
+    cadence is treated as an immediate latch) and drives light_debounce=80;
+    swapping the two would silently push ambient-light latency from ~15 s
+    to ~80 dark observations (~20 minutes at the default dark_interval)."""
+    events = []
+    mon = _monitor(events, light_debounce=5, dark_debounce=1)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))
+    assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(9.0), True)]
 
 
 def test_monitor_reports_ambient_light_on_dark_frame():
@@ -460,6 +497,24 @@ def test_monitor_on_scan_start_resets_state():
     assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
 
 
+def test_monitor_on_scan_start_clears_light_window():
+    """test_monitor_on_scan_start_resets_state above only pins the latch
+    resetting — it never fills the rolling window, so a missing
+    _light_window.clear() would pass it unnoticed. Fill the window with
+    healthy samples in scan 1 (leaving it short of maxlen, so a fresh
+    per-key deque and a merely-unfull old one are distinguishable); a
+    correctly-reset scan 2 must judge its own single bad sample entirely on
+    its own, not blended with scan 1's leftovers."""
+    events = []
+    mon = _monitor(events, rolling_window=4, light_debounce=1)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(3, 60.0))    # 3/4 of the window, healthy
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    events.clear()
+    mon.consume("live", _dn_batch(1, 2.0))     # single bad sample, fresh scan
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
+
+
 def test_monitor_emits_edges_only_not_every_frame():
     events = []
     mon = _monitor(events)
@@ -476,6 +531,21 @@ def test_monitor_rolling_window_averages_light_frames():
     mon.consume("live", _dn_batch(3, 60.0))
     mon.consume("live", _dn_batch(1, 0.0))
     assert events == []
+
+
+def test_monitor_rolling_window_zero_clamps_to_one():
+    """rolling_window=0 must clamp to 1 rather than constructing
+    deque(maxlen=0) — appending to a maxlen=0 deque silently discards the
+    item, so sum(window)/len(window) becomes 0/0 and raises
+    ZeroDivisionError on every light row. The bloodflow-app's `_cq_int_or`
+    helper is reported to rely on exactly this clamp when a config value
+    coerces to 0 or is missing (unverified from this SDK worktree — the
+    app repo isn't checked out here)."""
+    events = []
+    mon = _monitor(events, rolling_window=0)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))     # must not raise
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
 
 
 def test_monitor_survives_a_raising_callback():
@@ -508,6 +578,16 @@ def test_monitor_handles_batch_without_dn_fields():
     mon.consume("live", batch)                # must not raise
     assert events == []
 
+    # The mean_dc_rt guard is a separate line from the subtracted_mean
+    # guard above and was previously untested on its own: with
+    # subtracted_mean=None, the first guard always short-circuits before
+    # the second is ever reached. Null only mean_dc_rt so the second guard
+    # is what's actually exercised.
+    batch2 = _dn_batch(1, 2.0)
+    batch2.mean_dc_rt = None
+    mon.consume("live", batch2)                # must not raise
+    assert events == []
+
 
 # ---------------------------------------------------------------------------
 # Unlit frame (disconnected fiber) via low_light_rt — issue #364
@@ -536,14 +616,50 @@ def test_monitor_reports_poor_contact_for_unlit_frame_via_low_light_rt():
     assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
 
 
-def test_monitor_skips_non_finite_light_when_low_light_rt_present_but_false():
-    """low_light_rt existing on the batch but False for this row means 'no
-    verdict yet' (e.g. still in the warmup window before the first dark),
-    not 'unlit' — must still be skipped, not treated as poor contact."""
+def test_monitor_reports_unlit_frame_as_poor_contact_even_above_light_threshold():
+    """The low_light_rt=True branch reports poor_contact unconditionally —
+    NOT via is_poor_contact(subtracted_mean, ...) — because subtracted_mean
+    is pedestal-referenced while the light threshold was calibrated against
+    mean_dc_rt's dark-baseline-referenced scale; comparing the two against
+    the same bound would be apples-to-oranges (see the comment in
+    consume()). Every other unlit fixture in this file happens to use a
+    subtracted_mean already below the light threshold, so a mutant that ran
+    it through is_poor_contact would still report poor_contact by
+    coincidence and pass unnoticed. Use subtracted_mean=40.0 — above cam
+    0's 15.0 light bar: the real code still reports poor_contact (this is
+    judged structurally, not by threshold), while that mutant would clear
+    it as healthy."""
     events = []
     mon = _monitor(events)
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
-    batch = _dn_batch(1, float("nan"))
+    batch = _dn_batch(1, 40.0)               # above the 15.0 light threshold
+    batch.mean_dc_rt[:] = float("nan")       # DarkCorrectionStage suppressed it
+    low = np.zeros((16, 2, 8), dtype=bool)
+    low[0, 0, 0] = True
+    batch.low_light_rt = low
+    mon.consume("live", batch)
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(40.0), True)]
+
+
+def test_monitor_skips_non_finite_light_when_low_light_rt_present_but_false():
+    """low_light_rt existing on the batch but False for this row means 'no
+    verdict yet' (e.g. still in the warmup window before the first dark),
+    not 'unlit' — must still be skipped, not treated as poor contact.
+
+    subtracted_mean must be finite here, unlike mean_dc_rt — that is the
+    real warmup shape: a frame that arrived carrying a real signal but has
+    no dark baseline yet to subtract. Building both fields as NaN (as a
+    naive fixture would) is inert: it can't distinguish the correct code
+    from a mutant that drops the "not bool(low_light_rt[...])" half of the
+    guard, because that mutant falls through to the subtracted_mean check,
+    which was ALSO NaN by construction and skips anyway, by coincidence.
+    With subtracted_mean finite, that same mutant instead reports a false
+    poor-contact warning at the start of every scan."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    batch = _dn_batch(1, 60.0)              # finite subtracted_mean — real signal
+    batch.mean_dc_rt[:] = float("nan")      # no dark baseline yet
     batch.low_light_rt = np.zeros((16, 2, 8), dtype=bool)   # all False
     mon.consume("live", batch)
     assert events == []
