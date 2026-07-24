@@ -134,6 +134,34 @@ def test_create_ok_false_raises_on_missing(monkeypatch, tmp_path):
         db_open.connect(tmp_path / "nope.db", create_ok=False)
 
 
+def test_connect_threads_create_flag_through_to_get_key(monkeypatch, tmp_path):
+    """A brand-new DB creates the key (create=True); an existing encrypted DB
+    must NEVER create (create=False), or a regenerated key orphans it."""
+    pytest.importorskip("sqlcipher3")
+    store = {}
+    calls = []
+
+    def fake_get_key(*, create=False):
+        calls.append(create)
+        if "k" not in store:
+            if not create:
+                raise db_key.EncryptionKeyMissing("no key")
+            store["k"] = FIXED_KEY
+        return store["k"]
+
+    monkeypatch.setattr(db_key, "require_encryption", lambda: True)
+    monkeypatch.setattr(db_key, "get_key", fake_get_key)
+
+    p = tmp_path / "scans.db"
+    con = db_open.connect(p)          # new file -> create=True
+    con.execute("CREATE TABLE t(x)")
+    con.commit()
+    con.close()
+    con2 = db_open.connect(p)         # existing encrypted -> create=False
+    con2.close()
+    assert calls == [True, False]
+
+
 def test_pragma_key_is_first_statement(monkeypatch, tmp_path):
     """Regression guard: PRAGMA key must precede any other statement, else
     SQLCipher fails to decrypt. We assert by opening an existing encrypted DB

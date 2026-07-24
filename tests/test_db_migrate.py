@@ -69,20 +69,93 @@ def test_migration_noop_on_missing(clinical, tmp_path):
     assert db_migrate.migrate_plaintext_to_encrypted(tmp_path / "nope.db") is False
 
 
-def test_migration_preserves_wal_committed_data(clinical, tmp_path):
-    """A real scans.db is WAL-mode; committed rows in an uncheckpointed -wal
-    must survive migration (not be lost when stale sidecars are removed)."""
+def test_migration_preserves_uncheckpointed_wal(clinical, tmp_path):
+    """A real scans.db is WAL-mode. A crash can leave committed rows only in an
+    uncheckpointed -wal. Migration must fold them in (checkpoint before export),
+    not lose them when the stale sidecars are removed. We create a genuine
+    uncheckpointed -wal via a child that hard-exits without closing."""
+    import subprocess
+    import sys
+    import textwrap
+
     p = tmp_path / "scans.db"
-    con = sqlite3.connect(p)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("CREATE TABLE sessions(id INTEGER PRIMARY KEY, label TEXT)")
-    con.execute("INSERT INTO sessions(label) VALUES('WAL-ROW')")
-    con.commit()
-    con.close()  # may leave scans.db-wal alongside
+    child = textwrap.dedent(
+        """
+        import os, sqlite3, sys
+        con = sqlite3.connect(sys.argv[1])
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE sessions(id INTEGER PRIMARY KEY, label TEXT)")
+        con.execute("INSERT INTO sessions(label) VALUES('WAL-ROW')")
+        con.commit()
+        os._exit(0)  # hard exit: no checkpoint, no clean close -> -wal persists
+        """
+    )
+    subprocess.run([sys.executable, "-c", child, str(p)], check=True)
+    assert (tmp_path / "scans.db-wal").exists()          # precondition: real -wal
+
     assert db_migrate.migrate_plaintext_to_encrypted(p) is True
     con = db_open.connect(p)
     assert con.execute("SELECT label FROM sessions").fetchone()[0] == "WAL-ROW"
     con.close()
+    assert not (tmp_path / "scans.db-wal").exists()      # stale sidecar removed
+
+
+def test_migration_recovers_from_stale_enc_tmp(clinical, tmp_path):
+    """A leftover .enc.tmp from a previously killed run must be cleared, not
+    block a fresh migration."""
+    p = tmp_path / "scans.db"
+    _make_plaintext(p)
+    (tmp_path / "scans.db.enc.tmp").write_bytes(b"leftover from a killed run")
+    assert db_migrate.migrate_plaintext_to_encrypted(p) is True
+    con = db_open.connect(p)
+    assert con.execute("SELECT session_label FROM sessions").fetchone()[0] == "OLD-PHI"
+    con.close()
+    assert not (tmp_path / "scans.db.enc.tmp").exists()  # consumed by os.replace
+
+
+def test_schema_upgrade_adds_columns_on_encrypted_db(clinical, tmp_path):
+    """An app update over an OLD encrypted DB (predating frame_id/quality) must
+    run _init_schema's ALTER ADD COLUMN branch on the sqlcipher3 driver and
+    preserve pre-existing rows with the sentinel defaults. This exercises the
+    ALTER path that the fresh-DB schema test cannot."""
+    from sqlcipher3 import dbapi2 as sqlcipher
+
+    from omotion import ScanDatabase
+
+    path = str(tmp_path / "scans.db")
+    # Build an OLD-schema encrypted DB directly: session_data WITHOUT frame_id
+    # or quality columns.
+    con = sqlcipher.connect(path)
+    con.execute(f"PRAGMA key = \"x'{FIXED_KEY}'\"")
+    con.executescript(
+        "CREATE TABLE sessions(id INTEGER PRIMARY KEY, session_label TEXT NOT NULL,"
+        " session_start REAL NOT NULL, session_end REAL, session_notes TEXT,"
+        " session_meta TEXT);"
+        "CREATE TABLE session_data(id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL,"
+        " cam_id INTEGER NOT NULL, side INTEGER NOT NULL, timestamp_s REAL NOT NULL,"
+        " bfi REAL, bvi REAL, contrast REAL, mean REAL);"
+        "CREATE TABLE database_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    )
+    con.execute("INSERT INTO sessions(session_label, session_start) VALUES('OLD', 1.0)")
+    con.execute(
+        "INSERT INTO session_data(session_id, cam_id, side, timestamp_s, bfi)"
+        " VALUES(1, 0, 0, 1.0, 1.5)"
+    )
+    con.commit()
+    con.close()
+
+    # Open via ScanDatabase -> _init_schema runs ALTER ADD COLUMN on the
+    # encrypted driver, adding frame_id (-1) and quality ('ok').
+    db = ScanDatabase(db_path=path)
+    try:
+        cols = {r[1] for r in db._connection().execute("PRAGMA table_info('session_data')")}
+        assert "frame_id" in cols and "quality" in cols
+        row = next(iter(db.iter_session_data(1)))
+        assert row["bfi"] == 1.5
+        assert row["frame_id"] == -1
+        assert row["quality"] == "ok"
+    finally:
+        db.close()
 
 
 def test_schema_migration_runs_on_encrypted_db(clinical, tmp_path):

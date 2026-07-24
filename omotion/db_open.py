@@ -8,11 +8,14 @@ uniformly. See docs/superpowers/specs/2026-07-23-sqlite-encryption-design.md
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from pathlib import Path
 
 from omotion import db_key
+
+logger = logging.getLogger("omotion.db_open")
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"   # 16 bytes; SQLCipher encrypts its header
 _MIN_DB_SIZE = 100                       # a full SQLite header is 100 bytes
@@ -67,8 +70,11 @@ def connect(path: str | Path, *, create_ok: bool = True):
                 f"encryption policy is on but {path} is a plaintext database; "
                 "run db_migrate.migrate_plaintext_to_encrypted() first"
             )
-        key = db_key.get_key(create=(kind == "new"))
-        return _open_encrypted(path, key)
+        # Do not bind the key to a local here — an exception raised downstream
+        # would retain it in this frame for a locals-capturing error reporter.
+        conn = _open_encrypted(path, db_key.get_key(create=(kind == "new")))
+        logger.info("scan DB opened encrypted=True (policy require_encryption=True): %s", path)
+        return conn
 
     # policy off (research / default)
     if kind == "encrypted":
@@ -76,7 +82,16 @@ def connect(path: str | Path, *, create_ok: bool = True):
             f"{path} is an encrypted database; open it on a build with the "
             "encryption policy enabled"
         )
-    return _open_plain(path)
+    conn = _open_plain(path)
+    # Log the encryption state so a mis-provisioned clinical build that forgot to
+    # set the policy (and is therefore writing plaintext PHI) is diagnosable in
+    # the field. INFO, not WARNING — plaintext is the correct state for the
+    # research/headless majority.
+    logger.info(
+        "scan DB opened encrypted=False (policy require_encryption=%s): %s",
+        db_key.require_encryption(), path,
+    )
+    return conn
 
 
 def _apply_standard_pragmas(conn) -> None:
@@ -101,7 +116,13 @@ def _open_encrypted(path: str, key: str):
 
     conn = sqlcipher.connect(path, check_same_thread=False)
     # PRAGMA key MUST be the first statement, before any page is touched.
+    # (Known minor limitation: the keyed statement text stays in the driver's
+    # prepared-statement cache for the connection's lifetime. The key is already
+    # resident in process memory, so this adds no new at-rest exposure.)
     conn.execute(f"PRAGMA key = \"x'{key}'\"")
+    # Drop the key immediately: it is unused hereafter, so a probe-read failure's
+    # traceback frame must not carry the raw key for a locals-capturing reporter.
+    del key
     conn.row_factory = sqlcipher.Row          # driver-matched Row, NOT sqlite3.Row
     try:
         # Probe read: SQLCipher validates the key lazily, so force a page-1 read
@@ -111,7 +132,8 @@ def _open_encrypted(path: str, key: str):
     except sqlcipher.DatabaseError as exc:
         conn.close()
         raise db_key.EncryptionKeyMissing(
-            f"the key did not decrypt {path} (wrong or rotated key)"
+            f"could not read {path} with the current key "
+            "(wrong/rotated key or a corrupt/truncated database)"
         ) from exc
     _apply_standard_pragmas(conn)
     return conn

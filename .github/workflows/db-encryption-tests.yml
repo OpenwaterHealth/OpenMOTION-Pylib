@@ -1,0 +1,44 @@
+name: DB Encryption Tests
+
+# Software-only tests for the scan-database SQLCipher encryption path. The
+# encrypted tests are guarded with pytest.importorskip("sqlcipher3"); the
+# hardware runners do not install that clinical-only extra, so without this job
+# the entire encryption feature would ship untested (silent skips). This job
+# installs the extra and FAILS LOUD if sqlcipher3 is absent, so a regression
+# that drops the dependency breaks the build instead of passing green.
+
+on:
+  pull_request:
+    branches: [next, main]
+  push:
+    branches: [testing]
+
+jobs:
+  db-encryption:
+    name: Scan-DB encryption (software-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK with dev + encryption extras
+        run: pip install -e ".[dev,encryption]"
+
+      - name: Fail loud if sqlcipher3 is missing (else encrypted tests silently skip)
+        run: python -c "import sqlcipher3; print('sqlcipher3 ->', sqlcipher3.dbapi2.sqlite_version)"
+
+      - name: Run scan-DB + encryption tests
+        run: |
+          pytest \
+            tests/test_db_key.py \
+            tests/test_db_open.py \
+            tests/test_db_migrate.py \
+            tests/test_scan_database.py \
+            -v

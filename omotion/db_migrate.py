@@ -9,9 +9,24 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from pathlib import Path
 
 from omotion import db_key, db_open
+
+
+def _replace_with_retry(src: str, dst: str, *, attempts: int = 10, delay: float = 0.1) -> None:
+    """os.replace with a bounded retry for transient Windows sharing violations
+    (an AV scanner / indexer / a briefly-held handle can make replace raise
+    PermissionError). Surfaces the original error after exhausting attempts."""
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 def migrate_plaintext_to_encrypted(path: str | Path) -> bool:
@@ -20,6 +35,9 @@ def migrate_plaintext_to_encrypted(path: str | Path) -> bool:
     Returns True if a migration was performed, False if the file was already
     encrypted or absent (no-op). Leaves ``<name>.pre-encryption.bak`` next to the
     database; the operator removes it per SOP once the update is confirmed.
+
+    Precondition: all connections to ``path`` must be closed before calling —
+    the atomic replace needs an unopened target on Windows.
     """
     path = Path(path)
     if db_open.classify_file(path) != "plaintext":
@@ -31,20 +49,27 @@ def migrate_plaintext_to_encrypted(path: str | Path) -> bool:
     backup = path.with_name(path.name + ".pre-encryption.bak")
     tmp = path.with_name(path.name + ".enc.tmp")
 
-    shutil.copy2(path, backup)
     if tmp.exists():
-        tmp.unlink()
+        tmp.unlink()  # clear a leftover temp from a prior crashed run
 
-    # Open the plaintext source with NO key (SQLCipher reads unencrypted DBs when
-    # unkeyed). Fold any committed WAL back into the main file first so nothing
-    # committed is lost when the stale sidecars are removed below, then export
-    # the full logical DB into a freshly-keyed temp file.
-    src = sqlcipher.connect(str(path))
+    # Fold any committed WAL into the main file BEFORE backing up, so the .bak
+    # (the recovery artifact) contains every committed row and an empty WAL —
+    # not just what was in the main file at copy time.
+    check = sqlcipher.connect(str(path))
     try:
         try:
-            src.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            check.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except sqlcipher.DatabaseError:
             pass  # not in WAL mode — nothing to checkpoint
+    finally:
+        check.close()
+
+    shutil.copy2(path, backup)
+
+    # Open the plaintext source with NO key (SQLCipher reads unencrypted DBs when
+    # unkeyed) and export the full logical DB into a freshly-keyed temp file.
+    src = sqlcipher.connect(str(path))
+    try:
         src.execute(
             "ATTACH DATABASE ? AS enc KEY \"x'%s'\"" % key, (str(tmp),)
         )
@@ -52,6 +77,7 @@ def migrate_plaintext_to_encrypted(path: str | Path) -> bool:
         src.execute("DETACH DATABASE enc")
     finally:
         src.close()
+    del key  # unused hereafter; do not retain across fsync/replace/verify
 
     # Durably flush the encrypted copy before the atomic replace. The handle
     # must be writable — Windows os.fsync (_commit) rejects a read-only fd.
@@ -61,7 +87,7 @@ def migrate_plaintext_to_encrypted(path: str | Path) -> bool:
     finally:
         os.close(fd)
 
-    os.replace(str(tmp), str(path))  # atomic on the same filesystem
+    _replace_with_retry(str(tmp), str(path))  # atomic on the same filesystem
 
     # The old plaintext sidecars belong to the pre-migration file and would be
     # misapplied to the new encrypted DB — remove them (their committed content

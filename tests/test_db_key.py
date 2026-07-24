@@ -92,6 +92,40 @@ def test_generated_keys_are_random(fake_keyring):
     assert k1 != k2
 
 
+def test_get_key_create_true_is_idempotent(fake_keyring):
+    # create=True against an EXISTING key must return it unchanged, never
+    # regenerate — regeneration would orphan every already-encrypted DB.
+    k1 = db_key.get_key(create=True)
+    k2 = db_key.get_key(create=True)
+    assert k1 == k2
+
+
+# --------------------------------------------------------------------------
+# Backend pinning — the real _assert_backend (not stubbed)
+# --------------------------------------------------------------------------
+
+def test_set_policy_true_rejects_non_windows_backend(monkeypatch):
+    import keyring
+
+    class _PlaintextKeyring:  # name lacks 'WinVault'; module lacks 'Windows'
+        pass
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: _PlaintextKeyring())
+    with pytest.raises(db_key.EncryptionUnavailable):
+        db_key.set_policy(require_encryption=True)
+
+
+def test_set_policy_true_accepts_winvault_backend(monkeypatch):
+    import keyring
+
+    class WinVaultKeyring:  # name contains 'WinVault'
+        pass
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: WinVaultKeyring())
+    db_key.set_policy(require_encryption=True)  # must not raise
+    assert db_key.require_encryption() is True
+
+
 # --------------------------------------------------------------------------
 # Export / import recovery seam
 # --------------------------------------------------------------------------
@@ -115,5 +149,13 @@ def test_export_requires_existing_key(fake_keyring, tmp_path):
 def test_import_rejects_malformed_key(fake_keyring, tmp_path):
     bad = tmp_path / "bad.key"
     bad.write_text("not-a-64-hex-key")
+    with pytest.raises(ValueError):
+        db_key.import_key(bad)
+
+
+def test_import_rejects_64_char_non_hex_key(fake_keyring, tmp_path):
+    # 64 chars passes the length check and reaches the hex-char predicate
+    bad = tmp_path / "bad64.key"
+    bad.write_text("z" * 64)
     with pytest.raises(ValueError):
         db_key.import_key(bad)
