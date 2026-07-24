@@ -83,3 +83,20 @@ def test_migration_preserves_wal_committed_data(clinical, tmp_path):
     con = db_open.connect(p)
     assert con.execute("SELECT label FROM sessions").fetchone()[0] == "WAL-ROW"
     con.close()
+
+
+def test_schema_migration_runs_on_encrypted_db(clinical, tmp_path):
+    """An app-update schema bump (_init_schema ALTER/CREATE INDEX on every open)
+    must run cleanly on an encrypted DB and preserve data. See §7.1."""
+    from omotion import ScanDatabase
+
+    path = str(tmp_path / "scans.db")
+    db = ScanDatabase(db_path=path)               # creates encrypted + schema
+    sid = db.create_session("S", 1.0)
+    db.insert_session_data(sid, cam_id=0, side=0, timestamp_s=1.0, bfi=1.5)
+    db.close()
+    # reopen — _init_schema re-runs ADD COLUMN / CREATE INDEX IF NOT EXISTS:
+    db2 = ScanDatabase(db_path=path)
+    rows = list(db2.iter_session_data(sid))
+    db2.close()
+    assert rows[0]["bfi"] == 1.5

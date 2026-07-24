@@ -50,6 +50,7 @@ from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
 from .ScanDatabase import ScanDatabase
+from . import db_key, db_open, db_migrate
 from .SessionPlayback import materialize_corrected_csv
 from .Calibration import Calibration
 from .CalibrationWorkflow import (
@@ -95,6 +96,9 @@ __all__ = [
     "USBInterfaceBase",
     "MotionConfig",
     "ScanDatabase",
+    "db_key",
+    "db_open",
+    "db_migrate",
     "materialize_corrected_csv",
     "Calibration",
     "CalibrationRequest",
