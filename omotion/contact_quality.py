@@ -3,12 +3,16 @@
 Two consumers share this module:
 
 * :class:`~omotion.ContactQualityWorkflow.ContactQualityWorkflow` — the
-  one-shot pre-scan check. Accumulates the *worst* value seen per camera
-  across a short scan and rolls the two conditions into a single
-  precedence-ordered verdict via :func:`evaluate_reason`.
+  one-shot pre-scan check. For the dark signal, accumulates the *worst*
+  (maximum) value seen per camera across a short scan; the light signal
+  uses the same rolling-window mean as :class:`ContactQualityMonitor`.
+  Rolls both conditions into a single precedence-ordered verdict via
+  :func:`evaluate_reason`.
 * :class:`ContactQualityMonitor` — the live sink attached to a full scan.
-  Tracks the *current* value per camera, debounces each condition
-  independently, and reports edges through a callback.
+  For the dark signal, tracks only the *current* reading rather than a
+  running max — the light-signal rolling window is unchanged from the
+  one-shot check. Debounces each condition independently and reports edges
+  through a callback.
 
 Both read the same two DN-scale signals off the ``"live"`` channel and apply
 the same two predicates, so the *ambient-light* and *poor-contact* verdicts
@@ -238,10 +242,13 @@ class ContactQualityMonitor:
            ``mean_dc_rt``, so comparing the two against the same bound
            would be apples-to-oranges.
 
-    **Accumulation differs deliberately from the one-shot check.** The check
-    keeps the worst value seen across its 1 s window; this keeps the
-    *current* value, because a running dark max would latch an ambient
-    warning for the remaining hours of a free-run scan.
+    **Dark-signal accumulation differs deliberately from the one-shot
+    check; the light-signal rolling window does not.** The check keeps the
+    worst (maximum) dark reading seen across its short window; this keeps
+    only the *current* dark reading, because a running dark max would latch
+    an ambient warning for the remaining hours of a free-run scan. Both
+    consumers average light readings over an identical
+    ``deque(maxlen=rolling_window)`` and threshold the mean the same way.
 
     ``on_transition(side, cam_id, reason, value, active)`` fires on edges
     only. ``reason`` is ``REASON_AMBIENT_LIGHT`` or ``REASON_POOR_CONTACT``;
