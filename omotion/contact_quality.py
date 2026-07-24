@@ -14,8 +14,13 @@ Both read the same two DN-scale signals off the ``"live"`` channel and apply
 the same two predicates, so the *ambient-light* and *poor-contact* verdicts
 cannot drift apart between the preflight check and the live monitor.
 ``REASON_NO_SIGNAL`` is deliberately preflight-only: the live monitor skips
-non-finite readings, because total loss of frames belongs to the consumer's
-camera-dropout watchdog rather than to contact quality.
+readings from frames that never arrived at all (non-finite with no
+``low_light_rt`` corroboration), because total loss of frames belongs to
+the consumer's camera-dropout watchdog rather than to contact quality. A
+frame that DID arrive but was unlit — DarkCorrectionStage's own
+``low_light_rt`` determination — is reported as poor contact instead of
+silently dropped; that is the disconnected-fiber case the live monitor
+exists to catch (see :class:`ContactQualityMonitor`).
 
 Thresholds are background-subtracted DN. See docs/SciencePipeline.md §11.2
 and §11.3.
@@ -27,7 +32,7 @@ import collections
 import logging
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 logger = logging.getLogger("openmotion.sdk.contact_quality")
 
@@ -214,8 +219,24 @@ class ContactQualityMonitor:
         zero-light pedestal.
       * every other non-warmup/non-stale row -> ``mean_dc_rt``
         (``mean_raw - predicted_dark_baseline``), measuring laser-driven
-        signal above the just-measured dark. Non-finite values (early light
-        frames before the first dark observation) are skipped.
+        signal above the just-measured dark. ``mean_dc_rt`` is non-finite
+        for two DIFFERENT reasons, and they are not treated alike:
+
+        1. Warmup — no dark has been observed yet, so there is no baseline
+           to subtract. No signal exists to judge; skipped, left to the
+           consumer's camera-dropout watchdog.
+        2. The frame arrived but DarkCorrectionStage's own dark_like test
+           (``low_light_rt``) says it was unlit — a covered sensor, a
+           lifted sensor, or a decoupled fiber — and realtime emission was
+           suppressed on purpose. This is the strongest poor-contact
+           evidence the pipeline produces (the exact disconnected-fiber
+           case issue #364 was filed about), so it is reported
+           unconditionally via ``subtracted_mean`` for display, not
+           skipped and not run through :func:`is_poor_contact` —
+           ``subtracted_mean`` is pedestal-referenced while the light
+           threshold was calibrated against dark-baseline-referenced
+           ``mean_dc_rt``, so comparing the two against the same bound
+           would be apples-to-oranges.
 
     **Accumulation differs deliberately from the one-shot check.** The check
     keeps the worst value seen across its 1 s window; this keeps the
@@ -228,6 +249,14 @@ class ContactQualityMonitor:
     frames is the camera-dropout watchdog's job, and reporting it as poor
     contact would send the operator to fix the wrong thing.
 
+    ``light_debounce`` and ``dark_debounce`` are frame counts on two
+    DIFFERENT clocks — not seconds, and not the same clock as each other.
+    ``light_debounce`` counts consecutive light-frame observations, which
+    arrive at the ~40 Hz capture rate (so the default of 80 is roughly 2 s).
+    ``dark_debounce`` counts consecutive dark-frame observations, which are
+    scheduled roughly every ``dark_interval`` frames — about 15 s apart at
+    the default. Do not tune one against the other assuming a shared clock.
+
     The callback is invoked on the pipeline runner thread. A GUI consumer
     must marshal to its own thread. Exceptions from the callback are logged
     and swallowed so a broken consumer cannot disable the sink.
@@ -239,7 +268,7 @@ class ContactQualityMonitor:
         self,
         *,
         thresholds: CQThresholds,
-        on_transition,
+        on_transition: Callable[[str, int, str, float, bool], None],
         rolling_window: int = 10,
         light_debounce: int = 80,
         dark_debounce: int = 1,
@@ -255,20 +284,35 @@ class ContactQualityMonitor:
         self._latches: dict = {}
         # (side, cam_id) pairs in the scan mask; empty means "all"
         self._active_cams: set = set()
+        # on_complete() summary counters — reset per scan in on_scan_start;
+        # see on_complete's docstring for why they exist.
+        self._transitions_emitted = 0
+        self._observations_processed = 0
+        self._cameras_seen: set = set()
 
     def on_scan_start(self, meta) -> None:
         self._light_window.clear()
         self._latches.clear()
         self._active_cams = _cams_from_masks(meta)
+        self._transitions_emitted = 0
+        self._observations_processed = 0
+        self._cameras_seen = set()
+        if meta is None:
+            mask_desc = "no metadata (evaluating all cameras)"
+        else:
+            left_mask = int(getattr(meta, "left_camera_mask", 0) or 0)
+            right_mask = int(getattr(meta, "right_camera_mask", 0) or 0)
+            mask_desc = f"left=0x{left_mask:02X} right=0x{right_mask:02X}"
         # Deliberate tripwire: this line is the evidence that live
         # contact-quality monitoring is actually attached. Its absence is
         # how the feature stayed silently dead for two months in 2026.
         logger.info(
-            "live contact-quality monitor attached: %d camera(s), "
-            "dark<=%s DN, light>=%s DN, debounce light=%d dark=%d",
-            len(self._active_cams) or 2 * _CAMERAS_PER_SENSOR,
+            "live contact-quality monitor attached: %s, "
+            "dark<=%s DN, light>=%s DN, window=%d, debounce light=%d dark=%d",
+            mask_desc,
             list(self._thresholds.dark) or "n/a",
             list(self._thresholds.light) or "n/a",
+            self._window_size,
             self._light_debounce,
             self._dark_debounce,
         )
@@ -280,8 +324,10 @@ class ContactQualityMonitor:
             return
         if getattr(batch, "mean_dc_rt", None) is None:
             return
+        low_light_rt = getattr(batch, "low_light_rt", None)
         for i, side_idx, cam_id, ft in batch.iter_rows(exclude={"warmup", "stale"}):
-            if side_idx < 0 or not (0 <= cam_id < _CAMERAS_PER_SENSOR):
+            if (not (0 <= side_idx < len(_SIDE_NAMES))
+                    or not (0 <= cam_id < _CAMERAS_PER_SENSOR)):
                 continue
             side = _SIDE_NAMES[side_idx]
             key = (side, cam_id)
@@ -299,6 +345,38 @@ class ContactQualityMonitor:
             else:
                 value = float(batch.mean_dc_rt[i, side_idx, cam_id])
                 if not math.isfinite(value):
+                    # NaN means two different things here. A warmup row
+                    # carries no signal at all and belongs to the
+                    # consumer's dropout watchdog. But DarkCorrectionStage
+                    # also suppresses realtime emission for a frame that
+                    # ARRIVED and was unlit (low_light_rt) — a covered
+                    # sensor, a lifted sensor, a decoupled fiber. That is
+                    # total contact loss: the strongest poor-contact
+                    # evidence the pipeline produces, and the case issue
+                    # #364 (fiber disconnect not detected) was filed about.
+                    if low_light_rt is None or not bool(low_light_rt[i, side_idx, cam_id]):
+                        continue
+                    value = float(batch.subtracted_mean[i, side_idx, cam_id])
+                    if not math.isfinite(value):
+                        continue
+                    # low_light_rt is DarkCorrectionStage's own
+                    # determination — the same dark_like test used to
+                    # classify real dark frames — that this frame received
+                    # no light at all. That is stronger, more direct
+                    # evidence than any threshold comparison, so report it
+                    # unconditionally rather than running subtracted_mean
+                    # through is_poor_contact: subtracted_mean is
+                    # pedestal-referenced while the light threshold was
+                    # calibrated against dark-baseline-referenced
+                    # mean_dc_rt, so comparing the two would be
+                    # apples-to-oranges. Kept out of the rolling window for
+                    # the same reason — averaging it in would mix
+                    # reference frames.
+                    self._observe(
+                        side, cam_id, REASON_POOR_CONTACT,
+                        True,
+                        value, self._light_debounce,
+                    )
                     continue
                 window = self._light_window.get(key)
                 if window is None:
@@ -313,6 +391,8 @@ class ContactQualityMonitor:
                 )
 
     def _observe(self, side, cam_id, reason, bad, value, debounce) -> None:
+        self._observations_processed += 1
+        self._cameras_seen.add((side, cam_id))
         latch_key = (side, cam_id, reason)
         latch = self._latches.get(latch_key)
         if latch is None:
@@ -321,6 +401,7 @@ class ContactQualityMonitor:
         transition = latch.observe(bad)
         if transition == TRANSITION_NONE:
             return
+        self._transitions_emitted += 1
         active = transition == TRANSITION_ACTIVATED
         logger.info(
             "live CQ %s%d: %s %s (%.2f DN)",
@@ -330,9 +411,25 @@ class ContactQualityMonitor:
         try:
             self._on_transition(side, cam_id, reason, value, active)
         except Exception:
-            # The runner disables a sink that raises. A broken consumer must
-            # not take contact-quality monitoring down with it.
+            # NOT "the runner disables a sink that raises" — _safe_consume
+            # (runner.py) logs and continues; it does not disable anything.
+            # Only an on_scan_start failure does that. The real risk here is
+            # narrower but still real: an uncaught exception would unwind
+            # this whole consume() call, abandoning every remaining row in
+            # the batch after the one that raised (silently skipping the
+            # other cameras), and would log a fresh traceback per batch —
+            # at ~40 Hz — for as long as a broken callback keeps raising.
             logger.exception("contact-quality transition callback raised")
 
     def on_complete(self) -> None:
-        pass
+        # A silent scan is ambiguous without this: "contact was good
+        # throughout" and "the sink was attached but nothing ever reached
+        # the predicates" look identical from the absence of transitions
+        # alone — this feature was dead for two months in 2026 precisely
+        # because that silence looked like success.
+        logger.info(
+            "live contact-quality monitor: %d transition(s) emitted, "
+            "%d camera(s) observed, %d observation(s) processed",
+            self._transitions_emitted, len(self._cameras_seen),
+            self._observations_processed,
+        )

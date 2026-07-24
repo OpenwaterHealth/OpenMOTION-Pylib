@@ -21,11 +21,20 @@ from omotion.contact_quality import (
     CameraLatch,
     ContactQualityMonitor,
     CQThresholds,
+    _cams_from_masks,
     evaluate_reason,
     is_ambient_light,
     is_poor_contact,
 )
 from omotion.pipeline.batch import FrameBatch
+from omotion.pipeline.pedestal import SensorPedestals
+from omotion.pipeline.stages.dark import (
+    DarkCorrectionStage,
+    HybridRealtimePredictor,
+    LinearInterpolation,
+)
+from omotion.pipeline.stages.moments import MomentsStage
+from omotion.pipeline.stages.pedestal_sub import PedestalSubtractionStage
 
 
 THRESHOLDS = CQThresholds.from_sequences(
@@ -470,8 +479,12 @@ def test_monitor_rolling_window_averages_light_frames():
 
 
 def test_monitor_survives_a_raising_callback():
-    """The runner disables a sink that raises; a bad UI callback must not
-    take contact-quality monitoring down with it."""
+    """_safe_consume (runner.py) logs and continues on a raising sink — it
+    does not disable one; only an on_scan_start failure does that. But an
+    uncaught callback exception would still unwind this whole consume()
+    call, abandoning every remaining row in the batch (silently skipping
+    the other cameras) and logging a fresh traceback per batch at ~40 Hz.
+    A bad UI callback must not do that to contact-quality monitoring."""
     def boom(*_args):
         raise RuntimeError("UI exploded")
 
@@ -494,3 +507,227 @@ def test_monitor_handles_batch_without_dn_fields():
     batch.subtracted_mean = None
     mon.consume("live", batch)                # must not raise
     assert events == []
+
+
+# ---------------------------------------------------------------------------
+# Unlit frame (disconnected fiber) via low_light_rt — issue #364
+#
+# mean_dc_rt is NaN for two different reasons and _dn_batch's uniform-value
+# construction can only represent one of them (warmup). DarkCorrectionStage
+# also leaves mean_dc_rt NaN for a light-typed frame that arrived but was
+# unlit (low_light_rt=True) — a covered sensor, a lifted sensor, or a
+# decoupled fiber. That must surface as poor_contact, not be silently
+# skipped the way a warmup NaN is.
+# ---------------------------------------------------------------------------
+
+def test_monitor_reports_poor_contact_for_unlit_frame_via_low_light_rt():
+    """The disconnected-fiber case issue #364 was filed about: the frame
+    DID arrive (low_light_rt=True), it was just unlit. Must report
+    poor_contact, not be treated the same as a warmup/missing-frame NaN."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    batch = _dn_batch(1, 2.0)
+    batch.mean_dc_rt[:] = float("nan")     # DarkCorrectionStage suppressed it
+    low = np.zeros((16, 2, 8), dtype=bool)
+    low[0, 0, 0] = True                    # row 0 == (left, cam 0)
+    batch.low_light_rt = low
+    mon.consume("live", batch)
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
+
+
+def test_monitor_skips_non_finite_light_when_low_light_rt_present_but_false():
+    """low_light_rt existing on the batch but False for this row means 'no
+    verdict yet' (e.g. still in the warmup window before the first dark),
+    not 'unlit' — must still be skipped, not treated as poor contact."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    batch = _dn_batch(1, float("nan"))
+    batch.low_light_rt = np.zeros((16, 2, 8), dtype=bool)   # all False
+    mon.consume("live", batch)
+    assert events == []
+
+
+def test_monitor_skips_unlit_frame_when_subtracted_mean_also_non_finite():
+    """Defensive: even when low_light_rt says the frame was unlit, a
+    non-finite subtracted_mean (e.g. corrupted upstream) must still be
+    skipped rather than reported with a garbage value."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    batch = _dn_batch(1, float("nan"))   # both fields NaN by construction
+    low = np.zeros((16, 2, 8), dtype=bool)
+    low[0, 0, 0] = True
+    batch.low_light_rt = low
+    mon.consume("live", batch)
+    assert events == []
+
+
+def test_monitor_catches_disconnected_fiber_through_real_pipeline_stages():
+    """The regression test that would have caught the bug: mean_dc_rt is
+    NaN for the reason DarkCorrectionStage actually produces it for an
+    unlit frame (low_light_rt=True), a combination the synthetic _dn_batch
+    helper cannot represent (it sets subtracted_mean and mean_dc_rt to the
+    same finite array — DarkCorrectionStage never produces that pairing
+    for an unlit frame). Route real DN data through the real stages: a
+    dark frame, a healthy light frame, then an unlit light frame — the
+    disconnected-fiber shape issue #364 was filed about — on one camera."""
+    n = 3
+    pedestals = SensorPedestals(left=64.0, right=64.0)
+    # dark @ u1=64 (== pedestal, avoids an incidental ambient-light trip);
+    # healthy light @ u1=500 (mean_dc_rt = 500-64 = 436, far above the 15
+    # DN light threshold); unlit light @ u1=65 (<= pedestal 64 + guard 5
+    # => dark_like => low_light_rt=True, mean_dc_rt stays NaN).
+    raw = np.zeros((n, 2, 8, 1024), dtype=np.uint32)
+    raw[0, 0, 0, 64]  = 1000
+    raw[1, 0, 0, 500] = 1000
+    raw[2, 0, 0, 65]  = 1000
+
+    batch = FrameBatch(
+        cam_ids=np.zeros(n, dtype=np.int8),
+        frame_ids=np.arange(n, dtype=np.uint8),
+        side_ids=np.zeros(n, dtype=np.int8),
+        raw_histograms=raw,
+        temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
+        timestamp_s=np.arange(n, dtype=np.float64) * 0.025,
+        pdc=None, tcm=None, tcl=None,
+        abs_frame_ids=np.array([10, 11, 12], dtype=np.int64),
+        frame_type=np.array(["dark", "light", "light"], dtype="<U8"),
+    )
+
+    MomentsStage().process(batch)
+    PedestalSubtractionStage(pedestals).process(batch)
+    DarkCorrectionStage(
+        realtime_estimator=HybridRealtimePredictor(),
+        batch_estimator=LinearInterpolation(),
+        pedestals=pedestals,
+    ).process(batch)
+
+    # Confirm the setup actually produced the shape of bug this guards
+    # against, rather than trusting it blindly.
+    assert math.isnan(batch.mean_dc_rt[2, 0, 0])
+    assert bool(batch.low_light_rt[2, 0, 0]) is True
+
+    events = []
+    mon = ContactQualityMonitor(
+        thresholds=THRESHOLDS,
+        on_transition=lambda *a: events.append(a),
+        rolling_window=1,
+        light_debounce=1,
+        dark_debounce=1,
+    )
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", batch)
+
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(1.0), True)]
+
+
+# ---------------------------------------------------------------------------
+# Per-camera keying — every test above this line uses exactly one camera
+# (left, index 0); _dn_batch fills all 16 (side, cam) slots identically, so
+# per-camera divergence was entirely unrepresentable and a shared latch, a
+# shared window, or a hardcoded cam_id=0 predicate lookup could all pass
+# the full suite unnoticed.
+# ---------------------------------------------------------------------------
+
+def _dn_batch_percam(n_frames, values, *, default=60.0, frame_types=None):
+    """Like _dn_batch, but each (side, cam_id) can carry its own DN value.
+
+    ``values`` maps (side, cam_id) -> dn_value for the slots that matter;
+    every other (side, cam_id) gets ``default`` (healthy against every
+    camera's own threshold, so an untouched camera never accidentally
+    trips). subtracted_mean and mean_dc_rt both carry the same per-camera
+    value, same convention as _dn_batch.
+    """
+    if frame_types is None:
+        frame_types = ["light"] * n_frames
+    rows = n_frames * 16
+    cam_ids = np.tile(np.arange(8, dtype=np.int8), n_frames * 2)
+    side_ids = np.tile(np.repeat(np.array([0, 1], dtype=np.int8), 8), n_frames)
+    subtracted = np.full((rows, 2, 8), default, dtype=np.float32)
+    dc_rt = np.full((rows, 2, 8), default, dtype=np.float32)
+    for (side, cam_id), v in values.items():
+        side_idx = 0 if side == "left" else 1
+        subtracted[:, side_idx, cam_id] = v
+        dc_rt[:, side_idx, cam_id] = v
+    return FrameBatch(
+        cam_ids=cam_ids,
+        frame_ids=np.tile(np.arange(n_frames, dtype=np.uint8).repeat(16), 1),
+        side_ids=side_ids,
+        raw_histograms=None,
+        temperature_c=None,
+        timestamp_s=np.zeros(rows, dtype=np.float64),
+        pdc=None, tcm=None, tcl=None,
+        frame_type=np.repeat(np.array(frame_types, dtype="<U8"), 16),
+        subtracted_mean=subtracted,
+        mean_dc_rt=dc_rt,
+        std_raw=np.full((rows, 2, 8), 2.5, dtype=np.float32),
+    )
+
+
+def test_monitor_keys_latch_and_window_per_camera_not_globally():
+    """L3 and R2 stay healthy; only L5 goes bad, and only against its own
+    40.0 light threshold (25 DN reads as healthy against the generic 15.0
+    bar, so this also pins per-camera threshold lookup). A shared latch, a
+    shared window, or a forced cam_id=0 predicate lookup would each corrupt
+    this differently — verified against all three below."""
+    events = []
+    mon = _monitor(events, rolling_window=2)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x28, right_camera_mask=0x04))
+    mon.consume("live", _dn_batch_percam(1, {
+        ("left", 3): 60.0,    # healthy against its own 15.0 bar
+        ("left", 5): 25.0,    # bad against its OWN 40.0 bar; "healthy" vs 15.0
+        ("right", 2): 60.0,   # healthy against its own 15.0 bar
+    }))
+    assert events == [("left", 5, REASON_POOR_CONTACT, pytest.approx(25.0), True)]
+
+
+def test_monitor_dark_row_never_pollutes_light_window():
+    """Real batches are 10-100 frames and routinely span a dark boundary —
+    a bug where the dark branch appended to _light_window would corrupt
+    every rolling average downstream of a dark frame. An extreme (and
+    physically valid — subtracted_mean can go negative) dark reading would
+    immediately trip poor_contact if it ever leaked into the light window;
+    it must not."""
+    events = []
+    mon = _monitor(events, rolling_window=3)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, -500.0, frame_types=["dark"]))
+    mon.consume("live", _dn_batch(1, 60.0))   # healthy light
+    mon.consume("live", _dn_batch(1, 60.0))   # healthy light
+    assert events == []
+
+
+def test_cams_from_masks_none_means_evaluate_everything():
+    assert _cams_from_masks(None) == set()
+
+
+def test_monitor_on_scan_start_none_evaluates_every_camera():
+    """meta=None means 'no mask restriction' — every camera must still be
+    evaluated, not silently skipped (e.g. a bare pipeline test with no real
+    ScanMetadata available)."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(None)
+    mon.consume("live", _dn_batch(1, 2.0))   # uniformly bad, all 16 (side,cam)
+    cams = {(side, cam) for side, cam, *_ in events}
+    assert len(cams) == 16   # both sides, all 8 cameras — nothing masked out
+
+
+# ---------------------------------------------------------------------------
+# on_complete summary — the feature was dead for two months in 2026 because
+# silence looked identical to success; on_complete must say which happened.
+# ---------------------------------------------------------------------------
+
+def test_monitor_on_complete_logs_a_summary(caplog):
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(3, 60.0))    # healthy, no transitions
+    mon.consume("live", _dn_batch(1, 2.0))     # one activation
+    with caplog.at_level(logging.INFO, logger="openmotion.sdk.contact_quality"):
+        mon.on_complete()
+    assert "1 transition(s) emitted" in caplog.text
+    assert "1 camera(s) observed" in caplog.text
+    assert "4 observation(s) processed" in caplog.text
