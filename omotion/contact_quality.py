@@ -54,13 +54,8 @@ TRANSITION_CLEARED   = "cleared"
 
 _SIDE_NAMES = ("left", "right")
 
-# Camera count per sensor module, and bloodflow-app's config/app_config.json
-# keys that supply CQThresholds.from_sequences its two arrays — named here
-# so the wrong-length warning can point a log reader straight at the config
-# file.
+# Camera count per sensor module.
 _CAMERAS_PER_SENSOR = 8
-_DARK_CONFIG_KEY = "cq_dark_threshold_per_camera"
-_LIGHT_CONFIG_KEY = "cq_light_threshold_per_camera"
 
 
 @dataclass(frozen=True)
@@ -84,8 +79,8 @@ class CQThresholds:
         dark_t = tuple(float(v) for v in dark)
         light_t = tuple(float(v) for v in light)
         for name, config_key, seq in (
-            ("dark", _DARK_CONFIG_KEY, dark_t),
-            ("light", _LIGHT_CONFIG_KEY, light_t),
+            ("dark", "cq_dark_threshold_per_camera", dark_t),
+            ("light", "cq_light_threshold_per_camera", light_t),
         ):
             n = len(seq)
             if n < _CAMERAS_PER_SENSOR:
@@ -174,12 +169,6 @@ class CameraLatch:
         """Effective debounce — always >= 1, whatever was passed in."""
         return self._debounce
 
-    def reset(self) -> None:
-        """Silent — no transition is returned. Callers mirroring latch
-        state must clear their own view."""
-        self._active = False
-        self._streak = 0
-
     def observe(self, bad: bool) -> str:
         """Feed one observation; return activated / cleared / none."""
         bad = bool(bad)
@@ -223,24 +212,18 @@ class ContactQualityMonitor:
         zero-light pedestal.
       * every other non-warmup/non-stale row -> ``mean_dc_rt``
         (``mean_raw - predicted_dark_baseline``), measuring laser-driven
-        signal above the just-measured dark. ``mean_dc_rt`` is non-finite
-        for two DIFFERENT reasons, and they are not treated alike:
+        signal above the just-measured dark.
 
-        1. Warmup — no dark has been observed yet, so there is no baseline
-           to subtract. No signal exists to judge; skipped, left to the
-           consumer's camera-dropout watchdog.
-        2. The frame arrived but DarkCorrectionStage's own dark_like test
-           (``low_light_rt``) says it was unlit — a covered sensor, a
-           lifted sensor, or a decoupled fiber — and realtime emission was
-           suppressed on purpose. This is the strongest poor-contact
-           evidence the pipeline produces (the exact disconnected-fiber
-           case issue #364 was filed about), so it is reported
-           unconditionally via ``subtracted_mean`` for display, not
-           skipped and not run through :func:`is_poor_contact` —
-           ``subtracted_mean`` is pedestal-referenced while the light
-           threshold was calibrated against dark-baseline-referenced
-           ``mean_dc_rt``, so comparing the two against the same bound
-           would be apples-to-oranges.
+    A non-finite ``mean_dc_rt`` is handled two ways. A warmup/never-arrived
+    frame carries no signal and is skipped, left to the consumer's
+    camera-dropout watchdog. A frame that arrived but was unlit
+    (``low_light_rt=True`` — a covered/lifted sensor or a decoupled fiber)
+    is reported as ``poor_contact`` — the disconnected-fiber case issue
+    #364 was filed about. That case is reported via ``subtracted_mean``,
+    NOT run through :func:`is_poor_contact`, because ``subtracted_mean`` is
+    pedestal-referenced while the light threshold was calibrated against
+    dark-baseline-referenced ``mean_dc_rt``, so comparing the two would be
+    apples-to-oranges. See :meth:`consume` for the full rationale.
 
     **Dark-signal accumulation differs deliberately from the one-shot
     check; the light-signal rolling window does not.** The check keeps the
@@ -327,11 +310,9 @@ class ContactQualityMonitor:
     def consume(self, channel: str, batch) -> None:
         if channel != "live":
             return
-        if getattr(batch, "subtracted_mean", None) is None:
+        if batch.subtracted_mean is None or batch.mean_dc_rt is None:
             return
-        if getattr(batch, "mean_dc_rt", None) is None:
-            return
-        low_light_rt = getattr(batch, "low_light_rt", None)
+        low_light_rt = batch.low_light_rt
         for i, side_idx, cam_id, ft in batch.iter_rows(exclude={"warmup", "stale"}):
             if (not (0 <= side_idx < len(_SIDE_NAMES))
                     or not (0 <= cam_id < _CAMERAS_PER_SENSOR)):

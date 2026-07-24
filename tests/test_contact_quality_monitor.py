@@ -37,6 +37,8 @@ from omotion.pipeline.stages.dark import (
 from omotion.pipeline.stages.moments import MomentsStage
 from omotion.pipeline.stages.pedestal_sub import PedestalSubtractionStage
 
+from _cq_helpers import _dn_batch
+
 
 THRESHOLDS = CQThresholds.from_sequences(
     [3.0, 3.0, 3.0, 3.0, 3.0, 9.0, 3.0, 3.0],
@@ -221,56 +223,17 @@ def test_latch_streak_resets_on_disagreement():
     assert latch.observe(True) == TRANSITION_ACTIVATED
 
 
-def test_latch_clear_edge_also_debounced():
-    latch = CameraLatch(debounce=2)
-    latch.observe(True)
-    assert latch.observe(True) == TRANSITION_ACTIVATED
-    assert latch.observe(False) == TRANSITION_NONE
-    assert latch.observe(False) == TRANSITION_CLEARED
-
-
 def test_latch_full_activate_clear_reactivate_round_trip():
     """Activate -> clear -> re-activate at debounce > 1.
 
-    test_latch_clear_edge_also_debounced stops at the first clear, but this
-    exact cycle repeats thousands of times over a 12 h scan — a state leak
-    from one edge into the next would surface here, not in a single-edge
-    test."""
+    A single clear edge is the easy case; this exact cycle repeats thousands
+    of times over a 12 h scan — a state leak from one edge into the next
+    would surface here, not in a single-edge test."""
     latch = CameraLatch(debounce=2)
     latch.observe(True)
     assert latch.observe(True) == TRANSITION_ACTIVATED
     assert latch.observe(False) == TRANSITION_NONE
     assert latch.observe(False) == TRANSITION_CLEARED
-    assert latch.observe(True) == TRANSITION_NONE
-    assert latch.observe(True) == TRANSITION_ACTIVATED
-
-
-def test_latch_reset_returns_to_inactive():
-    latch = CameraLatch(debounce=1)
-    latch.observe(True)
-    assert latch.active is True
-    latch.reset()
-    assert latch.active is False
-    assert latch.observe(True) == TRANSITION_ACTIVATED
-
-
-def test_latch_reset_clears_a_partial_streak():
-    """reset() must discard accumulated evidence, not just the flag.
-
-    No in-tree caller uses reset() today: ContactQualityMonitor.on_scan_start
-    clears the whole _latches dict outright rather than resetting each
-    entry, which is equally correct — a freshly-constructed CameraLatch
-    starts in the exact state reset() produces. Kept anyway as tested,
-    documented API: a reusable debounced-latch primitive should let a
-    caller silently force one latch back to inactive without discarding it
-    (e.g. a future per-camera dismiss action), and this pins the
-    non-obvious half of that contract — reset() clears the partial streak
-    too, not just the active flag."""
-    latch = CameraLatch(debounce=3)
-    latch.observe(True)
-    latch.observe(True)          # 2/3 toward activation
-    latch.reset()
-    assert latch.observe(True) == TRANSITION_NONE   # streak restarted at 0
     assert latch.observe(True) == TRANSITION_NONE
     assert latch.observe(True) == TRANSITION_ACTIVATED
 
@@ -293,35 +256,6 @@ class _FakeMeta:
     def __init__(self, left_camera_mask=0xFF, right_camera_mask=0xFF):
         self.left_camera_mask = left_camera_mask
         self.right_camera_mask = right_camera_mask
-
-
-def _dn_batch(n_frames, dn_value, frame_types=None):
-    """A real FrameBatch with uniform DN across all cams.
-
-    The live pipeline delivers one (side, cam) per row, so each logical frame
-    expands to 16 rows (2 sides x 8 cams) sharing the frame_type. Both
-    subtracted_mean and mean_dc_rt carry the same value so the test stays
-    valid whichever the monitor reads for a given frame_type.
-    """
-    if frame_types is None:
-        frame_types = ["light"] * n_frames
-    rows = n_frames * 16
-    cam_ids = np.tile(np.arange(8, dtype=np.int8), n_frames * 2)
-    side_ids = np.tile(np.repeat(np.array([0, 1], dtype=np.int8), 8), n_frames)
-    arr = np.full((rows, 2, 8), dn_value, dtype=np.float32)
-    return FrameBatch(
-        cam_ids=cam_ids,
-        frame_ids=np.tile(np.arange(n_frames, dtype=np.uint8).repeat(16), 1),
-        side_ids=side_ids,
-        raw_histograms=None,
-        temperature_c=None,
-        timestamp_s=np.zeros(rows, dtype=np.float64),
-        pdc=None, tcm=None, tcl=None,
-        frame_type=np.repeat(np.array(frame_types, dtype="<U8"), 16),
-        subtracted_mean=arr,
-        mean_dc_rt=arr.copy(),
-        std_raw=np.full((rows, 2, 8), 2.5, dtype=np.float32),
-    )
 
 
 def _monitor(events, **kwargs):
@@ -393,14 +327,6 @@ def test_monitor_dark_debounce_is_independent_of_light_debounce():
     assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(9.0), True)]
 
 
-def test_monitor_reports_ambient_light_on_dark_frame():
-    events = []
-    mon = _monitor(events)
-    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
-    mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))
-    assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(9.0), True)]
-
-
 def test_monitor_dark_uses_latest_not_running_max():
     """A running max would latch an ambient warning for the rest of a 12 h
     scan. The live monitor must track the current dark instead."""
@@ -430,22 +356,20 @@ def test_monitor_skips_warmup_and_stale_rows():
     assert events == []
 
 
-def test_monitor_skips_non_finite_values():
+@pytest.mark.parametrize(
+    "frame_types",
+    [None, ["dark"]],
+    ids=["light", "dark"],
+)
+def test_monitor_skips_non_finite_values(frame_types):
+    """A NaN reading must be skipped, not turned into a transition — on the
+    light path and the dark path alike. Frame loss belongs to the consumer's
+    camera-dropout watchdog; reporting it as a contact-quality fault would
+    misdirect the operator."""
     events = []
     mon = _monitor(events)
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
-    mon.consume("live", _dn_batch(1, float("nan")))
-    assert events == []
-
-
-def test_monitor_skips_non_finite_dark_values():
-    """A NaN dark reading must be skipped, not turned into a transition.
-    Frame loss belongs to the consumer's camera-dropout watchdog; reporting
-    it as a contact-quality fault would misdirect the operator."""
-    events = []
-    mon = _monitor(events)
-    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
-    mon.consume("live", _dn_batch(1, float("nan"), frame_types=["dark"]))
+    mon.consume("live", _dn_batch(1, float("nan"), frame_types=frame_types))
     assert events == []
 
 
@@ -454,10 +378,11 @@ def test_monitor_never_emits_no_signal_reason():
     order) — total frame loss belongs to the consumer's camera-dropout
     watchdog, never to the live contact-quality stream.
 
-    The two non-finite tests above already pin "stays silent" for an
-    isolated bad reading, which is the strongest possible assertion in that
-    shape (an empty list rules out an event of any reason, no_signal
-    included). What they can't cover is a stream that legitimately DOES emit
+    The parametrized non-finite-skip test above already pins "stays silent"
+    for an isolated bad reading (both its light and dark cases), which is the
+    strongest possible assertion in that shape (an empty list rules out an
+    event of any reason, no_signal included). What it can't cover is a stream
+    that legitimately DOES emit
     real events (poor_contact / ambient_light) while garbage readings are
     interleaved — this test pins that the noise never leaks REASON_NO_SIGNAL
     into that otherwise-real event stream, e.g. if a future refactor routed
@@ -578,11 +503,10 @@ def test_monitor_handles_batch_without_dn_fields():
     mon.consume("live", batch)                # must not raise
     assert events == []
 
-    # The mean_dc_rt guard is a separate line from the subtracted_mean
-    # guard above and was previously untested on its own: with
-    # subtracted_mean=None, the first guard always short-circuits before
-    # the second is ever reached. Null only mean_dc_rt so the second guard
-    # is what's actually exercised.
+    # The mean_dc_rt check is the second operand of the guard's `or` and
+    # was previously untested on its own: with subtracted_mean=None, the
+    # `or` short-circuits before mean_dc_rt is ever evaluated. Null only
+    # mean_dc_rt so the second operand is what's actually exercised.
     batch2 = _dn_batch(1, 2.0)
     batch2.mean_dc_rt = None
     mon.consume("live", batch2)                # must not raise
