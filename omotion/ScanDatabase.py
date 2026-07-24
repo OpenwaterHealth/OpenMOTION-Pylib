@@ -70,14 +70,14 @@ class ScanDatabase:
         return path
 
     def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        # db_open classifies the file, consults the process encryption policy,
+        # and opens fail-closed (stdlib sqlite3 or sqlcipher3). Row factory and
+        # the standard PRAGMAs are applied there so both drivers behave
+        # identically. Under the default (plaintext) policy this is byte-for-byte
+        # the previous behavior. See omotion/db_open.py.
+        from omotion import db_open
+
+        return db_open.connect(self._db_path, create_ok=True)
 
     def _init_schema(self) -> None:
         self._connection().executescript(
