@@ -19,11 +19,13 @@ from omotion.contact_quality import (
     TRANSITION_CLEARED,
     TRANSITION_NONE,
     CameraLatch,
+    ContactQualityMonitor,
     CQThresholds,
     evaluate_reason,
     is_ambient_light,
     is_poor_contact,
 )
+from omotion.pipeline.batch import FrameBatch
 
 
 THRESHOLDS = CQThresholds.from_sequences(
@@ -260,3 +262,197 @@ def test_latch_debounce_floor_is_one(debounce):
     latch = CameraLatch(debounce=debounce)
     assert latch.debounce == 1
     assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+# ---------------------------------------------------------------------------
+# ContactQualityMonitor — live sink
+# ---------------------------------------------------------------------------
+
+class _FakeMeta:
+    """Stands in for ScanMetadata — the monitor reads only the two masks."""
+
+    def __init__(self, left_camera_mask=0xFF, right_camera_mask=0xFF):
+        self.left_camera_mask = left_camera_mask
+        self.right_camera_mask = right_camera_mask
+
+
+def _dn_batch(n_frames, dn_value, frame_types=None):
+    """A real FrameBatch with uniform DN across all cams.
+
+    The live pipeline delivers one (side, cam) per row, so each logical frame
+    expands to 16 rows (2 sides x 8 cams) sharing the frame_type. Both
+    subtracted_mean and mean_dc_rt carry the same value so the test stays
+    valid whichever the monitor reads for a given frame_type.
+    """
+    if frame_types is None:
+        frame_types = ["light"] * n_frames
+    rows = n_frames * 16
+    cam_ids = np.tile(np.arange(8, dtype=np.int8), n_frames * 2)
+    side_ids = np.tile(np.repeat(np.array([0, 1], dtype=np.int8), 8), n_frames)
+    arr = np.full((rows, 2, 8), dn_value, dtype=np.float32)
+    return FrameBatch(
+        cam_ids=cam_ids,
+        frame_ids=np.tile(np.arange(n_frames, dtype=np.uint8).repeat(16), 1),
+        side_ids=side_ids,
+        raw_histograms=None,
+        temperature_c=None,
+        timestamp_s=np.zeros(rows, dtype=np.float64),
+        pdc=None, tcm=None, tcl=None,
+        frame_type=np.repeat(np.array(frame_types, dtype="<U8"), 16),
+        subtracted_mean=arr,
+        mean_dc_rt=arr.copy(),
+        std_raw=np.full((rows, 2, 8), 2.5, dtype=np.float32),
+    )
+
+
+def _monitor(events, **kwargs):
+    kwargs.setdefault("rolling_window", 1)
+    kwargs.setdefault("light_debounce", 1)
+    kwargs.setdefault("dark_debounce", 1)
+    return ContactQualityMonitor(
+        thresholds=THRESHOLDS,
+        on_transition=lambda *a: events.append(a),
+        **kwargs,
+    )
+
+
+def test_monitor_reports_poor_contact_when_light_drops():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 60.0))   # healthy
+    assert events == []
+    mon.consume("live", _dn_batch(1, 2.0))    # fiber pulled
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
+
+
+def test_monitor_clears_poor_contact_on_recovery():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))
+    events.clear()
+    mon.consume("live", _dn_batch(1, 60.0))
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(60.0), False)]
+
+
+def test_monitor_debounce_suppresses_short_dip():
+    """A dip shorter than light_debounce must not raise a warning at all."""
+    events = []
+    mon = _monitor(events, light_debounce=3)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(2, 2.0))    # 2 bad observations, need 3
+    assert events == []
+    mon.consume("live", _dn_batch(1, 60.0))   # recovered, streak resets
+    assert events == []
+
+
+def test_monitor_reports_ambient_light_on_dark_frame():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))
+    assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(9.0), True)]
+
+
+def test_monitor_dark_uses_latest_not_running_max():
+    """A running max would latch an ambient warning for the rest of a 12 h
+    scan. The live monitor must track the current dark instead."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))
+    events.clear()
+    mon.consume("live", _dn_batch(1, 0.5, frame_types=["dark"]))
+    assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(0.5), False)]
+
+
+def test_monitor_ignores_cameras_outside_scan_mask():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))
+    cams = {(side, cam) for side, cam, *_ in events}
+    assert cams == {("left", 0)}
+
+
+def test_monitor_skips_warmup_and_stale_rows():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(2, 2.0, frame_types=["warmup", "stale"]))
+    assert events == []
+
+
+def test_monitor_skips_non_finite_values():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, float("nan")))
+    assert events == []
+
+
+def test_monitor_ignores_other_channels():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("final", _dn_batch(1, 2.0))
+    mon.consume("diagnostics", _dn_batch(1, 2.0))
+    assert events == []
+
+
+def test_monitor_on_scan_start_resets_state():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))
+    events.clear()
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))
+    # Fresh scan: the camera re-activates rather than staying silently latched.
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
+
+
+def test_monitor_emits_edges_only_not_every_frame():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(10, 2.0))
+    assert len(events) == 1
+
+
+def test_monitor_rolling_window_averages_light_frames():
+    """window=4 over [60,60,60,0] averages 45 — above threshold, no warning."""
+    events = []
+    mon = _monitor(events, rolling_window=4)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(3, 60.0))
+    mon.consume("live", _dn_batch(1, 0.0))
+    assert events == []
+
+
+def test_monitor_survives_a_raising_callback():
+    """The runner disables a sink that raises; a bad UI callback must not
+    take contact-quality monitoring down with it."""
+    def boom(*_args):
+        raise RuntimeError("UI exploded")
+
+    mon = ContactQualityMonitor(
+        thresholds=THRESHOLDS,
+        on_transition=boom,
+        rolling_window=1,
+        light_debounce=1,
+    )
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, 2.0))    # must not raise
+    mon.on_complete()
+
+
+def test_monitor_handles_batch_without_dn_fields():
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta())
+    batch = _dn_batch(1, 2.0)
+    batch.subtracted_mean = None
+    mon.consume("live", batch)                # must not raise
+    assert events == []
