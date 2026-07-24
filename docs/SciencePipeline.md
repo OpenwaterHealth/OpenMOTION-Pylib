@@ -496,7 +496,7 @@ Sinks subscribe to channels by declaring a `channels: set[str]` attribute. The r
 | Channel | Payload | Cadence | Source | Typical consumers |
 |---|---|---|---|---|
 | `"raw"` | `FrameBatch` (full, including warmup) | Per batch (~10–100 frames) | `Tee("raw")` | `CsvSink` (raw per-cam CSV — **the only raw record**; the scan DB does not store raw histograms) |
-| `"live"` | `FrameBatch` (excluding warmup/stale) | Per batch | `Tee("live")` | bloodflow-app `_LivePlotSink` (realtime per-frame plot — later overwritten by `"final"` corrections, see §8.3), `ContactQualityWorkflow._ContactQualitySink` (DN thresholding), `CalibrationWorkflow._CalibrationCollectorSink` (dark frames) |
+| `"live"` | `FrameBatch` (excluding warmup/stale) | Per batch | `Tee("live")` | bloodflow-app `_LivePlotSink` (realtime per-frame plot — later overwritten by `"final"` corrections, see §8.3), `ContactQualityWorkflow._ContactQualitySink` (DN thresholding), `ContactQualityMonitor` (live per-camera edge detection, see §11.3), `CalibrationWorkflow._CalibrationCollectorSink` (dark frames) |
 | `"live_side"` | `SideAverageSample` | Per capture per side (reduced mode only) | `SideAverageStage` (realtime path) | bloodflow-app `_LivePlotSink` (reduced-mode live trace) |
 | `"final"` | `EnrichedCorrectedInterval` | Per closed dark interval (~1 per `dark_interval/40` seconds; default ~15 s) | `IntervalClosed` from `DarkCorrectionStage` (per-camera; enriched + stencilled by downstream stages) and `SideAverageStage` (reduced-mode `cam_id=-1` side averages) | `CsvSink` (corrected CSV), `ScanDBSink` (`session_data` — the DB's only science record), bloodflow-app `_FinalBatchSink` (overwrites the realtime points plotted from `"live"` with interval-corrected BFI/BVI/mean/contrast), `CalibrationWorkflow` (corrected light samples) |
 | `"diagnostics"` | `DarkIntegrityWarning`, `StencilFallback`, `TerminalDarkResult`, `PipelineError`, `TriggerStateEvent` | As they occur | Stages append to `batch.events`; the runner also routes out-of-band events here | `DiagnosticsLogSink` (always injected — WARNING logs + scan-end summary), `ScanDBSink` (integrity summary → `session_meta`), bloodflow-app `_TriggerStateSink` |
@@ -697,7 +697,7 @@ If any stage raises mid-scan, the runner **drops that batch and preserves all st
 
 ## 11. Example consumers
 
-Two SDK-internal consumers illustrate the pattern.
+Three SDK-internal consumers illustrate the pattern.
 
 ### 11.1 CalibrationWorkflow — light + dark collection
 
@@ -717,7 +717,33 @@ After the scan, the workflow drains the sink's `corrected_samples` and `dark_sam
 
 After the scan, `result()` evaluates per camera: `no_signal` if no light samples were collected, `ambient_light` if the dark-frame max exceeds the per-cam dark threshold, `poor_contact` if the rolling light average falls below the per-cam light threshold, else `ok`. The verdict is rolled up into `ContactQualityResult.passed`.
 
-Both consumers are pure sinks — they add no pipeline stages, do not modify FrameBatch fields, and can be turned off by simply not constructing them.
+### 11.3 ContactQualityMonitor — live per-camera edge detection
+
+`omotion/contact_quality.py` defines `ContactQualityMonitor` with `channels = {"live"}`. It shares `is_ambient_light` and `is_poor_contact` — the same two predicates `_ContactQualitySink` now applies through `evaluate_reason` (§11.2) — so the preflight check and the live monitor cannot come to a different verdict about the same camera.
+
+**The light path is a three-way read, not a two-way one.** A finite `mean_dc_rt` is thresholded normally — rolling-window average against `is_poor_contact`, same as the one-shot check. A non-finite `mean_dc_rt` means one of two structurally different things, and `DarkCorrectionStage` tells them apart via `batch.low_light_rt`:
+
+- **No dark observed yet for this camera** (`low_light_rt = False`) — the realtime predictor has no history to predict from (or the row is warmup/stale and never reaches this code at all), so there is no baseline to subtract and no measurement exists. This is frame/history loss, not a contact-quality condition; the row is skipped and left to the consumer's camera-dropout watchdog.
+- **The frame arrived and was unlit** (`low_light_rt = True`) — `DarkCorrectionStage` classifies a light-typed frame as `dark_like` when `u1 <= pedestal + max_above_pedestal` (the same guard `DarkIntegrityGuard` applies to actual dark frames, §5.7.1), and when that holds it never calls the realtime predictor at all — `mean_dc_rt` stays at its NaN fill by construction, not by a per-frame decision. A covered sensor, a lifted sensor, or a decoupled fiber all present this way. The monitor reports it as `poor_contact` unconditionally.
+
+Treating the two alike inverts the detection window this feature exists for: a signal that's merely weak (still finite, still run through the threshold) would warn, while a signal that's completely gone (`low_light_rt = True`, the strictly worse case) would fall through the same silent-skip branch as a frame that hasn't arrived yet. That gap was a real defect caught in review against bloodflow-app #364 — the disconnected-fiber report this distinction exists to catch. The two cases can't be confused with each other because `dark_like` (stored as `low_light_rt`) is computed from the frame's own raw `u1` *before* the predictor is ever consulted, and it's that same flag which gates whether the predictor runs (`if not dark_like: pred = self._realtime.predict(...)`). A frame with no dark history yet still carries a real, measured `u1` — unless that reading happens to be dark-like on its own terms, `low_light_rt` for it reads `False`.
+
+**The unlit case is judged structurally, not by threshold.** `low_light_rt` is `DarkCorrectionStage`'s own determination, so the monitor reports it directly (`bad=True` unconditionally) instead of routing the value through `is_poor_contact`. Doing the latter would let a misconfigured `light_threshold_per_camera` — too short an array fails open to `0.0` for any camera past its length, via `CQThresholds.light_for` — silently swallow the strongest evidence the pipeline produces. The value reported is `subtracted_mean`, not `mean_dc_rt` (NaN here by definition): `subtracted_mean` is pedestal-referenced while the light threshold was calibrated against dark-baseline-referenced `mean_dc_rt`, so the two are never compared against the same bound, and the reading is excluded from the rolling window for the same reason.
+
+**Accumulation is current-state, not worst-case.** `_ContactQualitySink` keeps the *maximum* dark reading and a rolling average of light readings over its whole (short) window. `ContactQualityMonitor` keeps only the *latest* reading of each — a running max over a scan that can run for hours would latch an ambient-light warning permanently after one transient spike.
+
+**Each condition latches and debounces independently.** A camera can be ambient-lit and poorly coupled at the same time, and the consuming UI renders those as separate rows, so `_latches` keys on `(side, cam_id, reason)` — `ambient_light` and `poor_contact` each get their own `CameraLatch` per camera. `light_debounce` and `dark_debounce` count frames on two different clocks:
+
+| Parameter | Default | Counts | ≈ Real time at default |
+|---|---|---|---|
+| `light_debounce` | 80 | consecutive **light**-frame observations, ~40 Hz | ≈ 2 s |
+| `dark_debounce` | 1 | consecutive **dark**-frame observations, one every `dark_interval` frames | ≈ 15 s (immediate latch — legacy-equivalent); a value of 2 would mean ≈ 30 s |
+
+`REASON_NO_SIGNAL` is never reported live — it is preflight-only. Total loss of frames belongs to the consumer's camera-dropout watchdog; reporting it as a contact-quality fault would send the operator to fix the wrong thing.
+
+`on_transition(side, cam_id, reason, value, active)` fires on edges only — once per genuine activate/clear, not once per frame — and runs on the pipeline runner thread; a GUI consumer must marshal to its own thread. Callback exceptions are logged and swallowed, but not because an uncaught one would otherwise disable the sink: the runner's `_safe_consume` (`omotion/pipeline/runner.py`) already logs and continues past a raising sink without disabling it. What an uncaught callback exception *would* do is unwind the rest of that one `consume()` call — abandoning every remaining row in the batch after the one that raised, silently skipping the other cameras — and log a fresh traceback per batch, at ~40 Hz, for as long as the callback keeps raising. The monitor's own `try/except` exists to prevent that outcome, not to patch a gap in the runner.
+
+All three consumers are pure sinks — they add no pipeline stages, do not modify FrameBatch fields, and can be turned off by simply not constructing them.
 
 ---
 
