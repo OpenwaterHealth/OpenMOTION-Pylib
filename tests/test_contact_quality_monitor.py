@@ -392,6 +392,44 @@ def test_monitor_skips_non_finite_values():
     assert events == []
 
 
+def test_monitor_skips_non_finite_dark_values():
+    """A NaN dark reading must be skipped, not turned into a transition.
+    Frame loss belongs to the consumer's camera-dropout watchdog; reporting
+    it as a contact-quality fault would misdirect the operator."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, float("nan"), frame_types=["dark"]))
+    assert events == []
+
+
+def test_monitor_never_emits_no_signal_reason():
+    """REASON_NO_SIGNAL is preflight-only (ContactQualityWorkflow's precedence
+    order) — total frame loss belongs to the consumer's camera-dropout
+    watchdog, never to the live contact-quality stream.
+
+    The two non-finite tests above already pin "stays silent" for an
+    isolated bad reading, which is the strongest possible assertion in that
+    shape (an empty list rules out an event of any reason, no_signal
+    included). What they can't cover is a stream that legitimately DOES emit
+    real events (poor_contact / ambient_light) while garbage readings are
+    interleaved — this test pins that the noise never leaks REASON_NO_SIGNAL
+    into that otherwise-real event stream, e.g. if a future refactor routed
+    the dark or light path through evaluate_reason() (which does have a
+    no_signal branch) without first filtering non-finite values."""
+    events = []
+    mon = _monitor(events)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    mon.consume("live", _dn_batch(1, float("nan"), frame_types=["dark"]))
+    mon.consume("live", _dn_batch(1, 2.0))                        # real poor-contact
+    mon.consume("live", _dn_batch(1, float("nan"), frame_types=["dark"]))
+    mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))  # real ambient-light
+    assert len(events) == 2   # the two real detections, and nothing else
+    reasons = {reason for _side, _cam, reason, _value, _active in events}
+    assert REASON_NO_SIGNAL not in reasons
+    assert reasons == {REASON_POOR_CONTACT, REASON_AMBIENT_LIGHT}
+
+
 def test_monitor_ignores_other_channels():
     events = []
     mon = _monitor(events)
