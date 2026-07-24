@@ -731,3 +731,31 @@ def test_monitor_on_complete_logs_a_summary(caplog):
     assert "1 transition(s) emitted" in caplog.text
     assert "1 camera(s) observed" in caplog.text
     assert "4 observation(s) processed" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Parity with the one-shot sink — the whole reason the core is shared rather
+# than duplicated.
+# ---------------------------------------------------------------------------
+
+def test_shared_evaluator_matches_one_shot_sink_verdicts():
+    """The one-shot sink and the shared evaluator must agree — this is the
+    whole reason the core is shared rather than duplicated."""
+    from omotion.ContactQualityWorkflow import _ContactQualitySink
+
+    for dn, expected in ((60.0, REASON_OK), (2.0, REASON_POOR_CONTACT)):
+        sink = _ContactQualitySink(
+            dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8
+        )
+        sink.on_scan_start(None)
+        sink.consume("live", _dn_batch(4, dn))
+        cam = sink.result(left_mask=0x01, right_mask=0, duration_sec=1.0).per_camera[
+            ("left", 0)
+        ]
+        assert cam.reason == expected
+        assert cam.reason == evaluate_reason(
+            light_avg=cam.light_avg_dn,
+            dark_max=cam.dark_max_dn,
+            thresholds=CQThresholds.from_sequences([3.0] * 8, [15.0] * 8),
+            cam_id=0,
+        )
