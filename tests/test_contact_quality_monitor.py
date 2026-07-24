@@ -740,15 +740,48 @@ def test_monitor_on_complete_logs_a_summary(caplog):
 
 def test_shared_evaluator_matches_one_shot_sink_verdicts():
     """The one-shot sink and the shared evaluator must agree — this is the
-    whole reason the core is shared rather than duplicated."""
+    whole reason the core is shared rather than duplicated.
+
+    Each case is a sequence of consume() batches to feed the sink, paired
+    with the reason its own result() should produce. The pure cases (60.0,
+    2.0) alone never call is_ambient_light and is_poor_contact in the same
+    evaluation, so a precedence bug in evaluate_reason could pass unnoticed
+    even though "the sink and the evaluator agree" holds trivially in both
+    directions. The co-occurrence case below is the one that actually
+    exercises the precedence branch: a bright dark frame (9.0 > the 3.0 dark
+    threshold) together with dim light frames (2.0 < the 15.0 light
+    threshold) makes both is_ambient_light and is_poor_contact true at once,
+    so only the precedence order — ambient_light before poor_contact —
+    decides the verdict. The no-light-rows case does the same for the
+    no_signal branch: it pairs a tripped dark threshold with zero light
+    data, so only "no_signal outranks ambient_light" decides the verdict,
+    not merely "no data at all reports no_signal".
+    """
     from omotion.ContactQualityWorkflow import _ContactQualitySink
 
-    for dn, expected in ((60.0, REASON_OK), (2.0, REASON_POOR_CONTACT)):
+    cases = (
+        ([_dn_batch(4, 60.0)], REASON_OK),
+        ([_dn_batch(4, 2.0)], REASON_POOR_CONTACT),
+        (
+            [
+                _dn_batch(1, 9.0, frame_types=["dark"]),   # dark_max 9.0 > 3.0
+                _dn_batch(4, 2.0),                         # light_avg 2.0 < 15.0
+            ],
+            REASON_AMBIENT_LIGHT,
+        ),
+        (
+            [_dn_batch(1, 9.0, frame_types=["dark"])],     # no light rows at all
+            REASON_NO_SIGNAL,
+        ),
+    )
+
+    for batches, expected in cases:
         sink = _ContactQualitySink(
             dark_thresholds=[3.0] * 8, light_thresholds=[15.0] * 8
         )
         sink.on_scan_start(None)
-        sink.consume("live", _dn_batch(4, dn))
+        for batch in batches:
+            sink.consume("live", batch)
         cam = sink.result(left_mask=0x01, right_mask=0, duration_sec=1.0).per_camera[
             ("left", 0)
         ]
