@@ -22,11 +22,13 @@ from __future__ import annotations
 import collections
 import math
 from dataclasses import dataclass
-from typing import Optional
-
-import numpy as np
 
 from omotion.ScanWorkflow import run_collection_scan
+from omotion.contact_quality import (
+    REASON_OK,
+    CQThresholds,
+    evaluate_reason,
+)
 
 
 @dataclass
@@ -77,8 +79,7 @@ class _ContactQualitySink:
         light_thresholds: list[float],
         rolling_window: int = 10,
     ) -> None:
-        self._dark = list(dark_thresholds)
-        self._light = list(light_thresholds)
+        self._thresholds = CQThresholds.from_sequences(dark_thresholds, light_thresholds)
         self._window_size = max(1, int(rolling_window))
         # (side, cam_id) -> deque[float]   (light-frame subtracted_mean values)
         self._light_window: dict = {}
@@ -88,18 +89,12 @@ class _ContactQualitySink:
         self._dark_max: dict = {}
         # (side, cam_id) -> float          (std_raw paired with max dark frame)
         self._dark_std: dict = {}
-        # (side, cam_id) -> int            (count of light-frame samples seen)
-        self._light_count: dict = {}
-        # (side, cam_id) -> float          (running sum of light subtracted_mean)
-        self._light_sum: dict = {}
 
     def on_scan_start(self, meta) -> None:
         self._light_window.clear()
         self._light_std_window.clear()
         self._dark_max.clear()
         self._dark_std.clear()
-        self._light_count.clear()
-        self._light_sum.clear()
 
     def consume(self, channel: str, batch) -> None:
         if channel != "live":
@@ -160,8 +155,6 @@ class _ContactQualitySink:
                 w.append(v)
                 if math.isfinite(std_v):
                     sw.append(std_v)
-                self._light_sum[key]   = self._light_sum.get(key, 0.0) + v
-                self._light_count[key] = self._light_count.get(key, 0) + 1
 
     def on_complete(self) -> None:
         pass
@@ -180,11 +173,9 @@ class _ContactQualitySink:
                     continue
                 key = (side, cam_id)
                 window = self._light_window.get(key)
-                light_count = self._light_count.get(key, 0)
 
-                if light_count > 0 and window is not None and len(window) > 0:
-                    # Rolling window avg (matches legacy live-detection logic);
-                    # cumulative sum/count remains available for diagnostics.
+                if window is not None and len(window) > 0:
+                    # Rolling window avg (matches legacy live-detection logic).
                     light_avg = float(sum(window) / len(window))
                 else:
                     light_avg = float("nan")
@@ -197,21 +188,13 @@ class _ContactQualitySink:
                 dark_max = self._dark_max.get(key, float("nan"))
                 dark_std = self._dark_std.get(key, float("nan"))
 
-                dark_threshold = (
-                    self._dark[cam_id] if cam_id < len(self._dark) else float("inf")
+                reason = evaluate_reason(
+                    light_avg=light_avg,
+                    dark_max=dark_max,
+                    thresholds=self._thresholds,
+                    cam_id=cam_id,
                 )
-                light_threshold = (
-                    self._light[cam_id] if cam_id < len(self._light) else 0.0
-                )
-
-                if not math.isfinite(light_avg):
-                    reason, passed = "no_signal", False
-                elif math.isfinite(dark_max) and dark_max > dark_threshold:
-                    reason, passed = "ambient_light", False
-                elif light_avg < light_threshold:
-                    reason, passed = "poor_contact", False
-                else:
-                    reason, passed = "ok", True
+                passed = reason == REASON_OK
                 per_cam[key] = CamCQResult(
                     side=side,
                     cam_id=cam_id,
