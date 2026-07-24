@@ -732,12 +732,13 @@ Treating the two alike inverts the detection window this feature exists for: a s
 
 **Accumulation is current-state for the dark signal only — light accumulation is identical between the two.** Both consumers average light readings over an identical `deque(maxlen=rolling_window)` and threshold the mean the same way (§11.2's light bullet above). Only the **dark** path differs: `_ContactQualitySink` keeps the *maximum* dark reading seen across its whole (short) window, while `ContactQualityMonitor` keeps only the *latest* dark reading — a running max over a scan that can run for hours would latch an ambient-light warning permanently after one transient spike.
 
-**Each condition latches and debounces independently.** A camera can be ambient-lit and poorly coupled at the same time, and the consuming UI renders those as separate rows, so `_latches` keys on `(side, cam_id, reason)` — `ambient_light` and `poor_contact` each get their own `CameraLatch` per camera. `light_debounce` and `dark_debounce` count frames on two different clocks:
+**Each condition latches independently, and each edge of a latch debounces independently.** A camera can be ambient-lit and poorly coupled at the same time, and the consuming UI renders those as separate rows, so `_latches` keys on `(side, cam_id, reason)` — `ambient_light` and `poor_contact` each get their own `CameraLatch` per camera. Within a latch the two edges are debounced separately: RAISE (ok→poor) flips after `activate_debounce` consecutive bad observations, CLEAR (poor→ok) only after `clear_debounce` consecutive good ones; any disagreeing observation resets the running streak. The **light** path drives this asymmetrically on purpose — a late warning is a safety miss, so RAISE fast; a premature dismiss strands the operator on a still-bad camera, so CLEAR conservatively. The **dark** path stays symmetric (`dark_debounce` for both edges), because scheduled darks are ~15 s apart and treating each as an immediate latch matches the legacy gate. The two paths count on different clocks:
 
-| Parameter | Default | Counts | ≈ Real time at default |
-|---|---|---|---|
-| `light_debounce` | 80 | consecutive **light**-frame observations, ~40 Hz | ≈ 2 s |
-| `dark_debounce` | 1 | consecutive **dark**-frame observations, one every `dark_interval` frames | ≈ 15 s (immediate latch — legacy-equivalent); a value of 2 would mean ≈ 30 s |
+| Edge | Parameter | Default | Counts | ≈ Real time at default |
+|---|---|---|---|---|
+| light RAISE | `light_activate_debounce` | 10 | consecutive **light**-frame observations, ~40 Hz | ≈ 0.25 s |
+| light CLEAR | `light_clear_debounce` | 80 | consecutive **light**-frame observations, ~40 Hz | ≈ 2 s |
+| dark RAISE/CLEAR | `dark_debounce` | 1 | consecutive **dark**-frame observations, one every `dark_interval` frames | ≈ 15 s (immediate latch — legacy-equivalent) |
 
 `REASON_NO_SIGNAL` is never reported live — it is preflight-only. Total loss of frames belongs to the consumer's camera-dropout watchdog; reporting it as a contact-quality fault would send the operator to fix the wrong thing.
 

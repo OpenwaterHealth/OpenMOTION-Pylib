@@ -191,21 +191,22 @@ def test_evaluate_reason_precedence_matches_legacy_order():
 
 
 def test_latch_debounce_one_is_immediate():
-    latch = CameraLatch(debounce=1)
+    latch = CameraLatch(activate_debounce=1, clear_debounce=1)
     assert latch.observe(True) == TRANSITION_ACTIVATED
     assert latch.observe(True) == TRANSITION_NONE      # steady state, no repeat
     assert latch.observe(False) == TRANSITION_CLEARED
 
 
 def test_latch_default_debounce_is_one():
-    """debounce=1 is the default, not just a value tests happen to pass."""
+    """Both debounces default to 1 — not just values tests happen to pass."""
     latch = CameraLatch()
-    assert latch.debounce == 1
+    assert latch.activate_debounce == 1
+    assert latch.clear_debounce == 1
     assert latch.observe(True) == TRANSITION_ACTIVATED
 
 
 def test_latch_requires_consecutive_agreeing_observations():
-    latch = CameraLatch(debounce=3)
+    latch = CameraLatch(activate_debounce=3, clear_debounce=3)
     assert latch.observe(True) == TRANSITION_NONE
     assert latch.active is False   # pending evidence, not yet latched
     assert latch.observe(True) == TRANSITION_NONE
@@ -214,7 +215,7 @@ def test_latch_requires_consecutive_agreeing_observations():
 
 def test_latch_streak_resets_on_disagreement():
     """A dip shorter than the debounce must produce no transition at all."""
-    latch = CameraLatch(debounce=3)
+    latch = CameraLatch(activate_debounce=3, clear_debounce=3)
     assert latch.observe(True) == TRANSITION_NONE
     assert latch.observe(True) == TRANSITION_NONE
     assert latch.observe(False) == TRANSITION_NONE     # streak broken
@@ -229,7 +230,7 @@ def test_latch_full_activate_clear_reactivate_round_trip():
     A single clear edge is the easy case; this exact cycle repeats thousands
     of times over a 12 h scan — a state leak from one edge into the next
     would surface here, not in a single-edge test."""
-    latch = CameraLatch(debounce=2)
+    latch = CameraLatch(activate_debounce=2, clear_debounce=2)
     latch.observe(True)
     assert latch.observe(True) == TRANSITION_ACTIVATED
     assert latch.observe(False) == TRANSITION_NONE
@@ -240,10 +241,30 @@ def test_latch_full_activate_clear_reactivate_round_trip():
 
 @pytest.mark.parametrize("debounce", [0, -1, -5])
 def test_latch_debounce_floor_is_one(debounce):
-    """Zero or negative debounce behaves as debounce=1."""
-    latch = CameraLatch(debounce=debounce)
-    assert latch.debounce == 1
+    """Zero or negative debounce behaves as debounce=1 on both edges."""
+    latch = CameraLatch(activate_debounce=debounce, clear_debounce=debounce)
+    assert latch.activate_debounce == 1
+    assert latch.clear_debounce == 1
     assert latch.observe(True) == TRANSITION_ACTIVATED
+
+
+def test_latch_activate_and_clear_debounce_independently():
+    """The two edges are governed by separate bounds. With a fast activate
+    (2) and a slow clear (5): RAISE fires on the 2nd consecutive bad — not
+    the 5th — and once active, CLEAR fires only on the 5th consecutive good
+    — not the 2nd. This is the safety asymmetry: warn quickly, dismiss
+    conservatively."""
+    latch = CameraLatch(activate_debounce=2, clear_debounce=5)
+    # RAISE on the 2nd bad, well before the clear bound of 5.
+    assert latch.observe(True) == TRANSITION_NONE
+    assert latch.observe(True) == TRANSITION_ACTIVATED
+    # Now active. The 2nd good must NOT clear — the clear edge needs 5, and
+    # the activate bound of 2 does not leak into this direction.
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_NONE
+    assert latch.observe(False) == TRANSITION_CLEARED   # only the 5th good
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +281,8 @@ class _FakeMeta:
 
 def _monitor(events, **kwargs):
     kwargs.setdefault("rolling_window", 1)
-    kwargs.setdefault("light_debounce", 1)
+    kwargs.setdefault("light_activate_debounce", 1)
+    kwargs.setdefault("light_clear_debounce", 1)
     kwargs.setdefault("dark_debounce", 1)
     return ContactQualityMonitor(
         thresholds=THRESHOLDS,
@@ -303,9 +325,9 @@ def test_monitor_clears_poor_contact_on_recovery():
 
 
 def test_monitor_debounce_suppresses_short_dip():
-    """A dip shorter than light_debounce must not raise a warning at all."""
+    """A dip shorter than light_activate_debounce must not raise at all."""
     events = []
-    mon = _monitor(events, light_debounce=3)
+    mon = _monitor(events, light_activate_debounce=3, light_clear_debounce=3)
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
     mon.consume("live", _dn_batch(2, 2.0))    # 2 bad observations, need 3
     assert events == []
@@ -313,15 +335,41 @@ def test_monitor_debounce_suppresses_short_dip():
     assert events == []
 
 
-def test_monitor_dark_debounce_is_independent_of_light_debounce():
-    """Every other test in this file sets both debounces to 1, so a
-    dark_debounce <-> light_debounce mix-up in the dark branch survives
-    unnoticed. Production leaves dark_debounce=1 (the scheduled ~15 s
-    cadence is treated as an immediate latch) and drives light_debounce=80;
-    swapping the two would silently push ambient-light latency from ~15 s
-    to ~80 dark observations (~20 minutes at the default dark_interval)."""
+def test_monitor_light_activate_and_clear_debounce_independently():
+    """Monitor-level asymmetry: a camera driven below threshold RAISES after
+    light_activate_debounce bad frames (fast — a late warning is a safety
+    miss), but once raised CLEARS only after light_clear_debounce good frames
+    (slow — a premature dismiss strands the operator). window=1 (the _monitor
+    default) so each frame is its own observation."""
     events = []
-    mon = _monitor(events, light_debounce=5, dark_debounce=1)
+    mon = _monitor(events, light_activate_debounce=2, light_clear_debounce=5)
+    mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
+    # RAISE only on the 2nd consecutive bad frame.
+    mon.consume("live", _dn_batch(1, 2.0))
+    assert events == []
+    mon.consume("live", _dn_batch(1, 2.0))
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(2.0), True)]
+    events.clear()
+    # Once raised, 4 good frames must NOT clear — the fast activate bound of 2
+    # does not apply to the clear edge.
+    mon.consume("live", _dn_batch(4, 60.0))
+    assert events == []
+    # The 5th consecutive good frame clears.
+    mon.consume("live", _dn_batch(1, 60.0))
+    assert events == [("left", 0, REASON_POOR_CONTACT, pytest.approx(60.0), False)]
+
+
+def test_monitor_dark_debounce_is_independent_of_light_debounce():
+    """Every other test in this file sets all debounces to 1, so a
+    dark_debounce <-> light-debounce mix-up in the dark branch survives
+    unnoticed. Production leaves dark_debounce=1 (the scheduled ~15 s
+    cadence is treated as an immediate latch) and drives the light debounces
+    much higher (activate 10 / clear 80); swapping the dark bound for a light
+    one would silently push ambient-light latency from ~15 s to tens of dark
+    observations (~minutes at the default dark_interval)."""
+    events = []
+    mon = _monitor(events, light_activate_debounce=5, light_clear_debounce=5,
+                   dark_debounce=1)
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
     mon.consume("live", _dn_batch(1, 9.0, frame_types=["dark"]))
     assert events == [("left", 0, REASON_AMBIENT_LIGHT, pytest.approx(9.0), True)]
@@ -431,7 +479,8 @@ def test_monitor_on_scan_start_clears_light_window():
     correctly-reset scan 2 must judge its own single bad sample entirely on
     its own, not blended with scan 1's leftovers."""
     events = []
-    mon = _monitor(events, rolling_window=4, light_debounce=1)
+    mon = _monitor(events, rolling_window=4, light_activate_debounce=1,
+                   light_clear_debounce=1)
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
     mon.consume("live", _dn_batch(3, 60.0))    # 3/4 of the window, healthy
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
@@ -487,7 +536,8 @@ def test_monitor_survives_a_raising_callback():
         thresholds=THRESHOLDS,
         on_transition=boom,
         rolling_window=1,
-        light_debounce=1,
+        light_activate_debounce=1,
+        light_clear_debounce=1,
     )
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))
     mon.consume("live", _dn_batch(1, 2.0))    # must not raise
@@ -654,7 +704,8 @@ def test_monitor_catches_disconnected_fiber_through_real_pipeline_stages():
         thresholds=THRESHOLDS,
         on_transition=lambda *a: events.append(a),
         rolling_window=1,
-        light_debounce=1,
+        light_activate_debounce=1,
+        light_clear_debounce=1,
         dark_debounce=1,
     )
     mon.on_scan_start(_FakeMeta(left_camera_mask=0x01, right_camera_mask=0x00))

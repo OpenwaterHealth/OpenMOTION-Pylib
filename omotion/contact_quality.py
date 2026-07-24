@@ -140,23 +140,32 @@ def evaluate_reason(
 class CameraLatch:
     """Debounced edge detector for one camera / one condition.
 
-    Flips only after ``debounce`` consecutive agreeing observations; any
-    disagreeing observation resets the counter. ``debounce=1`` reproduces
-    the legacy immediate latch/clear behavior.
+    The two edges are debounced independently. RAISE flips only after
+    ``activate_debounce`` consecutive *bad* observations; CLEAR flips only
+    after ``clear_debounce`` consecutive *good* ones. Any disagreeing
+    observation resets the running streak. ``activate_debounce=1`` /
+    ``clear_debounce=1`` reproduces the legacy immediate latch/clear.
+
+    The asymmetry is deliberate: a contact-quality warning should RAISE
+    quickly (a late warning is a safety miss) but CLEAR conservatively (a
+    premature dismiss strands the operator on a still-bad camera), so
+    callers give a short activate debounce and a longer clear debounce.
 
     Consequence: time-to-transition is unbounded — a spurious disagreeing
-    observation arriving more often than once per ``debounce`` postpones the
-    edge indefinitely. This matters most on the clear edge.
+    observation arriving more often than once per (respective) debounce
+    postpones that edge indefinitely. With the asymmetric defaults this
+    matters most on the clear edge, which is the conservative direction.
 
     Returns a transition only on an edge — steady state returns
     ``TRANSITION_NONE`` so callers emit one event per genuine change
     rather than once per frame.
     """
 
-    __slots__ = ("_debounce", "_active", "_streak")
+    __slots__ = ("_activate_debounce", "_clear_debounce", "_active", "_streak")
 
-    def __init__(self, debounce: int = 1) -> None:
-        self._debounce = max(1, int(debounce))
+    def __init__(self, activate_debounce: int = 1, clear_debounce: int = 1) -> None:
+        self._activate_debounce = max(1, int(activate_debounce))
+        self._clear_debounce = max(1, int(clear_debounce))
         self._active = False
         self._streak = 0
 
@@ -165,9 +174,14 @@ class CameraLatch:
         return self._active
 
     @property
-    def debounce(self) -> int:
-        """Effective debounce — always >= 1, whatever was passed in."""
-        return self._debounce
+    def activate_debounce(self) -> int:
+        """Consecutive bad observations required to RAISE — always >= 1."""
+        return self._activate_debounce
+
+    @property
+    def clear_debounce(self) -> int:
+        """Consecutive good observations required to CLEAR — always >= 1."""
+        return self._clear_debounce
 
     def observe(self, bad: bool) -> str:
         """Feed one observation; return activated / cleared / none."""
@@ -176,7 +190,9 @@ class CameraLatch:
             self._streak = 0
             return TRANSITION_NONE
         self._streak += 1
-        if self._streak < self._debounce:
+        # Approaching RAISE when bad, CLEAR when good — each edge its own bound.
+        needed = self._activate_debounce if bad else self._clear_debounce
+        if self._streak < needed:
             return TRANSITION_NONE
         self._active = bad
         self._streak = 0
@@ -260,13 +276,18 @@ class ContactQualityMonitor:
         thresholds: CQThresholds,
         on_transition: Callable[[str, int, str, float, bool], None],
         rolling_window: int = 10,
-        light_debounce: int = 80,
+        light_activate_debounce: int = 10,
+        light_clear_debounce: int = 80,
         dark_debounce: int = 1,
     ) -> None:
         self._thresholds = thresholds
         self._on_transition = on_transition
         self._window_size = max(1, int(rolling_window))
-        self._light_debounce = max(1, int(light_debounce))
+        # Asymmetric: RAISE fast (a late warning is a safety miss), CLEAR
+        # slow (a premature dismiss strands the operator). Dark/ambient stays
+        # symmetric — scheduled darks are ~15 s apart, their own debounce.
+        self._light_activate_debounce = max(1, int(light_activate_debounce))
+        self._light_clear_debounce = max(1, int(light_clear_debounce))
         self._dark_debounce = max(1, int(dark_debounce))
         # (side, cam_id) -> deque[float] of recent light-frame mean_dc_rt
         self._light_window: dict = {}
@@ -298,12 +319,14 @@ class ContactQualityMonitor:
         # how the feature stayed silently dead for two months in 2026.
         logger.info(
             "live contact-quality monitor attached: %s, "
-            "dark<=%s DN, light>=%s DN, window=%d, debounce light=%d dark=%d",
+            "dark<=%s DN, light>=%s DN, window=%d, "
+            "light debounce activate=%d clear=%d, dark debounce=%d",
             mask_desc,
             list(self._thresholds.dark) or "n/a",
             list(self._thresholds.light) or "n/a",
             self._window_size,
-            self._light_debounce,
+            self._light_activate_debounce,
+            self._light_clear_debounce,
             self._dark_debounce,
         )
 
@@ -328,7 +351,7 @@ class ContactQualityMonitor:
                 self._observe(
                     side, cam_id, REASON_AMBIENT_LIGHT,
                     is_ambient_light(value, self._thresholds, cam_id),
-                    value, self._dark_debounce,
+                    value, self._dark_debounce, self._dark_debounce,
                 )
             else:
                 value = float(batch.mean_dc_rt[i, side_idx, cam_id])
@@ -363,7 +386,9 @@ class ContactQualityMonitor:
                     self._observe(
                         side, cam_id, REASON_POOR_CONTACT,
                         True,
-                        value, self._light_debounce,
+                        value,
+                        self._light_activate_debounce,
+                        self._light_clear_debounce,
                     )
                     continue
                 window = self._light_window.get(key)
@@ -375,16 +400,19 @@ class ContactQualityMonitor:
                 self._observe(
                     side, cam_id, REASON_POOR_CONTACT,
                     is_poor_contact(avg, self._thresholds, cam_id),
-                    avg, self._light_debounce,
+                    avg,
+                    self._light_activate_debounce,
+                    self._light_clear_debounce,
                 )
 
-    def _observe(self, side, cam_id, reason, bad, value, debounce) -> None:
+    def _observe(self, side, cam_id, reason, bad, value,
+                 activate_debounce, clear_debounce) -> None:
         self._observations_processed += 1
         self._cameras_seen.add((side, cam_id))
         latch_key = (side, cam_id, reason)
         latch = self._latches.get(latch_key)
         if latch is None:
-            latch = CameraLatch(debounce)
+            latch = CameraLatch(activate_debounce, clear_debounce)
             self._latches[latch_key] = latch
         transition = latch.observe(bad)
         if transition == TRANSITION_NONE:
