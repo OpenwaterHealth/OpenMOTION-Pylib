@@ -159,3 +159,48 @@ def test_import_rejects_64_char_non_hex_key(fake_keyring, tmp_path):
     bad.write_text("z" * 64)
     with pytest.raises(ValueError):
         db_key.import_key(bad)
+
+
+# --------------------------------------------------------------------------
+# Escrow: provisioning must warn loudly, and never write the key to disk
+# --------------------------------------------------------------------------
+
+def test_provisioning_a_new_key_warns_loudly(fake_keyring, caplog):
+    """The key is never auto-escrowed (a recovery file on the protected disk
+    defeats the threat model), so key creation is the one unrecoverable moment
+    and must be loud rather than silent."""
+    with caplog.at_level("WARNING", logger="omotion.db_key"):
+        db_key.get_key(create=True)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "permanently unreadable" in msg
+    assert "python -m omotion.db_key export" in msg      # actionable
+    assert db_key.get_key(create=False) not in msg       # never logs the key
+
+
+def test_fetching_an_existing_key_does_not_warn(fake_keyring, caplog):
+    db_key.get_key(create=True)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="omotion.db_key"):
+        db_key.get_key(create=False)
+        db_key.get_key(create=True)      # exists already -> no new provisioning
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_export_import_cli_roundtrip(fake_keyring, tmp_path, capsys):
+    original = db_key.get_key(create=True)
+    out = tmp_path / "scan-db.key"
+
+    assert db_key._main(["export", str(out)]) == 0
+    assert out.read_text().strip() == original
+
+    fake_keyring._store.clear()                      # simulate a rebuilt machine
+    assert db_key._main(["import", str(out)]) == 0
+    assert db_key.get_key(create=False) == original
+
+
+def test_export_cli_reports_error_without_a_key(fake_keyring, tmp_path, capsys):
+    rc = db_key._main(["export", str(tmp_path / "nope.key")])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().out

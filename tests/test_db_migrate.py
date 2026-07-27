@@ -1,5 +1,6 @@
 """Tests for omotion.db_migrate — plaintext -> encrypted migration."""
 import sqlite3
+import sys
 
 import pytest
 
@@ -67,6 +68,27 @@ def test_migration_noop_on_already_encrypted(clinical, tmp_path):
 
 def test_migration_noop_on_missing(clinical, tmp_path):
     assert db_migrate.migrate_plaintext_to_encrypted(tmp_path / "nope.db") is False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"),
+                    reason="POSIX allows replacing an open file")
+def test_migration_with_an_open_handle_fails_actionably(clinical, tmp_path):
+    """Found by a real end-to-end run: a caller holding the DB open turns the
+    atomic replace into a bare 'WinError 5: Access is denied'. It must instead
+    say what to do, and must leave the original database intact."""
+    p = tmp_path / "scans.db"
+    _make_plaintext(p)
+    holder = sqlite3.connect(p)          # deliberately left open
+    try:
+        with pytest.raises(PermissionError, match="still open"):
+            db_migrate.migrate_plaintext_to_encrypted(p)
+        # the original must survive untouched — still plaintext, still readable
+        assert holder.execute(
+            "SELECT session_label FROM sessions").fetchone()[0] == "OLD-PHI"
+        with open(p, "rb") as fh:
+            assert fh.read(16) == MAGIC
+    finally:
+        holder.close()
 
 
 def test_migration_preserves_uncheckpointed_wal(clinical, tmp_path):

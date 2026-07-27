@@ -10,8 +10,11 @@ signed build config; see docs/superpowers/specs/2026-07-23-sqlite-encryption-des
 """
 from __future__ import annotations
 
+import logging
 import secrets
 from pathlib import Path
+
+logger = logging.getLogger("omotion.db_key")
 
 _SERVICE = "openmotion"
 _ENTRY = "scan-db"
@@ -76,6 +79,17 @@ def get_key(*, create: bool = False) -> str:
             )
         value = secrets.token_bytes(32).hex()
         keyring.set_password(_SERVICE, _ENTRY, value)
+        # The key is deliberately NEVER written to the disk it protects — a
+        # recovery file sitting beside the encrypted DB defeats the stolen-disk
+        # threat model. So provisioning is the one moment where forgetting to
+        # escrow becomes unrecoverable; make it loud rather than silent.
+        logger.warning(
+            "scan-db encryption key provisioned for this Windows user on this "
+            "machine. It is NOT backed up anywhere. If this profile or machine "
+            "is rebuilt, every scan in the encrypted database becomes "
+            "permanently unreadable. Escrow it now to secure storage OFF this "
+            "machine:  python -m omotion.db_key export <path>"
+        )
     return value
 
 
@@ -97,3 +111,40 @@ def import_key(path: str | Path) -> None:
     if len(key) != 64 or any(c not in "0123456789abcdef" for c in key.lower()):
         raise ValueError("recovery key must be 64 hex characters")
     keyring.set_password(_SERVICE, _ENTRY, key)
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """``python -m omotion.db_key export|import <path>`` — the escrow CLI the
+    provisioning warning points at. Kept deliberately small: recovery has to
+    work from a bare console on a machine being rebuilt."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m omotion.db_key",
+        description="Export or restore the scan-database encryption key. "
+                    "Store exports in secure storage OFF this machine — a key "
+                    "beside the database it protects provides no protection.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    p_exp = sub.add_parser("export", help="write this machine's key to a file")
+    p_exp.add_argument("path")
+    p_imp = sub.add_parser("import", help="restore a key from a file")
+    p_imp.add_argument("path")
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "export":
+            export_key(args.path)
+            print(f"key exported to {args.path}\n"
+                  f"Move it to secure storage off this machine and delete the local copy.")
+        else:
+            import_key(args.path)
+            print("key restored to the Windows Credential Manager for this user.")
+    except (EncryptionKeyMissing, ValueError, OSError) as exc:
+        print(f"error: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess in tests
+    raise SystemExit(_main())

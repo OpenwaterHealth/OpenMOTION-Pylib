@@ -18,14 +18,28 @@ from omotion import db_key, db_open
 def _replace_with_retry(src: str, dst: str, *, attempts: int = 10, delay: float = 0.1) -> None:
     """os.replace with a bounded retry for transient Windows sharing violations
     (an AV scanner / indexer / a briefly-held handle can make replace raise
-    PermissionError). Surfaces the original error after exhausting attempts."""
+    PermissionError).
+
+    A retry only rides out *transient* holders. A connection someone left open
+    on the database never goes away, so after exhausting the attempts we
+    re-raise with an actionable message instead of a bare ``WinError 5: Access
+    is denied`` — that is the difference between a diagnosable failure and a
+    support call during a clinical update.
+    """
     for attempt in range(attempts):
         try:
             os.replace(src, dst)
             return
-        except PermissionError:
+        except PermissionError as exc:
             if attempt == attempts - 1:
-                raise
+                raise PermissionError(
+                    f"could not replace {dst} with the encrypted copy — the file "
+                    "is still open. Close every connection to it before migrating "
+                    "(on Windows the atomic replace needs an unopened target). "
+                    "In the app this usually means AuditLog or a ScanDatabase "
+                    "handle was opened before the migration ran. The original "
+                    f"database is untouched and {src} can be discarded."
+                ) from exc
             time.sleep(delay)
 
 
