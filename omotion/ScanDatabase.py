@@ -80,70 +80,13 @@ class ScanDatabase:
         return db_open.connect(self._db_path, create_ok=True)
 
     def _init_schema(self) -> None:
-        self._connection().executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                id             INTEGER PRIMARY KEY,
-                session_label  TEXT    NOT NULL,
-                session_start  REAL    NOT NULL,
-                session_end    REAL,
-                session_notes  TEXT,
-                session_meta   TEXT
-            );
+        # Versioned migrations, tracked in PRAGMA user_version. Runs on every
+        # open, so a database written by an older SDK is upgraded the first time
+        # new code touches it; a database already at the current version writes
+        # nothing. See omotion/db_schema.py for how to add a migration.
+        from omotion import db_schema
 
-            CREATE TABLE IF NOT EXISTS session_data (
-                id               INTEGER PRIMARY KEY,
-                session_id       INTEGER NOT NULL REFERENCES sessions(id)
-                                          ON DELETE CASCADE,
-                cam_id           INTEGER NOT NULL,
-                side             INTEGER NOT NULL CHECK(side IN (0, 1)),
-                frame_id         INTEGER NOT NULL DEFAULT -1,
-                timestamp_s      REAL    NOT NULL,
-                bfi              REAL,
-                bvi              REAL,
-                contrast         REAL,
-                mean             REAL,
-                quality          TEXT DEFAULT 'ok'
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_session_data_session_time
-                ON session_data(session_id, timestamp_s);
-
-            CREATE INDEX IF NOT EXISTS idx_session_data_session_cam
-                ON session_data(session_id, side, cam_id, timestamp_s);
-
-            CREATE TABLE IF NOT EXISTS database_settings (
-                key            TEXT PRIMARY KEY,
-                value          TEXT NOT NULL
-            );
-            """
-        )
-        # Issue #92 Step F: add session_data.frame_id to DBs created
-        # before the column existed. Rows from those older sessions get
-        # the sentinel value -1 ("frame_id unknown"); SessionPlayback
-        # treats that as "this session can't be played back from the DB
-        # — fall back to the corresponding _corrected.csv if present".
-        # The index creation is outside the if-block because fresh DBs
-        # (created with the new CREATE TABLE) also need it.
-        cols = {
-            r[1] for r in self._connection().execute("PRAGMA table_info('session_data')")
-        }
-        if "frame_id" not in cols:
-            self._connection().execute(
-                "ALTER TABLE session_data ADD COLUMN frame_id INTEGER NOT NULL DEFAULT -1"
-            )
-        if "quality" not in cols:
-            try:
-                self._connection().execute(
-                    "ALTER TABLE session_data ADD COLUMN quality TEXT DEFAULT 'ok'"
-                )
-            except sqlite3.OperationalError:
-                pass  # column already exists
-        self._connection().execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_data_session_frame "
-            "ON session_data(session_id, frame_id)"
-        )
-        self._connection().commit()
+        db_schema.upgrade(self._connection())
 
     def _get_setting(self, key: str) -> Optional[str]:
         row = self._connection().execute(
