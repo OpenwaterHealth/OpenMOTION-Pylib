@@ -51,6 +51,7 @@ class MotionInterface:
         data_dir: Optional[str] = None,
         scan_db_path: Optional[str] = None,
         operator_id: Optional[str] = None,
+        require_encrypted_db: bool = False,
     ):
         self.vid = vid
         self.sensor_pid = sensor_pid
@@ -60,6 +61,14 @@ class MotionInterface:
         self.data_dir = data_dir
         self.scan_db_path = scan_db_path
         self.operator_id = operator_id
+
+        # Encryption policy is process-global; set it once here from the app's
+        # (signed) build config. Default False keeps research/headless plaintext.
+        # When True this verifies the keystore backend, failing fast at startup
+        # rather than mid-scan. See omotion/db_key.py and design doc §5.2.
+        from omotion import db_key
+
+        db_key.set_policy(require_encryption=require_encrypted_db)
 
         # Resolved default trigger config used by every workflow whose
         # request doesn't carry a ``trigger_config`` override. Stored
