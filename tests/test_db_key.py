@@ -204,3 +204,46 @@ def test_export_cli_reports_error_without_a_key(fake_keyring, tmp_path, capsys):
     rc = db_key._main(["export", str(tmp_path / "nope.key")])
     assert rc == 1
     assert "error:" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# Missing optional dependency must fail ACTIONABLY, not with ModuleNotFoundError
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def no_keyring_installed(monkeypatch):
+    """Simulate a build whose requirements forgot the [encryption] extra."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "keyring" or name.startswith("keyring."):
+            raise ImportError("No module named 'keyring'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+
+def test_missing_keyring_raises_actionable_error(no_keyring_installed):
+    """Regression: a packaged clinical app built without the encryption extra
+    surfaced a bare ModuleNotFoundError. It must instead name the fix."""
+    with pytest.raises(db_key.EncryptionUnavailable) as exc:
+        db_key.get_key(create=True)
+    msg = str(exc.value)
+    assert "keyring" in msg
+    assert "openmotion-sdk[encryption]" in msg      # tells you how to fix it
+
+
+def test_missing_keyring_blocks_policy_activation(no_keyring_installed):
+    """set_policy(True) must fail loudly at startup rather than letting the app
+    reach a scan and only then discover it cannot reach the keystore."""
+    with pytest.raises(db_key.EncryptionUnavailable):
+        db_key.set_policy(require_encryption=True)
+
+
+def test_missing_keyring_does_not_affect_research_builds(no_keyring_installed):
+    """Encryption deps are optional: with the policy off, nothing touches the
+    keystore, so a research build without them must work normally."""
+    db_key.set_policy(require_encryption=False)
+    assert db_key.require_encryption() is False

@@ -49,8 +49,30 @@ def require_encryption() -> bool:
     return bool(_require_encryption)
 
 
+def _keyring():
+    """Import ``keyring``, converting a missing dependency into the actionable
+    ``EncryptionUnavailable`` rather than a bare ``ModuleNotFoundError``.
+
+    ``keyring`` and ``sqlcipher3`` ship in the ``[encryption]`` extra, so a build
+    that forgets it fails at the first keystore touch. Mirrors how ``db_open``
+    handles the ``sqlcipher3`` import — the message has to name the fix, because
+    the place this surfaces is a packaged clinical app on a bench.
+    """
+    try:
+        import keyring
+    except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
+        raise EncryptionUnavailable(
+            "the scan-database encryption policy requires the 'keyring' package, "
+            "which is not installed. Install the SDK with its encryption extra: "
+            "pip install 'openmotion-sdk[encryption]' (a packaged app must also "
+            "list keyring and sqlcipher3 among its build requirements, or "
+            "PyInstaller cannot bundle them)."
+        ) from exc
+    return keyring
+
+
 def _assert_backend() -> None:
-    import keyring
+    keyring = _keyring()
 
     kr = keyring.get_keyring()
     # Windows Credential Manager is the supported clinical backend.
@@ -69,7 +91,7 @@ def get_key(*, create: bool = False) -> str:
     missing key raises ``EncryptionKeyMissing`` (used when opening an existing
     encrypted DB). Never logs or echoes the key.
     """
-    import keyring
+    keyring = _keyring()
 
     value = keyring.get_password(_SERVICE, _ENTRY)
     if value is None:
@@ -105,7 +127,7 @@ def export_key(path: str | Path) -> None:
 
 def import_key(path: str | Path) -> None:
     """Load a key exported by ``export_key`` back into the keystore."""
-    import keyring
+    keyring = _keyring()
 
     key = Path(path).read_text(encoding="ascii").strip()
     if len(key) != 64 or any(c not in "0123456789abcdef" for c in key.lower()):
