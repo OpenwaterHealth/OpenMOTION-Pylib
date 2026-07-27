@@ -50,7 +50,13 @@ from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
 from .ScanDatabase import ScanDatabase
-from . import db_key, db_open, db_migrate, db_schema
+# Scan-DB plumbing is exposed as module namespaces rather than bare names —
+# db_open.connect() / db_schema.upgrade() read unambiguously where a top-level
+# connect() or upgrade() would not.
+from . import db_key
+from . import db_migrate
+from . import db_open
+from . import db_schema
 from .SessionPlayback import materialize_corrected_csv
 from .Calibration import Calibration
 from .CalibrationWorkflow import (
@@ -97,8 +103,8 @@ __all__ = [
     "MotionConfig",
     "ScanDatabase",
     "db_key",
-    "db_open",
     "db_migrate",
+    "db_open",
     "db_schema",
     "materialize_corrected_csv",
     "Calibration",
