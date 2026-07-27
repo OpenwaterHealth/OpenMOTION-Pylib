@@ -349,6 +349,18 @@ rather than being opened and written by code that does not understand it.
    in the field predate versioning and report version 0 while already carrying
    the v1 schema, so migration 1 must be a no-op on them.
 
+**Only real, used schema belongs in `MIGRATIONS`.** Every entry lands in every
+database in the field permanently, so an unused table or column becomes debt
+that cannot be cleanly removed. The registry currently holds only the baseline
+migration; the runner is verified in `tests/test_db_schema.py` two ways — against
+a **synthetic** migration registered by monkeypatch (adds a table and alters an
+existing one), and against a **checked-in legacy database**,
+`tests/fixtures/legacy_scans_v0.db`. That fixture is a real pre-versioning,
+pre-`frame_id` scan DB (regenerate with
+`python tests/fixtures/generate_legacy_scan_db.py`), so the upgrade is exercised
+against a genuine on-disk file rather than one synthesized in the test. It is
+frozen on purpose and copied before use — never migrated in place.
+
 Migrations apply identically to encrypted databases (clinical builds); SQLCipher
 is stock SQLite above the cipher layer.
 

@@ -34,7 +34,7 @@ import logging
 logger = logging.getLogger("omotion.db_schema")
 
 # Bump this whenever a migration is appended to MIGRATIONS.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 
 class SchemaTooNewError(RuntimeError):
@@ -127,41 +127,15 @@ def _migration_001_baseline(conn) -> None:
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON session_data({cols})")
 
 
-def _migration_002_annotations(conn) -> None:
-    """Example migration: add a table and extend an existing one.
-
-    - NEW TABLE  ``session_annotations`` — timestamped operator markers on a
-      scan ("cuff inflated", "subject moved"), so events can be correlated with
-      the BFI/BVI trace after the fact.
-    - ALTER      ``sessions.operator_id`` — who ran the scan. MotionInterface
-      already carries ``operator_id``; this gives it a home in the record.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS session_annotations (
-            id           INTEGER PRIMARY KEY,
-            session_id   INTEGER NOT NULL REFERENCES sessions(id)
-                                   ON DELETE CASCADE,
-            timestamp_s  REAL    NOT NULL,
-            label        TEXT    NOT NULL,
-            note         TEXT,
-            created_at   REAL
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_session_annotations_session "
-        "ON session_annotations(session_id, timestamp_s)"
-    )
-    _add_column_if_missing(conn, "sessions", "operator_id", "TEXT")
-
-
 # (version, description, function) — ordered, append-only.
+#
+# Only real, used schema belongs here: every entry lands in every database in
+# the field permanently, so an unused table or column is debt that can never be
+# cleanly removed. The runner itself is exercised end-to-end against a synthetic
+# migration and a checked-in legacy database in tests/test_db_schema.py.
 MIGRATIONS: list[tuple[int, str, object]] = [
     (1, "baseline schema (sessions, session_data, database_settings)",
      _migration_001_baseline),
-    (2, "add session_annotations table + sessions.operator_id",
-     _migration_002_annotations),
 ]
 
 
