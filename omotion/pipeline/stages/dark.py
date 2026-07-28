@@ -87,7 +87,7 @@ class DarkIntegrityGuard:
     light is leaking onto the sensor. The guard appends a diagnostic event and
     logs a WARNING, but does not drop the frame.
 
-    See docs/SciencePipeline.md §11 (input validation rails).
+    See docs/SciencePipeline.md §5.7.1.
     """
 
     def __init__(self, max_above_pedestal: float = 5.0):
@@ -118,7 +118,7 @@ class DarkIntegrityGuard:
 class HybridRealtimePredictor:
     """Realtime dark-baseline predictor.
 
-    Algorithm (see docs/SciencePipeline.md §7.4.1):
+    Algorithm (see docs/SciencePipeline.md §5.7.2):
         u1   ← average of last 3 dark observations (truncated; ZOH with 1)
         std  ← linear extrapolation through last 2 darks; ZOH with 1 or
                 when both darks share a timestamp
@@ -195,7 +195,7 @@ class CorrectedFrame:
     cam_id:        int       # 0..7
     mean:          float     # dark-subtracted u1 (no shot-noise yet)
     std:           float     # dark-subtracted std (no shot-noise yet)
-    raw_u1:        float     # original raw mean (for shot-noise use by downstream)
+    raw_u1:        float     # original raw mean retained on the corrected frame
     raw_var:       float     # u2 - u1^2 (raw variance before dark sub)
     dark_var:      float     # interpolated dark baseline variance
     contrast:      Optional[float] = None  # set by ShotNoiseCorrectionStage
@@ -278,7 +278,7 @@ class PendingInterval:
 class LinearInterpolation:
     """Compute corrected values for a closed dark-bounded interval.
 
-    See docs/SciencePipeline.md §8.1–§8.3.
+    See docs/SciencePipeline.md §5.7.4.
     """
 
     def correct_interval(self, interval: Interval, *,
@@ -335,7 +335,7 @@ class DarkFrameQuadraticStencil:
     Stencil:
         v(D) = (-1/6) v(D-2) + (2/3) v(D-1) + (2/3) v(D+1) + (-1/6) v(D+2)
 
-    Fallback chain (see SciencePipeline.md §8.4):
+    Fallback chain (see SciencePipeline.md §5.7.6):
         full        — all four neighbours present
         right_only  — left missing, right ≥2 → (v(+1) + v(+2)) / 2
         simple_avg  — only v(-1) and v(+1) → (v(-1) + v(+1)) / 2
@@ -380,12 +380,12 @@ class DarkCorrectionStage:
     stages (ShotNoiseCorrectionStage, BfiBviStage, DarkFrameHoldStage)
     handle enrichment and the dark-frame quadratic stencil.
 
-    on_scan_stop(batch) performs the terminal-dark flush — per §8.6, the
+    on_scan_stop(batch) performs the terminal-dark flush — per §5.7.8, the
     last buffered light frame is the firmware-guaranteed terminal dark frame;
     it is promoted to a dark boundary, removed from the light list, and the
     remaining lights (if any) are emitted.
 
-    See docs/SciencePipeline.md §7.4 (realtime) and §8 (batched).
+    See docs/SciencePipeline.md §5.7.2 (realtime) and §5.7.3–§5.7.8 (batched).
     """
     name = "dark_correction"
 
@@ -487,8 +487,9 @@ class DarkCorrectionStage:
                     if pi.is_closed():
                         interval = pi.flush()
                         # After flush, pi's left has rolled to the just-flushed right.
-                        # _emit_interval applies the stencil for D_prev and appends
-                        # the IntervalClosed event (§8.4).
+                        # _emit_interval emits a raw CorrectedInterval. The
+                        # D_prev stencil is applied downstream by
+                        # DarkFrameHoldStage._apply_stencil (§5.7.6).
                         self._emit_interval((side, cam_id), interval, batch.events)
 
             else:  # light
@@ -560,7 +561,7 @@ class DarkCorrectionStage:
         self._terminal_fsync_count = None
 
     def on_scan_stop(self, batch: FrameBatch) -> None:
-        """Terminal dark flush — see SciencePipeline.md §8.6.
+        """Terminal dark flush — see SciencePipeline.md §5.7.8.
 
         The firmware guarantees the end of every scan contains a dark (laser-
         off) frame.  That frame may not fall on a scheduled dark position, so
@@ -580,8 +581,9 @@ class DarkCorrectionStage:
              as the right boundary of the synthetic interval.
           3. Remove the whole tail from the light list so it is not double-counted.
           4. Call _emit_interval with the remaining lights (which may be empty).
-             The stencil for D_prev is applied as normal; if there are no lights,
-             D_prev cannot be stencilled (no right neighbours) and is skipped.
+             It emits a raw CorrectedInterval; DarkFrameHoldStage applies the
+             D_prev stencil downstream. If there are no lights, D_prev cannot
+             be stencilled (no right neighbours) and is skipped.
         """
         expected_abs = (
             None if self._terminal_fsync_count is None
@@ -706,5 +708,6 @@ class DarkCorrectionStage:
             pi.set_right_dark(terminal_obs, abs_frame_id=terminal_light.abs_frame_id)
             interval = pi.flush()
 
-            # _emit_interval applies the stencil for D_prev and emits the event.
+            # _emit_interval emits the raw interval; DarkFrameHoldStage applies
+            # the D_prev stencil downstream.
             self._emit_interval((side, cam_id), interval, batch.events)

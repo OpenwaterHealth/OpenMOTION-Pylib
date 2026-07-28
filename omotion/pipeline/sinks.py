@@ -155,7 +155,7 @@ class CsvSink:
     """Channel-based CSV sink for the pipeline.
 
     Channels:
-        "raw"   — per-frame raw histograms (gated by meta.write_raw_csv)
+        "raw"   — per-frame raw histograms
         "final" — per-interval corrected output
 
     Raw file naming:       ``{scan_id}_{subject_id}_{side}_mask{XX}_raw.csv``
@@ -184,7 +184,7 @@ class CsvSink:
         # When False, the corrected CSV ({scan_id}_{subject}.csv) is not
         # written — the scan DB's session_data is the system of record
         # for per-cam BFI/BVI instead. Raw histogram CSV handling (the
-        # "raw" channel, separately gated by meta.write_raw_csv) is
+        # "raw" channel) is
         # unaffected. The SDK runner forces this True when no scan DB is
         # configured so there's always at least one persisted record.
         self._write_corrected = bool(write_corrected)

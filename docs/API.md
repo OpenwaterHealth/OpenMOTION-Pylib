@@ -316,7 +316,8 @@ Key read methods:
 | `iter_sessions()` / `stream_sessions(batch_size=100)` | All sessions, oldest first. |
 | `get_session(id)` / `get_session_by_label(label)` | One session. |
 | `iter_session_data(session_id, side=None, cam_id=None, t_lo=None, t_hi=None)` | Per-frame BFI/BVI/mean/contrast; optional side/camera/time-range filters. |
-| `iter_raw_frames(...)` / `get_raw_frame(id)` | Raw histograms (only if `write_raw_to_db`). |
+Raw histogram data is written to raw CSV output and is not stored in
+`ScanDatabase`.
 
 **`session_data` layout:** `cam_id` 0..7 are per-camera rows (normal mode);
 `cam_id = -1` is the reduced-mode dark-corrected **per-side average** (one per
