@@ -83,15 +83,53 @@ def test_bootloader_device_flashes_signed_image_into_the_slot(release_dir):
     assert prog.flashed == [(release_dir / "motion-sensor-fw-signed.bin", "0x08020000")]
 
 
-def test_unknown_mode_refuses_to_flash_anything(release_dir):
+def test_unknown_mode_falls_back_to_bare_metal(release_dir):
+    """An unclassifiable device is flashed as bare metal rather than refused.
+
+    This is fail-safe in hardware, which is what makes it an acceptable default:
+    both bootloaders clamp their DFU write window to the application slot and
+    mark sector 0 read-only, so a bare-metal write at 0x08000000 against a
+    bootloader unit is rejected by the bootloader itself. The device fails the
+    flash loudly instead of being bricked. Defaulting the *other* way would not
+    be safe -- a signed image at 0x08020000 lands happily in the middle of a
+    bare-metal device's flash and produces a unit that will not boot.
+    """
     prog = FakeProgrammer(mode=BootMode.UNKNOWN)
     updater = FirmwareUpdater(programmer=prog)
     primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
     register_download(primary, FirmwareKind.SENSOR, "1.8.2")
 
-    with pytest.raises(FirmwareUpdateError):
-        updater.update(FakeHandle(), primary)
-    assert prog.flashed == []
+    updater.update(FakeHandle(), primary)
+
+    assert prog.flashed == [(primary, "0x08000000")]
+
+
+def test_unknown_mode_still_reports_what_was_actually_detected(release_dir):
+    """The fallback must not launder a guess into an observation: callers (and
+    the lock icon in the apps) read last_boot_mode, so it stays UNKNOWN."""
+    prog = FakeProgrammer(mode=BootMode.UNKNOWN)
+    updater = FirmwareUpdater(programmer=prog)
+    primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
+    register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+
+    updater.update(FakeHandle(), primary)
+
+    assert updater.last_boot_mode is BootMode.UNKNOWN
+
+
+def test_unknown_mode_never_picks_the_signed_image(release_dir):
+    """The dangerous outcome, asserted directly: whatever else happens on an
+    unclassifiable device, it must never be given a slot image."""
+    prog = FakeProgrammer(mode=BootMode.UNKNOWN)
+    updater = FirmwareUpdater(programmer=prog)
+    primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
+    register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+
+    updater.update(FakeHandle(), primary)
+
+    (flashed, address), = prog.flashed
+    assert "signed" not in flashed.name
+    assert address != "0x08020000"
 
 
 def test_bootloader_device_with_legacy_release_refuses(tmp_path):
