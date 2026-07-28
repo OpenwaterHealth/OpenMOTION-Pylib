@@ -204,3 +204,87 @@ def test_updater_records_mode_even_when_the_flash_is_refused(release_dir):
     with pytest.raises(UnsupportedReleaseError):
         updater.update(FakeHandle(), legacy)
     assert updater.last_boot_mode is BootMode.BOOTLOADER
+
+
+# ---------------------------------------------------------------------------
+# End-to-end classification (openmotion-sdk#197)
+#
+# FakeProgrammer above stubs detect_boot_mode() outright, so those tests can
+# never catch a *classification* bug — they assume the mode is already known.
+# These drive a real `dfu-util -l` listing through the actual
+# DFUProgrammer.detect_boot_mode -> parse_boot_mode chain, which is the path the
+# apps take: the test app hands a FirmwareUpdater to its flash thread and lets
+# the SDK decide the asset and address.
+# ---------------------------------------------------------------------------
+
+from omotion.DFUProgrammer import DFUProgrammer
+
+
+def _listing(alt_lines: str) -> str:
+    return (
+        "dfu-util 0.11\n\n"
+        "Copyright 2005-2009 Weston Schmidt, Harald Welte and OpenMoko Inc.\n\n"
+        f"{alt_lines}\n"
+    )
+
+
+# A bare-metal unit whose listing carries the Internal Flash alt and nothing
+# else — no ROM-only alt to key off. This is what made old consoles unflashable.
+ROM_FLASH_ALT_ONLY = _listing(
+    'Found DFU: [0483:df11] ver=0200, devnum=54, cfg=1, intf=0, path="2-1.1.1", '
+    'alt=0, name="@Internal Flash   /0x08000000/16*128Kg", serial="200364500000"'
+)
+
+# A converted console: same single-alt shape, but read-only runs around the slot.
+CONSOLE_BL_LISTING = _listing(
+    'Found DFU: [0483:df11] ver=0200, devnum=31, cfg=1, intf=0, path="2-1.1.1", '
+    'alt=0, name="@Internal Flash/0x08000000/01*128Ka,08*128Kg,07*128Ka", '
+    'serial="OWCONSOLEBL"'
+)
+
+
+class ListingProgrammer(FakeProgrammer):
+    """FakeProgrammer, but boot mode comes from a real listing via real parsing."""
+
+    def __init__(self, listing):
+        super().__init__()
+        self._listing = listing
+
+    def list_devices(self):
+        return self._listing
+
+    # Deliberately the genuine implementation, not a stub.
+    detect_boot_mode = DFUProgrammer.detect_boot_mode
+
+
+def test_update_flashes_bare_metal_when_only_the_flash_alt_is_listed(release_dir):
+    """The #197 regression: a bare-metal unit whose listing has no ROM-only alt
+    used to raise "could not tell whether this device has the bootloader
+    installed" and could not be updated at all."""
+    prog = ListingProgrammer(ROM_FLASH_ALT_ONLY)
+    updater = FirmwareUpdater(programmer=prog)
+    primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
+    register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+
+    updater.update(FakeHandle(), primary)
+
+    assert updater.last_boot_mode is BootMode.BARE_METAL
+    assert prog.flashed == [(primary, "0x08000000")]
+
+
+def test_update_still_routes_a_converted_console_to_the_signed_slot(release_dir):
+    """The other half of the guarantee: relaxing bare-metal detection must not
+    let a bootloader unit get a bare-metal image at the base of flash."""
+    for name in ("motion-console-fw-baremetal.bin", "motion-console-fw-signed.bin"):
+        (release_dir / name).write_bytes(b"\x00" * 16)
+    prog = ListingProgrammer(CONSOLE_BL_LISTING)
+    updater = FirmwareUpdater(programmer=prog)
+    primary = release_dir / "motion-console-fw-baremetal.bin"
+    register_download(primary, FirmwareKind.CONSOLE, "1.8.1-rc.2")
+
+    updater.update(FakeHandle(), primary)
+
+    assert updater.last_boot_mode is BootMode.BOOTLOADER
+    assert prog.flashed == [
+        (release_dir / "motion-console-fw-signed.bin", "0x08020000")
+    ]
