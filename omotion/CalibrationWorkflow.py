@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import enum
 import json
 import logging
 import os
@@ -159,6 +160,31 @@ class TestScanResult:
     test_scan_right_path: str
     started_timestamp: str
     mode: str = "test"
+
+
+class CalibrationOutcome(str, enum.Enum):
+    """Single authoritative terminal state of a calibration / test-scan
+    procedure. Replaces consumer-side guessing from the ok/passed/
+    canceled boolean triple (which allowed 16 combinations, ~5 of them
+    meaningful, and could not distinguish a watchdog timeout from an
+    operator cancel)."""
+    PASSED = "passed"        # ran end-to-end, all cameras met thresholds
+    FAILED = "failed"        # ran end-to-end, >=1 camera missed a threshold
+    CANCELED = "canceled"    # cancel_calibration() stopped it
+    TIMED_OUT = "timed_out"  # max_duration_sec watchdog stopped it
+    ERROR = "error"          # broke before completing (flash, USB, degenerate data, ...)
+
+
+def _resolve_outcome(
+    *, ok: bool, passed: bool, canceled: bool, timed_out: bool,
+) -> CalibrationOutcome:
+    if timed_out:
+        return CalibrationOutcome.TIMED_OUT
+    if canceled:
+        return CalibrationOutcome.CANCELED
+    if not ok:
+        return CalibrationOutcome.ERROR
+    return CalibrationOutcome.PASSED if passed else CalibrationOutcome.FAILED
 
 
 # ---------------------------------------------------------------------------
