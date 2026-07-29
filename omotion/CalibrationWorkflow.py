@@ -163,7 +163,7 @@ class CalibrationResult:
     validation_scan_left_path: str
     validation_scan_right_path: str
     started_timestamp: str
-    outcome: CalibrationOutcome = CalibrationOutcome.ERROR
+    outcome: Optional[CalibrationOutcome] = None
     rolled_back: bool = False   # set by Task 3
 
 
@@ -187,7 +187,7 @@ class TestScanResult:
     test_scan_right_path: str
     started_timestamp: str
     mode: str = "test"
-    outcome: CalibrationOutcome = CalibrationOutcome.ERROR
+    outcome: Optional[CalibrationOutcome] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1409,7 +1409,7 @@ class CalibrationWorkflow:
                 logger.info(
                     "Calibration: procedure complete (ok=%s, passed=%s, "
                     "canceled=%s, error=%r, outcome=%s)",
-                    ok, passed, canceled, error, outcome,
+                    ok, passed, canceled, error, outcome.value,
                 )
 
                 result = CalibrationResult(
@@ -1707,7 +1707,7 @@ class CalibrationWorkflow:
                 logger.info(
                     "Test scan: procedure complete (ok=%s, passed=%s, "
                     "canceled=%s, error=%r, outcome=%s)",
-                    ok, passed, canceled, error, outcome,
+                    ok, passed, canceled, error, outcome.value,
                 )
 
                 result = TestScanResult(
