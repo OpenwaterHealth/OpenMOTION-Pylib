@@ -422,6 +422,105 @@ def test_cancel_outcome_is_canceled_not_timed_out(interface, request_obj):
     assert "max_duration_sec" not in holder["r"].error
 
 
+def test_fail_verdict_rolls_back_eeprom(interface, request_obj, thresholds):
+    """A FAILED calibration must not leave the unvalidated calibration on
+    the console: write_calibration is called a second time with the
+    pre-run values and the result reports rolled_back=True."""
+    from dataclasses import replace
+    from omotion.CalibrationWorkflow import CalibrationThresholds
+    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
+    prior = interface.get_calibration()
+    # Snapshot before starting — the demo interface's cached calibration
+    # object could in principle be refreshed by a later write, so compare
+    # against copies taken now rather than re-reading `prior` after the
+    # run completes.
+    prior_c_min = prior.c_min.copy()
+    prior_c_max = prior.c_max.copy()
+    strict = CalibrationThresholds(
+        min_mean_per_camera=[1e9] * 8,      # nothing can pass
+        min_contrast_per_camera=[0.0] * 8,
+        min_bfi_per_camera=[-1e9] * 8,
+        min_bvi_per_camera=[-1e9] * 8,
+    )
+    req = replace(request_obj, thresholds=strict)
+    calls = []
+    def _record_write(cmin, cmax, imin, imax):
+        calls.append((cmin, cmax, imin, imax))
+        return Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
+                           source="test")
+    interface.write_calibration = MagicMock(side_effect=_record_write)
+    done = threading.Event(); holder = {}
+    interface.start_calibration(
+        req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+    assert done.wait(30)
+    r = holder["r"]
+    assert r.ok and not r.passed
+    assert r.rolled_back is True
+    assert len(calls) == 2                       # new write + restore
+    np.testing.assert_array_equal(calls[1][0], prior_c_min)
+    np.testing.assert_array_equal(calls[1][1], prior_c_max)
+
+
+def test_pass_verdict_does_not_roll_back(interface, request_obj):
+    # happy-path arrangement from test_happy_path_produces_csv_and_passes
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+
+    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
+    interface.write_calibration = MagicMock(
+        return_value=Calibration(
+            c_min=np.zeros((2, 8)), c_max=np.full((2, 8), 0.5),
+            i_min=np.zeros((2, 8)), i_max=np.full((2, 8), 200.0),
+            source="console",
+        )
+    )
+
+    done = threading.Event()
+    holder = {}
+    interface.start_calibration(
+        request_obj,
+        on_complete_fn=lambda r: (holder.update(r=r), done.set()),
+    )
+    assert done.wait(timeout=60.0), "calibration didn't complete"
+    assert holder["r"].rolled_back is False
+    interface.write_calibration.assert_called_once()
+
+
+def test_rollback_failure_is_best_effort(interface, request_obj):
+    """If the restore write itself raises (e.g. console USB died), the
+    result still completes, rolled_back stays False, and the error text
+    carries the rollback failure."""
+    # strict thresholds as above; write_calibration succeeds on call 1,
+    # raises RuntimeError("usb gone") on call 2.
+    from dataclasses import replace
+    from omotion.CalibrationWorkflow import CalibrationThresholds
+    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
+    strict = CalibrationThresholds(
+        min_mean_per_camera=[1e9] * 8,      # nothing can pass
+        min_contrast_per_camera=[0.0] * 8,
+        min_bfi_per_camera=[-1e9] * 8,
+        min_bvi_per_camera=[-1e9] * 8,
+    )
+    req = replace(request_obj, thresholds=strict)
+
+    calls = []
+    def _write_side_effect(cmin, cmax, imin, imax):
+        calls.append((cmin, cmax, imin, imax))
+        if len(calls) == 1:
+            return Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
+                               source="test")
+        raise RuntimeError("usb gone")
+    interface.write_calibration = MagicMock(side_effect=_write_side_effect)
+
+    done = threading.Event(); holder = {}
+    interface.start_calibration(
+        req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+    assert done.wait(30)
+    r = holder["r"]
+    assert r.rolled_back is False
+    assert "rollback failed" in r.error
+
+
 def test_watchdog_timeout_outcome_is_timed_out(interface, request_obj):
     from dataclasses import replace
     from omotion.CalibrationWorkflow import CalibrationOutcome

@@ -641,6 +641,7 @@ def write_result_json(
     interface,
     mode: str = "calibrate",
     outcome: str = "",
+    calibration_rolled_back: bool = False,
 ) -> None:
     """Write a self-describing JSON manifest of the calibration run.
 
@@ -671,6 +672,7 @@ def write_result_json(
         "canceled": canceled,
         "error": error,
         "outcome": outcome,
+        "calibration_rolled_back": calibration_rolled_back,
         "operator_id": request.operator_id,
         "notes": request.notes,
         "host": _collect_host_info(),
@@ -1018,6 +1020,9 @@ class CalibrationWorkflow:
             error = ""
             canceled = False
             timed_out = False
+            prior_cal: Optional[Calibration] = None
+            wrote_calibration = False
+            rolled_back = False
 
             logger.info(
                 "Calibration: starting procedure (operator=%s, output_dir=%s, "
@@ -1232,10 +1237,12 @@ class CalibrationWorkflow:
                 _emit_progress("write_calibration")
                 _emit_log("Calibration: writing to console…")
                 logger.info("Calibration phase 3: writing to console EEPROM.")
+                prior_cal = self._interface.get_calibration()
                 cal_obj = self._interface.write_calibration(
                     cal_obj.c_min, cal_obj.c_max,
                     cal_obj.i_min, cal_obj.i_max,
                 )
+                wrote_calibration = True
                 logger.info(
                     "Calibration phase 3 done — calibration written and "
                     "cached (source=%s).", cal_obj.source,
@@ -1335,6 +1342,34 @@ class CalibrationWorkflow:
                     ok=ok, passed=passed, canceled=canceled, timed_out=timed_out,
                 )
 
+                if (
+                    wrote_calibration and prior_cal is not None
+                    and outcome is not CalibrationOutcome.PASSED
+                ):
+                    # The write in phase 3 predates the validation verdict.
+                    # Anything short of PASSED means the new calibration is
+                    # unvalidated — put the previous one back (best-effort;
+                    # the console may be gone).
+                    try:
+                        self._interface.write_calibration(
+                            prior_cal.c_min, prior_cal.c_max,
+                            prior_cal.i_min, prior_cal.i_max,
+                        )
+                        rolled_back = True
+                        _emit_log(
+                            "Calibration: restored previous calibration "
+                            "(run did not pass)."
+                        )
+                        logger.info(
+                            "Calibration: EEPROM rolled back to pre-run values."
+                        )
+                    except Exception as e:
+                        logger.exception("Calibration: EEPROM rollback failed.")
+                        error = (
+                            f"{error}; rollback failed: {e}"
+                            if error else f"rollback failed: {e}"
+                        )
+
                 if cal_obj is not None:
                     logger.info(
                         "Calibration: final calibration on console:\n%s",
@@ -1364,6 +1399,7 @@ class CalibrationWorkflow:
                             "validation_right": val_right,
                         },
                         interface=self._interface,
+                        calibration_rolled_back=rolled_back,
                     )
                     logger.info("Calibration manifest written: %s", json_path)
                 except Exception:
@@ -1386,6 +1422,7 @@ class CalibrationWorkflow:
                     validation_scan_right_path=val_right,
                     started_timestamp=ts,
                     outcome=outcome,
+                    rolled_back=rolled_back,
                 )
                 with self._lock:
                     self._running = False
@@ -1660,6 +1697,7 @@ class CalibrationWorkflow:
                         },
                         interface=self._interface,
                         mode="test",
+                        calibration_rolled_back=False,
                     )
                     logger.info("Test scan manifest written: %s", json_path)
                 except Exception:
