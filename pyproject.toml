@@ -32,6 +32,8 @@ keywords = ["stm32", "fpga", "camera", "usb", "serial", "openmotion"]
 
 [project.optional-dependencies]
 keyboard = ["keyboard>=0.13.5"]
+# Clinical builds only: at-rest encryption for the scan database (SQLCipher).
+encryption = ["sqlcipher3>=0.6", "keyring>=25"]
 dev = [
   "pytest>=8.0",
   "pytest-html>=4.0",

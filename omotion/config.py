@@ -32,7 +32,7 @@ HISTO_BLOCK_SIZE = 1 + (HISTO_SIZE_WORDS * 4) + 1  # HID + HISTO + EOH
 HISTO_BINS: np.ndarray = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
 HISTO_BINS_SQ: np.ndarray = HISTO_BINS * HISTO_BINS
 
-# Full-well capacity of the OV2312 sensor in electrons. Used to compute
+# Full-well capacity of the OX02C1B sensor in electrons. Used to compute
 # ADC gain (DN per electron) for shot-noise correction:
 #   ADC_GAIN = (HISTO_SIZE_WORDS - pedestal) / ELECTRON_WELL_CAPACITY
 ELECTRON_WELL_CAPACITY: int = 11_000
@@ -152,6 +152,15 @@ OW_CMD_HWID = 0x05
 OW_CMD_SERIAL = 0x07
 OW_CMD_I2C_REG_READ = 0x08
 OW_CMD_MESSAGES = 0x09
+# Sensor-module 0x09 (NOT console — there 0x09 is OW_CMD_MESSAGES above). Reports
+# runtime SCB->VTOR so a host can tell bare-metal from bootloader-slot without a
+# DFU cycle. The console equivalent will use a different ID (console-fw #45),
+# since 0x09 is taken there. See openmotion-sensor-fw #110.
+OW_CMD_BOOT_INFO = 0x09
+# Console-module BOOT_INFO. 0x0B because 0x09 is OW_CMD_MESSAGES on the console.
+# Same reply payload as the sensor's, so parse_boot_info covers both. See
+# openmotion-console-fw #45.
+OW_CMD_BOOT_INFO_CONSOLE = 0x0B
 OW_CMD_USR_CFG = 0x0A
 OW_CMD_DFU = 0x0D
 OW_CMD_NOP = 0x0E
@@ -274,7 +283,7 @@ MODULES: int = 2
 """Number of sensor modules per device (left + right)."""
 
 CAMS_PER_MODULE: int = 8
-"""Cameras per sensor module (OV2312 array)."""
+"""Cameras per sensor module (OX02C1B array)."""
 
 CAPTURE_HZ: float = 40.0
 """Histogram capture rate per camera, in Hz."""

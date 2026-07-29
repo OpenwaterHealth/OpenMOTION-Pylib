@@ -37,6 +37,32 @@ def test_output_config_defaults_to_none_when_omitted():
     assert motion.operator_id is None
 
 
+def test_require_encrypted_db_sets_process_policy(monkeypatch):
+    import importlib
+    from omotion import db_key
+
+    importlib.reload(db_key)
+    # avoid the real keyring backend assertion during set_policy
+    monkeypatch.setattr(db_key, "_assert_backend", lambda: None)
+    try:
+        MotionInterface(demo_mode=True, require_encrypted_db=True)
+        assert db_key.require_encryption() is True
+    finally:
+        importlib.reload(db_key)
+
+
+def test_require_encrypted_db_defaults_off():
+    import importlib
+    from omotion import db_key
+
+    importlib.reload(db_key)
+    try:
+        MotionInterface(demo_mode=True)
+        assert db_key.require_encryption() is False
+    finally:
+        importlib.reload(db_key)
+
+
 # ---------------------------------------------------------------------------
 # Trigger-config resolution
 # ---------------------------------------------------------------------------

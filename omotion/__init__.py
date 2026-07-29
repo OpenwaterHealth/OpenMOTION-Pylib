@@ -50,6 +50,9 @@ from .MotionComposite import MotionComposite
 from .USBInterfaceBase import USBInterfaceBase
 from .MotionConfig import MotionConfig
 from .ScanDatabase import ScanDatabase
+# Submodules, not names: db_open.connect() / db_schema.upgrade() read
+# unambiguously where a top-level connect() or upgrade() would not.
+from . import db_key, db_migrate, db_open, db_schema
 from .SessionPlayback import materialize_corrected_csv
 from .Calibration import Calibration
 from .CalibrationWorkflow import (
@@ -59,6 +62,7 @@ from .CalibrationWorkflow import (
     CalibrationThresholds,
 )
 from .connection_state import ConnectionState
+from .boot_mode import BootMode, parse_boot_info
 from .firmware_update import (
     FirmwareKind,
     FirmwareUpdater,
@@ -66,9 +70,15 @@ from .firmware_update import (
     LatestInfo,
     check_latest,
     download_firmware,
+    UnsupportedReleaseError,
     is_update_available,
     parse_version,
+    production_asset,
 )
+# NOTE: omotion.bootloader_install is deliberately NOT imported here. Converting
+# a device to bootloader mode is irreversible over USB, so reaching that code
+# must be a conscious submodule import, not something `from omotion import *`
+# hands you. See tests/test_bootloader_install.py.
 # Top-level handles + interface (deferred until after the leaf modules above
 # so MotionConsole/MotionSensor can do `from omotion import _log_root` during
 # their own module load without hitting the partially-loaded package).
@@ -88,6 +98,10 @@ __all__ = [
     "USBInterfaceBase",
     "MotionConfig",
     "ScanDatabase",
+    "db_key",
+    "db_migrate",
+    "db_open",
+    "db_schema",
     "materialize_corrected_csv",
     "Calibration",
     "CalibrationRequest",
@@ -101,6 +115,10 @@ __all__ = [
     "LatestInfo",
     "check_latest",
     "download_firmware",
+    "BootMode",
+    "parse_boot_info",
+    "UnsupportedReleaseError",
     "is_update_available",
     "parse_version",
+    "production_asset",
 ]

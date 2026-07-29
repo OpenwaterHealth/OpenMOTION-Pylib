@@ -5,7 +5,6 @@ results are in **background-subtracted DN** scale (subtracted_mean), matching
 the legacy ContactQuality module semantics.
 """
 
-import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
@@ -15,44 +14,8 @@ from omotion.ContactQualityWorkflow import (
     ContactQualityResult,
     _ContactQualitySink,
 )
-from omotion.pipeline.batch import FrameBatch
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _dn_batch(
-    n_frames: int,
-    dn_value: float,
-    frame_types=None,
-) -> FrameBatch:
-    """Return a real FrameBatch with uniform DN across all cams.
-
-    The live pipeline delivers one (side, cam) per row, so each logical
-    frame expands to 16 rows (2 sides × 8 cams) sharing the frame_type.
-    Both subtracted_mean and mean_dc_rt get the same value so the test stays
-    valid regardless of which the sink reads for a given frame_type.
-    """
-    if frame_types is None:
-        frame_types = ["light"] * n_frames
-    rows = n_frames * 16
-    cam_ids = np.tile(np.arange(8, dtype=np.int8), n_frames * 2)
-    side_ids = np.tile(np.repeat(np.array([0, 1], dtype=np.int8), 8), n_frames)
-    arr = np.full((rows, 2, 8), dn_value, dtype=np.float32)
-    return FrameBatch(
-        cam_ids=cam_ids,
-        frame_ids=np.tile(np.arange(n_frames, dtype=np.uint8).repeat(16), 1),
-        side_ids=side_ids,
-        raw_histograms=None,
-        temperature_c=None,
-        timestamp_s=np.zeros(rows, dtype=np.float64),
-        pdc=None, tcm=None, tcl=None,
-        frame_type=np.repeat(np.array(frame_types, dtype="<U8"), 16),
-        subtracted_mean=arr,
-        mean_dc_rt=arr.copy(),
-        std_raw=np.full((rows, 2, 8), 2.5, dtype=np.float32),
-    )
+from _cq_helpers import _dn_batch
 
 
 # ---------------------------------------------------------------------------

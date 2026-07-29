@@ -84,7 +84,12 @@ class BfiBviStage:
                 c_span = c_max - c_min
                 i_span = i_max - i_min
 
-                contrast = f.contrast if f.contrast is not None else 0.0
+                # A missing contrast is missing data, not a measured zero:
+                # defaulting to 0.0 put it at C_min, i.e. the calibrated
+                # maximum flow (BFI 10.0 at default calibration). NaN carries
+                # through the affine map below and the sinks store it as NULL
+                # (issue #114).
+                contrast = f.contrast if f.contrast is not None else float("nan")
 
                 if c_span > 0:
                     bfi = (1.0 - (contrast - c_min) / c_span) * 10.0
