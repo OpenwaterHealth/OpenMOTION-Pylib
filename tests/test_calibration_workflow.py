@@ -353,3 +353,107 @@ def test_start_test_scan_uses_collector_sink_and_skip_default_storage(
         assert len(collector_sinks) >= 1, (
             f"Expected a _CalibrationCollectorSink in req.sinks; got {req.sinks}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 2: outcome wired through both workers (Refs #199)
+# ---------------------------------------------------------------------------
+
+def test_happy_path_outcome_is_passed(interface, request_obj):
+    from omotion.CalibrationWorkflow import CalibrationOutcome
+    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
+    interface.write_calibration = MagicMock(
+        side_effect=lambda cmin, cmax, imin, imax: Calibration(
+            c_min=cmin, c_max=cmax, i_min=imin, i_max=imax, source="test"))
+    done = threading.Event()
+    holder = {}
+    interface.start_calibration(
+        request_obj, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+    assert done.wait(30)
+    assert holder["r"].outcome is CalibrationOutcome.PASSED
+
+
+def test_cancel_outcome_is_canceled_not_timed_out(interface, request_obj):
+    """Regression for the old finally-block back-fill that stamped ANY
+    stop_evt as 'exceeded max_duration_sec' when the canceled flag hadn't
+    been picked up by a phase boundary yet."""
+    if not _have_fixtures():
+        pytest.skip("fixture CSVs missing")
+
+    from omotion.CalibrationWorkflow import CalibrationOutcome
+
+    # (mirror the existing test_cancel_during_phase_1 setup, then:)
+    sw = interface.scan_workflow
+    started = threading.Event()
+    cancel_called = threading.Event()
+
+    def _slow_scan(req):
+        sw._running = True
+        sw._last_scan_error = None
+        sw._last_scan_canceled = False
+
+        def _run():
+            started.set()
+            cancel_called.wait(timeout=5.0)
+            sw._last_scan_canceled = True
+            sw._running = False
+
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
+    sw.start_scan = _slow_scan
+    sw.await_complete = lambda *, timeout_sec=None: (
+        time.sleep(min(0.1, timeout_sec)) if timeout_sec else None
+    )
+    sw.cancel_scan = MagicMock(side_effect=lambda **kw: cancel_called.set())
+    interface.write_calibration = MagicMock()
+
+    # ... start_calibration, cancel mid-phase-1, wait for completion ...
+    done = threading.Event()
+    holder = {}
+    interface.start_calibration(
+        request_obj,
+        on_complete_fn=lambda r: (holder.update(r=r), done.set()),
+    )
+    assert started.wait(timeout=5.0)
+    interface.cancel_calibration()
+    assert done.wait(timeout=15.0)
+    assert holder["r"].outcome is CalibrationOutcome.CANCELED
+    assert "max_duration_sec" not in holder["r"].error
+
+
+def test_watchdog_timeout_outcome_is_timed_out(interface, request_obj):
+    from dataclasses import replace
+    from omotion.CalibrationWorkflow import CalibrationOutcome
+    # A fake scan workflow that never completes, and a 1-second watchdog.
+    req = replace(request_obj, max_duration_sec=1)
+
+    # (fake start_scan sets running=True and never flips it back; cancel_scan
+    #  flips running=False so _run_subscan_capture's poll loop exits)
+    sw = interface.scan_workflow
+
+    def _never_completing_scan(r):
+        sw._running = True
+        sw._last_scan_error = None
+        sw._last_scan_canceled = False
+        return True
+
+    def _fake_cancel_scan(**kw):
+        sw._running = False
+        sw._last_scan_canceled = True
+
+    sw.start_scan = _never_completing_scan
+    sw.cancel_scan = MagicMock(side_effect=_fake_cancel_scan)
+    sw.await_complete = lambda *, timeout_sec=None: (
+        time.sleep(min(0.05, timeout_sec)) if timeout_sec else None
+    )
+    interface.write_calibration = MagicMock()
+
+    # ... start_calibration(req, ...), wait ...
+    done = threading.Event()
+    holder = {}
+    interface.start_calibration(
+        req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+    assert done.wait(timeout=15.0)
+    assert holder["r"].outcome is CalibrationOutcome.TIMED_OUT
+    assert "max_duration_sec" in holder["r"].error

@@ -123,45 +123,6 @@ class CalibrationResultRow:
     hwid: str
 
 
-@dataclass
-class CalibrationResult:
-    ok: bool
-    passed: bool
-    canceled: bool
-    error: str
-    csv_path: str
-    json_path: str
-    calibration: Optional[Calibration]
-    rows: list[CalibrationResultRow]
-    calibration_scan_left_path: str
-    calibration_scan_right_path: str
-    validation_scan_left_path: str
-    validation_scan_right_path: str
-    started_timestamp: str
-
-
-@dataclass
-class TestScanResult:
-    """Outcome of a stand-alone Test scan — phase 1 only, no calibration
-    write, no validation scan. Shape mirrors ``CalibrationResult`` so the
-    bloodflow-app's QML layer can re-use the row formatting code, but the
-    fields are scoped to what a test scan actually produces (no
-    ``calibration`` field — Test scans don't write to console EEPROM, no
-    ``validation_scan_*_path`` — there's no validation scan).
-    """
-    ok: bool
-    passed: bool
-    canceled: bool
-    error: str
-    csv_path: str
-    json_path: str
-    rows: list[CalibrationResultRow]
-    test_scan_left_path: str
-    test_scan_right_path: str
-    started_timestamp: str
-    mode: str = "test"
-
-
 class CalibrationOutcome(str, enum.Enum):
     """Single authoritative terminal state of a calibration / test-scan
     procedure. Replaces consumer-side guessing from the ok/passed/
@@ -185,6 +146,48 @@ def _resolve_outcome(
     if not ok:
         return CalibrationOutcome.ERROR
     return CalibrationOutcome.PASSED if passed else CalibrationOutcome.FAILED
+
+
+@dataclass
+class CalibrationResult:
+    ok: bool
+    passed: bool
+    canceled: bool
+    error: str
+    csv_path: str
+    json_path: str
+    calibration: Optional[Calibration]
+    rows: list[CalibrationResultRow]
+    calibration_scan_left_path: str
+    calibration_scan_right_path: str
+    validation_scan_left_path: str
+    validation_scan_right_path: str
+    started_timestamp: str
+    outcome: CalibrationOutcome = CalibrationOutcome.ERROR
+    rolled_back: bool = False   # set by Task 3
+
+
+@dataclass
+class TestScanResult:
+    """Outcome of a stand-alone Test scan — phase 1 only, no calibration
+    write, no validation scan. Shape mirrors ``CalibrationResult`` so the
+    bloodflow-app's QML layer can re-use the row formatting code, but the
+    fields are scoped to what a test scan actually produces (no
+    ``calibration`` field — Test scans don't write to console EEPROM, no
+    ``validation_scan_*_path`` — there's no validation scan).
+    """
+    ok: bool
+    passed: bool
+    canceled: bool
+    error: str
+    csv_path: str
+    json_path: str
+    rows: list[CalibrationResultRow]
+    test_scan_left_path: str
+    test_scan_right_path: str
+    started_timestamp: str
+    mode: str = "test"
+    outcome: CalibrationOutcome = CalibrationOutcome.ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +640,7 @@ def write_result_json(
     scan_paths: dict,
     interface,
     mode: str = "calibrate",
+    outcome: str = "",
 ) -> None:
     """Write a self-describing JSON manifest of the calibration run.
 
@@ -666,6 +670,7 @@ def write_result_json(
         "passed": passed,
         "canceled": canceled,
         "error": error,
+        "outcome": outcome,
         "operator_id": request.operator_id,
         "notes": request.notes,
         "host": _collect_host_info(),
@@ -1012,6 +1017,7 @@ class CalibrationWorkflow:
             passed = False
             error = ""
             canceled = False
+            timed_out = False
 
             logger.info(
                 "Calibration: starting procedure (operator=%s, output_dir=%s, "
@@ -1024,6 +1030,8 @@ class CalibrationWorkflow:
             )
 
             def _watchdog() -> None:
+                nonlocal timed_out
+                timed_out = True
                 self._stop_evt.set()
                 logger.warning(
                     "Calibration watchdog fired after %d sec; aborting.",
@@ -1148,8 +1156,7 @@ class CalibrationWorkflow:
                 flash_ok, flash_err = _flash_sensors()
                 if not flash_ok:
                     error = f"flash phase failed: {flash_err}"
-                    if "canceled" in flash_err:
-                        canceled = True
+                    canceled = self._stop_evt.is_set()   # was: "canceled" in flash_err
                     return
                 logger.info("Calibration phase 0 done: sensors flashed.")
                 if self._stop_evt.is_set():
@@ -1306,13 +1313,27 @@ class CalibrationWorkflow:
                     error = f"{type(e).__name__}: {e}"
             finally:
                 wd.cancel()
-                if self._stop_evt.is_set() and not canceled:
+                # The watchdog is authoritative: if it fired, this run is a
+                # timeout regardless of which phase-boundary check (flash /
+                # scan) already stamped a generic "canceled ..." message —
+                # those messages describe a symptom of the stop_evt the
+                # watchdog itself set, not an independent cancel. Only fall
+                # back to the earlier finally-block guessing (any
+                # unaccounted-for stop_evt is a plain cancel) when the
+                # watchdog did not fire.
+                if timed_out:
+                    canceled = True
+                    error = (
+                        f"calibration exceeded max_duration_sec="
+                        f"{request.max_duration_sec}"
+                    )
+                elif self._stop_evt.is_set() and not canceled:
                     canceled = True
                     if not error:
-                        error = (
-                            f"calibration exceeded max_duration_sec="
-                            f"{request.max_duration_sec}"
-                        )
+                        error = "canceled"
+                outcome = _resolve_outcome(
+                    ok=ok, passed=passed, canceled=canceled, timed_out=timed_out,
+                )
 
                 if cal_obj is not None:
                     logger.info(
@@ -1332,6 +1353,7 @@ class CalibrationWorkflow:
                         passed=passed,
                         canceled=canceled,
                         error=error,
+                        outcome=outcome.value,
                         request=request,
                         rows=rows,
                         calibration=cal_obj,
@@ -1350,8 +1372,8 @@ class CalibrationWorkflow:
 
                 logger.info(
                     "Calibration: procedure complete (ok=%s, passed=%s, "
-                    "canceled=%s, error=%r)",
-                    ok, passed, canceled, error,
+                    "canceled=%s, error=%r, outcome=%s)",
+                    ok, passed, canceled, error, outcome,
                 )
 
                 result = CalibrationResult(
@@ -1363,6 +1385,7 @@ class CalibrationWorkflow:
                     validation_scan_left_path=val_left,
                     validation_scan_right_path=val_right,
                     started_timestamp=ts,
+                    outcome=outcome,
                 )
                 with self._lock:
                     self._running = False
@@ -1423,6 +1446,7 @@ class CalibrationWorkflow:
             passed = False
             error = ""
             canceled = False
+            timed_out = False
 
             logger.info(
                 "Test scan: starting (operator=%s, output_dir=%s, "
@@ -1435,6 +1459,8 @@ class CalibrationWorkflow:
             )
 
             def _watchdog() -> None:
+                nonlocal timed_out
+                timed_out = True
                 self._stop_evt.set()
                 logger.warning(
                     "Test-scan watchdog fired after %d sec; aborting.",
@@ -1521,8 +1547,7 @@ class CalibrationWorkflow:
                 flash_ok, flash_err = _flash_sensors()
                 if not flash_ok:
                     error = f"flash phase failed: {flash_err}"
-                    if "canceled" in flash_err:
-                        canceled = True
+                    canceled = self._stop_evt.is_set()   # was: "canceled" in flash_err
                     return
                 if self._stop_evt.is_set():
                     canceled = True
@@ -1597,13 +1622,23 @@ class CalibrationWorkflow:
                     error = f"{type(e).__name__}: {e}"
             finally:
                 wd.cancel()
-                if self._stop_evt.is_set() and not canceled:
+                # See the calibration worker's identical comment: the
+                # watchdog is authoritative — if it fired, this run is a
+                # timeout regardless of which phase-boundary check already
+                # stamped a generic "canceled ..." message.
+                if timed_out:
+                    canceled = True
+                    error = (
+                        f"test scan exceeded max_duration_sec="
+                        f"{request.max_duration_sec}"
+                    )
+                elif self._stop_evt.is_set() and not canceled:
                     canceled = True
                     if not error:
-                        error = (
-                            f"test scan exceeded max_duration_sec="
-                            f"{request.max_duration_sec}"
-                        )
+                        error = "canceled"
+                outcome = _resolve_outcome(
+                    ok=ok, passed=passed, canceled=canceled, timed_out=timed_out,
+                )
 
                 try:
                     json_path = os.path.join(
@@ -1615,6 +1650,7 @@ class CalibrationWorkflow:
                         passed=passed,
                         canceled=canceled,
                         error=error,
+                        outcome=outcome.value,
                         request=request,
                         rows=rows,
                         calibration=None,
@@ -1632,8 +1668,8 @@ class CalibrationWorkflow:
 
                 logger.info(
                     "Test scan: procedure complete (ok=%s, passed=%s, "
-                    "canceled=%s, error=%r)",
-                    ok, passed, canceled, error,
+                    "canceled=%s, error=%r, outcome=%s)",
+                    ok, passed, canceled, error, outcome,
                 )
 
                 result = TestScanResult(
@@ -1643,6 +1679,7 @@ class CalibrationWorkflow:
                     test_scan_left_path=test_left,
                     test_scan_right_path=test_right,
                     started_timestamp=ts,
+                    outcome=outcome,
                 )
                 with self._lock:
                     self._running = False
