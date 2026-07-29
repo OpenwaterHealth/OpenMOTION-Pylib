@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
 """
-nvcm_probe.py - Detect whether a CrossLink FPGA's NVCM has been programmed.
+nvcm_probe.py - Detect whether a CrossLink FPGA boots a working NVCM design.
 
-Talks to ONE camera (default: camera 8 on the left sensor) and reads every NVCM
-discriminator directly over I2C via the firmware OW_FACTORY_NVCM_CHECK command.
-This never boots the FPGA and never toggles camera power beyond a single standard
-power-on, so it can't upset the TCA9548A mux.
+Talks to ONE camera (default: camera 8 on the left sensor) via the firmware
+OW_FACTORY_NVCM_CHECK command and dumps every register discriminator for the
+record. The *verdict*, however, comes from the pin-drive boot byte that
+sensor-fw#92 appends to the blob (1 = NVCM design booted, 0 = no boot,
+0xFF = camera unpowered): the register reads cannot answer the programmed
+question — STATUS bit 19 ("SDM Enable") only mirrors the NVCM Done fuse, and
+a part can have the fuse burned yet never boot (openmotion-test-app#44,
+2026-07-17). bit19=1 with no boot is reported explicitly as
+burned-but-unbootable: that OTP part can never be NVCM-flashed bootable.
+
+On firmware without the trailing byte (pre sensor-fw#92) the script falls
+back to the behavioral timing test: OW_FPGA_RESET (clears the firmware's
+isProgrammed cache) then a timed non-forced program - the firmware's own
+pin test skips in ~0.1 s when NVCM boots and SRAM-loads for ~13 s when it
+does not. NOTE: the fallback SRAM-loads a non-booting part (same state a
+scan leaves it in); pass --no-fallback to skip it.
 
 Flow:
-  connect left -> debug flags (USB printf + cmd verbose) -> power on camera
-  -> switch_camera (routes TCA mux) -> nvcm_check -> parse + interpret.
+  connect -> debug flags (USB printf + cmd verbose) -> power on camera
+  -> switch_camera (routes TCA mux) -> nvcm_check -> parse + interpret
+  -> [no verdict byte] reset + timed program fallback.
 
 Usage:
-  python scripts/nvcm_probe.py                 # camera 8, NVCM mode, 1 row
+  python scripts/nvcm_probe.py                 # camera 8, left sensor
+  python scripts/nvcm_probe.py --sensor right --camera 3
   python scripts/nvcm_probe.py --rows 4        # read 4 NVCM array rows
   python scripts/nvcm_probe.py --operand 0x00  # try SRAM access mode instead
-  python scripts/nvcm_probe.py --no-power      # don't power-cycle, assume powered
+  python scripts/nvcm_probe.py --no-power      # don't power on, assume powered
+  python scripts/nvcm_probe.py --no-fallback   # old FW: skip reset+program
 """
 
 import argparse
@@ -75,6 +90,10 @@ def parse_blob(blob: bytes) -> dict:
             rows.append(blob[off:off + 16])
             off += 16
     d["nvcm_rows"] = rows
+    # sensor-fw#92 appends the pin-drive boot verdict after the rows:
+    # 1 = NVCM design booted, 0 = no boot, 0xFF = probe refused (unpowered).
+    # Absent on older firmware.
+    d["boot_verdict"] = blob[off] if len(blob) > off else None
     return d
 
 
@@ -102,50 +121,110 @@ def interpret(d: dict) -> None:
         print(f"    row{i}: {_hex(row)}")
 
     # ---- signals -------------------------------------------------------
-    # NOTE: the content reads (feature_row / NVCM array) come back as floating
-    # 0xFF on this part because a bare ISC_ENABLE 0x08 doesn't read-enable the
-    # NVCM array — they are NOT trustworthy.  The auto-boot test is NOT a
-    # discriminator either: the I2C config port at 0x40 only responds after
-    # receiving the activation key, so it never ACKs after a key-less CRESETB
-    # release regardless of NVCM state — it read "programmed" for blank parts
-    # (openmotion-test-app#44; sensor-fw commit c40a6b4).  The reliable signal
-    # is STATUS bit 19 (BE word 0x00080000): bench-verified 2026-07-02 on a
-    # 16-camera blind sweep — all 15 programmed cameras read 00 08 02 08,
-    # the known blank read 00 00 02 08.  The SRAM Done bit (bit 8) is NOT
-    # usable: the ISC probe flow holds the part unconfigured, so it reads 0
-    # on every camera regardless of NVCM state.
+    # NOTE: none of the register reads can answer "is it programmed":
+    #  - STATUS bit 19 ("SDM Enable") only mirrors the NVCM Done *fuse* — a
+    #    part can have the fuse burned yet never boot (openmotion-test-app#44,
+    #    right cam 8, 2026-07-17). Fuse info only.
+    #  - The content reads (feature_row / NVCM array) float 0xFF because a
+    #    bare ISC_ENABLE 0x08 doesn't read-enable the NVCM array.
+    #  - The 0x40 auto-boot test carries no signal: the config port needs the
+    #    activation key, so 0x40 never ACKs after a key-less release.
+    #  - The SRAM Done bit (bit 8) reads 0 in this ISC flow on every part.
+    # The verdict is the appended pin-drive boot byte (sensor-fw#92): the
+    # firmware releases CRESETB without the key and checks the booted design
+    # drives the camera-bus pins — the same test the scan path trusts.
     featrow_real = any(d["feature_row"]) and not all(b == 0xFF for b in d["feature_row"])
     usercode_nz = any(d["usercode"])
     nvcm_real = any(any(b for b in r if b != 0xFF) for r in d["nvcm_rows"])
-    prog_bit = bool((s_msb >> 19) & 1)  # STATUS bit 19 — NVCM-programmed discriminator
+    fuse_bit = bool((s_msb >> 19) & 1)  # STATUS bit 19 — Done-fuse mirror only
     status_read = bool(d["step_status"] & (1 << 3))  # FPGA_NVCM_STEP_STATUS
+    boot_verdict = d["boot_verdict"]
 
     print("\n  --- signals ---")
-    print(f"    [primary] status bit 19  : {prog_bit}")
-    print(f"    boot test ran             : {bool(boot_done)}  (informational "
-          "only — 0x40 never ACKs without the activation key)")
-    print(f"    0x40 after boot           : {'ACKs' if boot_ack else 'no ACK'}")
+    print(f"    [primary] pin-drive boot  : "
+          f"{'<absent — pre-#92 firmware>' if boot_verdict is None else boot_verdict}")
+    print(f"    Done fuse (bit19 SDM En.) : {fuse_bit}  (fuse state only — "
+          "NOT bootability)")
+    print(f"    0x40 after boot test      : {'ACKs' if boot_ack else 'no ACK'}"
+          f"  (ran={bool(boot_done)}; carries no signal)")
     print(f"    feature_row real (non-FF) : {featrow_real}")
     print(f"    usercode    != 0          : {usercode_nz}")
     print(f"    nvcm row real (non-FF)    : {nvcm_real}")
 
     print()
-    if d["idcode_ok"] != 1:
-        print("  VERDICT: INCONCLUSIVE — IDCODE mismatch; config port not "
-              "answering in forced config mode. Check power / mux / CRESETB.")
-    elif not status_read:
-        print("  VERDICT: INCONCLUSIVE — STATUS register read failed; the Done "
-              "bit could not be sampled.")
-    elif prog_bit:
-        print("  VERDICT: *** NVCM PROGRAMMED *** -- STATUS bit 19 is set "
-              "(empirical NVCM-programmed discriminator; programmed parts "
-              "read 00 08 02 08, blanks 00 00 02 08).")
-        if featrow_real or nvcm_real or usercode_nz:
-            print("  (corroborated by a non-blank content read)")
+    verdict = None
+    # The behavioral pin probe outranks the register reads: it stays valid
+    # even when the ISC port is wedged (idcode_ok=0 — seen on the
+    # burned-but-unbootable part after a boot attempt).
+    if boot_verdict == 1:
+        print("  VERDICT: *** NVCM PROGRAMMED *** — the NVCM design booted "
+              "and drove the camera bus (firmware pin probe).")
+        verdict = "PROGRAMMED"
+    elif boot_verdict == 0 and fuse_bit and status_read:
+        print("  VERDICT: NOT BOOTABLE — the Done fuse is burned (STATUS "
+              "bit 19) but the image does NOT boot. This OTP part can never "
+              "be NVCM-flashed to a bootable state; it needs SRAM loads (or "
+              "replacement) permanently.")
+        verdict = "NOT BOOTABLE"
+    elif boot_verdict == 0:
+        print("  VERDICT: BLANK — no NVCM boot (firmware pin probe)."
+              + ("" if status_read else "  (STATUS read failed, so the Done "
+                 "fuse state is unknown — blank vs burned-but-unbootable "
+                 "undetermined.)"))
+        verdict = "BLANK"
+    elif boot_verdict == 0xFF:
+        print("  VERDICT: INCONCLUSIVE — firmware refused the boot probe "
+              "(camera not powered?).")
+        verdict = "INCONCLUSIVE"
+    elif boot_verdict is not None:
+        print(f"  VERDICT: INCONCLUSIVE — unexpected pin-probe byte "
+              f"0x{boot_verdict:02X}.")
+        verdict = "INCONCLUSIVE"
+    elif d["idcode_ok"] != 1:
+        print("  VERDICT: INCONCLUSIVE — no pin-probe byte AND the IDCODE "
+              "read failed; config port not answering in forced config "
+              "mode. Check power / mux / CRESETB.")
+        verdict = "INCONCLUSIVE"
     else:
-        print("  VERDICT: BLANK -- STATUS bit 19 is clear: NVCM is not "
-              "programmed.")
+        print("  NO VERDICT from this probe: firmware predates sensor-fw#92 "
+              "(no pin-drive byte in the blob). Running the reset + timed "
+              "program fallback unless --no-fallback was given.")
     print("==================================================\n")
+    return verdict
+
+
+# Elapsed-time split for the fallback: NVCM skip ~0.1 s vs SRAM load >10 s
+# (bench 2026-07-17: 0.11 s vs 12.5-13.9 s).
+SRAM_LOAD_THRESHOLD_S = 2.0
+
+
+def fallback_boot_probe(sensor, cam_idx: int, fuse_bit: bool) -> None:
+    """Pre-#92 firmware: behavioral timing test via the firmware's own
+    detector. SRAM-loads the FPGA when NVCM does not boot (the state a scan
+    leaves it in)."""
+    mask = 1 << cam_idx
+    print("Fallback: OW_FPGA_RESET + timed non-forced program "
+          "(SRAM-loads the part if NVCM does not boot)...")
+    reset_ok = sensor.reset_camera_sensor(mask)
+    if not reset_ok:
+        print("  VERDICT: INCONCLUSIVE — OW_FPGA_RESET failed "
+              "(camera absent/unpowered?)")
+        return
+    t0 = time.perf_counter()
+    prog_ok = sensor.program_fpga(mask, False)
+    dt = time.perf_counter() - t0
+    if not prog_ok:
+        print(f"  VERDICT: INCONCLUSIVE — programming failed after {dt:.1f} s")
+    elif dt < SRAM_LOAD_THRESHOLD_S:
+        print(f"  VERDICT: *** NVCM PROGRAMMED *** — firmware skipped the "
+              f"SRAM load ({dt:.2f} s): its pin test saw the design boot.")
+    elif fuse_bit:
+        print(f"  VERDICT: NOT BOOTABLE — firmware SRAM-loaded the FPGA "
+              f"({dt:.1f} s) although the Done fuse is burned (STATUS "
+              "bit 19): burned-but-unbootable OTP part.")
+    else:
+        print(f"  VERDICT: BLANK — firmware SRAM-loaded the FPGA ({dt:.1f} s); "
+              "NVCM did not boot and the Done fuse is not burned.")
 
 
 def main():
@@ -161,6 +240,10 @@ def main():
                     help="skip power-on (assume the camera is already powered)")
     ap.add_argument("--no-boot-test", action="store_true",
                     help="skip the auto-boot 0x40-disappearance test")
+    ap.add_argument("--no-fallback", action="store_true",
+                    help="on pre-#92 firmware (no pin-drive byte), skip the "
+                         "reset + timed-program fallback (which SRAM-loads "
+                         "non-booting parts)")
     ap.add_argument("--verbose", action="store_true",
                     help="show all SDK debug logging")
     args = ap.parse_args()
@@ -218,7 +301,16 @@ def main():
 
         print(f"raw response ({len(blob)} bytes): {_hex(blob)}")
         d = parse_blob(blob)
-        interpret(d)
+        verdict = interpret(d)
+        if verdict is None and d["boot_verdict"] is None:
+            if args.no_fallback:
+                print("(--no-fallback: skipping the reset + timed-program "
+                      "boot test; no verdict.)")
+            else:
+                s_msb = int.from_bytes(d["status"], "big")
+                fuse_bit = (bool((s_msb >> 19) & 1)
+                            and bool(d["step_status"] & (1 << 3)))
+                fallback_boot_probe(sensor, cam_idx, fuse_bit)
     finally:
         iface.stop()
 

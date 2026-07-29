@@ -315,14 +315,54 @@ schema migrations only ever ADD columns), but readers should know:
   without the column; inserts name their columns explicitly so both layouts
   accept writes.
 
-## Notes on schema evolution
+## Schema versioning and migrations
 
-There is no schema version column yet. When a forward-incompatible schema
-change becomes necessary, the convention will be to write a `schema_version`
-key into `database_settings` and have `ScanDatabase._init_schema()` perform a
-guarded migration. Until then, existing DBs are safely opened by current
-code — the `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`
-clauses make every open idempotent.
+The schema version lives in **`PRAGMA user_version`** and migrations are
+registered in [`omotion/db_schema.py`](../omotion/db_schema.py).
+`ScanDatabase._init_schema()` calls `db_schema.upgrade()` on every open, so **a
+database written by an older SDK is migrated in place the first time newer code
+opens it** — that is how an app update applies a schema change. A database
+already at the current version costs one `PRAGMA` read and writes nothing, so
+read-only and archived databases still open.
+
+Each migration runs in its own transaction together with its version bump, so an
+interrupted update leaves the database at the last fully-applied version rather
+than half-migrated. A database from a *newer* SDK raises `SchemaTooNewError`
+rather than being opened and written by code that does not understand it.
+
+> An earlier draft of this doc proposed a `schema_version` key in
+> `database_settings`. `PRAGMA user_version` was chosen instead: it is readable
+> before any table exists (so it works for a brand-new file), it is transactional
+> with the DDL in the same transaction, and it does not depend on a table that
+> might itself need migrating. Note `assert_writable()` also rewrites
+> `user_version` to its current value as a no-op write probe — that is
+> compatible, since it never changes the value.
+
+**Adding a migration** (see the module docstring for the full checklist):
+
+1. Write `_migration_00N_<name>(conn)` using individual `conn.execute()` calls.
+   **Never use `executescript` inside a migration** — it issues an implicit
+   `COMMIT`, which breaks the surrounding transaction and the all-or-nothing
+   guarantee.
+2. Append `(N, "description", fn)` to `MIGRATIONS` and bump `SCHEMA_VERSION`.
+3. Write it defensively (`IF NOT EXISTS`, `_add_column_if_missing`) — databases
+   in the field predate versioning and report version 0 while already carrying
+   the v1 schema, so migration 1 must be a no-op on them.
+
+**Only real, used schema belongs in `MIGRATIONS`.** Every entry lands in every
+database in the field permanently, so an unused table or column becomes debt
+that cannot be cleanly removed. The registry currently holds only the baseline
+migration; the runner is verified in `tests/test_db_schema.py` two ways — against
+a **synthetic** migration registered by monkeypatch (adds a table and alters an
+existing one), and against a **checked-in legacy database**,
+`tests/fixtures/legacy_scans_v0.db`. That fixture is a real pre-versioning,
+pre-`frame_id` scan DB (regenerate with
+`python tests/fixtures/generate_legacy_scan_db.py`), so the upgrade is exercised
+against a genuine on-disk file rather than one synthesized in the test. It is
+frozen on purpose and copied before use — never migrated in place.
+
+Migrations apply identically to encrypted databases (clinical builds); SQLCipher
+is stock SQLite above the cipher layer.
 
 #### #92 Step F: `session_data.frame_id`
 

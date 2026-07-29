@@ -317,6 +317,31 @@ def _full_thresholds(*, max_dark_per_camera=None):
     )
 
 
+def test_c_max_uses_average_of_ratios_not_ratio_of_averages():
+    """c_max is a time-averaged contrast and must use average-of-ratios
+    (mean of per-frame std/mean), never ratio-of-averages
+    (mean(std) / mean(mean)). See issue #148.
+
+    Two frames on one camera with different per-frame mean and contrast
+    make the two estimators disagree:
+      * average-of-ratios = mean(0.5, 0.3)              = 0.40
+      * ratio-of-averages = mean(50, 90) / mean(100, 300) = 0.35
+    """
+    from omotion.CalibrationWorkflow import _compute_calibration_from_samples
+
+    samples = [
+        _light("left", 0, mean=100.0, contrast=0.5, frame_id=10),
+        _light("left", 0, mean=300.0, contrast=0.3, frame_id=11),
+    ]
+    cal = _compute_calibration_from_samples(
+        samples,
+        left_camera_mask=0x01,
+        right_camera_mask=0x00,
+    )
+    assert cal.c_max[0, 0] == pytest.approx(0.40)          # average-of-ratios
+    assert cal.c_max[0, 0] != pytest.approx(0.35)          # not ratio-of-averages
+
+
 def test_dark_test_pass_when_below_threshold():
     light = [_light(side, 0) for side in ("left", "right")]
     dark = [_dark(side, 0, mean=1.0) for side in ("left", "right")]

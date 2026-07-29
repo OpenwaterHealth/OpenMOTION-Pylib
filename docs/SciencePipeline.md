@@ -79,7 +79,7 @@ Three things characterise this design and make it auditable:
 | `mean_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | `mean_raw − û₁` (best-effort dark-subtracted mean) |
 | `std_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | √(std_raw² − σ̂²) (best-effort dark-subtracted std) |
 | `std_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | std after Poisson shot-noise removal |
-| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, 0 where mean ≤ 0 |
+| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, **NaN** where mean ≤ 0 or non-finite (no measurement — see §5.8) |
 | `bfi_live` | `(N, 2, 8)` float32 | BfiBviStage | BFI from realtime corrected (K, μ₁) via calibration |
 | `bvi_live` | `(N, 2, 8)` float32 | BfiBviStage | BVI from realtime corrected mean via calibration |
 | `events` | `list[BatchEvent]` | Stages append | Out-of-band events: `LiveEmit`, `IntervalClosed`, diagnostics. Reduced-mode side averages ride here too: realtime as `LiveEmit(channel="live_side", SideAverageSample)`, corrected as synthetic `IntervalClosed` intervals whose frames carry `cam_id=-1` (see §5.10) |
@@ -140,9 +140,9 @@ Tee("live", filter=ft not in {"warmup","stale"})
 
 ## 4. Hardware context
 
-- **Cameras:** up to 8 OV2312 cameras per sensor module, up to 2 sensor modules (left + right), 16 cameras max.
+- **Cameras:** up to 8 OX02C1B cameras per sensor module, up to 2 sensor modules (left + right), 16 cameras max.
 - **Frame rate:** 40 Hz, frame sync controlled by the console MCU.
-- **Histogram:** 1024 bins per camera per frame, 32-bit counts. The expected total count per valid frame is **2,457,606** (= 1920 × 1280 pixels + 6 sentinel counts), validated as `EXPECTED_HISTOGRAM_SUM` in `omotion/MotionProcessing.py`. Frames whose sum does not match are dropped by the parser before they ever reach the pipeline.
+- **Histogram:** 1024 bins per camera per frame, 32-bit counts. A valid frame's bin sum equals its pixel count plus a constant 6-count sentinel — **2,457,606** for the full 1920 × 1280 frame, or **2,201,606** for the debug-cropped 1720 × 1280 frame (`DEBUG_FLAG_CAMERA_CROP`, sensor-fw #86). The parser validates against the set `EXPECTED_HISTOGRAM_SUMS` in `omotion/MotionProcessing.py` (`EXPECTED_HISTOGRAM_SUM` remains the full-frame single value); frames matching none of the valid totals are dropped before they reach the pipeline. Science moments are normalized by the per-frame pixel count, so they are unaffected by which geometry is streaming.
 - **Dark frame protocol:** the firmware deterministically cuts laser illumination on a fixed schedule (see §5.2). The pipeline never has to infer dark/light from the data.
 - **Frame ID:** each histogram packet carries an 8-bit rolling counter (0–255). The pipeline unwraps this per `(side, cam_id)` pair (§5.1).
 - **Pedestal:** the camera-reported value at zero illumination. Per-side, firmware-version-keyed: 64.0 DN for sensor firmware ≤ 1.5.2, 128.0 DN after. `omotion/pipeline/pedestal.py` resolves this from the connected sensors at scan start (`SensorPedestals.from_sensors(left, right)`).
@@ -354,16 +354,31 @@ For one corrected frame `f`:
 
 ```
 g_cam         = CAMERA_GAIN_MAP[cam_id % 8]
-shot_var      = ADC_GAIN · max(0, f.mean) · g_cam
-corr_var      = max(0, f.std² − shot_var)
-shot_std      = √corr_var
 
-contrast      = shot_std / f.mean       if f.mean > 0 else 0
+if not isfinite(f.mean):                          # no measurement — NaN-fill row
+    f.std, contrast = NaN, NaN                    # (see "invalid input" below)
+else:
+    shot_var  = ADC_GAIN · max(0, f.mean) · g_cam
+    corr_var  = f.std² − shot_var
+    if corr_var < 0:                              # below the Poisson floor
+        f.std, contrast = NaN, NaN                # speckle var unresolvable
+    else:
+        shot_std  = √corr_var
+        contrast  = shot_std / f.mean   if f.mean > 0 else NaN
+
 bfi           = (1 − (contrast − c_min) / (c_max − c_min)) · 10
 bvi           = (1 − (f.mean   − i_min) / (i_max − i_min)) · 10
 ```
 
-When `c_min == c_max` (degenerate calibration), the fallback is identity scaling: `bfi = contrast · 10`, `bvi = mean · 10`. Constants:
+When `c_min == c_max` (degenerate calibration), the fallback is identity scaling: `bfi = contrast · 10`, `bvi = mean · 10`.
+
+**Invalid input never becomes a finite reading.** A frame with no usable signal yields `contrast = NaN`, so `bfi` and `bvi` come out NaN and `ScanDBSink` stores them as NULL. Three distinct inputs reach that state:
+
+1. a NaN-fill row standing in for a dropped frame (non-finite mean),
+2. a covered / signal-starved camera whose dark-subtracted mean is `≤ 0`,
+3. a frame whose measured variance falls **below the Poisson floor** (`f.std² < shot_var`). That is unphysical — the speckle variance cannot be resolved, so it is reported unresolvable rather than clamped to zero.
+
+Case 3 matters as much as the other two: clamping to `√0 = 0` produced `contrast = 0.0` from a *positive* mean, sailing past any `mean <= 0` guard. On a pitch-dark bench scan (fiber unplugged, 9456 corrected frames) cases 1+2 accounted for 3200 frames and case 3 for a further **4151** — 44% of the scan reported as maximal flow. Emitting `0.0` instead (as the batch path did before issue #114) placed the frame at `C_min`, i.e. the *calibrated maximum*: `bfi = (1 + c_min/c_span) · 10` — 10.0 at default calibration, indistinguishable from real top-of-scale flow and silently averaged into the reduced-mode side average by `SideAverageStage`'s `nanmean`. A *measured* contrast of exactly 0 is still a real observation and still maps to BFI 10.0; only missing/undefined values are NaN. Constants:
 
 | Symbol | Value | Defined in |
 |---|---|---|
@@ -428,10 +443,12 @@ Vectorised Poisson-variance subtraction on the realtime path. Operates on `mean_
 ```
 var          = std_dc_rt²
 shot_var     = ADC_GAIN · max(0, mean_dc_rt) · gain_map           # broadcast (1, 1, 8)
-corr_var     = max(0, var − shot_var)
-std_sn_rt    = √corr_var
-contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, 0)
+corr_var     = var − shot_var
+std_sn_rt    = where(corr_var < 0, NaN, √max(0, corr_var))        # below Poisson floor → unresolvable
+contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, NaN)
 ```
+
+`mean_dc_rt > 0` is False for NaN as well as for a non-positive mean, so a frame that never arrived and a camera with no signal above its dark baseline both fall through to NaN — contrast is undefined, not zero (§5.7.5).
 
 `ADC_GAIN` and `CAMERA_GAIN_MAP` are the same constants used in the batched enrichment (§5.7.5). After dark subtraction the remaining variance still contains photon shot noise; subtracting the expected shot-noise contribution isolates the speckle variance, yielding a contrast `K̃` that is independent of mean photon flux. Without this correction, higher-intensity frames would appear to have artificially lower contrast.
 
@@ -479,7 +496,7 @@ Sinks subscribe to channels by declaring a `channels: set[str]` attribute. The r
 | Channel | Payload | Cadence | Source | Typical consumers |
 |---|---|---|---|---|
 | `"raw"` | `FrameBatch` (full, including warmup) | Per batch (~10–100 frames) | `Tee("raw")` | `CsvSink` (raw per-cam CSV — **the only raw record**; the scan DB does not store raw histograms) |
-| `"live"` | `FrameBatch` (excluding warmup/stale) | Per batch | `Tee("live")` | bloodflow-app `_LivePlotSink` (realtime per-frame plot — later overwritten by `"final"` corrections, see §8.3), `ContactQualityWorkflow._ContactQualitySink` (DN thresholding), `CalibrationWorkflow._CalibrationCollectorSink` (dark frames) |
+| `"live"` | `FrameBatch` (excluding warmup/stale) | Per batch | `Tee("live")` | bloodflow-app `_LivePlotSink` (realtime per-frame plot — later overwritten by `"final"` corrections, see §8.3), `ContactQualityWorkflow._ContactQualitySink` (DN thresholding), `ContactQualityMonitor` (live per-camera edge detection, see §11.3), `CalibrationWorkflow._CalibrationCollectorSink` (dark frames) |
 | `"live_side"` | `SideAverageSample` | Per capture per side (reduced mode only) | `SideAverageStage` (realtime path) | bloodflow-app `_LivePlotSink` (reduced-mode live trace) |
 | `"final"` | `EnrichedCorrectedInterval` | Per closed dark interval (~1 per `dark_interval/40` seconds; default ~15 s) | `IntervalClosed` from `DarkCorrectionStage` (per-camera; enriched + stencilled by downstream stages) and `SideAverageStage` (reduced-mode `cam_id=-1` side averages) | `CsvSink` (corrected CSV), `ScanDBSink` (`session_data` — the DB's only science record), bloodflow-app `_FinalBatchSink` (overwrites the realtime points plotted from `"live"` with interval-corrected BFI/BVI/mean/contrast), `CalibrationWorkflow` (corrected light samples) |
 | `"diagnostics"` | `DarkIntegrityWarning`, `StencilFallback`, `TerminalDarkResult`, `PipelineError`, `TriggerStateEvent` | As they occur | Stages append to `batch.events`; the runner also routes out-of-band events here | `DiagnosticsLogSink` (always injected — WARNING logs + scan-end summary), `ScanDBSink` (integrity summary → `session_meta`), bloodflow-app `_TriggerStateSink` |
@@ -680,7 +697,7 @@ If any stage raises mid-scan, the runner **drops that batch and preserves all st
 
 ## 11. Example consumers
 
-Two SDK-internal consumers illustrate the pattern.
+Three SDK-internal consumers illustrate the pattern.
 
 ### 11.1 CalibrationWorkflow — light + dark collection
 
@@ -698,9 +715,36 @@ After the scan, the workflow drains the sink's `corrected_samples` and `dark_sam
 - For `frame_type == "dark"` rows, tracks the per-camera maximum `subtracted_mean` (= `max(0, mean_raw − pedestal)`). Baseline is the zero-light pedestal; this measures ambient light leaking onto the sensor — the right quantity for the **AMBIENT_LIGHT** gate.
 - For all other non-warmup/non-stale rows (light frames), maintains a per-camera rolling deque (default 10 samples) of `mean_dc_rt` (= `mean_raw − predicted_dark_baseline`). Baseline is the just-measured dark, not the pedestal; this measures actual laser-driven signal strength — the right quantity for the **POOR_CONTACT** gate. Early light frames before the first dark observation have `mean_dc_rt = NaN` (predictor returned `None`) and are skipped; the window fills up once the first dark lands.
 
-After the scan, `result()` evaluates per camera: `no_signal` if no light samples were collected, `ambient_light` if the dark-frame max exceeds the per-cam dark threshold, `poor_contact` if the rolling light average falls below the per-cam light threshold, else `ok`. The verdict is rolled up into `ContactQualityResult.passed`.
+After the scan, `result()` evaluates per camera: `no_signal` if no light samples were collected, `ambient_light` if the dark-frame max exceeds the per-cam dark threshold, `poor_contact` if the rolling light average falls below the per-cam light threshold, else `ok`. The verdict is rolled up into `ContactQualityResult.passed`. This verdict logic is not open-coded here — `result()` delegates to `evaluate_reason` in `omotion/contact_quality.py` (§11.3), the same module `ContactQualityMonitor` shares its two threshold predicates with.
 
-Both consumers are pure sinks — they add no pipeline stages, do not modify FrameBatch fields, and can be turned off by simply not constructing them.
+### 11.3 ContactQualityMonitor — live per-camera edge detection
+
+`omotion/contact_quality.py` defines `ContactQualityMonitor` with `channels = {"live"}`. It shares `is_ambient_light` and `is_poor_contact` — the same two predicates `_ContactQualitySink` now applies through `evaluate_reason` (§11.2) — so the *ambient-light* and *poor-contact* verdicts cannot drift apart between the preflight check and the live monitor. That is a guarantee about threshold semantics, not about always agreeing at a given instant: accumulation (below) and debouncing mean a camera can legitimately read differently between the two consumers at any one moment.
+
+**The light path is a three-way read, not a two-way one.** A finite `mean_dc_rt` is thresholded normally — rolling-window average against `is_poor_contact`, same as the one-shot check. A non-finite `mean_dc_rt` means one of two structurally different things, and `DarkCorrectionStage` tells them apart via `batch.low_light_rt`:
+
+- **No dark observed yet for this camera** (`low_light_rt = False`) — the realtime predictor has no history to predict from (or the row is warmup/stale and never reaches this code at all), so there is no baseline to subtract and no measurement exists. This is frame/history loss, not a contact-quality condition; the row is skipped and left to the consumer's camera-dropout watchdog.
+- **The frame arrived and was unlit** (`low_light_rt = True`) — `DarkCorrectionStage` classifies a light-typed frame as `dark_like` when `u1 <= pedestal + max_above_pedestal` (the same guard `DarkIntegrityGuard` applies to actual dark frames, §5.7.1), and when that holds it never calls the realtime predictor at all — `mean_dc_rt` stays at its NaN fill by construction, not by a per-frame decision. A covered sensor, a lifted sensor, or a decoupled fiber all present this way. The monitor reports it as `poor_contact` unconditionally.
+
+Treating the two alike inverts the detection window this feature exists for: a signal that's merely weak (still finite, still run through the threshold) would warn, while a signal that's completely gone (`low_light_rt = True`, the strictly worse case) would fall through the same silent-skip branch as a frame that hasn't arrived yet. That gap was a real defect caught in review against bloodflow-app #364 — the disconnected-fiber report this distinction exists to catch. The two cases can't be confused with each other because `dark_like` (stored as `low_light_rt`) is computed from the frame's own raw `u1` *before* the predictor is ever consulted, and it's that same flag which gates whether the predictor runs (`if not dark_like: pred = self._realtime.predict(...)`). A frame with no dark history yet still carries a real, measured `u1` — unless that reading happens to be dark-like on its own terms, `low_light_rt` for it reads `False`.
+
+**The unlit case is judged structurally, not by threshold.** `low_light_rt` is `DarkCorrectionStage`'s own determination, so the monitor reports it directly (`bad=True` unconditionally) instead of routing the value through `is_poor_contact`. Doing the latter would let a misconfigured `light_threshold_per_camera` — too short an array fails open to `0.0` for any camera past its length, via `CQThresholds.light_for` — silently swallow the strongest evidence the pipeline produces. The value reported is `subtracted_mean`, not `mean_dc_rt` (NaN here by definition): `subtracted_mean` is pedestal-referenced while the light threshold was calibrated against dark-baseline-referenced `mean_dc_rt`, so the two are never compared against the same bound, and the reading is excluded from the rolling window for the same reason.
+
+**Accumulation is current-state for the dark signal only — light accumulation is identical between the two.** Both consumers average light readings over an identical `deque(maxlen=rolling_window)` and threshold the mean the same way (§11.2's light bullet above). Only the **dark** path differs: `_ContactQualitySink` keeps the *maximum* dark reading seen across its whole (short) window, while `ContactQualityMonitor` keeps only the *latest* dark reading — a running max over a scan that can run for hours would latch an ambient-light warning permanently after one transient spike.
+
+**Each condition latches independently, and each edge of a latch debounces independently.** A camera can be ambient-lit and poorly coupled at the same time, and the consuming UI renders those as separate rows, so `_latches` keys on `(side, cam_id, reason)` — `ambient_light` and `poor_contact` each get their own `CameraLatch` per camera. Within a latch the two edges are debounced separately: RAISE (ok→poor) flips after `activate_debounce` consecutive bad observations, CLEAR (poor→ok) only after `clear_debounce` consecutive good ones; any disagreeing observation resets the running streak. The **light** path drives this asymmetrically on purpose — a late warning is a safety miss, so RAISE fast; a premature dismiss strands the operator on a still-bad camera, so CLEAR conservatively. The **dark** path stays symmetric (`dark_debounce` for both edges), because scheduled darks are ~15 s apart and treating each as an immediate latch matches the legacy gate. The two paths count on different clocks:
+
+| Edge | Parameter | Default | Counts | ≈ Real time at default |
+|---|---|---|---|---|
+| light RAISE | `light_activate_debounce` | 10 | consecutive **light**-frame observations, ~40 Hz | ≈ 0.25 s |
+| light CLEAR | `light_clear_debounce` | 80 | consecutive **light**-frame observations, ~40 Hz | ≈ 2 s |
+| dark RAISE/CLEAR | `dark_debounce` | 1 | consecutive **dark**-frame observations, one every `dark_interval` frames | ≈ 15 s (immediate latch — legacy-equivalent) |
+
+`REASON_NO_SIGNAL` is never reported live — it is preflight-only. Total loss of frames belongs to the consumer's camera-dropout watchdog; reporting it as a contact-quality fault would send the operator to fix the wrong thing.
+
+`on_transition(side, cam_id, reason, value, active)` fires on edges only — once per genuine activate/clear, not once per frame — and runs on the pipeline runner thread, so a GUI consumer must marshal to its own thread. The monitor catches and logs callback exceptions itself: an uncaught one would unwind the rest of that `consume()` call — abandoning every remaining row in the batch after the one that raised, silently skipping the other cameras — and log a fresh traceback per batch, at ~40 Hz, for as long as the callback keeps raising. This is not patching a runner gap — `_safe_consume` (`omotion/pipeline/runner.py`) already logs and continues past a raising sink without disabling it — the monitor's own `try/except` just contains the damage to a single row.
+
+All three consumers are pure sinks — they add no pipeline stages, do not modify FrameBatch fields, and can be turned off by simply not constructing them.
 
 ---
 
@@ -717,7 +761,8 @@ Both consumers are pure sinks — they add no pipeline stages, do not modify Fra
 | `ADC_GAIN` | `(1024 − pedestal_height) / 11_000` (≈ 0.0873 at pedestal 64, ≈ 0.0815 at pedestal 128) | `omotion/pipeline/pedestal.py` (`adc_gain_for_pedestal`) | Sensor ADC gain used for shot-noise correction; derived per-scan from the pedestal |
 | `CAMERA_GAIN_MAP` | `[16, 4, 2, 1, 1, 2, 4, 16]` | `omotion/config.py` | Per-camera analog gain by `cam_id % 8` |
 | `HISTO_BINS` / `HISTO_BINS_SQ` | `[0..1023]` / element-wise square | `omotion/config.py` | Bin-index arrays for moment computations and CSV column names |
-| `EXPECTED_HISTOGRAM_SUM` | 2_457_606 | `omotion/MotionProcessing.py` | Required total count per valid frame (1920 × 1280 px + 6 sentinel) |
+| `EXPECTED_HISTOGRAM_SUMS` | {2_457_606, 2_201_606} | `omotion/MotionProcessing.py` | Accepted total counts per valid frame — full (1920×1280) and debug-crop (1720×1280), each = W×H + 6 sentinel |
+| `EXPECTED_HISTOGRAM_SUM` | 2_457_606 | `omotion/MotionProcessing.py` | Full-frame single value (backward-compat alias) |
 | `FRAME_ID_MODULUS` | 256 | `FrameClassificationStage` | Firmware 8-bit counter rollover period |
 | `_FRAME_ROLLOVER_THRESHOLD` | 128 | `FrameClassificationStage` | Max forward delta before rollover is detected |
 | `batch_size_frames` | 10 (live) / 100 (replay) | `LiveUsbSource` / `CsvReplaySource` | N frames per FrameBatch |

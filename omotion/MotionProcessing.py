@@ -13,7 +13,7 @@ What lives here
 ---------------
 - Wire-level constants: HISTO_SIZE_WORDS, HISTOGRAM_BYTES, PACKET_*,
   MIN_*_PACKET_SIZE, MAX_PACKET_SIZE, SOF/SOH/EOH/EOF, FRAME_ID_MODULUS,
-  EXPECTED_HISTOGRAM_SUM, PEDESTAL_HEIGHT
+  EXPECTED_HISTOGRAM_SUM, EXPECTED_HISTOGRAM_SUMS, PEDESTAL_HEIGHT
 - Dataclasses: HistogramSample, HistogramPacket, Sample, CorrectedBatch
 - Parsing helpers: parse_histogram_stream, parse_histogram_packet_structured,
   _rle_decompress (re-exported from omotion.utils), _util_crc16
@@ -30,7 +30,7 @@ import logging
 import struct
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 import numpy as np
 import queue
@@ -80,13 +80,57 @@ SOF, SOH, EOH, EOF = 0xAA, 0xFF, 0xEE, 0xDD
 FRAME_ID_MODULUS = 256
 FRAME_ROLLOVER_THRESHOLD = 128
 
-# Expected sum of all histogram bins for a valid frame.
-# When this is not None, any parsed histogram whose bin sum differs from this
-# value is treated as corrupt and silently dropped from the sample list.
-# Set to the integer value confirmed during calibration; leave as None to
-# disable the check (e.g. during development before the expected value is
-# known).
-EXPECTED_HISTOGRAM_SUM: int | None = 2_457_606
+# Sum of all histogram bins for a valid frame == number of output pixels
+# (width × height) plus a constant 6-count sentinel that appears in every
+# frame regardless of geometry (bench-confirmed: full and cropped frames both
+# carry exactly +6 over W×H). A frame whose bin sum matches none of the valid
+# geometry totals is treated as corrupt (doubled/partial frame) and dropped.
+#
+# There is more than one legitimate geometry: the sensor normally streams the
+# full 1920×1280 frame, but the sensor-fw debug crop (DEBUG_FLAG_CAMERA_CROP,
+# sensor-fw #86) narrows it to 1720×1280. Add a row here for any new geometry
+# the firmware can emit.
+_HISTOGRAM_SUM_SENTINEL = 6
+_VALID_FRAME_GEOMETRIES: tuple[tuple[int, int], ...] = (
+    (1920, 1280),   # full frame
+    (1720, 1280),   # DEBUG_FLAG_CAMERA_CROP: right 200 columns dropped (sensor-fw #86)
+)
+# Set of accepted bin-sum totals. Empty set disables the check entirely.
+EXPECTED_HISTOGRAM_SUMS: frozenset[int] = frozenset(
+    w * h + _HISTOGRAM_SUM_SENTINEL for (w, h) in _VALID_FRAME_GEOMETRIES
+)
+
+# Backward-compatible single-value alias: the full-frame total. Retained for
+# external importers (scripts, docs, the shim test). The parser and live
+# pipeline validate against EXPECTED_HISTOGRAM_SUMS (the full set) so cropped
+# frames are accepted; pass an explicit int to a parser to force a single
+# expected total.
+EXPECTED_HISTOGRAM_SUM: int | None = 1920 * 1280 + _HISTOGRAM_SUM_SENTINEL  # 2_457_606
+
+
+def _resolve_valid_sums(expected) -> frozenset[int] | None:
+    """Normalize an ``expected_row_sum`` argument into a set of accepted totals.
+
+    - ``None``  → the module default set ``EXPECTED_HISTOGRAM_SUMS``.
+    - ``int``   → a single accepted total ``{int}`` (legacy exact-match).
+    - iterable  → the given totals as a frozenset.
+
+    Returns ``None`` when the resulting set is empty, meaning "check disabled —
+    accept every frame".
+    """
+    if expected is None:
+        sums = EXPECTED_HISTOGRAM_SUMS
+    elif isinstance(expected, int):
+        sums = frozenset((expected,))
+    else:
+        sums = frozenset(expected)
+    return sums or None
+
+
+def _histogram_sum_ok(row_sum: int, expected) -> bool:
+    """True if ``row_sum`` is an accepted total (or the check is disabled)."""
+    valid = _resolve_valid_sums(expected)
+    return valid is None or row_sum in valid
 
 # Camera sensor pedestal height.
 # When no light reaches the sensor the pixel ADC output settles at this
@@ -208,7 +252,7 @@ def bytes_to_integers(byte_array: bytes | bytearray) -> tuple[list[int], list[in
 
 def _parse_histo_payload(
     payload: bytes,
-    expected_row_sum: int | None,
+    expected_row_sum: "int | Iterable[int] | None",
     original_pkt_len: int,
 ) -> "HistogramPacket":
     """
@@ -261,12 +305,12 @@ def _parse_histo_payload(
         ts_val = timestamp_sec if timestamp_sec is not None else 0.0
         row_sum = int(hist.sum(dtype=np.uint64))
 
-        _expected = expected_row_sum if expected_row_sum is not None else EXPECTED_HISTOGRAM_SUM
-        if _expected is not None and row_sum != _expected:
+        if not _histogram_sum_ok(row_sum, expected_row_sum):
             logger.warning(
                 "Histogram sum mismatch for cam %d frame %d: "
-                "got %d, expected %d — dropping sample",
-                int(cam_id), int(frame_id), row_sum, _expected,
+                "got %d, expected one of %s — dropping sample",
+                int(cam_id), int(frame_id), row_sum,
+                sorted(_resolve_valid_sums(expected_row_sum) or ()),
             )
             continue
 
@@ -298,7 +342,7 @@ def _candidate_packet_size_ok(pkt_type_byte: int, candidate_size: int) -> bool:
 
 def parse_histogram_packet_structured(
     pkt: memoryview,
-    expected_row_sum: int | None = None,
+    expected_row_sum: "int | Iterable[int] | None" = None,
 ) -> HistogramPacket:
     """
     Parse a binary histogram packet into normalized packet/sample dataclasses.
@@ -308,13 +352,14 @@ def parse_histogram_packet_structured(
     pkt
         Raw bytes of a single histogram packet.
     expected_row_sum
-        When not None, each parsed sample's bin sum is compared against this
-        value.  Samples whose sum does not match are logged as warnings and
-        excluded from the returned ``HistogramPacket.samples`` list — they are
-        treated as if the frame never arrived (will not be written to CSV and
-        will not be fed into the science pipeline).  Pass ``None`` (default) to
-        disable the check.  The module-level ``EXPECTED_HISTOGRAM_SUM``
-        constant is a convenient global override point.
+        Accepted histogram bin-sum total(s). ``None`` (default) validates
+        against the module set ``EXPECTED_HISTOGRAM_SUMS`` (full + debug-crop
+        geometries). Pass an ``int`` to require a single exact total, or an
+        iterable of ints for a custom set. Samples whose sum matches none of
+        the accepted totals are logged and excluded from the returned
+        ``HistogramPacket.samples`` — treated as if the frame never arrived
+        (not written to CSV, not fed into the science pipeline). An empty
+        iterable disables the check (accept every frame).
 
     Returns
     -------
@@ -412,14 +457,15 @@ def parse_histogram_packet_structured(
         row_sum = int(hist.sum(dtype=np.uint64))
 
         # Sum validation — drop corrupt/doubled frames before they reach the
-        # pipeline.  The expected value is the invariant photon-count total
-        # that every valid frame must satisfy.
-        _expected = expected_row_sum if expected_row_sum is not None else EXPECTED_HISTOGRAM_SUM
-        if _expected is not None and row_sum != _expected:
+        # pipeline.  A valid frame's bin sum equals one of the known geometry
+        # totals (full frame, or a debug-cropped frame); anything else is a
+        # partial/doubled/garbled frame.
+        if not _histogram_sum_ok(row_sum, expected_row_sum):
             logger.warning(
                 "Histogram sum mismatch for cam %d frame %d: "
-                "got %d, expected %d — dropping sample",
-                int(cam_id), int(frame_id), row_sum, _expected,
+                "got %d, expected one of %s — dropping sample",
+                int(cam_id), int(frame_id), row_sum,
+                sorted(_resolve_valid_sums(expected_row_sum) or ()),
             )
             continue
 
@@ -536,7 +582,7 @@ def parse_histogram_stream(
     stop_evt: threading.Event,
     buffer_accumulator: bytearray,
     on_row_fn: Callable[[int, int, float, np.ndarray, int, float], None] | None = None,
-    expected_row_sum: int | None = None,
+    expected_row_sum: "int | Iterable[int] | None" = None,
     t0_normalizer: Callable[[float], float] | None = None,
 ) -> int:
     """

@@ -14,7 +14,7 @@ import usb.util
 import time
 import threading
 import queue
-from omotion.USBInterfaceBase import USBInterfaceBase
+from omotion.USBInterfaceBase import USBInterfaceBase, is_usb_timeout
 from omotion import _log_root
 
 # Max data_len we accept (sanity check to avoid runaway buffer)
@@ -218,7 +218,7 @@ class CommInterface(USBInterfaceBase):
                     # Firmware back-pressure: the device's OUT FIFO is temporarily
                     # full.  Back off briefly and retry so callers don't have to
                     # care about transient busy periods (e.g. after program_fpga).
-                    if e.errno in (110, 10060):  # ETIMEDOUT / WSAETIMEDOUT
+                    if is_usb_timeout(e):
                         if attempt < _retries:
                             delay = 0.05 * (attempt + 1)  # 50 ms, 100 ms, 150 ms …
                             logger.warning(
@@ -229,17 +229,43 @@ class CommInterface(USBInterfaceBase):
                             continue
                         logger.error("%s: write timed out after %d attempts", self.desc, 1 + _retries)
                         raise
-                    # A stalled endpoint (EPIPE / broken-pipe) can be recovered by
-                    # issuing a CLEAR_HALT control transfer.  Try once; if it works
-                    # re-send the original data.  Any other USB error is re-raised
-                    # so callers and _read_loop disconnect logic see it normally.
-                    if e.errno in (32, -9):  # EPIPE on Linux; LIBUSB_ERROR_PIPE cross-platform
+                    # A stalled OUT endpoint (EPIPE) leaves the host-side pipe
+                    # unusable until a CLEAR_HALT control transfer resets it.
+                    # Clear it so a *later* write on a still-present device has a
+                    # working pipe, then always re-raise: this write failed either
+                    # way, and _read_loop has usually already latched
+                    # _transport_down_evt by the time we get here.
+                    #
+                    # We deliberately do NOT re-send.  The stall can arrive after
+                    # the device already accepted and executed the transfer, and
+                    # the sensor firmware has no id dedup — it runs
+                    # process_if_command() on every frame that passes framing +
+                    # CRC (sensor-fw Core/Src/uart_comms.c:331).  A duplicate
+                    # inverts OW_CMD_TOGGLE_LED (if_commands.c:139) and
+                    # double-appends an OW_FPGA_BITSTREAM chunk
+                    # (if_commands.c:527-529), walking the write pointer past the
+                    # buffer.  Retry with duplicate suppression belongs one layer
+                    # up, in send_packet.  See #189.
+                    #
+                    # pyusb puts the libusb code in .backend_error_code and the
+                    # POSIX errno in .errno, and _libusb_errno[-9] is 32 on every
+                    # platform, so LIBUSB_ERROR_PIPE always arrives as errno 32.
+                    if e.errno in (32, -9):  # EPIPE (32); -9 never reaches .errno
                         logger.warning("%s: OUT endpoint stalled, attempting clear_halt", self.desc)
                         try:
-                            usb.util.clear_halt(self.dev, self.ep_out)
-                            return self.dev.write(self.ep_out.bEndpointAddress, data, timeout=timeout)
-                        except Exception as recovery_err:
-                            logger.error("%s: clear_halt recovery failed: %s", self.desc, recovery_err)
+                            # clear_halt is a usb.core.Device method; usb.util has
+                            # no such attribute — that was the #189 defect.
+                            self.dev.clear_halt(self.ep_out.bEndpointAddress)
+                            logger.info("%s: OUT endpoint halt cleared", self.desc)
+                        except (usb.core.USBError, NotImplementedError) as recovery_err:
+                            # Common after teardown: dispose_resources() has
+                            # already released the interface, so libusb returns
+                            # NOT_FOUND.  The errno tells that apart from a live
+                            # device refusing the request.
+                            logger.warning(
+                                "%s: clear_halt failed (errno=%s): %s",
+                                self.desc, getattr(recovery_err, "errno", None), recovery_err,
+                            )
                     raise
 
     def receive(self, length=512, timeout=100):
@@ -304,7 +330,7 @@ class CommInterface(USBInterfaceBase):
                 # errors as the transport is closed; suppress them silently.
                 if self.stop_event.is_set():
                     break
-                if e.errno in (110, 10060):
+                if is_usb_timeout(e):
                     # Read timeout — no data this window. Keep looping.
                     continue
                 # errno 32 = EPIPE (stalled/disconnected endpoint)

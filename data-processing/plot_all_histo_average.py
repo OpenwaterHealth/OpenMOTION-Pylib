@@ -31,6 +31,11 @@ FRAME_ID_MAX = 256          # frame_id wraps 255 → 0
 # Physical layout order (row-major, top-left → bottom-right)
 CAMERA_ORDER = [3, 4, 2, 5, 1, 6, 0, 7]
 
+# Raw scan CSVs name the 1024 bin columns "0".."1023"; metadata columns
+# (cam_id, frame_id, timestamp_s, type, temperature, sum, tcm, tcl, pdc)
+# surround them, so bins must be selected by name, never by position.
+BIN_COLS = [str(i) for i in range(NUM_BINS)]
+
 
 def logical_frame_index(series: pd.Series) -> pd.Series:
     """Turn the raw frame_id series (0-255 rollover) into a monotonic index."""
@@ -44,8 +49,8 @@ def cam_stats(cam_df: pd.DataFrame):
     cam_df["logical_frame_index"] = logical_frame_index(cam_df["frame_id"])
     cam_df.sort_values("logical_frame_index", inplace=True)
 
-    histo = cam_df.iloc[:, 2 : 2 + NUM_BINS].to_numpy()
-    histo[:, -1] = 0                      # zero-out bin 1023 if needed
+    histo = cam_df[BIN_COLS].to_numpy(dtype=float)
+    histo[:, -1] = 0                      # drop saturation bin 1023
 
     sums = histo.sum(axis=1)
     bins = np.arange(NUM_BINS)
@@ -69,6 +74,11 @@ def main():
     print(f"Reading CSV file: {args.csv}")
 
     df = pd.read_csv(args.csv)
+    if not set(BIN_COLS).issubset(df.columns):
+        raise SystemExit(
+            f"Missing histogram bin columns '0'..'{NUM_BINS - 1}' - "
+            f"expected a *_raw.csv scan file, got: {args.csv}"
+        )
 
     fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 10), sharex=False)
     axes = axes.flatten()  # easier indexing

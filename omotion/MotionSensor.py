@@ -17,6 +17,7 @@ from omotion.config import (
     OW_CAMERA_GET_HISTOGRAM,
     OW_CAMERA_SET_TESTPATTERN,
     OW_CAMERA_SINGLE_HISTOGRAM,
+    DEBUG_FLAG_CAMERA_RAW,
     OW_CAMERA_SET_CONFIG,
     OW_CMD,
     OW_CMD_DIAG_STATS,
@@ -24,6 +25,7 @@ from omotion.config import (
     OW_CMD_HWID,
     OW_CMD_I2C_REG_READ,
     OW_CMD_I2C_STATUS,
+    OW_CMD_BOOT_INFO,
     OW_CMD_PING,
     OW_CMD_RESET,
     OW_CMD_TOGGLE_LED,
@@ -68,11 +70,13 @@ from omotion.config import (
     OW_CAMERA_POWER_ON,
     OW_CAMERA_POWER_STATUS,
     OW_CAMERA_READ_SECURITY_UID,
+    OW_CAMERA_GET_TELEMETRY,
     OW_CMD_DFU,
     OW_CMD_SERIAL,
     is_valid_serial,
 )
 from omotion.i2c_packet import I2C_Packet
+from omotion.boot_mode import BootMode, parse_boot_info
 from omotion.GitHubReleases import GitHubReleases
 from omotion.MotionProcessing import bytes_to_integers
 from omotion.utils import calculate_file_crc, log_i2c_health
@@ -85,6 +89,180 @@ _ERROR_TYPES = frozenset({OW_ERROR, OW_BAD_CRC, OW_BAD_PARSE, OW_UNKNOWN})
 
 
 from omotion.firmware_update import parse_version as _parse_firmware_version
+
+
+# --- Camera telemetry (sensor-fw#94, OB/black-level block sensor-fw#103) ---
+# Wire format: cam_telemetry_response_t in sensor-fw Core/Inc/camera_telemetry.h
+# — 12-byte header {version, valid_mask, struct_size, reserved,
+# fsin_pulse_count, uptime_ms} followed by 8 packed 110-byte per-camera
+# records (little-endian). The firmware sends raw register values; this parser
+# owns every engineering-unit conversion.
+CAM_TELEMETRY_VERSION = 2
+_CAM_TELEM_HDR_FMT = "<BBBBII"  # version, valid_mask, struct_size, rsvd, fsin_pulse_count, uptime_ms
+_CAM_TELEM_CAM_FMT = "<II22H22B11H14B"
+_CAM_TELEM_CAM_SIZE = struct.calcsize(_CAM_TELEM_CAM_FMT)  # 110
+_CAM_TELEM_HDR_SIZE = struct.calcsize(_CAM_TELEM_HDR_FMT)  # 12
+_CAM_TELEM_SIZE = _CAM_TELEM_HDR_SIZE + 8 * _CAM_TELEM_CAM_SIZE  # 892
+
+
+def _vm_volts(raw: int) -> float:
+    """On-die voltage-monitor code -> volts (OX02C1B DS table A-39)."""
+    return (raw & 0x0FFF) * 6.0 / 4096.0
+
+
+def _tpm_celsius(raw: int) -> float:
+    """8.8 fixed-point die temperature; >0xC000 encodes negative (DS 10.5.23)."""
+    if raw > 0xC000:
+        return -((raw - 0xC000) / 256.0)
+    return raw / 256.0
+
+
+def parse_camera_telemetry(data: bytes) -> dict | None:
+    """Parse a cam_telemetry_response_t blob; None if malformed or version-mismatched.
+
+    Returned dict: ``{"version", "valid_mask", "fsin_pulse_count", "uptime_ms",
+    "cameras": [dict * 8]}`` where each camera dict carries converted values
+    (``avdd_v``/``dovdd_v``/``dvdd_v`` volts, ``tpm_avg_c``/``tpm0_c``/``tpm1_c``
+    degC, ``again_x``/``dgain_x`` gain factors) alongside the raw
+    fault/state/counter bytes.
+
+    The optical-black block (sensor-fw#103) adds ``z_avg`` — the four
+    zero-line (dark row) averages, Bayer positions 00/01/10/11 — plus the
+    derived ``z_avg_mean``/``z_avg_spread`` and the window, target, trigger
+    and fault context that produced them (``zl_start``/``zl_end``,
+    ``blk_lvl_target``, ``blc_trig_ctrl``, ``blc_fault_latch``, ...).
+
+    Bench-established (2026-07-20, left sensor): ``z_avg`` and ``blc_offsets``
+    update **only while the sensor is scanning rows** — they read 0 at idle
+    and populate within a sweep of stream-on, so judge them against
+    ``sc_state`` (0x9 = streaming), not ``updated_ms``. They are *not* gated
+    by ``blc_en``: raw mode (sensor-fw#89, ``blc_ctrl`` 0x00) yields the same
+    values, because the statistics engine runs whether or not the correction
+    is applied. ``z_avg`` carries 6 fractional bits — ``z_avg / 64`` is DN
+    (measured 121.7 DN against the sensor's own raw-mode ``yavg`` of 121).
+
+    The sensor is mono, so all four ``z_avg`` values average the same physical
+    dark rows, but they do **not** agree: Bayer positions 10/11 sit ~60 LSB
+    (~0.8 %) above 00/01 on every camera, a reproducible row-parity split.
+    ``z_avg_spread`` therefore has a nonzero floor — track it against that
+    baseline rather than against 0.
+
+    ``fsin_pulse_count`` is the firmware's frame
+    trigger counter — external (console-driven) FSIN edges only; the sensor's
+    own frame counter has no readable SCCB value register, and internal-FSIN
+    frames don't increment this. ``valid`` is False for a camera the firmware
+    has never completed
+    a sweep on (fields all zero); ``updated_ms`` (firmware HAL_GetTick, compare
+    against ``uptime_ms``) reveals staleness, ``sweep_count`` liveness.
+    """
+    if data is None or len(data) < _CAM_TELEM_SIZE:
+        return None
+    (version, valid_mask, struct_size, _,
+     fsin_pulse_count, uptime_ms) = struct.unpack_from(_CAM_TELEM_HDR_FMT, data, 0)
+    if version != CAM_TELEMETRY_VERSION or struct_size != _CAM_TELEM_CAM_SIZE:
+        logger.warning(
+            "camera telemetry format mismatch (version %d size %d, expected %d/%d)",
+            version, struct_size, CAM_TELEMETRY_VERSION, _CAM_TELEM_CAM_SIZE)
+        return None
+
+    cameras = []
+    for i in range(8):
+        f = struct.unpack_from(
+            _CAM_TELEM_CAM_FMT, data, _CAM_TELEM_HDR_SIZE + i * _CAM_TELEM_CAM_SIZE)
+        updated_ms, dgain_raw = f[0:2]
+        (avdd, dovdd, dvdd, tpm_avg, tpm0, tpm1, tc_row, expo_cmd, expo_applied,
+         again_raw, isp_real_gain, isp_dig_gain, isp_blc, isp_expo) = f[2:16]
+        blc_offsets = [v & 0x7FFF for v in f[16:24]]
+        (tpm_status, vm_live, vm_cp, vm_latched, vm_cp_latched,
+         wd_a, wd_b, wd_sticky, _wd_tpm_hi, _wd_tpm_lo, wd_state,
+         sc_state, otp_crc0, otp_crc1, trig_error, yavg, aec_mode,
+         dcg_state, blc_ctrl, isp_ctrl, i2c_err_count, sweep_count) = f[24:46]
+        # OB / black-level block (sensor-fw#103, DS table A-25). z_avg and the
+        # offsets are 15-bit in a 16-bit register; bit 15 is reserved.
+        z_avg = [v & 0x7FFF for v in f[46:50]]
+        blc_offsets_z = [v & 0x7FFF for v in f[50:54]]
+        blc_thres, blk_lvl_target, zero_ln_num = f[54:57]
+        (blc_trig_ctrl, bl_start, bl_end, blk_ln_num, blc_ln_mode,
+         zl_start, zl_end, zavg_ctrl, zl_start2, zl_end2,
+         blc_fault_latch, blc_fault_state, dig_test_fail, dtr_fault) = f[57:71]
+
+        # Analog gain: 0x3508[4:0] = code[8:4], 0x3509[7:4] = code[3:0]; x = code/16.
+        again_code = (((again_raw >> 8) & 0x1F) << 4) | ((again_raw >> 4) & 0x0F)
+        # Digital gain: 0x350A[3:0]=code[13:10], 0x350B=code[9:2], 0x350C[7:6]=code[1:0].
+        dgain_code = ((((dgain_raw >> 16) & 0x0F) << 10)
+                      | (((dgain_raw >> 8) & 0xFF) << 2)
+                      | ((dgain_raw & 0xFF) >> 6))
+
+        cameras.append({
+            "valid": bool(valid_mask & (1 << i)),
+            "updated_ms": updated_ms,
+            "sweep_count": sweep_count,
+            "i2c_err_count": i2c_err_count,
+            "avdd_v": _vm_volts(avdd),
+            "dovdd_v": _vm_volts(dovdd),
+            "dvdd_v": _vm_volts(dvdd),
+            "tpm_avg_c": _tpm_celsius(tpm_avg),
+            "tpm0_c": _tpm_celsius(tpm0),
+            "tpm1_c": _tpm_celsius(tpm1),
+            "tpm_status": tpm_status,
+            "vm_live": vm_live,
+            "vm_cp": vm_cp,
+            "vm_latched": vm_latched,
+            "vm_cp_latched": vm_cp_latched,
+            "wd_fault_a": wd_a,
+            "wd_fault_b": wd_b,
+            "wd_sticky": wd_sticky & 0x01,
+            "wd_state": wd_state,
+            "sc_state": sc_state & 0x0F,
+            "otp_crc": (otp_crc0, otp_crc1),
+            "trig_error": trig_error,
+            "yavg": yavg,
+            "tc_row": tc_row,
+            "expo_cmd": expo_cmd,
+            "expo_applied": expo_applied,
+            "again_cmd": again_raw,
+            "again_x": again_code / 16.0,
+            "dgain_x": dgain_code / 1024.0,
+            "aec_mode": aec_mode,
+            "dcg_state": dcg_state,
+            "blc_ctrl": blc_ctrl,
+            "isp_ctrl": isp_ctrl,
+            "isp_real_gain": isp_real_gain,
+            "isp_dig_gain": isp_dig_gain,
+            "isp_blc": isp_blc,
+            "isp_expo": isp_expo,
+            "blc_offsets": blc_offsets,
+            # --- OB / black-level block (sensor-fw#103) ---
+            # z_avg_00/01/10/11 are the zero-line (dark row) averages per
+            # Bayer position. The OX02C1B is mono here, so all four sample the
+            # same physical dark rows and should agree — z_avg_spread is the
+            # per-camera sanity metric, z_avg_mean the dark pedestal estimate.
+            "z_avg": z_avg,
+            "z_avg_mean": sum(z_avg) / 4.0,
+            "z_avg_spread": max(z_avg) - min(z_avg),
+            "blc_offsets_z": blc_offsets_z,
+            "blc_thres": blc_thres & 0x07FF,
+            "blk_lvl_target": blk_lvl_target & 0x07FF,
+            "zero_ln_num": zero_ln_num & 0x03FF,
+            "blc_trig_ctrl": blc_trig_ctrl,
+            "bl_start": bl_start & 0x3F,
+            "bl_end": bl_end & 0x3F,
+            "blk_ln_num": blk_ln_num,
+            "blc_ln_mode": blc_ln_mode,
+            "zl_start": zl_start,
+            "zl_end": zl_end,
+            "zavg_ctrl": zavg_ctrl,
+            "z_avg_sel": zavg_ctrl & 0x03,
+            "zl_start2": zl_start2,
+            "zl_end2": zl_end2,
+            "blc_fault_latch": blc_fault_latch,
+            "blc_fault_state": blc_fault_state & 0x01,
+            "dig_test_fail": dig_test_fail,
+            "dtr_fault": dtr_fault,
+        })
+    return {"version": version, "valid_mask": valid_mask,
+            "fsin_pulse_count": fsin_pulse_count, "uptime_ms": uptime_ms,
+            "cameras": cameras}
 
 
 class MotionSensor(SignalWrapper):
@@ -395,6 +573,26 @@ class MotionSensor(SignalWrapper):
             return ver_str or "v0.0.0"
         return "v0.0.0"
 
+    def get_boot_mode(self) -> BootMode:
+        """Whether this sensor runs a bare-metal or bootloader-slot image.
+
+        Queries OW_CMD_BOOT_INFO over the normal command interface — no DFU
+        cycle — and classifies the reported ``SCB->VTOR``. Firmware without the
+        command replies OW_UNKNOWN, which yields :data:`BootMode.UNKNOWN`; so
+        does any garbled/short reply. Never raises: callers treat UNKNOWN as
+        "couldn't determine" and must not make flashing decisions on it (the DFU
+        alt-setting check remains the authoritative gate before any write).
+        """
+        if self.demo_mode:
+            return BootMode.BARE_METAL
+        try:
+            r = self._send(packetType=OW_CMD, command=OW_CMD_BOOT_INFO)
+        except Exception:
+            return BootMode.UNKNOWN
+        if r is None or r.packetType in _ERROR_TYPES:
+            return BootMode.UNKNOWN
+        return parse_boot_info(bytes(r.data[: r.data_len]) if r.data else b"")
+
     def read_serial_number(self) -> str | None:
         """Read the sensor module hardware serial number (None if unprogrammed/error)."""
         try:
@@ -505,7 +703,7 @@ class MotionSensor(SignalWrapper):
 
         The firmware verifies, at startup, that every expected I2C device is
         present: the TCA9548A mux, the ICM-20948 IMU, and all 8 cameras
-        (OV2312) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
+        (OX02C1B) + 8 FPGAs (CrossLink) behind the mux. The USB PHY is not on
         I2C (ULPI) and is excluded.
 
         Args:
@@ -519,7 +717,7 @@ class MotionSensor(SignalWrapper):
                 "version": int,
                 "mux": bool,             # TCA9548A 0x70
                 "imu": bool,             # ICM-20948 0x68
-                "cameras": [bool] * 8,   # OV2312 0x36 per mux channel
+                "cameras": [bool] * 8,   # OX02C1B 0x36 per mux channel
                 "fpgas":   [bool] * 8,   # CrossLink 0x40 per mux channel
                 "cameras_expected": int, # bitmask, 0xFF = all 8
                 "all_present": bool,
@@ -604,6 +802,57 @@ class MotionSensor(SignalWrapper):
             "cmp_fallback_count": counts[10],
             "cmp_max_time_us": counts[11],
         }
+
+    def get_camera_telemetry(self) -> dict | None:
+        """Return the firmware's cached per-camera condition telemetry, or None.
+
+        sensor-fw#94: firmware continuously sweeps every powered OX02C1B in the
+        background (rails from the on-die voltage monitor, dual die temps,
+        VM/watchdog fault latches, sensor state machine, OTP CRC status, MIPI
+        frame counter, FSIN trigger errors, on-chip frame mean, commanded vs
+        applied exposure/gain, applied BLC offsets, and the optical-black
+        block: dark-row averages plus their window/target/fault context) and
+        this command returns
+        the cached snapshot — no camera I2C happens at query time, so it is
+        safe to poll during scans. Fleet refresh is ~1 s; per-camera
+        ``updated_ms``/``sweep_count`` reveal staleness. See
+        ``parse_camera_telemetry`` for the returned structure.
+        """
+        if self.demo_mode:
+            cam = {
+                "valid": True, "updated_ms": 1000, "sweep_count": 1,
+                "i2c_err_count": 0,
+                "avdd_v": 2.8, "dovdd_v": 1.8, "dvdd_v": 1.2,
+                "tpm_avg_c": 45.0, "tpm0_c": 45.0, "tpm1_c": 45.0,
+                "tpm_status": 0, "vm_live": 0, "vm_cp": 0,
+                "vm_latched": 0, "vm_cp_latched": 0,
+                "wd_fault_a": 0, "wd_fault_b": 0, "wd_sticky": 0,
+                "wd_state": 0, "sc_state": 0x9, "otp_crc": (0, 0),
+                "trig_error": 0, "yavg": 128,
+                "tc_row": 0, "expo_cmd": 0x48, "expo_applied": 0x48,
+                "again_cmd": 0x0100, "again_x": 1.0, "dgain_x": 1.0,
+                "aec_mode": 0xA8, "dcg_state": 0x40,
+                "blc_ctrl": 0x23, "isp_ctrl": 0x34,
+                "isp_real_gain": 0x10, "isp_dig_gain": 0x400,
+                "isp_blc": 0x80, "isp_expo": 0x48,
+                "blc_offsets": [0] * 8,
+                "z_avg": [128] * 4, "z_avg_mean": 128.0, "z_avg_spread": 0,
+                "blc_offsets_z": [0] * 4,
+                "blc_thres": 0, "blk_lvl_target": 128, "zero_ln_num": 2,
+                "blc_trig_ctrl": 0xF9, "bl_start": 4, "bl_end": 0x1B,
+                "blk_ln_num": 4, "blc_ln_mode": 0x50,
+                "zl_start": 2, "zl_end": 0x0D,
+                "zavg_ctrl": 0, "z_avg_sel": 0, "zl_start2": 8, "zl_end2": 0x0D,
+                "blc_fault_latch": 0, "blc_fault_state": 0,
+                "dig_test_fail": 0, "dtr_fault": 0,
+            }
+            return {"version": CAM_TELEMETRY_VERSION, "valid_mask": 0xFF,
+                    "fsin_pulse_count": 0, "uptime_ms": 1000,
+                    "cameras": [dict(cam) for _ in range(8)]}
+        r = self._send(packetType=OW_CAMERA, command=OW_CAMERA_GET_TELEMETRY)
+        if r is None or r.packetType in _ERROR_TYPES or r.data_len < _CAM_TELEM_SIZE:
+            return None
+        return parse_camera_telemetry(bytes(r.data[:_CAM_TELEM_SIZE]))
 
     def _check_i2c_health(self) -> None:
         """Read and cache the boot-time I2C health snapshot (connection step).
@@ -864,12 +1113,21 @@ class MotionSensor(SignalWrapper):
                    boot_test: bool = True) -> bytes:
         """Probe the active camera's CrossLink NVCM state.
 
-        Reads NVCM discriminators over I2C (config-mode read-back).  The
-        programmed/blank discriminator is the STATUS register Done bit
-        (response byte 8, bit 0): the Done fuse is the last step burned
-        during NVCM programming and gates auto-boot.  Neither phase touches
-        camera power.  Select the camera first with switch_camera() and make
-        sure it is powered.
+        Dumps the ISC register discriminators over I2C for diagnostics and —
+        on firmware with sensor-fw#92 — appends the pin-drive boot verdict
+        byte, the ONLY field that answers "is it programmed": 1 = the NVCM
+        design booted and drove the camera bus, 0 = no boot, 0xFF = probe
+        refused (camera unpowered). The register reads cannot answer it:
+        STATUS bit 19 ("SDM Enable") merely mirrors the NVCM Done fuse — a
+        part can have the fuse burned yet never boot (openmotion-test-app#44)
+        — the content reads float 0xFF (the NVCM array is not read-enabled
+        in this flow), and the SRAM Done bit reads 0 on every part. Older
+        firmware returns the blob without the trailing byte; for a verdict
+        there, use the behavioral fallback (reset_camera_sensor + timed
+        non-forced program_fpga; see scripts/nvcm_probe.py).
+
+        Select the camera first with switch_camera() — checking its response
+        — and make sure it is powered.
 
         Args:
             isc_operand: ISC_ENABLE operand1 — 0x08 = NVCM access (default),
@@ -883,7 +1141,7 @@ class MotionSensor(SignalWrapper):
 
         Returns:
             Raw fixed-layout response blob (see scripts/nvcm_probe.py for the
-            field layout), or b"" on error.
+            field layout incl. the trailing verdict byte), or b"" on error.
         """
         payload = bytearray([isc_operand & 0xFF, num_rows & 0xFF,
                              1 if boot_test else 0])
@@ -912,6 +1170,11 @@ class MotionSensor(SignalWrapper):
         Bit 8 (DEBUG_FLAG_HISTO_STALL) stops histogram sends after ~45 s of
         streaming while USB stays alive — deterministic camera-stall repro
         (sensor-fw#75).
+        Bit 9 (DEBUG_FLAG_CAMERA_CROP) crops camera output to 1720x1280 at
+        camera (re)configuration (sensor-fw#86).
+        Bit 10 (DEBUG_FLAG_CAMERA_RAW) disables all on-sensor pixel
+        corrections at camera (re)configuration (sensor-fw#89) — prefer
+        :meth:`set_camera_raw_mode`.
         """
         if self.demo_mode:
             return True
@@ -937,6 +1200,30 @@ class MotionSensor(SignalWrapper):
         flags = struct.unpack("<I", r.data)[0]
         logger.info("Debug flags: 0x%08X", flags)
         return flags
+
+    def set_camera_raw_mode(self, enable: bool) -> bool:
+        """Enable/disable the raw "scientific sensor" camera mode (sensor-fw#89).
+
+        Sets or clears DEBUG_FLAG_CAMERA_RAW (bit 10), preserving all other
+        debug flags. While the flag is set, camera (re)configuration disables
+        every on-sensor pixel correction — BLC, DC-BLC, BLC dither and OTP
+        defect-pixel correction — so pixels are bare ADC codes.
+
+        The flag is read at camera-configure time only: power-cycle the
+        cameras (or the sensor) and re-run the configure workflow for it to
+        take effect — OW_CAMERA_SET_CONFIG skips cameras it considers
+        already configured. In raw mode the dark level sits at the raw
+        per-channel pedestal (roughly 255 DN at 1x analog gain, 495 DN at
+        16x) instead of the servoed target, so PEDESTAL_HEIGHT-based dark
+        handling is invalid — engineering/scientific captures only, not
+        production scans.
+        """
+        flags = self.get_debug_flags()
+        if enable:
+            flags |= DEBUG_FLAG_CAMERA_RAW
+        else:
+            flags &= ~DEBUG_FLAG_CAMERA_RAW
+        return self.set_debug_flags(flags)
 
     # ------------------------------------------------------------------
     # IMU

@@ -32,7 +32,7 @@ HISTO_BLOCK_SIZE = 1 + (HISTO_SIZE_WORDS * 4) + 1  # HID + HISTO + EOH
 HISTO_BINS: np.ndarray = np.arange(HISTO_SIZE_WORDS, dtype=np.float64)
 HISTO_BINS_SQ: np.ndarray = HISTO_BINS * HISTO_BINS
 
-# Full-well capacity of the OV2312 sensor in electrons. Used to compute
+# Full-well capacity of the OX02C1B sensor in electrons. Used to compute
 # ADC gain (DN per electron) for shot-noise correction:
 #   ADC_GAIN = (HISTO_SIZE_WORDS - pedestal) / ELECTRON_WELL_CAPACITY
 ELECTRON_WELL_CAPACITY: int = 11_000
@@ -98,6 +98,7 @@ OW_CAMERA_POWER_ON = 0x50
 OW_CAMERA_POWER_OFF = 0x51
 OW_CAMERA_POWER_STATUS = 0x52
 OW_CAMERA_READ_SECURITY_UID = 0x53
+OW_CAMERA_GET_TELEMETRY = 0x54  # sensor-fw#94: cached cam_telemetry_response_t snapshot
 OW_CAMERA_STREAM = 0x07
 
 
@@ -138,6 +139,15 @@ OW_CMD_HWID = 0x05
 OW_CMD_SERIAL = 0x07
 OW_CMD_I2C_REG_READ = 0x08
 OW_CMD_MESSAGES = 0x09
+# Sensor-module 0x09 (NOT console — there 0x09 is OW_CMD_MESSAGES above). Reports
+# runtime SCB->VTOR so a host can tell bare-metal from bootloader-slot without a
+# DFU cycle. The console equivalent will use a different ID (console-fw #45),
+# since 0x09 is taken there. See openmotion-sensor-fw #110.
+OW_CMD_BOOT_INFO = 0x09
+# Console-module BOOT_INFO. 0x0B because 0x09 is OW_CMD_MESSAGES on the console.
+# Same reply payload as the sensor's, so parse_boot_info covers both. See
+# openmotion-console-fw #45.
+OW_CMD_BOOT_INFO_CONSOLE = 0x0B
 OW_CMD_USR_CFG = 0x0A
 OW_CMD_DFU = 0x0D
 OW_CMD_NOP = 0x0E
@@ -159,6 +169,9 @@ DEBUG_FLAG_COMM_VERBOSE = 0x10  # Enable cmd id and "." response prints in uart_
 DEBUG_FLAG_CMD_VERBOSE = 0x20  # Enable printf in command handlers (if_commands.c)
 DEBUG_FLAG_SEND_DEFER = 0x80  # Defer per-frame histogram send out of the FSIN ISR into the main loop (sensor-fw#68)
 DEBUG_FLAG_HISTO_STALL = 0x100  # Stop sending histogram frames after ~45 s while USB stays alive — deterministic camera-stall repro (sensor-fw#75)
+DEBUG_FLAG_HISTO_SPARSE = 0x08  # Send histogram data in small chunks over ~15 s to reduce EMI
+DEBUG_FLAG_CAMERA_CROP = 0x200  # Crop camera output to 1720x1280 (drop right 200 columns) at camera (re)configure — misaligned-optic test (sensor-fw#86)
+DEBUG_FLAG_CAMERA_RAW = 0x400  # Raw "scientific sensor" mode: disable all on-sensor pixel corrections (BLC/DC-BLC/dither/OTP DPC) at camera (re)configure (sensor-fw#89)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
@@ -257,7 +270,7 @@ MODULES: int = 2
 """Number of sensor modules per device (left + right)."""
 
 CAMS_PER_MODULE: int = 8
-"""Cameras per sensor module (OV2312 array)."""
+"""Cameras per sensor module (OX02C1B array)."""
 
 CAPTURE_HZ: float = 40.0
 """Histogram capture rate per camera, in Hz."""

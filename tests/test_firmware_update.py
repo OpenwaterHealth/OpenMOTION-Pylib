@@ -116,10 +116,13 @@ def test_download_firmware_uses_release_by_tag(tmp_path):
 
 
 def test_updater_happy_path(tmp_path):
+    from omotion.boot_mode import BootMode
+
     handle = MagicMock()
     handle.enter_dfu.return_value = True
     dfu = MagicMock()
     dfu.wait_for_dfu_device.return_value = True
+    dfu.detect_boot_mode.return_value = BootMode.BARE_METAL
     dfu.flash_bin.return_value = MagicMock(success=True)
 
     updater = FirmwareUpdater(programmer=dfu)
@@ -128,6 +131,8 @@ def test_updater_happy_path(tmp_path):
     assert result.success is True
     handle.enter_dfu.assert_called_once()
     dfu.flash_bin.assert_called_once()
+    # A bare-metal device is flashed at the base of flash, never the slot.
+    assert dfu.flash_bin.call_args.kwargs["address"] == "0x08000000"
 
 
 def test_updater_raises_if_enter_dfu_rejected(tmp_path):
