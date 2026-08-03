@@ -55,12 +55,54 @@ def show_tx(raw: bytes, label: str = "TX") -> None:
     print(f"  {label} ({len(raw)} bytes): {head}{' ... ' if len(raw) > 15 else ' '}{tail}")
 
 
-def send_raw(uart, raw: bytes, timeout: int = 5):
+class Transport:
+    """Uniform raw-frame send/receive over either the console UART or a
+    sensor's COMMS bulk endpoint.
+
+    Both paths speak the same `UartPacket` frame; only the byte pipe differs.
+    """
+
+    def __init__(self, kind: str, handle):
+        self.kind = kind          # "console" | "sensor"
+        self.handle = handle      # MotionUart | CommInterface
+        self._paused_reader = False
+
+    def __enter__(self):
+        # A sensor in async mode runs a reader thread that would consume the
+        # responses we want to inspect; pause it for the duration.
+        if self.kind == "sensor" and getattr(self.handle, "async_mode", False):
+            try:
+                self.handle.stop_read_thread()
+                self._paused_reader = True
+            except Exception:
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if self._paused_reader:
+            try:
+                self.handle.start_read_thread()
+            except Exception:
+                pass
+        return False
+
+    def send(self, raw: bytes, timeout: int = 5):
+        if self.kind == "console":
+            self.handle._tx(bytes(raw))
+            return self.handle.read_packet(timeout=timeout)
+        # sensor: raw bulk write, then read and parse one frame
+        self.handle.write(bytes(raw), timeout=max(100, timeout * 1000))
+        data = self.handle.receive(length=4096, timeout=max(100, timeout * 1000))
+        if not data:
+            return None
+        return UartPacket(buffer=bytes(data))
+
+
+def send_raw(tp: "Transport", raw: bytes, timeout: int = 5):
     """Write raw bytes and read whatever comes back. None on timeout."""
     show_tx(raw)
     try:
-        uart._tx(bytes(raw))
-        resp = uart.read_packet(timeout=timeout)
+        resp = tp.send(raw, timeout=timeout)
     except Exception as exc:                      # timeout / parse failure
         print(f"  RX: none ({type(exc).__name__}: {exc})")
         return None
@@ -229,6 +271,10 @@ def main() -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--check", default="all", help="check name, or 'all'")
     p.add_argument("--list", action="store_true", help="list available checks")
+    p.add_argument("--target", default="console", choices=("console", "sensor"),
+                   help="device under test (default: console)")
+    p.add_argument("--side", default="left", choices=("left", "right"),
+                   help="sensor side when --target sensor (default: left)")
     args = p.parse_args()
 
     if args.list:
@@ -242,26 +288,44 @@ def main() -> int:
 
     iface = MotionInterface()
     iface.start()
-    iface.wait_for_ready(console=True, sensors=0, timeout=15)
-    console_ok, _, _ = iface.is_device_connected()
-    if not console_ok:
-        print("Console not connected — check the cable and that no other app holds the port.")
-        iface.stop()
-        return 1
+    want_sensors = 1 if args.target == "sensor" else 0
+    iface.wait_for_ready(console=args.target == "console",
+                         sensors=want_sensors, timeout=15)
+    console_ok, left_ok, right_ok = iface.is_device_connected()
 
-    uart = iface.console.uart
+    if args.target == "console":
+        if not console_ok:
+            print("Console not connected — check the cable and that no other app holds the port.")
+            iface.stop()
+            return 1
+        handle, kind = iface.console.uart, "console"
+    else:
+        sensor = iface.left if args.side == "left" else iface.right
+        if not (left_ok if args.side == "left" else right_ok):
+            print(f"{args.side.capitalize()} sensor not connected — check the cable "
+                  "and that no other app holds the device.")
+            iface.stop()
+            return 1
+        if sensor.uart is None or getattr(sensor.uart, "comm", None) is None:
+            print("Sensor COMMS interface unavailable.")
+            iface.stop()
+            return 1
+        handle, kind = sensor.uart.comm, "sensor"
+
+    print(f"Target: {kind}" + (f" ({args.side})" if kind == "sensor" else ""))
     selected = list(CHECKS) if args.check == "all" else [args.check]
     results = {}
 
     try:
-        for name in selected:
-            print(f"\n=== {name} ===")
-            try:
-                results[name] = bool(CHECKS[name](uart))
-            except Exception as exc:
-                print(f"  EXCEPTION: {type(exc).__name__}: {exc}")
-                results[name] = False
-            print(f"  RESULT: {'PASS' if results[name] else 'REVIEW'}")
+        with Transport(kind, handle) as tp:
+            for name in selected:
+                print(f"\n=== {name} ===")
+                try:
+                    results[name] = bool(CHECKS[name](tp))
+                except Exception as exc:
+                    print(f"  EXCEPTION: {type(exc).__name__}: {exc}")
+                    results[name] = False
+                print(f"  RESULT: {'PASS' if results[name] else 'REVIEW'}")
     finally:
         iface.stop()
 
