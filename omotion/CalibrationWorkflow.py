@@ -23,6 +23,7 @@ import platform
 import socket
 import sys
 import threading
+import time
 import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
@@ -165,6 +166,11 @@ class CalibrationResult:
     started_timestamp: str
     outcome: Optional[CalibrationOutcome] = None
     rolled_back: bool = False   # set by Task 3
+    # True when the operator explicitly approved writing a calibration
+    # whose scan-1 means/contrast were below threshold (#199 pre-write
+    # gate). A consented run is never rolled back — the operator already
+    # said this unit is simply dim.
+    consented_below_threshold: bool = False
 
 
 @dataclass
@@ -470,6 +476,30 @@ def evaluate_passed(rows: list[CalibrationResultRow]) -> bool:
     )
 
 
+def evaluate_gate_passed(rows: list[CalibrationResultRow]) -> bool:
+    """Pre-write gate (#199): mean + contrast only.
+
+    Evaluated on the *calibration* scan, before anything is written to the
+    console. Both quantities are calibration-independent — mean is the raw
+    pixel average and contrast is speckle std/mean — so applying the newly
+    computed calibration cannot change them. That is what makes it sound to
+    judge them one scan early: a camera that is too dim here will still be
+    too dim in the validation scan.
+
+    BFI/BVI are deliberately excluded — they *are* the calibrated
+    quantities, so they only become meaningful after the calibration is
+    applied, which is what the validation scan is for. Ambient-dark is
+    excluded too: phase 1's dark frames are captured but the ambient
+    criterion is defined against the validation scan (#122).
+    """
+    if not rows:
+        return False
+    return all(
+        r.mean_test == "PASS" and r.contrast_test == "PASS"
+        for r in rows
+    )
+
+
 _CSV_FIELDS = [
     "camera_index", "side", "cam",
     "mean", "avg_contrast", "bfi", "bvi", "dark",
@@ -642,6 +672,7 @@ def write_result_json(
     mode: str = "calibrate",
     outcome: str = "",
     calibration_rolled_back: bool = False,
+    consented_below_threshold: bool = False,
 ) -> None:
     """Write a self-describing JSON manifest of the calibration run.
 
@@ -673,6 +704,9 @@ def write_result_json(
         "error": error,
         "outcome": outcome,
         "calibration_rolled_back": calibration_rolled_back,
+        # #199 — this calibration was written on the operator's explicit
+        # authority despite below-threshold scan means/contrast.
+        "consented_below_threshold": consented_below_threshold,
         "operator_id": request.operator_id,
         "notes": request.notes,
         "host": _collect_host_info(),
@@ -990,7 +1024,27 @@ class CalibrationWorkflow:
         on_log_fn: Optional[Callable[[str], None]] = None,
         on_progress_fn: Optional[Callable[[str], None]] = None,
         on_complete_fn: Optional[Callable[[CalibrationResult], None]] = None,
+        on_confirm_fn: Optional[
+            Callable[[list["CalibrationResultRow"]], bool]
+        ] = None,
     ) -> bool:
+        """Run the calibration procedure on a worker thread.
+
+        ``on_confirm_fn`` implements the pre-write gate (#199). It is called
+        — on the worker thread — only when the calibration scan's means or
+        contrasts miss their thresholds, with the per-camera rows measured
+        so far, and must return True to authorise writing the console EEPROM
+        anyway or False to abort untouched. **When it is not supplied, a
+        failing gate aborts without writing**, which is the conservative
+        default: the console keeps whatever calibration it already had.
+
+        The handler blocks the worker thread, so it must bound its own wait
+        — the watchdog is paused across the call precisely so operator think
+        time isn't charged against ``max_duration_sec``, which also means it
+        cannot rescue a handler that never returns. Raising is treated as a
+        decline. ``cancel_calibration()`` remains responsive throughout: the
+        stop event is re-checked as soon as the handler returns.
+        """
         with self._lock:
             if self._running:
                 logger.warning("start_calibration refused: already running.")
@@ -1023,6 +1077,8 @@ class CalibrationWorkflow:
             prior_cal: Optional[Calibration] = None
             wrote_calibration = False
             rolled_back = False
+            consented = False
+            t_proc0 = time.monotonic()
 
             logger.info(
                 "Calibration: starting procedure (operator=%s, output_dir=%s, "
@@ -1185,12 +1241,13 @@ class CalibrationWorkflow:
                         skip_frames,
                     )
                 _reset_firmware_trigger("phase 1 (pre-scan)")
-                # _cal_dark_samples deliberately discarded — the ambient
-                # check (#122) gates on validation-scan dark frames so it
-                # measures the same scan as the row-level mean/contrast/
-                # BFI/BVI tests. If we ever want to also gate on the
-                # calibration scan's dark frames, capture this here.
-                cal_left, cal_right, cal_samples, _cal_dark_samples = _run_subscan_capture(
+                # cal_dark_samples feeds the pre-write gate's row build
+                # (#199) so its table can show an ambient column. The
+                # ambient *criterion* still gates on validation-scan darks
+                # (#122) — evaluate_gate_passed ignores dark_test — so the
+                # pass/fail semantics are unchanged; these frames are only
+                # here so the operator sees a complete table.
+                cal_left, cal_right, cal_samples, cal_dark_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib1_{request.operator_id}",
                     duration_sec=request.duration_sec + request.scan_delay_sec,
@@ -1233,6 +1290,100 @@ class CalibrationWorkflow:
                     "Calibration phase 2 done — proposed calibration:\n%s",
                     _format_calibration(cal_obj),
                 )
+
+                # ── Phase 2.5: pre-write gate (#199) ──────────────────────
+                # The console EEPROM is not touched until either the
+                # calibration scan's own mean/contrast clear their bars or
+                # the operator explicitly authorises writing anyway. Before
+                # this gate existed the write happened here unconditionally
+                # and a bad run was undone afterwards, which meant every
+                # failed calibration briefly destroyed the previous one.
+                _emit_progress("gate")
+                logger.info(
+                    "Calibration phase 2.5: pre-write gate on calibration-"
+                    "scan mean/contrast."
+                )
+                gate_rows = _build_result_rows_from_samples(
+                    cal_samples,
+                    dark_samples=cal_dark_samples,
+                    left_camera_mask=request.left_camera_mask,
+                    right_camera_mask=request.right_camera_mask,
+                    thresholds=request.thresholds,
+                    sensor_left=getattr(self._interface, "left", None),
+                    sensor_right=getattr(self._interface, "right", None),
+                )
+                if evaluate_gate_passed(gate_rows):
+                    logger.info(
+                        "Calibration phase 2.5 done: gate PASS — proceeding "
+                        "to write."
+                    )
+                else:
+                    below = ", ".join(
+                        f"{'L' if r.side == 'left' else 'R'}{r.cam_id + 1}"
+                        for r in gate_rows
+                        if r.mean_test == "FAIL" or r.contrast_test == "FAIL"
+                    )
+                    logger.warning(
+                        "Calibration phase 2.5: gate FAIL — below threshold "
+                        "on %s. Console EEPROM not written yet.", below,
+                    )
+                    _emit_log(
+                        "Calibration: scan means/contrast below threshold "
+                        f"({below}) — awaiting confirmation before writing."
+                    )
+                    if on_confirm_fn is None:
+                        error = (
+                            "calibration scan below threshold on "
+                            f"{below}; not written (no confirmation handler)"
+                        )
+                        canceled = True
+                        return
+
+                    # Pause the watchdog: the operator's think time must not
+                    # be charged against max_duration_sec, or a slow answer
+                    # would surface as a bogus timeout.
+                    wd.cancel()
+                    t_wait0 = time.monotonic()
+                    try:
+                        consented = bool(on_confirm_fn(gate_rows))
+                    except Exception as e:
+                        logger.exception(
+                            "Calibration gate: confirmation handler raised; "
+                            "treating as declined."
+                        )
+                        consented = False
+                        error = f"gate confirmation failed: {e}"
+                    wait_s = time.monotonic() - t_wait0
+                    logger.info(
+                        "Calibration phase 2.5: operator %s after %.1fs.",
+                        "APPROVED the write" if consented else "declined",
+                        wait_s,
+                    )
+                    if self._stop_evt.is_set():
+                        canceled = True
+                        if not error:
+                            error = "canceled at pre-write gate"
+                        return
+                    if not consented:
+                        canceled = True
+                        if not error:
+                            error = (
+                                "declined at pre-write gate: calibration "
+                                f"scan below threshold on {below}"
+                            )
+                        return
+                    # Restart the watchdog on the remaining budget, with the
+                    # wait excluded.
+                    remaining = request.max_duration_sec - (
+                        time.monotonic() - t_proc0 - wait_s
+                    )
+                    wd = threading.Timer(max(1.0, remaining), _watchdog)
+                    wd.daemon = True
+                    wd.start()
+                    _emit_log(
+                        "Calibration: proceeding with operator approval "
+                        "despite below-threshold scan."
+                    )
 
                 _emit_progress("write_calibration")
                 _emit_log("Calibration: writing to console…")
@@ -1345,11 +1496,19 @@ class CalibrationWorkflow:
                 if (
                     wrote_calibration and prior_cal is not None
                     and outcome is not CalibrationOutcome.PASSED
+                    and not consented
                 ):
                     # The write in phase 3 predates the validation verdict.
                     # Anything short of PASSED means the new calibration is
                     # unvalidated — put the previous one back (best-effort;
                     # the console may be gone).
+                    #
+                    # Skipped when the operator consented at the pre-write
+                    # gate: they were shown the below-threshold numbers and
+                    # asked for this calibration anyway, so undoing it would
+                    # discard exactly what they approved. Such a run still
+                    # reports FAILED — the verdict is honest, the write is
+                    # simply intentional.
                     try:
                         self._interface.write_calibration(
                             prior_cal.c_min, prior_cal.c_max,
@@ -1400,6 +1559,7 @@ class CalibrationWorkflow:
                         },
                         interface=self._interface,
                         calibration_rolled_back=rolled_back,
+                        consented_below_threshold=consented,
                     )
                     logger.info("Calibration manifest written: %s", json_path)
                 except Exception:
@@ -1423,6 +1583,7 @@ class CalibrationWorkflow:
                     started_timestamp=ts,
                     outcome=outcome,
                     rolled_back=rolled_back,
+                    consented_below_threshold=consented,
                 )
                 with self._lock:
                     self._running = False
