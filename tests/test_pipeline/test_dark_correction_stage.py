@@ -717,3 +717,84 @@ def test_corrected_frame_quality_defaults_to_ok():
         mean=36.0, std=4.8, contrast=0.13, bfi=5.0, bvi=5.0,
     )
     assert ef.quality == "ok"
+
+
+def _stage_with_schedule(dark_interval):
+    """dark_interval=3 puts scheduled darks at abs_id 10, 13, 16, 19 —
+    compact enough to construct a missed dark in a handful of frames."""
+    return DarkCorrectionStage(
+        realtime_estimator=HybridRealtimePredictor(),
+        batch_estimator=LinearInterpolation(),
+        discard_count=9,
+        dark_interval=dark_interval,
+    )
+
+
+def _interval_batch(frame_types, abs_ids):
+    n = len(abs_ids)
+    mean = np.full((n, 2, 8), 500.0, dtype=np.float32)
+    std = np.full((n, 2, 8), 20.0, dtype=np.float32)
+    for i, ft in enumerate(frame_types):
+        if ft == "dark":
+            mean[i, :, :] = 100.0
+            std[i, :, :] = 10.0
+    return _batch(n, frame_types, abs_ids, mean_raw=mean, std_raw=std)
+
+
+def test_nominal_interval_leaves_quality_untouched():
+    """Darks at 10 and 13 are consecutive scheduled positions — nothing missed."""
+    batch = _interval_batch(["dark", "light", "light", "dark"], [10, 11, 12, 13])
+    _stage_with_schedule(3).process(batch)
+
+    frames = [f for e in batch.events if isinstance(e, IntervalClosed)
+              for f in e.corrected_batch.frames]
+    assert frames, "expected an interval to close"
+    assert all(f.quality == "ok" for f in frames)
+
+
+def test_missed_dark_flags_every_frame_in_the_widened_interval():
+    """The dark at 13 never arrives, so the interval closes 10..16 instead."""
+    batch = _interval_batch(
+        ["dark", "light", "light", "light", "light", "dark"],
+        [10, 11, 12, 14, 15, 16],
+    )
+    _stage_with_schedule(3).process(batch)
+
+    frames = [f for e in batch.events if isinstance(e, IntervalClosed)
+              for f in e.corrected_batch.frames]
+    assert frames, "expected an interval to close"
+    assert all(f.quality == "wide_interval" for f in frames)
+
+
+def test_missed_dark_emits_a_warning_event():
+    from omotion.pipeline.batch import MissedDarkWarning
+
+    batch = _interval_batch(
+        ["dark", "light", "light", "light", "light", "dark"],
+        [10, 11, 12, 14, 15, 16],
+    )
+    _stage_with_schedule(3).process(batch)
+
+    warnings = [e for e in batch.events if isinstance(e, MissedDarkWarning)]
+    assert len(warnings) == 1
+    w = warnings[0]
+    assert w.expected_abs_ids == [13]
+    assert w.n_missed == 1
+    assert (w.left_abs, w.right_abs) == (10, 16)
+    assert w.side == "left" and w.cam_id == 0
+
+
+def test_missed_dark_escalates_over_an_existing_quality():
+    """A frame already flagged nan_filled ends up wide_interval, since that is
+    the flag that biases the aggregate."""
+    batch = _interval_batch(
+        ["dark", "light", "light", "light", "light", "dark"],
+        [10, 11, 12, 14, 15, 16],
+    )
+    batch.quality = np.array(
+        ["ok", "nan_filled", "ok", "ok", "ok", "ok"], dtype="<U14")
+    _stage_with_schedule(3).process(batch)
+
+    frames = [f for e in batch.events if isinstance(e, IntervalClosed)
+              for f in e.corrected_batch.frames]
+    assert all(f.quality == "wide_interval" for f in frames)

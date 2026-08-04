@@ -25,6 +25,7 @@ from typing import Optional
 import numpy as np
 
 from ..batch import FrameBatch, IntervalClosed
+from ..quality import worse_of
 from .dark import (
     DarkFrameQuadraticStencil,
     EnrichedCorrectedFrame, EnrichedCorrectedInterval,
@@ -164,6 +165,14 @@ class DarkFrameHoldStage:
                 v_plus_1=r1, v_plus_2=r2,
             )
 
+        # The stencilled row's quality must be the worst of the neighbours it
+        # was actually interpolated from — it must not silently claim "ok"
+        # when built from wide_interval (or otherwise degraded) frames (#175).
+        stencil_quality = "ok"
+        for neighbour in (right1, right2, left1, left2):
+            if neighbour is not None:
+                stencil_quality = worse_of(stencil_quality, neighbour.quality)
+
         return EnrichedCorrectedFrame(
             abs_frame_id=d_prev_abs,
             t=d_prev_t,
@@ -174,7 +183,7 @@ class DarkFrameHoldStage:
             contrast=_interp("contrast"),
             bfi=_interp("bfi"),
             bvi=_interp("bvi"),
-            quality="ok",
+            quality=stencil_quality,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────

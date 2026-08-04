@@ -227,3 +227,19 @@ def test_reset_clears_pending_window():
     flush = _batch()
     stage.on_scan_stop(flush)
     assert _avg_frames(flush) == []
+
+
+def test_side_average_inherits_wide_interval_from_one_camera():
+    """One degraded camera flags the whole side-average row — it contributes
+    real-looking numbers built on a stretched baseline, so the aggregate is
+    biased even though the other camera is clean."""
+    stage = _stage()
+    good = _ef(12, 5.0, "left", 0, 2.0, 20.0)
+    degraded = _ef(12, 5.0, "left", 1, 6.0, 60.0)
+    degraded.quality = "wide_interval"
+    b = _batch([_interval(10, 20, [good]), _interval(10, 20, [degraded])])
+    stage.process(b)
+
+    frames = _avg_frames(b)
+    assert frames, "expected a side-average frame"
+    assert frames[0].quality == "wide_interval"

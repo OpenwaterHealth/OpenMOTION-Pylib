@@ -17,8 +17,13 @@ from typing import Any, Deque, Optional
 
 import numpy as np
 
-from ..batch import DarkIntegrityWarning, FrameBatch, IntervalClosed, TerminalDarkResult
+from ..batch import (
+    DarkIntegrityWarning, FrameBatch, IntervalClosed, MissedDarkWarning,
+    TerminalDarkResult,
+)
+from ..dark_schedule import missed_dark_ids
 from ..pedestal import SensorPedestals
+from ..quality import worse_of
 
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.dark")
@@ -396,7 +401,9 @@ class DarkCorrectionStage:
                  batch_estimator: LinearInterpolation,
                  pedestals: Optional[SensorPedestals] = None,
                  realtime_history_size: int = 4,
-                 integrity_max_above_pedestal: float = 5.0):
+                 integrity_max_above_pedestal: float = 5.0,
+                 discard_count: int = 9,
+                 dark_interval: int = 600):
         self._realtime = realtime_estimator
         self._batch = batch_estimator
         self._pedestals = pedestals or SensorPedestals(left=64.0, right=64.0)
@@ -407,6 +414,8 @@ class DarkCorrectionStage:
         )
         self._last_realtime: dict[tuple[str, int], tuple[float, float, float]] = {}
         self._terminal_fsync_count: Optional[int] = None
+        self._discard_count = int(discard_count)
+        self._dark_interval = int(dark_interval)
 
     def set_terminal_fsync_count(self, count: int) -> None:
         """Ground-truth index of the final FSYNC pulse, from the console
@@ -430,10 +439,40 @@ class DarkCorrectionStage:
 
         Downstream stages handle shot-noise, BFI/BVI, and the dark-frame
         quadratic stencil.
+
+        A closed interval should be bounded by consecutive scheduled darks. Any
+        scheduled position falling inside it is a dark that never arrived, so
+        the baseline was interpolated across the gap — every frame is flagged
+        `wide_interval` and a MissedDarkWarning is raised (#175).
         """
         side, cam_id = key
         corrected = self._batch.correct_interval(interval, side=side, cam_id=cam_id)
         corrected.left_t = interval.left.obs.t
+
+        missed = missed_dark_ids(
+            interval.left_abs, interval.right_abs,
+            discard_count=self._discard_count,
+            dark_interval=self._dark_interval,
+        )
+        if missed:
+            for f in corrected.frames:
+                f.quality = worse_of(f.quality, "wide_interval")
+            events.append(MissedDarkWarning(
+                side=side, cam_id=int(cam_id),
+                expected_abs_ids=list(missed),
+                left_abs=int(interval.left_abs),
+                right_abs=int(interval.right_abs),
+                n_missed=len(missed),
+            ))
+            logger.warning(
+                "missed dark: side=%s cam=%d — scheduled dark(s) at %s never "
+                "arrived; interval %d..%d spans the gap, so the baseline was "
+                "interpolated across %d frames. Frames flagged wide_interval.",
+                side, int(cam_id), missed,
+                int(interval.left_abs), int(interval.right_abs),
+                int(interval.right_abs) - int(interval.left_abs),
+            )
+
         events.append(IntervalClosed(corrected_batch=corrected))
 
     def process(self, batch: FrameBatch) -> FrameBatch:

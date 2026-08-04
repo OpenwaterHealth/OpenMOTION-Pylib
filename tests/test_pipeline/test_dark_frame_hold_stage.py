@@ -2,7 +2,8 @@
 
 import numpy as np
 import pytest
-from omotion.pipeline.batch import FrameBatch
+from omotion.pipeline.batch import FrameBatch, IntervalClosed
+from omotion.pipeline.stages.dark import EnrichedCorrectedFrame, EnrichedCorrectedInterval
 from omotion.pipeline.stages.dark_frame_hold import DarkFrameHoldStage
 
 
@@ -91,3 +92,90 @@ def test_reset_clears_hold_state():
     batch = _batch(["dark"], [0], [4], [9.0], [0.0])
     stage.process(batch)
     assert batch.bfi_live[0, 0, 4] == pytest.approx(9.0)
+
+
+# ── Batch stencil: quality propagation (#175) ──────────────────────────────
+
+def _empty_batch():
+    """A batch with no rows — the stencil path only reads batch.events."""
+    return FrameBatch(
+        cam_ids=np.zeros(0, dtype=np.int8), frame_ids=np.zeros(0, dtype=np.uint8),
+        side_ids=np.zeros(0, dtype=np.int8),
+        raw_histograms=np.zeros((0, 2, 8, 1024), dtype=np.uint32),
+        temperature_c=np.zeros((0, 2, 8), dtype=np.float32),
+        timestamp_s=np.zeros(0, dtype=np.float64), pdc=None, tcm=None, tcl=None,
+    )
+
+
+def _ef(fid, t, side, cam, bfi, bvi, quality="ok"):
+    return EnrichedCorrectedFrame(
+        abs_frame_id=fid, t=t, side=side, cam_id=cam,
+        mean=100.0, std=30.0, contrast=0.3, bfi=bfi, bvi=bvi,
+        quality=quality,
+    )
+
+
+def test_stencilled_dark_row_is_ok_when_all_neighbours_are_ok():
+    """Baseline: with only ok-quality neighbours, the stencilled D_prev row
+    stays "ok" — the fix must not force wide_interval unconditionally."""
+    stage = DarkFrameHoldStage()
+    interval = EnrichedCorrectedInterval(
+        left_abs=10, right_abs=20, left_t=4.9,
+        frames=[_ef(12, 5.0, "left", 0, 2.0, 20.0, quality="ok"),
+                _ef(13, 5.025, "left", 0, 4.0, 40.0, quality="ok")],
+    )
+    batch = _empty_batch()
+    batch.events.append(IntervalClosed(corrected_batch=interval))
+    stage.process(batch)
+
+    dark_row = interval.frames[0]
+    assert dark_row.abs_frame_id == 10
+    assert dark_row.quality == "ok"
+
+
+def test_stencilled_dark_row_inherits_wide_interval_from_right_neighbour():
+    """The stencilled D_prev row must not silently claim quality="ok" when the
+    light frames it was interpolated from are flagged wide_interval (missed-
+    dark policy, #175) — worst-quality-wins applies to the stencil too."""
+    stage = DarkFrameHoldStage()
+    interval = EnrichedCorrectedInterval(
+        left_abs=10, right_abs=20, left_t=4.9,
+        frames=[_ef(12, 5.0, "left", 0, 2.0, 20.0, quality="wide_interval"),
+                _ef(13, 5.025, "left", 0, 4.0, 40.0, quality="ok")],
+    )
+    batch = _empty_batch()
+    batch.events.append(IntervalClosed(corrected_batch=interval))
+    stage.process(batch)
+
+    dark_row = interval.frames[0]
+    assert dark_row.abs_frame_id == 10
+    assert dark_row.quality == "wide_interval"
+
+
+def test_stencilled_dark_row_inherits_wide_interval_from_left_tail():
+    """A wide_interval quality on the PREVIOUS interval's tail (the left
+    neighbours v(D-1)/v(D-2)) must also propagate into the next interval's
+    stencilled dark row, even when that interval's own light frames are ok."""
+    stage = DarkFrameHoldStage()
+
+    first_interval = EnrichedCorrectedInterval(
+        left_abs=0, right_abs=10, left_t=-0.25,
+        frames=[_ef(2, 0.05, "left", 0, 1.0, 10.0, quality="wide_interval"),
+                _ef(3, 0.075, "left", 0, 1.5, 15.0, quality="wide_interval")],
+    )
+    batch1 = _empty_batch()
+    batch1.events.append(IntervalClosed(corrected_batch=first_interval))
+    stage.process(batch1)
+
+    second_interval = EnrichedCorrectedInterval(
+        left_abs=10, right_abs=20, left_t=4.9,
+        frames=[_ef(12, 5.0, "left", 0, 2.0, 20.0, quality="ok"),
+                _ef(13, 5.025, "left", 0, 4.0, 40.0, quality="ok")],
+    )
+    batch2 = _empty_batch()
+    batch2.events.append(IntervalClosed(corrected_batch=second_interval))
+    stage.process(batch2)
+
+    dark_row = second_interval.frames[0]
+    assert dark_row.abs_frame_id == 10
+    assert dark_row.quality == "wide_interval"

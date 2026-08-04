@@ -54,6 +54,20 @@ class DarkIntegrityWarning(BatchEvent):
 
 
 @dataclass
+class MissedDarkWarning(BatchEvent):
+    """One or more scheduled dark frames never arrived, so the interval that
+    closed spans wider than nominal and its baseline was interpolated across
+    the gap. Frames are still emitted, flagged quality="wide_interval" — this
+    is a diagnostic event, not a drop signal."""
+    side: str
+    cam_id: int
+    expected_abs_ids: list[int]
+    left_abs: int
+    right_abs: int
+    n_missed: int
+
+
+@dataclass
 class StencilFallback(BatchEvent):
     """The 4-point dark-frame quadratic stencil fell back to a simpler scheme
     because some neighbours were unavailable. Diagnostic, not an error."""
