@@ -26,6 +26,14 @@ import os
 import sys
 from types import SimpleNamespace
 
+# Emoji in operator instructions must survive Windows pipes, where Python
+# otherwise defaults to the cp1252 locale encoding and dies on first print.
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from omotion.tuning import (
     STATE_FILE as TUNE_STATE,
     load_state as tune_state,
@@ -113,7 +121,7 @@ def main() -> int:
     if not a.skip_tuning:
         bench = "Ophir meter connected, " + bench
     if not gate(f"Bench ready: {bench}. Continue?",
-                simple="Get the machine ready. Close other programs. Then press Continue."):
+                simple="✅ Get the machine ready. ⚠️ Laser will be on. Close other programs. Then press Continue ▶️"):
         return 1
 
     if not a.skip_tuning:
@@ -124,7 +132,7 @@ def main() -> int:
                          "lower, seat it FIRST - the higher one must be "
                          "seated for the later safety-ADC step, so ending "
                          "on it saves a swap. Which side is seated?",
-                         simple="Put ONE sensor in the metal holder, glass side up. Then press the button for that sensor: Left or Right.")
+                         simple="📥 Put ONE sensor in the metal holder, glass side up ⬆️. Then press the button for that sensor: ⬅️ Left or Right ➡️")
         if first is None:
             return 1
         if run(f"Baseline - {first}", phase_baseline,
@@ -134,7 +142,7 @@ def main() -> int:
         other = "right" if first == "left" else "left"
         if not gate(f"Swap: seat the {other.upper()} module in the fixture "
                     f"(same orientation rules). Ready?",
-                    simple=f"Take the sensor out. Put in the {other.upper()} sensor, glass side up. Then press Continue."):
+                    simple=f"🔄 Take the sensor out. Put in the {other.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
             return 1
         if run(f"Baseline - {other}", phase_baseline,
                SimpleNamespace(side=other, window=a.window)) != 0:
@@ -149,7 +157,7 @@ def main() -> int:
         if higher != other:
             if not gate(f"Swap: seat the {higher.upper()} module (higher "
                         f"power) for tuning and the safety-ADC reads. Ready?",
-                        simple=f"Take the sensor out. Put in the {higher.upper()} sensor, glass side up. Then press Continue."):
+                        simple=f"🔄 Take the sensor out. Put in the {higher.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
                 return 1
         if run("Tune + section 4.4", phase_tune,
                SimpleNamespace(seated=higher)) != 0:
@@ -176,20 +184,20 @@ def main() -> int:
             lower = "right" if higher == "left" else "left"
             if not gate(f"Swap: seat the {lower.upper()} module for the "
                         f"cross-check. Ready?",
-                        simple=f"Take the sensor out. Put in the {lower.upper()} sensor, glass side up. Then press Continue."):
+                        simple=f"🔄 Take the sensor out. Put in the {lower.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
                 return 1
             cc_rc = run("Cross-check", phase_crosscheck,
                         SimpleNamespace(seated=lower))
             if cc_rc != 0:
                 if not gate("Cross-check FAILED its window (NCR per WI "
                             "step 22). Continue anyway (dev bench only)?",
-                            simple="The test FAILED. Ask a technician before you continue."):
+                            simple="❌ The test FAILED. 🧑‍🔧 Ask a technician before you continue."):
                     return 1
 
         # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
         if not gate("Finalize will write the console EPROM and CYCLE MAINS "
                     "POWER (15 s off). Ready?",
-                    simple="The machine will turn off and on by itself. Do not touch anything. Press Continue."):
+                    simple="⚡ The machine will turn off and on by itself. 🚫✋ Do not touch anything. Press Continue ▶️"):
             return 1
         if run("Finalize (EPROM + power cycle + PDF)", phase_finalize,
                SimpleNamespace()) != 0:
@@ -204,13 +212,13 @@ def main() -> int:
                          "module on the STATIC PHANTOM with the included "
                          "weight (WI Figure H), covers removed. Which side "
                          "is on the phantom?",
-                         simple="Put ONE sensor on the white test block. Put the weight on top. Then press the button for that sensor: Left or Right.")
+                         simple="📥 Put ONE sensor on the white test block ⬜. Put the weight on top. Then press the button for that sensor: ⬅️ Left or Right ➡️")
     if cal_first is None:
         return 1
     if not gate("Confirm: module is on the phantom, weight on top, and the "
                 "setup will NOT be touched or bumped during calibration. "
                 "The laser will fire. Ready?",
-                simple="Check: sensor on the white block, weight on top. Do not touch the table after this. Press Continue."):
+                simple="✅ Check: sensor on the white block ⬜, weight on top. 🚫✋ Do not touch the table after this. Press Continue ▶️"):
         return 1
     ns = SimpleNamespace(side=cal_first, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
@@ -221,7 +229,7 @@ def main() -> int:
     cal_other = "right" if cal_first == "left" else "left"
     if not gate(f"Swap: place the {cal_other.upper()} module on the phantom "
                 f"(weight on, hands off after). Ready?",
-                simple=f"Take the sensor off the block. Put the {cal_other.upper()} sensor on the block. Weight on top. Then press Continue."):
+                simple=f"🔄 Take the sensor off the block. Put the {cal_other.upper()} sensor on the block ⬜. Weight on top. Then press Continue ▶️"):
         return 1
     ns = SimpleNamespace(side=cal_other, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
@@ -231,7 +239,7 @@ def main() -> int:
 
     if not gate("Verify will CYCLE MAINS POWER again to prove persistence. "
                 "Ready?",
-                simple="The machine will turn off and on again by itself. Do not touch anything. Press Continue."):
+                simple="⚡ The machine will turn off and on again by itself. 🚫✋ Do not touch anything. Press Continue ▶️"):
         return 1
     rc = run("Calibration verify (power cycle + PDF)", cal.phase_verify,
              SimpleNamespace())
