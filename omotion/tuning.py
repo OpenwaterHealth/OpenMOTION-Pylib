@@ -114,6 +114,26 @@ REG_UNITS = {
     "OPT_PULSE_WIDTH_UL": "us", "OPT_DRIVE_CL": "mA", "OPT_ADC_DATA": "mA",
 }
 
+# WI step 9: the default starting User Configuration (Figure Y). A fresh
+# tuning run RESETS the laser keys to these before any measurement — a unit
+# can arrive with stale foreign values (seen live: a "factory-new" console
+# carrying TA_PULSE_WIDTH 600 at config seq 66), and baselining at those
+# would corrupt the whole procedure. `calibration`/`TEC_TRIP` are preserved
+# per the flow segmentation; legacy EE/OPT THRESH+GAIN keys are dropped.
+WI_DEFAULT_CONFIG = {
+    "TA_PULSE_WIDTH": 500,
+    "TA_CURRENT_DRV": 5000,
+    "SEED_CW_GAIN": 140,
+    "EE_PULSE_WIDTH_UL": 550,
+    "EE_RATE_LL": 23125,
+    "EE_DRIVE_CL": 9999,
+    "OPT_PULSE_WIDTH_UL": 550,
+    "OPT_RATE_LL": 23125,
+    "OPT_DRIVE_CL": 9999,
+}
+_PRESERVED_KEYS = ("calibration", "TEC_TRIP")
+_DROPPED_LEGACY_KEYS = ("EE_THRESH", "EE_GAIN", "OPT_THRESH", "OPT_GAIN")
+
 # =========================================================================
 
 
@@ -179,13 +199,25 @@ def collect_sensor_inventory() -> dict:
     """Short-lived MotionInterface session for the step-8 inventory. Used by
     the tuning flow, which otherwise talks to the console alone."""
     from omotion.MotionInterface import MotionInterface
+    from omotion.connection_state import ConnectionState
     iface = MotionInterface(operator_id="wi15-inventory")
     iface.start()
     try:
         iface.wait_for_ready(console=True, sensors=2, timeout=20.0)
         return sensor_inventory_from_iface(iface)
     finally:
+        # stop() joins the monitor with a 5 s cap and does not check the
+        # result, and the monitor's shutdown performs the final disconnects
+        # of every handle. Wait on the handle states directly so the
+        # ConsoleSession that follows cannot race the COM-port teardown
+        # (observed on the bench: 'console not connected' aborts).
         iface.stop()
+        for handle in (iface.console, iface.left, iface.right):
+            try:
+                handle.wait_for(ConnectionState.DISCONNECTED, timeout=10.0)
+            except Exception:
+                pass
+        time.sleep(1.0)
 
 
 def read_fpga_revisions(session: "ConsoleSession") -> dict:
@@ -339,9 +371,22 @@ class OphirMeter:
 
 # --- console -------------------------------------------------------------
 class ConsoleSession:
-    def __init__(self) -> None:
-        self.console = MotionConsole(vid=MOTION_VID, pid=CONSOLE_MODULE_PID)
-        self.console._drive_connecting("wi15 runner")
+    def __init__(self, attempts: int = 3) -> None:
+        """Connect to the console, retrying across the transient window where
+        a just-released COM port still reports busy (post-inventory teardown,
+        app device hand-off, console re-enumeration after power-up)."""
+        for attempt in range(1, attempts + 1):
+            self.console = MotionConsole(vid=MOTION_VID, pid=CONSOLE_MODULE_PID)
+            self.console._drive_connecting("wi15 runner")
+            if self.console.is_connected():
+                break
+            try:
+                self.console.uart.close()
+            except Exception:
+                pass
+            if attempt < attempts:
+                print(f"  console connect attempt {attempt} failed - retrying")
+                time.sleep(2.0)
         if not self.console.is_connected():
             raise RuntimeError(
                 "could not connect to the console - close the TestApp/bloodflow-app first")
@@ -463,6 +508,34 @@ def phase_baseline(args) -> int:
         if "prior_config" not in st:
             cfg = session.console.read_config()
             st["prior_config"] = cfg.json_data if cfg else None
+
+        # WI step 9: reset the laser keys to the default starting
+        # configuration once per run, BEFORE the first bring-up. Without
+        # this, apply_laser_power() honors whatever stale overrides the
+        # unit arrived with and every baseline measures the wrong point.
+        if "step9_reset" not in st:
+            prior = st.get("prior_config") or {}
+            stale = {k: prior[k] for k in WI_DEFAULT_CONFIG
+                     if k in prior and prior[k] != WI_DEFAULT_CONFIG[k]}
+            new_cfg = dict(WI_DEFAULT_CONFIG)
+            for keep in _PRESERVED_KEYS:
+                if keep in prior:
+                    new_cfg[keep] = prior[keep]
+            if stale:
+                print("WI step 9: EPROM held NON-DEFAULT laser values - "
+                      "resetting to the default starting configuration:")
+                for k, v in stale.items():
+                    print(f"  {k}: {v} -> {WI_DEFAULT_CONFIG[k]}")
+                st["notes"].append(
+                    "WI step 9: unit arrived with non-default laser config "
+                    f"{stale}; reset to defaults before baselining "
+                    "(prior config preserved verbatim in Appendix A).")
+            dropped = [k for k in _DROPPED_LEGACY_KEYS if k in prior]
+            if dropped:
+                st["notes"].append(f"Dropped legacy override keys: {dropped}")
+            session.console.write_config_json(json.dumps(new_cfg))
+            st["step9_reset"] = {"stale_found": stale, "dropped": dropped}
+            save_state(st)
 
         bringup(session, st["notes"])
         if "console_fpga" not in st.get("inventory", {}):

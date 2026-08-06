@@ -94,14 +94,19 @@ questions as asked.
 - **The EPROM is written once, at the end** (`finalize`), rather than the WI's
   incremental save-as-you-go through steps 9→33. The end state is identical;
   the write is verified key-by-key after a power cycle.
-- **WI step 9 ("delete any data … paste the default configuration") is not
-  performed.** On the dev unit it would have destroyed a real calibration
-  block and the legacy `EE/OPT_THRESH`/`_GAIN` overrides. Instead the runner
-  reads the existing config, preserves `calibration`/`TEC_TRIP`
-  (permitted per ruling 7), and **drops** legacy `EE_THRESH`, `EE_GAIN`,
-  `OPT_THRESH`, `OPT_GAIN` at write time — `omotion/laser.py` prefers those
-  over `EE/OPT_DRIVE_CL` when both are present, so carrying them forward
-  would silently defeat the freshly tuned limits.
+- **WI step 9 IS performed, with preservation nuances.** At the start of each
+  fresh run the nine laser keys are reset to the WI default starting
+  configuration **before the first bring-up** — proven necessary on hardware:
+  a "factory-new" unit arrived carrying a stale foreign config (seq 66,
+  `TA_PULSE_WIDTH: 600`), and without the reset every baseline would have
+  measured at the wrong operating point (`apply_laser_power()` honors EPROM
+  overrides by design). Deviations from the literal step 9:
+  `calibration`/`TEC_TRIP` are preserved rather than deleted (calibration is
+  a separate flow; extras permitted per ruling 7), legacy `EE_THRESH`,
+  `EE_GAIN`, `OPT_THRESH`, `OPT_GAIN` are dropped (`omotion/laser.py`
+  prefers them over `EE/OPT_DRIVE_CL`, silently defeating tuned limits), and
+  the pre-reset config is recorded verbatim in the PDF's Appendix A with a
+  note listing every stale value found.
 - **Laser bring-up** uses the SDK's `apply_laser_power()`, which programs
   1000 µs pulse-width upper limits from its bundled `laser_params.json`. The
   WI's standing default is 550 µs, so the runner tightens both limits to
