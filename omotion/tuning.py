@@ -595,8 +595,25 @@ def phase_baseline(args) -> int:
         meter.close()
 
 
+def tuning_seat_for(energies: dict, higher: str) -> tuple[str, str]:
+    """Which module must be seated for the tune phase, and why.
+
+    WI step 19 (over-max) seats the HIGHEST-energy module; WI step 23
+    (under-min, per Ethan's 2026-08-06 recommendation superseding ruling 1)
+    seats the LOWEST. In-window keeps the higher module purely for flow
+    continuity - the section 4.4 ADC reads are seating-independent (one
+    laser, one safety ADC; the laser feeds both module outputs).
+    """
+    lower = "right" if higher == "left" else "left"
+    if any(e > SPEC31_MAX_UJ for e in energies.values()):
+        return higher, "over-max (step 19: highest module seated)"
+    if any(e < SPEC31_MIN_UJ for e in energies.values()):
+        return lower, "under-min (step 23: lowest module seated)"
+    return higher, "in window (no adjustment expected)"
+
+
 def phase_tune(args) -> int:
-    """WI steps 18-19 branch + section 4.4 ADC capture, higher module seated."""
+    """WI steps 18-19 / 23 branch + section 4.4 ADC capture."""
     st = load_state()
     apply_window(st)
     base = st.get("phases", {}).get("baseline", {})
@@ -604,19 +621,21 @@ def phase_tune(args) -> int:
         print("FAIL: need both baselines first")
         return 1
     higher = st["higher_side"]
-    if args.seated != higher:
-        print(f"FAIL: WI ruling 2 requires the higher-power module ('{higher}') "
-              f"seated for tuning and the section 4.4 ADC reads; you said "
-              f"'{args.seated}'. Swap and re-run.")
+    energies = {s: base[s]["measurement"]["mean_uj"] for s in base}
+    required, why = tuning_seat_for(energies, higher)
+    if args.seated != required:
+        print(f"FAIL: this branch is {why}; the '{required}' module must be "
+              f"seated, but you said '{args.seated}'. Swap and re-run.")
         return 1
 
-    energies = {s: base[s]["measurement"]["mean_uj"] for s in base}
     meter = OphirMeter()
     session = ConsoleSession()
     try:
         meter.configure_for_wi()
         bringup(session, st["notes"])
-        tune = {"branch": None, "steps": [], "outcome": ""}
+        tune = {"branch": None, "steps": [], "outcome": "",
+                "seated": args.seated}
+        adjusted_ok = True
 
         if any(e > SPEC31_MAX_UJ for e in energies.values()):
             # WI step 19: reduce TA current 50 mA at a time until below max.
@@ -639,17 +658,71 @@ def phase_tune(args) -> int:
                 if nxt < TA_CURRENT_FLOOR_MA:
                     tune["outcome"] = (f"FLOOR: refusing to step below "
                                        f"{TA_CURRENT_FLOOR_MA:g} mA - NCR")
+                    adjusted_ok = False
                     break
                 session.write_scaled("TA_CURRENT_DRV", nxt)
             else:
                 tune["outcome"] = f"MAX STEPS ({TUNE_MAX_STEPS}) reached - NCR"
+                adjusted_ok = False
         elif any(e < SPEC31_MIN_UJ for e in energies.values()):
-            # Ruling 1: under-min does NOT escalate pulse width in the
-            # production flow - it skips ahead to section 4.4. The unit's
-            # SPEC-31 line will show FAIL; diagnose-low exists for the sweep.
-            tune["branch"] = "under-min: skip ahead to 4.4 (ruling 1)"
-            tune["outcome"] = "no adjustment made"
-            print("under-min -> skipping ahead to section 4.4 per ruling 1")
+            # WI step 23 (Ethan's 2026-08-06 recommendation, superseding
+            # ruling 1): raise TA pulse width 10 us at a time - lowest module
+            # seated - until the floor is met or the 600 us ceiling. The
+            # standing safety limits are temporarily relaxed to 660 us for
+            # the loop; on success they are re-tightened to 1.1x the found
+            # pulse width, on ceiling-failure everything is restored to the
+            # WI defaults and the procedure ENDS per step 23's text.
+            tune["branch"] = "raise-pulse-width (step 23)"
+            pw = session.read_reg("TA_PULSE_WIDTH")[1]
+            print(f"=== step 23: raising TA pulse width from {pw:.1f} us ===")
+            print(f"    limits temporarily {WI_PULSE_WIDTH_UL_US:g} -> "
+                  f"{TEMP_PULSE_WIDTH_UL_US:g} us")
+            for reg in ("EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
+                session.write_scaled(reg, TEMP_PULSE_WIDTH_UL_US)
+            met = False
+            try:
+                for i in range(1, TUNE_MAX_STEPS + 1):
+                    m = fire_and_measure(session, meter, LOOP_CAPTURE_S)
+                    actual = session.read_reg("TA_PULSE_WIDTH")[1]
+                    tune["steps"].append(
+                        {"index": i, "ta_pulse_width_us": actual,
+                         "mean_uj": m["mean_uj"], "stdev_uj": m["stdev_uj"],
+                         "n": m["n"]})
+                    print(f"  step {i:2d}: {actual:6.2f} us -> "
+                          f"{m['mean_uj']:7.2f} uJ (sd {m['stdev_uj']:.2f}, "
+                          f"n={m['n']})")
+                    if m["mean_uj"] >= SPEC31_MIN_UJ:
+                        met = True
+                        tune["outcome"] = (f"MET: {m['mean_uj']:.2f} uJ >= "
+                                           f"{SPEC31_MIN_UJ:g} uJ at "
+                                           f"{actual:.2f} us")
+                        break
+                    nxt = actual + 10.0
+                    if nxt > TA_PULSE_WIDTH_CEILING_US + 1e-6:
+                        tune["outcome"] = (
+                            f"CEILING: {TA_PULSE_WIDTH_CEILING_US:g} us "
+                            f"reached without meeting {SPEC31_MIN_UJ:g} uJ - "
+                            f"unit fails, procedure ends (WI step 23)")
+                        break
+                    session.write_scaled("TA_PULSE_WIDTH", nxt)
+                else:
+                    tune["outcome"] = (f"MAX STEPS ({TUNE_MAX_STEPS}) "
+                                       f"reached - NCR")
+            finally:
+                if met:
+                    final_pw = session.read_reg("TA_PULSE_WIDTH")[1]
+                    new_ul = round(final_pw * PW_UL_MULT)
+                    for reg in ("EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
+                        session.write_scaled(reg, new_ul)
+                    print(f"    limits set to {new_ul:g} us "
+                          f"({PW_UL_MULT:g}x found pulse width)")
+                else:
+                    session.write_scaled("TA_PULSE_WIDTH",
+                                         WI_DEFAULT_CONFIG["TA_PULSE_WIDTH"])
+                    for reg in ("EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
+                        session.write_scaled(reg, WI_PULSE_WIDTH_UL_US)
+                    print("    restored WI default pulse width and limits")
+            adjusted_ok = met
         else:
             tune["branch"] = "in window: no tuning required"
             tune["outcome"] = "no adjustment made"
@@ -657,9 +730,23 @@ def phase_tune(args) -> int:
 
         print(f"  outcome: {tune['outcome']}")
 
-        # --- Section 4.4: safety ADC at FINAL tuned values, higher module
-        # seated (ruling 2), averaged over several reads (ruling 9), sampled
-        # while the laser fires (the register latches when stopped).
+        if not adjusted_ok:
+            # Adjustment loop failed its target: NCR, end the procedure
+            # (WI step 23 says so explicitly for the pulse-width branch;
+            # applied to both adjustment branches for consistency).
+            st["phases"]["tune"] = {
+                "when": dt.datetime.now().isoformat(timespec="seconds"),
+                **tune}
+            save_state(st)
+            print("NCR - procedure ends without section 4.4 / finalize")
+            return 1
+
+        # --- Section 4.4: safety ADC at FINAL tuned values, averaged over
+        # several reads (ruling 9), sampled while the laser fires (the
+        # register latches when stopped). Seating is irrelevant to the ADC
+        # itself - one laser, one safety ADC, both module outputs always fed
+        # (Ethan, 2026-08-06) - whichever module the tuning branch seated
+        # simply stays in the fixture for beam containment.
         print(f"\n=== section 4.4: safety ADC capture ({ADC_SAMPLES} reads) ===")
         session.assert_trigger_40hz()
         session.preflight()
@@ -699,7 +786,7 @@ def phase_tune(args) -> int:
                                 **tune}
         st["phases"]["sec44"] = final
         save_state(st)
-        other = [s for s in ("left", "right") if s != higher][0]
+        other = [s for s in ("left", "right") if s != args.seated][0]
         print(f"\nNEXT: seat the '{other}' module and run: crosscheck --seated {other}")
         return 0
     finally:
@@ -708,16 +795,18 @@ def phase_tune(args) -> int:
 
 
 def phase_crosscheck(args) -> int:
-    """WI steps 21-22: re-measure the other module at the final settings."""
+    """WI steps 21-22 / 25-26: re-measure the module NOT used for tuning, at
+    the final tuned settings."""
     st = load_state()
     apply_window(st)
     if "tune" not in st.get("phases", {}):
         print("FAIL: run tune first")
         return 1
-    higher = st["higher_side"]
-    other = [s for s in ("left", "right") if s != higher][0]
+    tuned_seat = st["phases"]["tune"].get("seated", st["higher_side"])
+    other = [s for s in ("left", "right") if s != tuned_seat][0]
     if args.seated != other:
-        print(f"FAIL: crosscheck wants the '{other}' module seated")
+        print(f"FAIL: crosscheck wants the '{other}' module seated (the one "
+              f"not used for tuning)")
         return 1
 
     meter = OphirMeter()
@@ -725,12 +814,18 @@ def phase_crosscheck(args) -> int:
     try:
         meter.configure_for_wi()
         bringup(session, st["notes"])
-        # Re-assert the tuned current (bringup rewrites laser_params defaults,
-        # then user-config overrides - but the tuned value is not in EPROM
-        # yet, so program it explicitly from state).
-        tuned = st["phases"]["sec44"]["TA_CURRENT_DRV"]
-        session.write_scaled("TA_CURRENT_DRV", tuned)
-        print(f"TA current re-asserted to tuned {tuned} mA")
+        # Re-assert the tuned operating point (bringup rewrites the
+        # laser_params defaults and the tuned values are not in EPROM yet).
+        # The standing pulse-width limits must track the tuned width - after
+        # a step-23 escalation the WI-default 550 us limit would sit below
+        # the operating pulse and trip the interlock.
+        sec44 = st["phases"]["sec44"]
+        session.write_scaled("TA_CURRENT_DRV", sec44["TA_CURRENT_DRV"])
+        session.write_scaled("TA_PULSE_WIDTH", sec44["TA_PULSE_WIDTH"])
+        for reg in ("EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
+            session.write_scaled(reg, sec44["PW_UL"])
+        print(f"re-asserted tuned point: {sec44['TA_PULSE_WIDTH']} us / "
+              f"{sec44['TA_CURRENT_DRV']} mA (limits {sec44['PW_UL']} us)")
 
         print(f"\n*** FIRING LASER ({other}, {BASELINE_CAPTURE_S:g}s) ***")
         m = fire_and_measure(session, meter, BASELINE_CAPTURE_S)
@@ -1062,12 +1157,18 @@ def build_pdf(st: dict, path: str) -> None:
 
     tune = st.get("phases", {}).get("tune")
     if tune:
-        el.append(Paragraph("4. Tuning (WI steps 18-19)", h2))
-        el.append(Paragraph(f"Branch: {tune.get('branch')}", body))
+        el.append(Paragraph("4. Tuning (WI steps 18-19 / 23)", h2))
+        el.append(Paragraph(
+            f"Branch: {tune.get('branch')} - module seated: "
+            f"{tune.get('seated', '?')}", body))
         if tune.get("steps"):
-            rows = [["#", "TA current", "Energy", "Std dev", "Pulses"]]
+            rows = [["#", "Setting", "Energy", "Std dev", "Pulses"]]
             for s in tune["steps"]:
-                rows.append([str(s["index"]), f"{s['ta_current_ma']:.1f} mA",
+                if "ta_current_ma" in s:
+                    setting = f"{s['ta_current_ma']:.1f} mA"
+                else:
+                    setting = f"{s['ta_pulse_width_us']:.2f} us"
+                rows.append([str(s["index"]), setting,
                              f"{s['mean_uj']:.2f} uJ", f"{s['stdev_uj']:.2f} uJ",
                              str(s["n"])])
             el.append(table(rows, (0.5 * inch, 1.4 * inch, 1.4 * inch,

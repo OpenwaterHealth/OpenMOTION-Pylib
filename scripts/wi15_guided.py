@@ -42,6 +42,7 @@ from omotion.tuning import (
     phase_finalize,
     phase_tune,
     save_state as save_tune_state,
+    tuning_seat_for,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -151,19 +152,24 @@ def main() -> int:
                SimpleNamespace(side=other, window=a.window)) != 0:
             return 1
 
-        higher = tune_state().get("higher_side")
+        st_now = tune_state()
+        higher = st_now.get("higher_side")
         if higher is None:
             print("ABORT: baselines did not produce a higher side")
             return 1
-
-        # --- Tuning + section 4.4 (higher module seated) -----------------
-        if higher != other:
-            if not gate(f"Swap: seat the {higher.upper()} module (higher "
-                        f"power) for tuning and the safety-ADC reads. Ready?",
-                        simple=f"🔄 Take the sensor out. Put in the {higher.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
+        energies = {s: b["measurement"]["mean_uj"]
+                    for s, b in st_now["phases"]["baseline"].items()}
+        # Which module the tuning branch needs seated: highest for the
+        # over-max reduce loop (step 19), lowest for the under-min
+        # pulse-width escalation (step 23), higher for the in-window case.
+        seat, why = tuning_seat_for(energies, higher)
+        if seat != other:
+            if not gate(f"Swap: seat the {seat.upper()} module for tuning "
+                        f"({why}). Ready?",
+                        simple=f"🔄 Take the sensor out. Put in the {seat.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
                 return 1
         if run("Tune + section 4.4", phase_tune,
-               SimpleNamespace(seated=higher)) != 0:
+               SimpleNamespace(seated=seat)) != 0:
             print("Tuning did not converge - NCR per the WI. Stopping.")
             return 1
 
@@ -184,13 +190,13 @@ def main() -> int:
                 "final settings (WI step 18 - both in window).")
             save_tune_state(st)
         else:
-            lower = "right" if higher == "left" else "left"
-            if not gate(f"Swap: seat the {lower.upper()} module for the "
+            cc_side = "right" if seat == "left" else "left"
+            if not gate(f"Swap: seat the {cc_side.upper()} module for the "
                         f"cross-check. Ready?",
-                        simple=f"🔄 Take the sensor out. Put in the {lower.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
+                        simple=f"🔄 Take the sensor out. Put in the {cc_side.upper()} sensor, glass side up ⬆️. Then press Continue ▶️"):
                 return 1
             cc_rc = run("Cross-check", phase_crosscheck,
-                        SimpleNamespace(seated=lower))
+                        SimpleNamespace(seated=cc_side))
             if cc_rc != 0:
                 if not gate("Cross-check FAILED its window (NCR per WI "
                             "step 22). Continue anyway (dev bench only)?",

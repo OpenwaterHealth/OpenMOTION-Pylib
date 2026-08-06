@@ -40,8 +40,8 @@ questions as asked.
 
 | # | Ambiguity in WI | Ruling | Where implemented |
 |---|---|---|---|
-| 1 | Step 18 routes an under-min module to "skip ahead to section 4.4", but steps 23–26 describe a pulse-width escalation for the same condition | **Skip ahead is correct.** Under-min units proceed straight to §4.4 with no adjustment; the SPEC-31 line records the failure. The step-23 sweep exists in the runner only as `diagnose-low`, a non-persisting diagnostic | `phase_tune` under-min branch; `phase_diagnose_low` |
-| 2 | §4.4 never says which module is seated during the safety-ADC reads, yet OPT ADC is module-dependent (measured: ~2247 mA with Left seated vs ~2358 mA with Right) | **Use the module with the higher measured power.** | `phase_tune` refuses to run unless `--seated` matches the higher-baseline side |
+| 1 | Step 18 routes an under-min module to "skip ahead to section 4.4", but steps 23–26 describe a pulse-width escalation for the same condition | **SUPERSEDED 2026-08-06:** under-min now routes through the **step-23 escalation** (lowest module seated, +10 µs steps to the 600 µs ceiling; ceiling-failure ends the procedure per step 23’s text). Ethan’s formal recommendation, replacing the WI author’s informal skip-ahead answer; step 18’s "skip ahead to 4.4" text is the error (its "place it back" already matches step 23’s setup). Redline item 3 proposes the same | `phase_tune` under-min branch (persisting); `diagnose-low` remains the non-persisting sweep |
+| 2 | §4.4 never says which module is seated during the safety-ADC reads | **CORRECTED 2026-08-06:** seating is irrelevant to the ADC — one laser, one safety ADC, both module outputs always fed (the ~5% Left/Right difference measured earlier was drift, not module dependence). Seating for the tune phase is governed by the adjustment branch instead: highest module for step 19, **lowest for step 23**, higher for the in-window case (continuity only) | `tuning_seat_for()`; `phase_tune` seat guard |
 | 3 | Step 31 says round the 1.1× EE value "to the nearest integer" in the step text but "round down" in its results column | **Round down** for EE (1.1×). OPT (1.3×, step 30) stays round-to-nearest as the WI consistently states | `EE_DRIVE_CL = int(...)`, `OPT_DRIVE_CL = round(...)` |
 | 4 | One module above max while the other is below min (single shared TA drive) is not covered by the decision tree | **NCR.** Unresolvable by tuning | Falls out of the branch logic; cross-check failure marks NCR |
 | 5 | Step 18 "The Test is complete" cannot literally end the test (§4.4–4.6 follow) | Reading confirmed: it means §4.2 tuning is complete; the procedure continues | flow always proceeds to §4.4 |
@@ -83,10 +83,11 @@ questions as asked.
   measurement-equivalent and saves a fixture insertion (the WI's literal
   order needs the higher module seated a second time: 5 insertions vs 3–4).
 - **Cross-check only runs when tuning adjusted something.** WI steps 21–22
-  exist inside the adjustment branches; when both baselines land in the
-  window (step 18 "complete") the other module was already measured at the
-  final settings and the re-measure buys nothing. The skip is recorded in
-  the run notes/PDF.
+  (over-max) and 25–26 (under-min) exist inside the adjustment branches;
+  when both baselines land in the window the other module was already
+  measured at the final settings and the re-measure buys nothing. The skip
+  is recorded in the run notes/PDF. The cross-checked module is always the
+  one NOT seated for the adjustment loop.
 - **Baseline order is operator's choice**, not the WI's hardcoded
   Left-then-Right (steps 12/15). Symmetric measurements; the guided flow
   tips the operator to seat the expected lower-power module first so the

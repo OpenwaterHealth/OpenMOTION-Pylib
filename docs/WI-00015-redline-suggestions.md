@@ -32,18 +32,17 @@ Utility**, multiply it by …"
 **Current:** section 4.4 never says which Sensor Module (if any) should be in
 the 0 cm detector while the Safety OPT/EE ADC values are read.
 
-**Problem:** the OPT (optical) safety ADC is **module-dependent** — measured
-~2247 mA with the Left module seated vs ~2358 mA with the Right (≈5%). The
-derived `OPT_DRIVE_CL` therefore depends on an unspecified condition.
+**Clarification (Ethan, 2026-08-06):** seating does NOT affect the readings
+— there is one laser and one safety ADC, and the laser feeds both module
+outputs continuously. (A ~5% Left/Right difference observed during
+automation development was drift, not module dependence.) The WI therefore
+needs no module-selection language for the ADC reads themselves; a module
+must simply be seated somewhere for beam containment, and in practice it is
+whichever module the section 4.2 adjustment branch used.
 
-**Proposed:** add to step 29: "Ensure the Sensor Module with the **higher
-measured energy** (from steps 14/17) is seated in the 0 cm detector for the
-following ADC readings." (Ruling 2.)
-
-Note the same edit must touch **step 18's under-minimum routing**, which
-currently says to place **the under-minimum module** ("place it back into
-the 0cm detector") before skipping ahead to section 4.4 — the under-minimum
-module is by definition the *lower*-power one, contradicting ruling 2.
+**Proposed:** state in step 29 that the ADC readings are independent of
+which Sensor Module is in the detector, so operators do not perform an
+unnecessary swap before section 4.4.
 
 Additionally, consider **moving the section 4.4 ADC readings to immediately
 after step 19's loop**, before the step 21–22 cross-check: the ADC values
@@ -63,10 +62,13 @@ The WI's step ordering implies this but never states the latching behavior.
 minimum "ahead to section 4.4", while steps 23–26 describe a pulse-width
 escalation procedure for the same condition.
 
-**Ruling 1:** the skip-ahead is correct; the under-minimum unit proceeds to
-section 4.4 with no adjustment (and fails SPEC-31 → NCR). *Note: this ruling
-was obtained informally from the WI author and deserves a documented
-resolution — a real under-minimum unit has now hit this fork.*
+**Recommendation (Ethan, 2026-08-06, superseding the earlier informal
+ruling):** the under-threshold case should route **through the step 23
+escalation**, not skip to section 4.4. Step 18's "skip ahead to section
+4.4" is the erroneous text — note its own instruction to "place it back
+into the 0cm detector" already matches step 23's setup (lowest-energy
+module seated), so the minimal fix is replacing "skip ahead to section 4.4"
+with "proceed to step 23". The automated runner implements this routing.
 
 **Measured data for the decision** (both bench units, step-23 sweep executed
 diagnostically): energy vs TA pulse width is cleanly linear — unit 1
@@ -78,11 +80,11 @@ units within roughly **14% of the floor (~260 µJ and up)**; anything dimmer
 fails at the ceiling regardless. Whichever routing the WI settles on, it
 should be chosen knowing the escalation's actual rescue band is this narrow.
 
-**Proposed:** either rewrite steps 23–26 as an explicitly optional
-diagnostic (or delete them), noting in step 18 that the under-minimum case
-both skips ahead **and** constitutes a SPEC-31 failure per the NCR process —
-or, if the escalation is retained as mandatory, resolve step 18's text to
-route through steps 23–26 first.
+**Proposed:** in step 18, replace "skip ahead to section 4.4 where the
+laser safety settings are determined" with "proceed to step 23". Keep steps
+23–26 as the mandatory under-threshold path; step 23's existing
+ceiling-failure clause ("the unit fails … end the procedure") already
+handles units the escalation cannot rescue.
 
 ## 4. Step 31 — rounding direction contradicts its own results column
 
