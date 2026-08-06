@@ -356,9 +356,11 @@ def phase_verify(args) -> int:
         out = os.path.join(
             OUT_DIR, f"WI-00015-46_{dt.datetime.now():%Y%m%d_%H%M%S}_calibration.pdf")
         build_pdf(st, out)
-        print(f"\npersistence: {'VERIFIED' if all_ok else 'FAILED'}")
+        verified = all_ok and rebooted
+        print("\npersistence: " + ("VERIFIED" if verified else "FAILED")
+              + ("" if rebooted else " (reboot not confirmed)"))
         print(f"report: {out}")
-        return 0 if all_ok else 1
+        return 0 if verified else 1
     finally:
         if session is not None:
             session.close()

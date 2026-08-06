@@ -681,6 +681,27 @@ def shelly_power(on: bool) -> None:
         r.read()
 
 
+def _print_utf8(text: str) -> None:
+    """Print text that may contain emoji without dying on cp1252 consoles.
+
+    Windows pipes default Python's stdout to the locale encoding; try to
+    upgrade it to UTF-8 once, and if printing still fails, degrade the text
+    rather than crash a hardware procedure over a pictogram.
+    """
+    try:
+        print(text)
+        return
+    except UnicodeEncodeError:
+        pass
+    try:
+        import sys as _sys
+        if hasattr(_sys.stdout, "reconfigure"):
+            _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        print(text)
+    except Exception:
+        print(text.encode("ascii", "replace").decode())
+
+
 def request_power_cycle() -> str:
     """Cycle console mains: automated when WI15_SHELLY_HOST is set, otherwise
     instruct the operator (same prompt protocol as the guided runner, so GUI
@@ -693,8 +714,9 @@ def request_power_cycle() -> str:
         time.sleep(POWER_OFF_DWELL_S)
         shelly_power(True)
         return f"Shelly {SHELLY_HOST}, {POWER_OFF_DWELL_S:g}s dwell"
-    print("@@SIMPLE \U0001f50c Turn the machine OFF with the power switch. "
-          "Count to 15. Turn it ON again. Then press Continue ▶️")
+    _print_utf8("@@SIMPLE \U0001f50c Turn the machine OFF with the power "
+                "switch. Count to 15. Turn it ON again. Then press "
+                "Continue ▶️")
     try:
         answer = input(
             f"\n>>> MANUAL POWER CYCLE: switch the console mains OFF, wait "
@@ -704,7 +726,7 @@ def request_power_cycle() -> str:
         answer = ""
     if answer.strip().lower() != "y":
         raise RuntimeError("operator aborted the manual power cycle")
-    return "manual operator power cycle (WI15_SHELLY_HOST not set)"
+    return "manual operator power cycle (SHELLY_IP_ADDRESS not set)"
 
 
 def console_uptime_ms(session: "ConsoleSession") -> int | None:
