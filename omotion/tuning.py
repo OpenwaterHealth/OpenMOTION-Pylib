@@ -87,11 +87,15 @@ OPT_MULT = 1.30            # WI step 30; round to NEAREST per WI text
 PW_UL_MULT = 1.10          # WI step 32; nearest
 
 # --- Section 4.5 power-cycle verification ---
-# Automated mains cycling uses a Shelly smart switch when WI15_SHELLY_HOST is
-# set (Ethan's bench: 192.168.1.81). Without it - e.g. at the factory - the
-# flow prompts the operator to flip the power switch instead, and then
-# verifies via firmware uptime that the console actually rebooted.
-SHELLY_HOST = os.environ.get("WI15_SHELLY_HOST", "")
+# Automated mains cycling uses a Shelly smart switch when SHELLY_IP_ADDRESS
+# is set - the same env var the bloodflow-app HIL test infrastructure uses
+# (tests/shelly.py, hil-tests.yml), so a bench configured for HIL runs is
+# already configured for this. Without it - e.g. at the factory - the flow
+# prompts the operator to flip the power switch instead, and then verifies
+# via firmware uptime that the console actually rebooted. SHELLY_RELAY
+# selects the relay index (default 0), also per the HIL convention.
+SHELLY_HOST = os.environ.get("SHELLY_IP_ADDRESS", "")
+SHELLY_RELAY = int(os.environ.get("SHELLY_RELAY", "0") or 0)
 POWER_OFF_DWELL_S = 15.0       # ruling 9
 RECONNECT_TIMEOUT_S = 90.0
 MAX_UPTIME_AFTER_CYCLE_MS = 180_000   # console must report < 3 min uptime
@@ -670,8 +674,9 @@ def phase_crosscheck(args) -> int:
 
 def shelly_power(on: bool) -> None:
     if not SHELLY_HOST:
-        raise RuntimeError("no WI15_SHELLY_HOST configured")
-    url = f"http://{SHELLY_HOST}/rpc/Switch.Set?id=0&on={'true' if on else 'false'}"
+        raise RuntimeError("no SHELLY_IP_ADDRESS configured")
+    url = (f"http://{SHELLY_HOST}/rpc/Switch.Set?id={SHELLY_RELAY}"
+           f"&on={'true' if on else 'false'}")
     with urllib.request.urlopen(url, timeout=10) as r:
         r.read()
 

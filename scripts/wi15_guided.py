@@ -198,7 +198,7 @@ def main() -> int:
                     return 1
 
         # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
-        auto_cycle = bool(os.environ.get("WI15_SHELLY_HOST"))
+        auto_cycle = bool(os.environ.get("SHELLY_IP_ADDRESS"))
         if not gate("Finalize will write the console EPROM and verify it "
                     "across a mains power cycle"
                     + (" (automatic, 15 s off)" if auto_cycle
@@ -248,7 +248,7 @@ def main() -> int:
     if run(f"Calibration - {cal_other}", cal.phase_calibrate, ns) != 0:
         return 1
 
-    auto_cycle = bool(os.environ.get("WI15_SHELLY_HOST"))
+    auto_cycle = bool(os.environ.get("SHELLY_IP_ADDRESS"))
     if not gate("Verify will check persistence across another mains power "
                 "cycle"
                 + (" (automatic)" if auto_cycle
