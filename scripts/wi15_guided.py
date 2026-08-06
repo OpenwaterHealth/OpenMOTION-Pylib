@@ -198,9 +198,15 @@ def main() -> int:
                     return 1
 
         # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
-        if not gate("Finalize will write the console EPROM and CYCLE MAINS "
-                    "POWER (15 s off). Ready?",
-                    simple="⚡ The machine will turn off and on by itself. 🚫✋ Do not touch anything. Press Continue ▶️"):
+        auto_cycle = bool(os.environ.get("WI15_SHELLY_HOST"))
+        if not gate("Finalize will write the console EPROM and verify it "
+                    "across a mains power cycle"
+                    + (" (automatic, 15 s off)" if auto_cycle
+                       else " - you will be asked to flip the power switch")
+                    + ". Ready?",
+                    simple=("⚡ The machine will turn off and on by itself. 🚫✋ Do not touch anything. Press Continue ▶️"
+                            if auto_cycle else
+                            "⚡ Soon you will turn the machine off and on. Get ready. Press Continue ▶️")):
             return 1
         if run("Finalize (EPROM + power cycle + PDF)", phase_finalize,
                SimpleNamespace()) != 0:
@@ -242,9 +248,15 @@ def main() -> int:
     if run(f"Calibration - {cal_other}", cal.phase_calibrate, ns) != 0:
         return 1
 
-    if not gate("Verify will CYCLE MAINS POWER again to prove persistence. "
-                "Ready?",
-                simple="⚡ The machine will turn off and on again by itself. 🚫✋ Do not touch anything. Press Continue ▶️"):
+    auto_cycle = bool(os.environ.get("WI15_SHELLY_HOST"))
+    if not gate("Verify will check persistence across another mains power "
+                "cycle"
+                + (" (automatic)" if auto_cycle
+                   else " - you will be asked to flip the power switch")
+                + ". Ready?",
+                simple=("⚡ The machine will turn off and on again by itself. 🚫✋ Do not touch anything. Press Continue ▶️"
+                        if auto_cycle else
+                        "⚡ Soon you will turn the machine off and on again. Get ready. Press Continue ▶️")):
         return 1
     rc = run("Calibration verify (power cycle + PDF)", cal.phase_verify,
              SimpleNamespace())

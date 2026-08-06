@@ -87,9 +87,14 @@ OPT_MULT = 1.30            # WI step 30; round to NEAREST per WI text
 PW_UL_MULT = 1.10          # WI step 32; nearest
 
 # --- Section 4.5 power-cycle verification ---
-SHELLY_HOST = "192.168.1.81"   # bench mains switch (Shelly Gen-4)
+# Automated mains cycling uses a Shelly smart switch when WI15_SHELLY_HOST is
+# set (Ethan's bench: 192.168.1.81). Without it - e.g. at the factory - the
+# flow prompts the operator to flip the power switch instead, and then
+# verifies via firmware uptime that the console actually rebooted.
+SHELLY_HOST = os.environ.get("WI15_SHELLY_HOST", "")
 POWER_OFF_DWELL_S = 15.0       # ruling 9
 RECONNECT_TIMEOUT_S = 90.0
+MAX_UPTIME_AFTER_CYCLE_MS = 180_000   # console must report < 3 min uptime
 
 # --- Files ---
 # Reports and run state land here; override with the WI15_OUT_DIR env var.
@@ -664,9 +669,49 @@ def phase_crosscheck(args) -> int:
 
 
 def shelly_power(on: bool) -> None:
+    if not SHELLY_HOST:
+        raise RuntimeError("no WI15_SHELLY_HOST configured")
     url = f"http://{SHELLY_HOST}/rpc/Switch.Set?id=0&on={'true' if on else 'false'}"
     with urllib.request.urlopen(url, timeout=10) as r:
         r.read()
+
+
+def request_power_cycle() -> str:
+    """Cycle console mains: automated when WI15_SHELLY_HOST is set, otherwise
+    instruct the operator (same prompt protocol as the guided runner, so GUI
+    hosts surface a Continue button and a simple-language instruction).
+    Returns a description for the run record."""
+    if SHELLY_HOST:
+        print(f"power-cycling via Shelly {SHELLY_HOST} "
+              f"({POWER_OFF_DWELL_S:g}s dwell) ...")
+        shelly_power(False)
+        time.sleep(POWER_OFF_DWELL_S)
+        shelly_power(True)
+        return f"Shelly {SHELLY_HOST}, {POWER_OFF_DWELL_S:g}s dwell"
+    print("@@SIMPLE \U0001f50c Turn the machine OFF with the power switch. "
+          "Count to 15. Turn it ON again. Then press Continue ▶️")
+    try:
+        answer = input(
+            f"\n>>> MANUAL POWER CYCLE: switch the console mains OFF, wait "
+            f"{POWER_OFF_DWELL_S:g} seconds, switch it back ON, then "
+            f"confirm.\n    [y to continue, anything else aborts] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() != "y":
+        raise RuntimeError("operator aborted the manual power cycle")
+    return "manual operator power cycle (WI15_SHELLY_HOST not set)"
+
+
+def console_uptime_ms(session: "ConsoleSession") -> int | None:
+    """Firmware uptime of the connected console, from telemetry timestamps.
+    Used to prove a power cycle actually happened (uptime resets at boot)."""
+    try:
+        samples = session.console.get_temperatures(return_all=True)
+        if samples:
+            return int(samples[-1].timestamp_ms)
+    except Exception:
+        pass
+    return None
 
 
 def phase_finalize(args) -> int:
@@ -708,13 +753,9 @@ def phase_finalize(args) -> int:
         session.console.write_config_json(json.dumps(new_cfg))
         time.sleep(0.5)
 
-        print(f"power-cycling via Shelly {SHELLY_HOST} "
-              f"(off {POWER_OFF_DWELL_S:g}s dwell) ...")
         session.close()
-        shelly_power(False)
-        time.sleep(POWER_OFF_DWELL_S)
-        shelly_power(True)
-        print("mains restored, waiting for console ...")
+        cycle_desc = request_power_cycle()
+        print("waiting for console ...")
 
         deadline = time.time() + RECONNECT_TIMEOUT_S
         session = None
@@ -729,6 +770,19 @@ def phase_finalize(args) -> int:
             print("FAIL: console did not come back after power cycle")
             return 1
         print(f"console back on {session.console.uart.port}")
+
+        # Prove the cycle happened: firmware uptime resets at boot. Catches
+        # an operator confirming without flipping the switch (and a Shelly
+        # misfire) - without a real power loss, persistence is unproven.
+        uptime = console_uptime_ms(session)
+        rebooted = uptime is not None and uptime < MAX_UPTIME_AFTER_CYCLE_MS
+        if uptime is None:
+            print("! could not read console uptime - reboot unconfirmed")
+        elif not rebooted:
+            print(f"FAIL: console uptime is {uptime/1000:.0f}s - it did NOT "
+                  f"power cycle; persistence is not proven")
+        else:
+            print(f"reboot confirmed (uptime {uptime/1000:.0f}s)")
 
         back = session.console.read_config()
         readback = back.json_data if back else {}
@@ -745,8 +799,10 @@ def phase_finalize(args) -> int:
             "when": dt.datetime.now().isoformat(timespec="seconds"),
             "written": {k: v for k, v in new_cfg.items() if k != "calibration"},
             "verify": verify,
-            "power_cycle": f"Shelly {SHELLY_HOST}, {POWER_OFF_DWELL_S:g}s dwell",
-            "all_ok": all(v[3] for v in verify),
+            "power_cycle": cycle_desc,
+            "uptime_after_ms": uptime,
+            "reboot_confirmed": rebooted,
+            "all_ok": all(v[3] for v in verify) and rebooted,
         }
         save_state(st)
 
@@ -947,7 +1003,12 @@ def build_pdf(st: dict, path: str) -> None:
     if fin:
         el.append(Paragraph("7. EPROM write and power-cycle verification "
                             "(WI sections 4.3/4.5)", h2))
-        el.append(Paragraph(f"Power cycle: {fin['power_cycle']}.", body))
+        up = fin.get("uptime_after_ms")
+        reboot_txt = ("reboot confirmed by firmware uptime "
+                      f"({up/1000:.0f} s)" if fin.get("reboot_confirmed")
+                      else "REBOOT NOT CONFIRMED - persistence unproven")
+        el.append(Paragraph(
+            f"Power cycle: {fin['power_cycle']}; {reboot_txt}.", body))
         rows = [["Key", "Written", "Read back after cycle", "Result"]]
         for k, wrote, got, ok in fin["verify"]:
             rows.append([k, wrote, got, "OK" if ok else "MISMATCH"])

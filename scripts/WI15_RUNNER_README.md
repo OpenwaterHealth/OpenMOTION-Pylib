@@ -48,7 +48,7 @@ questions as asked.
 | 6 | Steps 24/26 say to set TA_PULSE_WIDTH "to the new drive current found" | Copy-paste error in the WI; the Figure-Y line references show pulse width is meant | n/a (affects only the diagnostic sweep) |
 | 7 | What does a factory-new console EPROM contain, and are keys beyond the WI's nine permitted in the final config? | **Factory-new is empty. Extra keys are permitted.** | `phase_finalize` preserves pre-existing `calibration`/`TEC_TRIP`; on an empty unit this is a no-op |
 | 8 | §4.6 step text says `calibration-YYYYMMDD_HHMMSS.csv`, its results table says `test-YYYYMMDD_HHMMSS.csv` | Resolved from code: `CalibrationWorkflow.py` writes `calibration-{ts}.csv` from the calibration flow and `test-{ts}.csv` from the separate verification-test flow. **The step text is right; the results-table header is wrong** | (§4.6 not yet automated) |
-| 9 | Power-cycle dwell, trigger frequency, single-vs-averaged ADC reads unspecified | **15 s dwell; assume/enforce 40 Hz; average a few ADC reads** | `POWER_OFF_DWELL_S = 15`, `assert_trigger_40hz()` (sets it if wrong), `ADC_SAMPLES = 5` averaged |
+| 9 | Power-cycle dwell, trigger frequency, single-vs-averaged ADC reads unspecified | **15 s dwell; assume/enforce 40 Hz; average a few ADC reads** | `POWER_OFF_DWELL_S = 15`, `assert_trigger_40hz()` (sets it if wrong), `ADC_SAMPLES = 5` averaged. Power cycling is automated via a Shelly smart switch when the `WI15_SHELLY_HOST` env var is set (Ethan's bench: `192.168.1.81`); **without it — e.g. at the factory — the flow prompts the operator to flip the power switch**, and in both modes the console's firmware uptime is checked after reconnect (< 3 min) to prove the cycle actually happened — an unproven cycle fails the persistence verification |
 | 10 | Steps 30/31 "note the returned value": raw ADC counts or scaled mA? | **Scaled mA** (confirmed). Proven empirically: writing `EE_DRIVE_CL: 4604` yields register raw 2475 = 4603.50 mA — a clean round trip through the 1.86 mA/LSB scale. The TestApp displays `rawValue * scale` for any field carrying unit+scale (`Console.qml`), which ADC DATA does. A literal raw-counts reading would program EE_DRIVE_CL ≈ 2476 mA against a ~4185 mA operating current and trip the interlock on the first pulse. **The WI wording should be redlined to say "the value in mA as displayed."** | multipliers applied to scaled mA |
 
 ## 3. Deviations from the WI as written
@@ -76,6 +76,21 @@ questions as asked.
   parameters** (5 reads averaged, higher-power module seated). The registers
   latch their last value after the trigger stops — a post-stop read looks
   plausible and is wrong. Reads with the laser off return 0.
+- **Section 4.4 runs before the cross-check (WI order: steps 21–22 then
+  §4.4).** The ADC values depend only on the final tuned drive settings,
+  which are frozen when the step-19 loop exits, and the cross-check changes
+  no settings — so sampling §4.4 while the higher module is still seated is
+  measurement-equivalent and saves a fixture insertion (the WI's literal
+  order needs the higher module seated a second time: 5 insertions vs 3–4).
+- **Cross-check only runs when tuning adjusted something.** WI steps 21–22
+  exist inside the adjustment branches; when both baselines land in the
+  window (step 18 "complete") the other module was already measured at the
+  final settings and the re-measure buys nothing. The skip is recorded in
+  the run notes/PDF.
+- **Baseline order is operator's choice**, not the WI's hardcoded
+  Left-then-Right (steps 12/15). Symmetric measurements; the guided flow
+  tips the operator to seat the expected lower-power module first so the
+  higher one is already seated for §4.4.
 - **The EPROM is written once, at the end** (`finalize`), rather than the WI's
   incremental save-as-you-go through steps 9→33. The end state is identical;
   the write is verified key-by-key after a power cycle.

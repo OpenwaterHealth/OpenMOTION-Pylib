@@ -41,13 +41,13 @@ import time
 from omotion import CalibrationRequest, CalibrationThresholds
 from omotion.MotionInterface import MotionInterface
 from omotion.tuning import (
+    MAX_UPTIME_AFTER_CYCLE_MS,
     OUT_DIR,
-    POWER_OFF_DWELL_S,
-    SHELLY_HOST,
     ConsoleSession,
+    console_uptime_ms,
     read_fpga_revisions,
+    request_power_cycle,
     sensor_inventory_from_iface,
-    shelly_power,
 )
 
 # =========================================================================
@@ -302,13 +302,9 @@ def phase_verify(args) -> int:
             print("FAIL: no calibration block present in EPROM")
             return 1
 
-        print(f"power-cycling via Shelly {SHELLY_HOST} "
-              f"({POWER_OFF_DWELL_S:g}s dwell) ...")
         session.close()
-        shelly_power(False)
-        time.sleep(POWER_OFF_DWELL_S)
-        shelly_power(True)
-        print("mains restored, waiting for console ...")
+        cycle_desc = request_power_cycle()
+        print("waiting for console ...")
         deadline = time.time() + 90
         session = None
         while time.time() < deadline:
@@ -321,6 +317,15 @@ def phase_verify(args) -> int:
         if session is None:
             print("FAIL: console did not come back after power cycle")
             return 1
+
+        uptime = console_uptime_ms(session)
+        rebooted = uptime is not None and uptime < MAX_UPTIME_AFTER_CYCLE_MS
+        if not rebooted:
+            print(f"FAIL: console uptime "
+                  f"{'unknown' if uptime is None else f'{uptime/1000:.0f}s'}"
+                  f" - power cycle not confirmed; persistence unproven")
+        else:
+            print(f"reboot confirmed (uptime {uptime/1000:.0f}s)")
 
         if "console_fpga" not in st.get("inventory", {}):
             st.setdefault("inventory", {})["console_fpga"] = \
@@ -339,9 +344,11 @@ def phase_verify(args) -> int:
 
         st["verify"] = {
             "when": dt.datetime.now().isoformat(timespec="seconds"),
-            "power_cycle": f"Shelly {SHELLY_HOST}, {POWER_OFF_DWELL_S:g}s dwell",
+            "power_cycle": cycle_desc,
+            "uptime_after_ms": uptime,
+            "reboot_confirmed": rebooted,
             "keys": verify,
-            "all_ok": all_ok,
+            "all_ok": all_ok and rebooted,
             "config_after": after,
         }
         save_state(st)
@@ -434,7 +441,12 @@ def build_pdf(st: dict, path: str) -> None:
     ver = st.get("verify")
     if ver:
         el.append(Paragraph("Persistence verification (WI step 37)", h2))
-        el.append(Paragraph(f"Power cycle: {ver['power_cycle']}.", body))
+        up = ver.get("uptime_after_ms")
+        reboot_txt = ("reboot confirmed by firmware uptime "
+                      f"({up/1000:.0f} s)" if ver.get("reboot_confirmed")
+                      else "REBOOT NOT CONFIRMED - persistence unproven")
+        el.append(Paragraph(
+            f"Power cycle: {ver['power_cycle']}; {reboot_txt}.", body))
         rows = [["Key", "Value before cycle", "Result"]]
         for key, shown, ok in ver["keys"]:
             rows.append([key, shown, "OK" if ok else "MISMATCH"])
