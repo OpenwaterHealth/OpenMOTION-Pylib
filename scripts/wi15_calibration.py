@@ -58,16 +58,19 @@ CAL_SCAN_DURATION_SEC = 5
 CAL_SCAN_DELAY_SEC = 1
 CAL_MAX_DURATION_SEC = 600
 
-# Per-camera acceptance thresholds. Zeros = accept any signal (bench default
-# for the low-intensity dev rig - the WI's pass gate is then just "the
-# procedure ran end-to-end"). For factory use, point --thresholds-json at the
-# bloodflow-app's factory-test threshold config so "Calibration Passed" means
-# what the app means by it.
+# Per-camera acceptance thresholds. Defaults implement the WI's own
+# acceptance criteria (SPEC-69: BFI within +/-0.5, BVI within 4.5-5.5 on the
+# static phantom). BFI bounds MUST straddle zero - on a static phantom BFI
+# legitimately reads slightly negative, so a 0.0 minimum fails good cameras.
+# Mean/contrast minimums stay 0 on the bench (dim dev unit); for factory use
+# point --thresholds-json at the bloodflow-app's factory-test thresholds.
 DEFAULT_THRESHOLDS = {
     "min_mean_per_camera": [0.0] * 8,
     "min_contrast_per_camera": [0.0] * 8,
-    "min_bfi_per_camera": [0.0] * 8,
-    "min_bvi_per_camera": [0.0] * 8,
+    "min_bfi_per_camera": [-0.5] * 8,   # SPEC-69 BFI Min
+    "max_bfi_per_camera": [0.5] * 8,    # SPEC-69 BFI Max
+    "min_bvi_per_camera": [4.5] * 8,    # SPEC-69 BVI Min
+    "max_bvi_per_camera": [5.5] * 8,    # SPEC-69 BVI Max
 }
 
 READY_TIMEOUT_S = 20.0
