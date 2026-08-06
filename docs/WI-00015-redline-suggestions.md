@@ -1,0 +1,128 @@
+# WI-00015 rev 2 — redline suggestions from automation
+
+Proposed edits to **WI-00015 Open-Motion Device Specific Parameter Tuning
+rev 2 (ECO-000270)**, collected while building and hardware-validating the
+automated runner (openmotion-sdk#214 / PR #215) on console QWW04Q10003,
+2026-08-05/06. Interpretation rulings referenced below were given by Ethan
+(ethan@openwater.cc) on 2026-08-05 and are recorded in
+`scripts/WI15_RUNNER_README.md`.
+
+Ordered by consequence, worst first.
+
+## 1. Steps 30–31 — say the ADC value is in mA as displayed
+
+**Current:** "Note the returned value, multiply it by 1.30 …" (step 30),
+"… multiply it by 1.10 …" (step 31).
+
+**Problem:** "the returned value" does not say whether it is the raw ADC
+count or the scaled mA figure the TestApp displays. The TestApp shows
+**scaled mA** (`rawValue × 1.86`) for ADC DATA; the User Configuration keys
+are also in engineering units (verified by register round-trip: writing
+`EE_DRIVE_CL: 4604` lands as raw 2475 = 4603.50 mA). An operator who reads
+the sentence literally as "raw counts" programs `EE_DRIVE_CL ≈ 2476 mA`
+against a ~4185 mA operating current — **the laser safety interlock trips on
+the first pulse**. This misreading actually happened during automation
+development and was caught only because the register math was checked.
+
+**Proposed:** "Note the returned value **in mA as displayed by the FPGA I2C
+Utility**, multiply it by …"
+
+## 2. Section 4.4 — specify which module is seated during the ADC reads
+
+**Current:** section 4.4 never says which Sensor Module (if any) should be in
+the 0 cm detector while the Safety OPT/EE ADC values are read.
+
+**Problem:** the OPT (optical) safety ADC is **module-dependent** — measured
+~2247 mA with the Left module seated vs ~2358 mA with the Right (≈5%). The
+derived `OPT_DRIVE_CL` therefore depends on an unspecified condition.
+
+**Proposed:** add to step 29: "Ensure the Sensor Module with the **higher
+measured energy** (from steps 14/17) is seated in the 0 cm detector for the
+following ADC readings." (Ruling 2.)
+
+Also worth stating: the ADC values must be read **while the laser is
+firing** — the register latches its last value after Stop Trigger, so a
+late read looks plausible but is stale (reads 0 before the first fire).
+The WI's step ordering implies this but never states the latching behavior.
+
+## 3. Step 18 vs steps 23–26 — contradictory under-minimum routing
+
+**Current:** step 18's expected result sends a module measuring below the
+minimum "ahead to section 4.4", while steps 23–26 describe a pulse-width
+escalation procedure for the same condition.
+
+**Ruling 1:** the skip-ahead is correct; the under-minimum unit proceeds to
+section 4.4 with no adjustment (and fails SPEC-31 → NCR).
+
+**Proposed:** rewrite steps 23–26 as an explicitly optional diagnostic (or
+delete them), and note in step 18 that the under-minimum case both skips
+ahead **and** constitutes a SPEC-31 failure to be dispositioned per the NCR
+process.
+
+## 4. Step 31 — rounding direction contradicts its own results column
+
+**Current:** step text says "rounding to the nearest integer"; the Expected
+Results column says "round down to the nearest integer".
+
+**Ruling 3:** round **down** for the EE 1.1× value. (OPT 1.3×, step 30,
+stays round-to-nearest.)
+
+**Proposed:** make step 31's text say "round down"; leave step 30 as
+nearest. One LSB on a safety limit, but a factory record will be audited
+against one of the two.
+
+## 5. Steps 24 / 26 — "drive current" should read "pulse width"
+
+**Current:** "update the TA_PULSE_WIDTH value to the new **drive current**
+found" (both steps).
+
+**Proposed:** "… to the new **pulse width** found …" (copy-paste error; the
+Figure Y line references already point at the pulse-width line).
+
+## 6. Step 36 results table — wrong CSV filename
+
+**Current:** the step text says `calibration-YYYYMMDD_HHMMSS.csv`; the
+results-table headers say `test-YYYYMMDD_HHMMSS.csv`.
+
+**Fact (from `omotion/CalibrationWorkflow.py`):** the calibration flow
+writes `calibration-{ts}.csv`; `test-{ts}.csv` is produced by the separate
+verification-test flow. **The step text is right; the table header is
+wrong.**
+
+## 7. Step 18 — "The Test is complete"
+
+**Current:** "If both sensors measure between 300 and 400 µJ The Test is
+complete."
+
+**Proposed:** "…the **laser driver parameter determination (section 4.2)**
+is complete; continue with section 4.3." Sections 4.4–4.6 still follow, so
+"the Test is complete" invites an early stop.
+
+## 8. Unspecified procedural parameters (rulings 9)
+
+Worth pinning in the WI so every station behaves identically:
+
+- **Power-cycle dwell** (steps 33/37): none specified → **15 seconds off**.
+- **Trigger frequency**: step 10 checks 40 Hz but nothing says to *set* it
+  if wrong → "confirm 40 Hz, correcting it if necessary".
+- **ADC reads**: single read implied → "average several readings taken
+  while the laser fires" (automation uses 5).
+- **Step 28 quantization**: the note explains readback ≠ programmed value
+  but gives no tolerance. Observed: 140 → 141.87 (1.3%). Suggest stating
+  an acceptance tolerance (e.g. ±2%).
+
+## 9. Both-directions failure is not covered
+
+One module above maximum while the other is below minimum cannot be resolved
+with the single shared TA drive. **Ruling 4:** NCR. Suggest adding a row to
+the step 18 decision table saying so, rather than leaving the case to fall
+through the sequential skip-aheads.
+
+## 10. Consider referencing the automated runner
+
+If the automated rig (openmotion-sdk `scripts/wi15_runner.py` /
+`wi15_guided.py`) is to become the official execution method, the WI needs a
+revision naming it as an approved instrument (it currently names the
+TestApp and bloodflow-app), or TP-00018 needs to bless the equivalence. The
+runner's deviation log (`scripts/WI15_RUNNER_README.md`) enumerates every
+difference from the WI as written to support that assessment.

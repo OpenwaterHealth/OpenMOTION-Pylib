@@ -44,12 +44,14 @@ from omotion.laser import FpgaMap, apply_laser_power
 # =========================================================================
 
 # --- Acceptance window (SPEC-31) ---
-# PRODUCTION values per WI-00015 rev 2: 300.0 (min) / 400.0 (max) uJ.
-# TEMPORARILY set for Ethan's low-intensity dev rig (2026-08-05): this unit
-# tops out ~163 uJ at full drive, so the window is scaled down to exercise
-# the full decision tree. RESTORE 300/400 BEFORE FACTORY USE.
-SPEC31_MIN_UJ = 75.0
-SPEC31_MAX_UJ = 125.0
+# PRODUCTION values per WI-00015 rev 2 / SPEC-31. These are the defaults.
+# For a dev rig with a dim unit, override per run at the baseline phase:
+#     wi15_runner.py baseline --side right --window 75 125
+# (or env WI15_WINDOW="75,125"). The chosen window is stored in the run state
+# at baseline time and reloaded by every later phase, so one run can never
+# mix windows.
+SPEC31_MIN_UJ = 300.0
+SPEC31_MAX_UJ = 400.0
 
 # --- Measurement ---
 MIN_PULSES = 25            # WI steps 14/17: meter Total must exceed 25
@@ -104,6 +106,92 @@ REG_UNITS = {
 }
 
 # =========================================================================
+
+
+def set_window(lo_uj: float, hi_uj: float) -> None:
+    """Set the SPEC-31 acceptance window for this process."""
+    global SPEC31_MIN_UJ, SPEC31_MAX_UJ
+    if not (0 < lo_uj < hi_uj):
+        raise ValueError(f"invalid window {lo_uj}-{hi_uj} uJ")
+    SPEC31_MIN_UJ, SPEC31_MAX_UJ = float(lo_uj), float(hi_uj)
+
+
+def resolve_window(args, st: dict) -> None:
+    """Baseline phase only: pick the window (CLI > env > production default)
+    and pin it into the run state."""
+    if "window" in st:
+        set_window(*st["window"])
+        return
+    if getattr(args, "window", None):
+        lo, hi = args.window
+        src = "--window override"
+    elif os.environ.get("WI15_WINDOW"):
+        lo, hi = (float(x) for x in os.environ["WI15_WINDOW"].split(","))
+        src = "WI15_WINDOW env override"
+    else:
+        lo, hi = 300.0, 400.0
+        src = "production default (SPEC-31)"
+    set_window(lo, hi)
+    st["window"] = [lo, hi]
+    st["window_source"] = src
+    print(f"acceptance window: {lo:g}-{hi:g} uJ ({src})")
+
+
+def apply_window(st: dict) -> None:
+    """Later phases: reload the window pinned at baseline time."""
+    if st.get("window"):
+        set_window(*st["window"])
+
+
+def sensor_inventory_from_iface(iface) -> dict:
+    """WI step 8 inventory: SDK version + per-sensor identity, from an
+    already-started MotionInterface."""
+    import omotion as _omotion
+    inv: dict = {"sdk_version": getattr(_omotion, "__version__", "?")}
+    _, l_ok, r_ok = iface.is_device_connected()
+    for side, dev, ok in (("left", iface.left, l_ok),
+                          ("right", iface.right, r_ok)):
+        if not ok:
+            inv[side] = {"connected": False}
+            continue
+        entry = {"connected": True}
+        for key, fn in (("serial", dev.read_serial_number),
+                        ("firmware", dev.get_version),
+                        ("hardware_id", dev.get_hardware_id)):
+            try:
+                entry[key] = fn()
+            except Exception as e:
+                entry[key] = f"unavailable ({e})"
+        inv[side] = entry
+    return inv
+
+
+def collect_sensor_inventory() -> dict:
+    """Short-lived MotionInterface session for the step-8 inventory. Used by
+    the tuning flow, which otherwise talks to the console alone."""
+    from omotion.MotionInterface import MotionInterface
+    iface = MotionInterface(operator_id="wi15-inventory")
+    iface.start()
+    try:
+        iface.wait_for_ready(console=True, sensors=2, timeout=20.0)
+        return sensor_inventory_from_iface(iface)
+    finally:
+        iface.stop()
+
+
+def read_fpga_revisions(session: "ConsoleSession") -> dict:
+    """Console laser/safety FPGA versions (WI step 8's 'FPGA Firmware')."""
+    out = {}
+    for label, prefix in (("TA", "TA"), ("Seed", "SEED"),
+                          ("Safety EE", "EE"), ("Safety OPT", "OPT")):
+        try:
+            major = session.read_reg(f"{prefix}_MAJOR")[0]
+            minor = session.read_reg(f"{prefix}_MINOR")[0]
+            rev = session.read_reg(f"{prefix}_REVISION")[0]
+            out[label] = f"v{major}.{minor}.{rev}"
+        except Exception as e:
+            out[label] = f"unavailable ({e})"
+    return out
 
 
 def check_rows(mean_uj, stdev_uj, rate_hz, n):
@@ -349,6 +437,14 @@ def bringup(session: ConsoleSession, notes: list) -> None:
 # --- phases --------------------------------------------------------------
 def phase_baseline(args) -> int:
     st = load_state()
+    resolve_window(args, st)
+    if "inventory" not in st:
+        print("collecting sensor inventory (one-time, ~15s) ...")
+        try:
+            st["inventory"] = collect_sensor_inventory()
+        except Exception as e:
+            st["inventory"] = {"error": str(e)}
+        save_state(st)
     meter = OphirMeter()
     session = ConsoleSession()
     try:
@@ -360,6 +456,9 @@ def phase_baseline(args) -> int:
             st["prior_config"] = cfg.json_data if cfg else None
 
         bringup(session, st["notes"])
+        if "console_fpga" not in st.get("inventory", {}):
+            st.setdefault("inventory", {})["console_fpga"] = \
+                read_fpga_revisions(session)
         regs = {}
         for name in ("TA_PULSE_WIDTH", "TA_CURRENT_DRV", "SEED_CW_GAIN",
                      "EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
@@ -408,6 +507,7 @@ def phase_baseline(args) -> int:
 def phase_tune(args) -> int:
     """WI steps 18-19 branch + section 4.4 ADC capture, higher module seated."""
     st = load_state()
+    apply_window(st)
     base = st.get("phases", {}).get("baseline", {})
     if len(base) < 2:
         print("FAIL: need both baselines first")
@@ -519,6 +619,7 @@ def phase_tune(args) -> int:
 def phase_crosscheck(args) -> int:
     """WI steps 21-22: re-measure the other module at the final settings."""
     st = load_state()
+    apply_window(st)
     if "tune" not in st.get("phases", {}):
         print("FAIL: run tune first")
         return 1
@@ -571,6 +672,7 @@ def shelly_power(on: bool) -> None:
 def phase_finalize(args) -> int:
     """Write EPROM (4.3/4.5), power-cycle + verify persistence, emit the PDF."""
     st = load_state()
+    apply_window(st)
     sec44 = st.get("phases", {}).get("sec44")
     if not sec44:
         print("FAIL: run tune first")
@@ -727,11 +829,13 @@ def build_pdf(st: dict, path: str) -> None:
                             bottomMargin=0.75 * inch,
                             title="WI-00015 tuning record")
     el = []
+    win = st.get("window", [SPEC31_MIN_UJ, SPEC31_MAX_UJ])
+    win_src = st.get("window_source", "production default (SPEC-31)")
     el.append(Paragraph("Open-Motion Device Specific Parameter Tuning", h1))
     el.append(Paragraph(
         f"Automated tuning record - {WI_DOC}. Acceptance window in effect: "
-        f"{SPEC31_MIN_UJ:g}-{SPEC31_MAX_UJ:g} uJ "
-        f"(TEMPORARY dev-rig values; production is 300-400 uJ).", body))
+        f"{win[0]:g}-{win[1]:g} uJ ({win_src}; production is 300-400 uJ).",
+        body))
     el.append(Spacer(1, 10))
 
     con, met = st.get("console", {}), st.get("meter", {})
@@ -746,6 +850,24 @@ def build_pdf(st: dict, path: str) -> None:
                       f"{met.get('device_cal_due')} / {met.get('sensor_cal_due')}"]],
                     (2.3 * inch, 4.4 * inch)))
     el.append(Spacer(1, 10))
+
+    inv = st.get("inventory") or {}
+    if inv and "error" not in inv:
+        el.append(Paragraph("1b. Device inventory (WI step 8)", h2))
+        rows = [["Item", "Value"], ["SDK version", inv.get("sdk_version", "?")]]
+        for side in ("left", "right"):
+            s = inv.get(side) or {}
+            if s.get("connected"):
+                rows.append([f"{side.capitalize()} sensor module",
+                             f"s/n {s.get('serial')} - fw {s.get('firmware')} "
+                             f"- hw {s.get('hardware_id')}"])
+            else:
+                rows.append([f"{side.capitalize()} sensor module",
+                             "not connected at inventory time"])
+        for label, ver in (inv.get("console_fpga") or {}).items():
+            rows.append([f"Console FPGA - {label}", ver])
+        el.append(table(rows, (2.3 * inch, 4.4 * inch)))
+        el.append(Spacer(1, 10))
 
     ms = st.get("meter_settings")
     if ms:

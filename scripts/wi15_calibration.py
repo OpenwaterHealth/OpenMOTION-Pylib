@@ -45,6 +45,8 @@ from omotion.tuning import (
     POWER_OFF_DWELL_S,
     SHELLY_HOST,
     ConsoleSession,
+    read_fpga_revisions,
+    sensor_inventory_from_iface,
     shelly_power,
 )
 
@@ -155,6 +157,12 @@ def phase_calibrate(args) -> int:
         cfg_data = (cfg.json_data or {}) if cfg else {}
         if "prior_config" not in st:
             st["prior_config"] = cfg_data
+        if "inventory" not in st:
+            st["inventory"] = sensor_inventory_from_iface(iface)
+            st["inventory"]["console"] = {
+                "serial": iface.console.read_serial_number(),
+                "firmware": iface.console.get_version(),
+            }
         laser_point = {k: cfg_data.get(k) for k in
                        ("TA_PULSE_WIDTH", "TA_CURRENT_DRV")}
         print(f"tuned laser point from EPROM: {laser_point}")
@@ -288,6 +296,10 @@ def phase_verify(args) -> int:
             print("FAIL: console did not come back after power cycle")
             return 1
 
+        if "console_fpga" not in st.get("inventory", {}):
+            st.setdefault("inventory", {})["console_fpga"] = \
+                read_fpga_revisions(session)
+
         cfg2 = session.console.read_config()
         after = (cfg2.json_data or {}) if cfg2 else {}
         verify = []
@@ -345,6 +357,30 @@ def build_pdf(st: dict, path: str) -> None:
     el = [Paragraph("Open-Motion BFI/BVI Calibration", h1),
           Paragraph(f"Automated calibration record - {WI_DOC}.", body),
           Spacer(1, 10)]
+
+    inv = st.get("inventory") or {}
+    if inv:
+        el.append(Paragraph("Device inventory (WI step 8)", h2))
+        rows = [["Item", "Value"], ["SDK version", inv.get("sdk_version", "?")]]
+        con = inv.get("console") or {}
+        if con:
+            rows.append(["Console",
+                         f"s/n {con.get('serial')} - fw {con.get('firmware')}"])
+        for side in ("left", "right"):
+            s = inv.get(side) or {}
+            if s.get("connected"):
+                rows.append([f"{side.capitalize()} sensor module",
+                             f"s/n {s.get('serial')} - fw {s.get('firmware')} "
+                             f"- hw {s.get('hardware_id')}"])
+            else:
+                rows.append([f"{side.capitalize()} sensor module",
+                             "not connected at inventory time"])
+        for label, ver in (inv.get("console_fpga") or {}).items():
+            rows.append([f"Console FPGA - {label}", ver])
+        t = Table(rows, colWidths=(2.3 * inch, 4.4 * inch), hAlign="LEFT")
+        t.setStyle(GRID)
+        el.append(t)
+        el.append(Spacer(1, 10))
 
     for i, run in enumerate(st.get("runs", []), start=1):
         el.append(Paragraph(

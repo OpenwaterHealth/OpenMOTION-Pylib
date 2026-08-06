@@ -36,6 +36,10 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("baseline")
     p.add_argument("--side", required=True, choices=["left", "right"])
+    p.add_argument("--window", nargs=2, type=float, metavar=("MIN_UJ", "MAX_UJ"),
+                   help="override the SPEC-31 acceptance window for this run "
+                        "(default: production 300 400). Pinned into the run "
+                        "state; later phases reuse it automatically.")
     p = sub.add_parser("tune")
     p.add_argument("--seated", required=True, choices=["left", "right"])
     p = sub.add_parser("crosscheck")

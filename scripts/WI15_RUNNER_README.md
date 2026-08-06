@@ -13,21 +13,25 @@ Rulings were given 2026-08-05 in review of the first automated runs.
 
 ---
 
-## 1. Temporary acceptance window — NOT production values
+## 1. Acceptance window — production by default, per-run override
 
-`SPEC31_MIN_UJ = 75.0` / `SPEC31_MAX_UJ = 125.0` at the top of the script.
+The defaults in `omotion/tuning.py` are the **production SPEC-31 values,
+300–400 µJ**. A dev rig overrides them per run at the baseline phase:
 
-The WI/SPEC-31 production window is **300–400 µJ**. The dev-rig unit (console
-QWW04Q10003) tops out at ~163 µJ at maximum drive (5000 mA / 500 µs; measured
-slope 0.289 µJ/µs of pulse width, i.e. ~975 µs would be needed to reach
-300 µJ — far beyond the 600 µs ceiling). Per Ethan, the window is scaled to
-75–125 µJ *for the time being* so the full decision tree can be exercised on
-this unit, with **literal semantics: >125 µJ is "too hot" and triggers the
-WI step-19 current-reduction loop**. The tuned (reduced) current is what lands
-in EPROM on this rig.
+    python scripts/wi15_runner.py baseline --side right --window 75 125
 
-**Restore 300/400 before factory use.** The constants are the first thing in
-the configuration block.
+(or `WI15_WINDOW=75,125` in the environment). The chosen window and its
+provenance are pinned into the run state at baseline time and reloaded by
+every later phase — a single run can never mix windows — and both appear in
+the PDF header.
+
+Background for the 75–125 dev window: the bench unit (console QWW04Q10003)
+tops out at ~163 µJ at maximum drive (5000 mA / 500 µs; measured slope
+0.289 µJ/µs of pulse width ⇒ ~975 µs to reach 300 µJ, far beyond the 600 µs
+ceiling), so per Ethan the window is scaled to 75–125 µJ with **literal
+semantics** (>125 µJ triggers the step-19 current-reduction loop) to
+exercise the full decision tree. By the production window this unit is an
+NCR.
 
 ## 2. Authoritative WI interpretation rulings (Ethan, 2026-08-05)
 
@@ -139,18 +143,35 @@ watchdog, canonical trigger config. Deviations / decisions:
 - `apply_laser_power()` runs first, which also applies the tuned EPROM
   overrides — calibration therefore happens at the tuned laser point.
 
+## 3c. Operator-guided single-command flow — `scripts/wi15_guided.py`
+
+Runs the entire WI (tuning 4.1–4.5 then calibration 4.6) with `y`-gated
+prompts at every physical step: fixture swaps, phantom placement +
+attestation, and mains-power-cycle warnings. Wraps the same phase functions
+as the two per-flow CLIs — no separate logic. `--window MIN MAX` passes
+through to the baseline phase; `--skip-calibration` runs tuning only;
+`--fresh` discards previous run state. A failed cross-check (NCR per WI step
+22) stops the run unless the operator explicitly continues (dev bench only).
+
+## 3d. Device inventory (WI step 8)
+
+Captured automatically once per run and rendered in both PDFs: SDK version,
+console serial/firmware, per-sensor-module serial/firmware/hardware-id, and
+the console laser/safety FPGA versions (TA / Seed / Safety EE / Safety OPT,
+read from their I2C revision registers). The tuning flow collects sensor
+identities via a short-lived `MotionInterface` session before opening its
+console-only session; the calibration flow reuses its own interface.
+
 ## 4. Known gaps / not yet implemented
 
-- Sensor-module serials/firmware and FPGA revisions in the report (WI step 8's
-  inventory) — the DUT side is currently operator-asserted via `--seated`.
-- Physical-setup attestation prompts (strap covers, cable bend, orientation)
-  for an operator-guided single-command flow.
-- The over-max branch was validated only against the temporary 125 µJ ceiling;
-  the under-min skip-ahead branch is unreachable on this unit with the 75 µJ
-  floor and remains logic-tested only.
+- The over-max branch was validated only against the 125 µJ dev ceiling; the
+  under-min skip-ahead branch is unreachable on this unit with the 75 µJ
+  floor and remains logic-tested only. Both need a pass on a bright unit
+  with the production window.
 - The WI names the TestApp/bloodflow-app as the instruments; whether this
   SDK-based runner can be the *official* method needs a WI revision or
-  TP-00018 blessing.
+  TP-00018 blessing. Proposed WI edits are collected in
+  `docs/WI-00015-redline-suggestions.md`.
 
 ## 5. Hardware quirks discovered (apply to any future implementation)
 
