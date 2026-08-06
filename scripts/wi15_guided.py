@@ -40,8 +40,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wi15_calibration as cal  # noqa: E402
 
 
-def gate(msg: str) -> bool:
-    """Operator confirmation. Returns False (= abort) unless 'y'."""
+def gate(msg: str, simple: str | None = None) -> bool:
+    """Operator confirmation. Returns False (= abort) unless 'y'.
+
+    ``simple`` is a short plain-language version of the instruction, emitted
+    as an ``@@SIMPLE``-tagged line. Front ends showing a reduced (factory)
+    view display the simple line instead of the detailed prompt; it is also
+    the string set to translate for non-English operators.
+    """
+    if simple:
+        print(f"@@SIMPLE {simple}")
     try:
         return input(f"\n>>> {msg}\n    [y to continue, anything else aborts] "
                      ).strip().lower() == "y"
@@ -49,7 +57,9 @@ def gate(msg: str) -> bool:
         return False
 
 
-def ask_side(msg: str) -> str | None:
+def ask_side(msg: str, simple: str | None = None) -> str | None:
+    if simple:
+        print(f"@@SIMPLE {simple}")
     try:
         s = input(f"\n>>> {msg} [left/right] ").strip().lower()
     except EOFError:
@@ -102,7 +112,8 @@ def main() -> int:
              "TestApp/bloodflow-app CLOSED")
     if not a.skip_tuning:
         bench = "Ophir meter connected, " + bench
-    if not gate(f"Bench ready: {bench}. Continue?"):
+    if not gate(f"Bench ready: {bench}. Continue?",
+                simple="Get the machine ready. Close other programs. Then press Continue."):
         return 1
 
     if not a.skip_tuning:
@@ -112,7 +123,8 @@ def main() -> int:
                          "Figure F). TIP: if you know which module reads "
                          "lower, seat it FIRST - the higher one must be "
                          "seated for the later safety-ADC step, so ending "
-                         "on it saves a swap. Which side is seated?")
+                         "on it saves a swap. Which side is seated?",
+                         simple="Put ONE sensor in the metal holder, glass side up. Then press the button for that sensor: Left or Right.")
         if first is None:
             return 1
         if run(f"Baseline - {first}", phase_baseline,
@@ -121,7 +133,8 @@ def main() -> int:
 
         other = "right" if first == "left" else "left"
         if not gate(f"Swap: seat the {other.upper()} module in the fixture "
-                    f"(same orientation rules). Ready?"):
+                    f"(same orientation rules). Ready?",
+                    simple=f"Take the sensor out. Put in the {other.upper()} sensor, glass side up. Then press Continue."):
             return 1
         if run(f"Baseline - {other}", phase_baseline,
                SimpleNamespace(side=other, window=a.window)) != 0:
@@ -135,7 +148,8 @@ def main() -> int:
         # --- Tuning + section 4.4 (higher module seated) -----------------
         if higher != other:
             if not gate(f"Swap: seat the {higher.upper()} module (higher "
-                        f"power) for tuning and the safety-ADC reads. Ready?"):
+                        f"power) for tuning and the safety-ADC reads. Ready?",
+                        simple=f"Take the sensor out. Put in the {higher.upper()} sensor, glass side up. Then press Continue."):
                 return 1
         if run("Tune + section 4.4", phase_tune,
                SimpleNamespace(seated=higher)) != 0:
@@ -161,18 +175,21 @@ def main() -> int:
         else:
             lower = "right" if higher == "left" else "left"
             if not gate(f"Swap: seat the {lower.upper()} module for the "
-                        f"cross-check. Ready?"):
+                        f"cross-check. Ready?",
+                        simple=f"Take the sensor out. Put in the {lower.upper()} sensor, glass side up. Then press Continue."):
                 return 1
             cc_rc = run("Cross-check", phase_crosscheck,
                         SimpleNamespace(seated=lower))
             if cc_rc != 0:
                 if not gate("Cross-check FAILED its window (NCR per WI "
-                            "step 22). Continue anyway (dev bench only)?"):
+                            "step 22). Continue anyway (dev bench only)?",
+                            simple="The test FAILED. Ask a technician before you continue."):
                     return 1
 
         # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
         if not gate("Finalize will write the console EPROM and CYCLE MAINS "
-                    "POWER (15 s off). Ready?"):
+                    "POWER (15 s off). Ready?",
+                    simple="The machine will turn off and on by itself. Do not touch anything. Press Continue."):
             return 1
         if run("Finalize (EPROM + power cycle + PDF)", phase_finalize,
                SimpleNamespace()) != 0:
@@ -186,12 +203,14 @@ def main() -> int:
     cal_first = ask_side("Remove the module from the 0 cm fixture. Place a "
                          "module on the STATIC PHANTOM with the included "
                          "weight (WI Figure H), covers removed. Which side "
-                         "is on the phantom?")
+                         "is on the phantom?",
+                         simple="Put ONE sensor on the white test block. Put the weight on top. Then press the button for that sensor: Left or Right.")
     if cal_first is None:
         return 1
     if not gate("Confirm: module is on the phantom, weight on top, and the "
                 "setup will NOT be touched or bumped during calibration. "
-                "The laser will fire. Ready?"):
+                "The laser will fire. Ready?",
+                simple="Check: sensor on the white block, weight on top. Do not touch the table after this. Press Continue."):
         return 1
     ns = SimpleNamespace(side=cal_first, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
@@ -201,7 +220,8 @@ def main() -> int:
 
     cal_other = "right" if cal_first == "left" else "left"
     if not gate(f"Swap: place the {cal_other.upper()} module on the phantom "
-                f"(weight on, hands off after). Ready?"):
+                f"(weight on, hands off after). Ready?",
+                simple=f"Take the sensor off the block. Put the {cal_other.upper()} sensor on the block. Weight on top. Then press Continue."):
         return 1
     ns = SimpleNamespace(side=cal_other, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
@@ -210,7 +230,8 @@ def main() -> int:
         return 1
 
     if not gate("Verify will CYCLE MAINS POWER again to prove persistence. "
-                "Ready?"):
+                "Ready?",
+                simple="The machine will turn off and on again by itself. Do not touch anything. Press Continue."):
         return 1
     rc = run("Calibration verify (power cycle + PDF)", cal.phase_verify,
              SimpleNamespace())
