@@ -106,9 +106,41 @@ questions as asked.
 - The `diagnose-low` sweep restores the safety limits **and the TA pulse
   width itself** on every exit path, and persists nothing.
 
+## 3b. Section 4.6 calibration — `scripts/wi15_calibration.py`
+
+Deliberately a **separate flow** from the tuning runner (per Ethan: keep laser
+tuning and calibration segmented in software even though they will be tied
+together later). Shared bench plumbing (console session, Shelly control,
+output dirs) is imported from `omotion.tuning`; state and PDF are its own
+(`wi15_cal_state.json`, `WI-00015-46_*_calibration.pdf`).
+
+Runs the same SDK engine as the bloodflow-app's Calibrate button
+(`MotionInterface.start_calibration` → `CalibrationWorkflow`), with the app's
+parameters: camera mask 0xFF per selected side, 5 s scan / 1 s delay / 600 s
+watchdog, canonical trigger config. Deviations / decisions:
+
+- **No bloodflow-app GUI** (WI step 34 opens it in developer mode with a
+  password). The engine and the EEPROM write are identical; the app's
+  passwords and green indicator are UI dressing over this same workflow.
+- **Physical attestations become mandatory flags**: `--phantom-confirmed`
+  every run; `--side both` additionally needs `--two-phantoms` (WI step 35's
+  warning about improperly recalibrating the other module, enforced).
+- **Thresholds default to zeros** on the bench (dev unit is dim), so "passed"
+  means "ran end-to-end and wrote EEPROM". For factory use, pass
+  `--thresholds-json` with the bloodflow-app's factory-test thresholds so
+  PASSED means what the app means. `--allow-dim` wires the SDK's #199
+  below-threshold consent gate.
+- **Step 36's record** (side/cam/mean/avg_contrast per camera) is captured in
+  the console output, the state file, and the PDF, along with the engine's
+  own `calibration-{ts}.csv`.
+- **Step 37** is the `verify` subcommand: real mains power cycle, then a
+  key-by-key comparison of the FULL config (tuning keys + calibration block +
+  extras) before/after.
+- `apply_laser_power()` runs first, which also applies the tuned EPROM
+  overrides — calibration therefore happens at the tuned laser point.
+
 ## 4. Known gaps / not yet implemented
 
-- §4.6 BFI/BVI calibration (bloodflow-app or `MotionInterface.start_calibration()`).
 - Sensor-module serials/firmware and FPGA revisions in the report (WI step 8's
   inventory) — the DUT side is currently operator-asserted via `--seated`.
 - Physical-setup attestation prompts (strap covers, cable bend, orientation)
