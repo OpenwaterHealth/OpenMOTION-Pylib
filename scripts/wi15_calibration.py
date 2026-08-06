@@ -60,19 +60,33 @@ CAL_SCAN_DURATION_SEC = 5
 CAL_SCAN_DELAY_SEC = 1
 CAL_MAX_DURATION_SEC = 600
 
-# Per-camera acceptance thresholds. Defaults implement the WI's own
-# acceptance criteria (SPEC-69: BFI within +/-0.5, BVI within 4.5-5.5 on the
-# static phantom). BFI bounds MUST straddle zero - on a static phantom BFI
-# legitimately reads slightly negative, so a 0.0 minimum fails good cameras.
-# Mean/contrast minimums stay 0 on the bench (dim dev unit); for factory use
-# point --thresholds-json at the bloodflow-app's factory-test thresholds.
-DEFAULT_THRESHOLDS = {
-    "min_mean_per_camera": [0.0] * 8,
-    "min_contrast_per_camera": [0.0] * 8,
+# Per-camera acceptance thresholds. Defaults are the FACTORY values,
+# mirroring the bloodflow-app's live config (config/app_config.json ft_*
+# keys, read 2026-08-06): absolute-brightness minimums per camera (corner
+# cameras 40, inner 80), contrast 0.25, SPEC-69 BFI/BVI, dark <= 3.0.
+#
+# The SPEC-69 BFI/BVI gates alone are nearly self-fulfilling right after
+# calibration (i_max/c_max are normalized to the just-measured values, so
+# the validation scan reads BVI ~5 / BFI ~0 by construction). The
+# mean/contrast minimums are the only ABSOLUTE-brightness gates - without
+# them, "passed" says nothing about signal level. BFI bounds MUST straddle
+# zero: on a static phantom BFI legitimately reads slightly negative.
+#
+# On a dim dev bench use --bench-thresholds (disables the mean/contrast
+# gates, loudly) or --thresholds-json for custom values.
+FACTORY_THRESHOLDS = {
+    "min_mean_per_camera": [40.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 40.0],
+    "min_contrast_per_camera": [0.25] * 8,
     "min_bfi_per_camera": [-0.5] * 8,   # SPEC-69 BFI Min
     "max_bfi_per_camera": [0.5] * 8,    # SPEC-69 BFI Max
     "min_bvi_per_camera": [4.5] * 8,    # SPEC-69 BVI Min
     "max_bvi_per_camera": [5.5] * 8,    # SPEC-69 BVI Max
+    "max_dark_per_camera": [3.0] * 8,
+}
+BENCH_THRESHOLDS = {
+    **FACTORY_THRESHOLDS,
+    "min_mean_per_camera": [0.0] * 8,
+    "min_contrast_per_camera": [0.0] * 8,
 }
 
 READY_TIMEOUT_S = 20.0
@@ -96,12 +110,19 @@ def save_state(st: dict) -> None:
         json.dump(st, f, indent=2)
 
 
-def build_thresholds(path: str | None) -> CalibrationThresholds:
-    data = dict(DEFAULT_THRESHOLDS)
+def build_thresholds(path: str | None, bench: bool) -> tuple[CalibrationThresholds, str]:
+    """Resolve thresholds. Returns (thresholds, source-label-for-the-record)."""
     if path:
+        data = dict(FACTORY_THRESHOLDS)
         with open(path, "r", encoding="utf-8") as f:
             data.update(json.load(f))
-    return CalibrationThresholds(**data)
+        return CalibrationThresholds(**data), f"custom ({os.path.basename(path)})"
+    if bench:
+        return (CalibrationThresholds(**BENCH_THRESHOLDS),
+                "BENCH: mean/contrast gates DISABLED - passed does not "
+                "certify signal level")
+    return (CalibrationThresholds(**FACTORY_THRESHOLDS),
+            "factory (mean 40/80, contrast 0.25, SPEC-69 BFI/BVI, dark 3.0)")
 
 
 def phase_calibrate(args) -> int:
@@ -118,7 +139,12 @@ def phase_calibrate(args) -> int:
         return 1
 
     st = load_state()
-    thresholds = build_thresholds(args.thresholds_json)
+    thresholds, thresholds_label = build_thresholds(
+        args.thresholds_json, getattr(args, "bench_thresholds", False))
+    print(f"thresholds: {thresholds_label}")
+    if getattr(args, "bench_thresholds", False):
+        print("*** WARNING: bench mode - a PASSED result does NOT certify "
+              "image brightness ***")
     output_dir = os.path.join(OUT_DIR, "calibrations")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -242,7 +268,7 @@ def phase_calibrate(args) -> int:
             "json_path": r.json_path,
             "rows": rows_rec,
             "laser_point": laser_point,
-            "thresholds_source": args.thresholds_json or "zeros (bench default)",
+            "thresholds_source": thresholds_label,
             "eprom_calibration_after": cal_block,
         })
         save_state(st)
@@ -446,9 +472,12 @@ def main() -> int:
     p.add_argument("--allow-dim", action="store_true",
                    help="consent to write a below-threshold calibration "
                         "(dim laser) if the pre-write gate fires")
+    p.add_argument("--bench-thresholds", action="store_true",
+                   help="disable the absolute mean/contrast gates (dim dev "
+                        "bench). PASSED then does NOT certify signal level.")
     p.add_argument("--thresholds-json", default=None,
-                   help="JSON file of CalibrationThresholds fields; default "
-                        "zeros (bench)")
+                   help="JSON file of CalibrationThresholds overrides; "
+                        "default: factory values")
     sub.add_parser("verify")
     sub.add_parser("reset-state")
     args = ap.parse_args()

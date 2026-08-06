@@ -90,7 +90,10 @@ def main() -> int:
     ap.add_argument("--allow-dim", action="store_true",
                     help="consent to below-threshold calibration writes")
     ap.add_argument("--thresholds-json", default=None,
-                    help="calibration thresholds JSON (default: SPEC-69)")
+                    help="calibration thresholds JSON (default: factory)")
+    ap.add_argument("--bench-thresholds", action="store_true",
+                    help="calibration: disable absolute mean/contrast gates "
+                         "(dim dev bench)")
     ap.add_argument("--skip-calibration", action="store_true",
                     help="run only the tuning sections (4.1-4.5)")
     ap.add_argument("--skip-tuning", action="store_true",
@@ -222,7 +225,8 @@ def main() -> int:
         return 1
     ns = SimpleNamespace(side=cal_first, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
-                         thresholds_json=a.thresholds_json)
+                         thresholds_json=a.thresholds_json,
+                         bench_thresholds=a.bench_thresholds)
     if run(f"Calibration - {cal_first}", cal.phase_calibrate, ns) != 0:
         return 1
 
@@ -233,7 +237,8 @@ def main() -> int:
         return 1
     ns = SimpleNamespace(side=cal_other, phantom_confirmed=True,
                          two_phantoms=False, allow_dim=a.allow_dim,
-                         thresholds_json=a.thresholds_json)
+                         thresholds_json=a.thresholds_json,
+                         bench_thresholds=a.bench_thresholds)
     if run(f"Calibration - {cal_other}", cal.phase_calibrate, ns) != 0:
         return 1
 
