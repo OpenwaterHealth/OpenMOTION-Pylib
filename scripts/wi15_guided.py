@@ -6,9 +6,11 @@ module swaps in the 0 cm fixture, phantom placement, and power-cycle warnings.
 Wraps the same phase functions as scripts/wi15_runner.py (omotion.tuning) and
 scripts/wi15_calibration.py - no separate logic, just sequencing and prompts.
 
-    python scripts/wi15_guided.py                      # production window
+    python scripts/wi15_guided.py                      # full WI, production window
     python scripts/wi15_guided.py --window 75 125      # dev-rig override
     python scripts/wi15_guided.py --fresh              # discard previous state
+    python scripts/wi15_guided.py --skip-calibration   # laser tuning only (4.1-4.5)
+    python scripts/wi15_guided.py --skip-tuning        # calibration only (4.6)
 
 The laser fires during measurement, tuning, and calibration phases; the
 console mains power is cycled twice (persistence checks). Every prompt must be
@@ -72,71 +74,88 @@ def main() -> int:
                     help="calibration thresholds JSON (default: SPEC-69)")
     ap.add_argument("--skip-calibration", action="store_true",
                     help="run only the tuning sections (4.1-4.5)")
+    ap.add_argument("--skip-tuning", action="store_true",
+                    help="run only the calibration section (4.6)")
     a = ap.parse_args()
 
+    if a.skip_calibration and a.skip_tuning:
+        print("nothing to do: both --skip-calibration and --skip-tuning given")
+        return 1
+
     if a.fresh:
-        for f in (TUNE_STATE, cal.STATE_FILE):
+        # Only clear the state belonging to the flows this run executes.
+        clear = []
+        if not a.skip_tuning:
+            clear.append(TUNE_STATE)
+        if not a.skip_calibration:
+            clear.append(cal.STATE_FILE)
+        for f in clear:
             if os.path.exists(f):
                 os.remove(f)
         print("previous run state cleared")
 
     print("WI-00015 Device Specific Parameter Tuning - guided run")
-    print("The laser will fire during measurements; mains will cycle twice.")
-    if not gate("Bench ready: Ophir meter connected, console powered, both "
-                "sensor modules connected via USB, TestApp/bloodflow-app "
-                "CLOSED. Continue?"):
+    print("The laser will fire during measurements; mains power will be "
+          "cycled for persistence checks.")
+    bench = ("console powered, both sensor modules connected via USB, "
+             "TestApp/bloodflow-app CLOSED")
+    if not a.skip_tuning:
+        bench = "Ophir meter connected, " + bench
+    if not gate(f"Bench ready: {bench}. Continue?"):
         return 1
 
-    # --- Section 4.2: baselines ------------------------------------------
-    first = ask_side("Seat a sensor module in the 0 cm fixture, optics up, "
-                     "cable perpendicular with minimal bend (WI Figure F). "
-                     "Which side is seated?")
-    if first is None:
-        return 1
-    if run(f"Baseline - {first}", phase_baseline,
-           SimpleNamespace(side=first, window=a.window)) != 0:
-        return 1
-
-    other = "right" if first == "left" else "left"
-    if not gate(f"Swap: seat the {other.upper()} module in the fixture "
-                f"(same orientation rules). Ready?"):
-        return 1
-    if run(f"Baseline - {other}", phase_baseline,
-           SimpleNamespace(side=other, window=a.window)) != 0:
-        return 1
-
-    higher = tune_state().get("higher_side")
-    if higher is None:
-        print("ABORT: baselines did not produce a higher side")
-        return 1
-
-    # --- Tuning + section 4.4 (higher module seated) ---------------------
-    if higher != other:
-        if not gate(f"Swap: seat the {higher.upper()} module (higher power) "
-                    f"for tuning and the safety-ADC reads. Ready?"):
+    if not a.skip_tuning:
+        # --- Section 4.2: baselines --------------------------------------
+        first = ask_side("Seat a sensor module in the 0 cm fixture, optics "
+                         "up, cable perpendicular with minimal bend (WI "
+                         "Figure F). Which side is seated?")
+        if first is None:
             return 1
-    if run("Tune + section 4.4", phase_tune,
-           SimpleNamespace(seated=higher)) != 0:
-        print("Tuning did not converge - NCR per the WI. Stopping.")
-        return 1
-
-    lower = "right" if higher == "left" else "left"
-    if not gate(f"Swap: seat the {lower.upper()} module for the cross-check. "
-                f"Ready?"):
-        return 1
-    cc_rc = run("Cross-check", phase_crosscheck, SimpleNamespace(seated=lower))
-    if cc_rc != 0:
-        if not gate("Cross-check FAILED its window (NCR per WI step 22). "
-                    "Continue anyway (dev bench only)?"):
+        if run(f"Baseline - {first}", phase_baseline,
+               SimpleNamespace(side=first, window=a.window)) != 0:
             return 1
 
-    # --- Sections 4.3/4.5: EPROM + power cycle ---------------------------
-    if not gate("Finalize will write the console EPROM and CYCLE MAINS POWER "
-                "(15 s off). Ready?"):
-        return 1
-    if run("Finalize (EPROM + power cycle + PDF)", phase_finalize,
-           SimpleNamespace()) != 0:
-        return 1
+        other = "right" if first == "left" else "left"
+        if not gate(f"Swap: seat the {other.upper()} module in the fixture "
+                    f"(same orientation rules). Ready?"):
+            return 1
+        if run(f"Baseline - {other}", phase_baseline,
+               SimpleNamespace(side=other, window=a.window)) != 0:
+            return 1
+
+        higher = tune_state().get("higher_side")
+        if higher is None:
+            print("ABORT: baselines did not produce a higher side")
+            return 1
+
+        # --- Tuning + section 4.4 (higher module seated) -----------------
+        if higher != other:
+            if not gate(f"Swap: seat the {higher.upper()} module (higher "
+                        f"power) for tuning and the safety-ADC reads. Ready?"):
+                return 1
+        if run("Tune + section 4.4", phase_tune,
+               SimpleNamespace(seated=higher)) != 0:
+            print("Tuning did not converge - NCR per the WI. Stopping.")
+            return 1
+
+        lower = "right" if higher == "left" else "left"
+        if not gate(f"Swap: seat the {lower.upper()} module for the "
+                    f"cross-check. Ready?"):
+            return 1
+        cc_rc = run("Cross-check", phase_crosscheck,
+                    SimpleNamespace(seated=lower))
+        if cc_rc != 0:
+            if not gate("Cross-check FAILED its window (NCR per WI step 22). "
+                        "Continue anyway (dev bench only)?"):
+                return 1
+
+        # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
+        if not gate("Finalize will write the console EPROM and CYCLE MAINS "
+                    "POWER (15 s off). Ready?"):
+            return 1
+        if run("Finalize (EPROM + power cycle + PDF)", phase_finalize,
+               SimpleNamespace()) != 0:
+            return 1
 
     if a.skip_calibration:
         print("\nTuning sections complete (calibration skipped).")
