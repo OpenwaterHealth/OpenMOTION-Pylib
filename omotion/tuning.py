@@ -509,32 +509,34 @@ def phase_baseline(args) -> int:
             cfg = session.console.read_config()
             st["prior_config"] = cfg.json_data if cfg else None
 
-        # WI step 9: reset the laser keys to the default starting
-        # configuration once per run, BEFORE the first bring-up. Without
-        # this, apply_laser_power() honors whatever stale overrides the
-        # unit arrived with and every baseline measures the wrong point.
+        # WI step 9, literal (ruling update, Ethan 2026-08-06): the ENTIRE
+        # User Configuration is replaced with the default starting values -
+        # including any calibration block. Runs once per fresh run, BEFORE
+        # the first bring-up; without it, apply_laser_power() honors
+        # whatever stale overrides the unit arrived with and every baseline
+        # measures the wrong operating point. The pre-wipe config is kept
+        # verbatim in the run state / PDF Appendix A.
         if "step9_reset" not in st:
             prior = st.get("prior_config") or {}
             stale = {k: prior[k] for k in WI_DEFAULT_CONFIG
                      if k in prior and prior[k] != WI_DEFAULT_CONFIG[k]}
-            new_cfg = dict(WI_DEFAULT_CONFIG)
-            for keep in _PRESERVED_KEYS:
-                if keep in prior:
-                    new_cfg[keep] = prior[keep]
+            extras = sorted(set(prior) - set(WI_DEFAULT_CONFIG))
             if stale:
-                print("WI step 9: EPROM held NON-DEFAULT laser values - "
-                      "resetting to the default starting configuration:")
+                print("WI step 9: EPROM held NON-DEFAULT laser values:")
                 for k, v in stale.items():
                     print(f"  {k}: {v} -> {WI_DEFAULT_CONFIG[k]}")
+            if extras:
+                print(f"WI step 9: wiping non-default keys: {extras}")
+            print("WI step 9: writing the default starting configuration "
+                  "(full replacement)")
+            session.console.write_config_json(json.dumps(WI_DEFAULT_CONFIG))
+            if stale or extras:
                 st["notes"].append(
-                    "WI step 9: unit arrived with non-default laser config "
-                    f"{stale}; reset to defaults before baselining "
-                    "(prior config preserved verbatim in Appendix A).")
-            dropped = [k for k in _DROPPED_LEGACY_KEYS if k in prior]
-            if dropped:
-                st["notes"].append(f"Dropped legacy override keys: {dropped}")
-            session.console.write_config_json(json.dumps(new_cfg))
-            st["step9_reset"] = {"stale_found": stale, "dropped": dropped}
+                    "WI step 9: entire User Configuration replaced with "
+                    f"defaults. Non-default values found: {stale or 'none'}; "
+                    f"wiped extra keys: {extras or 'none'} "
+                    "(pre-wipe config preserved verbatim in Appendix A).")
+            st["step9_reset"] = {"stale_found": stale, "wiped_keys": extras}
             save_state(st)
 
         bringup(session, st["notes"])
@@ -825,7 +827,16 @@ def phase_finalize(args) -> int:
 
     session = ConsoleSession()
     try:
-        prior = st.get("prior_config") or {}
+        # Preserve extras from the CURRENT EPROM contents, not the pre-run
+        # snapshot: step 9 wiped the configuration (including any stale
+        # calibration), and resurrecting pre-wipe keys here would undo it.
+        # Anything present now was written during this run's flow (e.g. a
+        # calibration block if section 4.6 ran first) and is permitted per
+        # ruling 7; legacy THRESH/GAIN overrides are dropped regardless
+        # (laser.py prefers them over DRIVE_CL, silently defeating the
+        # tuned limits).
+        cur_cfg = session.console.read_config()
+        current = (cur_cfg.json_data or {}) if cur_cfg else {}
         new_cfg = {
             "TA_PULSE_WIDTH": sec44["TA_PULSE_WIDTH"],
             "TA_CURRENT_DRV": sec44["TA_CURRENT_DRV"],
@@ -837,15 +848,10 @@ def phase_finalize(args) -> int:
             "OPT_RATE_LL": 23125,
             "OPT_DRIVE_CL": sec44["OPT_DRIVE_CL"],
         }
-        # Ruling 7: factory-new EPROM is empty; extra keys are permitted in the
-        # final config. Preserve calibration/TEC_TRIP when present; drop legacy
-        # EE/OPT THRESH+GAIN (laser.py prefers them over DRIVE_CL - keeping
-        # them would silently defeat the tuned limits).
-        for keep in ("calibration", "TEC_TRIP"):
-            if keep in prior:
-                new_cfg[keep] = prior[keep]
-        dropped = [k for k in ("EE_THRESH", "EE_GAIN", "OPT_THRESH", "OPT_GAIN")
-                   if k in prior]
+        for keep in _PRESERVED_KEYS:
+            if keep in current:
+                new_cfg[keep] = current[keep]
+        dropped = [k for k in _DROPPED_LEGACY_KEYS if k in current]
         if dropped:
             st["notes"].append(f"Dropped legacy override keys: {dropped}")
 
