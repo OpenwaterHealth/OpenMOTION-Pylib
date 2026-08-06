@@ -33,6 +33,7 @@ from omotion.tuning import (
     phase_crosscheck,
     phase_finalize,
     phase_tune,
+    save_state as save_tune_state,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -108,7 +109,10 @@ def main() -> int:
         # --- Section 4.2: baselines --------------------------------------
         first = ask_side("Seat a sensor module in the 0 cm fixture, optics "
                          "up, cable perpendicular with minimal bend (WI "
-                         "Figure F). Which side is seated?")
+                         "Figure F). TIP: if you know which module reads "
+                         "lower, seat it FIRST - the higher one must be "
+                         "seated for the later safety-ADC step, so ending "
+                         "on it saves a swap. Which side is seated?")
         if first is None:
             return 1
         if run(f"Baseline - {first}", phase_baseline,
@@ -138,16 +142,33 @@ def main() -> int:
             print("Tuning did not converge - NCR per the WI. Stopping.")
             return 1
 
-        lower = "right" if higher == "left" else "left"
-        if not gate(f"Swap: seat the {lower.upper()} module for the "
-                    f"cross-check. Ready?"):
-            return 1
-        cc_rc = run("Cross-check", phase_crosscheck,
-                    SimpleNamespace(seated=lower))
-        if cc_rc != 0:
-            if not gate("Cross-check FAILED its window (NCR per WI step 22). "
-                        "Continue anyway (dev bench only)?"):
+        # Cross-check (WI steps 21-22) exists only inside the adjustment
+        # branches: it re-measures the OTHER module after the shared drive
+        # changed. If tuning made no adjustment, that module's baseline was
+        # already taken at these exact settings - skip the extra insertion.
+        tuned = bool(tune_state().get("phases", {})
+                     .get("tune", {}).get("steps"))
+        if not tuned:
+            print("\nNo tuning adjustment was made - the other module's "
+                  "baseline already reflects the final settings; "
+                  "cross-check re-measure not required (WI step 18).")
+            st = tune_state()
+            st.setdefault("notes", []).append(
+                "Cross-check (WI steps 21-22) not performed: no tuning "
+                "adjustment was made, so both baselines were taken at the "
+                "final settings (WI step 18 - both in window).")
+            save_tune_state(st)
+        else:
+            lower = "right" if higher == "left" else "left"
+            if not gate(f"Swap: seat the {lower.upper()} module for the "
+                        f"cross-check. Ready?"):
                 return 1
+            cc_rc = run("Cross-check", phase_crosscheck,
+                        SimpleNamespace(seated=lower))
+            if cc_rc != 0:
+                if not gate("Cross-check FAILED its window (NCR per WI "
+                            "step 22). Continue anyway (dev bench only)?"):
+                    return 1
 
         # --- Sections 4.3/4.5: EPROM + power cycle -----------------------
         if not gate("Finalize will write the console EPROM and CYCLE MAINS "
