@@ -130,6 +130,13 @@ WI_DEFAULT_CONFIG = {
     "OPT_PULSE_WIDTH_UL": 550,
     "OPT_RATE_LL": 23125,
     "OPT_DRIVE_CL": 9999,
+    # NOT in the WI's Figure Y (bench ruling, Ethan 2026-08-06): the firmware
+    # treats a missing/zero TEC_TRIP as over-temp-trip DISABLED, the
+    # bloodflow-app re-ensures it on connect but this rig does not, and
+    # step 9's full wipe would otherwise leave the unit unprotected. 40 C
+    # matches the fleet convention (bloodflow-app config tecTripTempC).
+    # Flagged for the WI owner in docs/WI-00015-redline-suggestions.md.
+    "TEC_TRIP": 40.0,
 }
 _PRESERVED_KEYS = ("calibration", "TEC_TRIP")
 _DROPPED_LEGACY_KEYS = ("EE_THRESH", "EE_GAIN", "OPT_THRESH", "OPT_GAIN")

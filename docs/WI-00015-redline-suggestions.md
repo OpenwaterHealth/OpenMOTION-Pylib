@@ -40,6 +40,18 @@ derived `OPT_DRIVE_CL` therefore depends on an unspecified condition.
 measured energy** (from steps 14/17) is seated in the 0 cm detector for the
 following ADC readings." (Ruling 2.)
 
+Note the same edit must touch **step 18's under-minimum routing**, which
+currently says to place **the under-minimum module** ("place it back into
+the 0cm detector") before skipping ahead to section 4.4 — the under-minimum
+module is by definition the *lower*-power one, contradicting ruling 2.
+
+Additionally, consider **moving the section 4.4 ADC readings to immediately
+after step 19's loop**, before the step 21–22 cross-check: the ADC values
+depend only on the final tuned settings (frozen at loop exit) and the
+cross-check changes no settings, so the readings are identical — and the
+literal order costs two extra fixture insertions (seat higher, seat lower
+for 21, re-seat higher for 4.4).
+
 Also worth stating: the ADC values must be read **while the laser is
 firing** — the register latches its last value after Stop Trigger, so a
 late read looks plausible but is stale (reads 0 before the first fire).
@@ -52,12 +64,25 @@ minimum "ahead to section 4.4", while steps 23–26 describe a pulse-width
 escalation procedure for the same condition.
 
 **Ruling 1:** the skip-ahead is correct; the under-minimum unit proceeds to
-section 4.4 with no adjustment (and fails SPEC-31 → NCR).
+section 4.4 with no adjustment (and fails SPEC-31 → NCR). *Note: this ruling
+was obtained informally from the WI author and deserves a documented
+resolution — a real under-minimum unit has now hit this fork.*
 
-**Proposed:** rewrite steps 23–26 as an explicitly optional diagnostic (or
-delete them), and note in step 18 that the under-minimum case both skips
-ahead **and** constitutes a SPEC-31 failure to be dispositioned per the NCR
-process.
+**Measured data for the decision** (both bench units, step-23 sweep executed
+diagnostically): energy vs TA pulse width is cleanly linear — unit 1
+(dim): 0.289 µJ/µs from a 163 µJ base, 600 µs ceiling reaches ~191 µJ;
+unit 2 (console WWW04Q40010): 0.419 µJ/µs from a 219 µJ base, ceiling
+reaches **260.6 µJ — still 13% under the 300 µJ floor** (extrapolated
+~694 µs would be needed). The escalation path can therefore only rescue
+units within roughly **14% of the floor (~260 µJ and up)**; anything dimmer
+fails at the ceiling regardless. Whichever routing the WI settles on, it
+should be chosen knowing the escalation's actual rescue band is this narrow.
+
+**Proposed:** either rewrite steps 23–26 as an explicitly optional
+diagnostic (or delete them), noting in step 18 that the under-minimum case
+both skips ahead **and** constitutes a SPEC-31 failure per the NCR process —
+or, if the escalation is retained as mandatory, resolve step 18's text to
+route through steps 23–26 first.
 
 ## 4. Step 31 — rounding direction contradicts its own results column
 
@@ -118,7 +143,25 @@ with the single shared TA drive. **Ruling 4:** NCR. Suggest adding a row to
 the step 18 decision table saying so, rather than leaving the case to fall
 through the sequential skip-aheads.
 
-## 10. Consider referencing the automated runner
+## 10. Figure Y omits TEC_TRIP — step 9 disarms the over-temp trip
+
+**Current:** the default starting configuration (Figure Y, step 9) contains
+only the nine laser keys. TEC_TRIP appears nowhere in the WI.
+
+**Problem:** step 9 replaces the entire User Configuration. The console
+firmware treats a missing/zero `TEC_TRIP` as **over-temp trip disabled**
+(bloodflow-app `motion_config.py` guard-rail comments), and only the
+bloodflow-app re-ensures the value on connect — the engineering/test app and
+any rig executing this WI do not. A unit that completes this procedure and
+never runs the clinical app therefore operates **without TEC over-temp
+protection**. Observed live 2026-08-06: after the step-9 wipe on console
+WWW04Q40010 nothing rewrote TEC_TRIP.
+
+**Proposed:** add `"TEC_TRIP": 40` to Figure Y's default configuration (40 °C
+is the fleet convention, bloodflow-app `tecTripTempC`), and to step 33/37's
+expected final configuration. The automated runner already does this.
+
+## 11. Consider referencing the automated runner
 
 If the automated rig (openmotion-sdk `scripts/wi15_runner.py` /
 `wi15_guided.py`) is to become the official execution method, the WI needs a
