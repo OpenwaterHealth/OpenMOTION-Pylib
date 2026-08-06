@@ -1,6 +1,8 @@
 # WI-00015 Automated Tuning Runner — deviation log and traceability
 
-Accompanies `wi15_runner.py`. Automates **WI-00015 Open-Motion Device Specific
+Accompanies `scripts/wi15_runner.py` (CLI) and `omotion/tuning.py` (the phase
+engine — importable so the test-app's future tune button, tracked as
+openmotion-test-app#70, can drive the same phases directly). Automates **WI-00015 Open-Motion Device Specific
 Parameter Tuning rev 2 (ECO-000270)** via the `omotion` SDK and the Ophir
 Centauri COM interface. This document records every place the implementation
 deviates from the WI as written, and why, so a future reader can reconstruct
