@@ -70,6 +70,14 @@ into the 0cm detector" already matches step 23's setup (lowest-energy
 module seated), so the minimal fix is replacing "skip ahead to section 4.4"
 with "proceed to step 23". The automated runner implements this routing.
 
+**Executed live (2026-08-06, console WWW04Q40010):** with both modules
+under-threshold (L 224.2 / R 219.6 µJ), the runner routed through step 23:
+lowest module seated, 11 steps of +10 µs from 500 to 599 µs, energy rising
+220.1 → 265.2 µJ — ceiling reached without meeting 300 µJ, unit dispositioned
+NCR and the procedure ended per step 23's failure clause, with the default
+configuration restored. Both the recommended routing and the ceiling-failure
+clause are therefore proven executable exactly as proposed.
+
 **Measured data for the decision** (both bench units, step-23 sweep executed
 diagnostically): energy vs TA pulse width is cleanly linear — unit 1
 (dim): 0.289 µJ/µs from a 163 µJ base, 600 µs ceiling reaches ~191 µJ;
@@ -163,7 +171,54 @@ WWW04Q40010 nothing rewrote TEC_TRIP.
 is the fleet convention, bloodflow-app `tecTripTempC`), and to step 33/37's
 expected final configuration. The automated runner already does this.
 
-## 11. Consider referencing the automated runner
+## 11. Steps 19/23 module selection needs a closeness margin
+
+**Current:** step 19 seats "the Sensor Module with the highest energy
+measured"; step 23 seats the lowest.
+
+**Problem:** on a well-matched unit the ordering is not reproducible. Console
+WWW04Q40010 measured L 216.0 / R 220.0 µJ on one run and L 224.2 / R 219.6 µJ
+on the next — the "lowest" module flipped sides between insertions, because
+the inter-module gap (~2%) is within insertion-to-insertion repeatability
+(~±2–4%). Two compliant executions of the same WI on the same unit can
+therefore seat different modules and record contradictory "lowest/highest"
+designations. Physically this is harmless (one laser, one safety ADC — see
+item 2), but the record inconsistency invites audit questions.
+
+**Proposed:** add to steps 19/23: "If the two modules' measurements differ by
+less than 5%, either module may be used; record which."
+
+## 12. Step 8 should verify serial numbers are programmed, not just recorded
+
+**Current:** step 8 says to record the System Serial Number and the modules'
+Device IDs.
+
+**Problem:** a unit arrived at this bench with **no console serial
+programmed** (reads empty) and unprogrammed sensor-module serials — they had
+to be written by the operator mid-procedure. "Record" silently produces a
+blank field in the DHR; nothing in the WI catches the omission.
+
+**Proposed:** step 8 add: "Verify the console and both Sensor Modules report
+non-empty serial numbers. If any is missing, stop and program serials per
+<applicable procedure> before continuing."
+
+## 13. Step 9 should record the pre-existing configuration before deleting it
+
+**Current:** step 9 says "Delete any data in the 'User Configuration' field
+if present" — with no instruction to capture it first.
+
+**Problem:** the deleted configuration can be the only record of a unit's
+prior state. The same bench unit arrived carrying a foreign configuration at
+write-sequence 66 (including `TA_PULSE_WIDTH: 600` — the WI ceiling); under
+the WI as written that evidence would have been destroyed unexamined. The
+automated runner preserves the pre-wipe configuration verbatim in its report
+appendix.
+
+**Proposed:** step 9 add, before the delete: "Copy the entire existing
+contents of the User Configuration into the Actual Results cell for this
+step, then delete."
+
+## 14. Consider referencing the automated runner
 
 If the automated rig (openmotion-sdk `scripts/wi15_runner.py` /
 `wi15_guided.py`) is to become the official execution method, the WI needs a
