@@ -72,11 +72,14 @@ def test_bare_metal_device_flashes_baremetal_image_at_flash_base(release_dir):
 
 def test_bootloader_device_flashes_signed_image_into_the_slot(release_dir):
     """Same starting path as the bare-metal case — the detected mode, not the
-    caller, decides which sibling is used."""
+    caller, decides which sibling is used. Both files are registered, as
+    download_firmware() registers every asset it fetches; only registered
+    same-release files are sibling candidates."""
     prog = FakeProgrammer(mode=BootMode.BOOTLOADER)
     updater = FirmwareUpdater(programmer=prog)
     primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
     register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+    register_download(release_dir / "motion-sensor-fw-signed.bin", FirmwareKind.SENSOR, "1.8.2")
 
     updater.update(FakeHandle(), primary)
 
@@ -109,6 +112,54 @@ def test_bootloader_device_with_legacy_release_refuses(tmp_path):
 def test_legacy_release_still_flashes_on_a_bare_metal_device(tmp_path):
     legacy = tmp_path / "motion-sensor-fw.bin"
     legacy.write_bytes(b"\x00" * 16)
+    register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
+    prog = FakeProgrammer(mode=BootMode.BARE_METAL)
+
+    FirmwareUpdater(programmer=prog).update(FakeHandle(), legacy)
+
+    assert prog.flashed == [(legacy, "0x08000000")]
+
+
+def test_stale_higher_preference_file_from_another_release_is_not_selected(tmp_path):
+    """Regression for #218: the downloads dir is shared across releases, so a
+    leftover registered for a newer release must not shadow the release the
+    caller actually chose."""
+    legacy = tmp_path / "motion-sensor-fw.bin"
+    legacy.write_bytes(b"\x00" * 16)
+    stale = tmp_path / "motion-sensor-fw-baremetal-fpga.bin"
+    stale.write_bytes(b"\x01" * 16)
+    register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
+    register_download(stale, FirmwareKind.SENSOR, "1.10.0")
+    prog = FakeProgrammer(mode=BootMode.BARE_METAL)
+
+    FirmwareUpdater(programmer=prog).update(FakeHandle(), legacy)
+
+    assert prog.flashed == [(legacy, "0x08000000")]
+
+
+def test_stale_signed_image_does_not_bypass_the_legacy_release_refusal(tmp_path):
+    """A bootloader unit on a pre-bootloader release must refuse — not flash a
+    signed image left over from some other release (#218)."""
+    legacy = tmp_path / "motion-sensor-fw.bin"
+    legacy.write_bytes(b"\x00" * 16)
+    stale = tmp_path / "motion-sensor-fw-signed.bin"
+    stale.write_bytes(b"\x01" * 16)
+    register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
+    register_download(stale, FirmwareKind.SENSOR, "1.10.0")
+    prog = FakeProgrammer(mode=BootMode.BOOTLOADER)
+
+    with pytest.raises(UnsupportedReleaseError):
+        FirmwareUpdater(programmer=prog).update(FakeHandle(), legacy)
+    assert prog.flashed == []
+
+
+def test_unregistered_files_in_the_directory_are_not_candidates(tmp_path):
+    """A file from a previous session (no provenance in this process) is
+    invisible to sibling selection even when its name would win on preference
+    (#218)."""
+    legacy = tmp_path / "motion-sensor-fw.bin"
+    legacy.write_bytes(b"\x00" * 16)
+    (tmp_path / "motion-sensor-fw-baremetal-fpga.bin").write_bytes(b"\x01" * 16)
     register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
     prog = FakeProgrammer(mode=BootMode.BARE_METAL)
 
@@ -186,6 +237,7 @@ def test_updater_records_the_mode_it_detected(release_dir):
     updater = FirmwareUpdater(programmer=prog)
     primary = release_dir / "motion-sensor-fw-baremetal-fpga.bin"
     register_download(primary, FirmwareKind.SENSOR, "1.8.2")
+    register_download(release_dir / "motion-sensor-fw-signed.bin", FirmwareKind.SENSOR, "1.8.2")
 
     assert updater.last_boot_mode is None
     updater.update(FakeHandle(), primary)
@@ -193,11 +245,12 @@ def test_updater_records_the_mode_it_detected(release_dir):
 
 
 def test_updater_records_mode_even_when_the_flash_is_refused(release_dir):
-    """A refusal is still information about the device — don't discard it."""
+    """A refusal is still information about the device — don't discard it.
+
+    The new-style files from the fixture stay on disk, unregistered: they must
+    not shadow the legacy release's refusal (#218)."""
     legacy = release_dir / "motion-sensor-fw.bin"
     legacy.write_bytes(b"\x00" * 16)
-    for stale in ("motion-sensor-fw-baremetal-fpga.bin", "motion-sensor-fw-signed.bin"):
-        (release_dir / stale).unlink()
     register_download(legacy, FirmwareKind.SENSOR, "1.8.1")
     updater = FirmwareUpdater(programmer=FakeProgrammer(mode=BootMode.BOOTLOADER))
 
