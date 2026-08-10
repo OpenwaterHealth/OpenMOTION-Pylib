@@ -91,3 +91,34 @@ def test_reset_clears_hold_state():
     batch = _batch(["dark"], [0], [4], [9.0], [0.0])
     stage.process(batch)
     assert batch.bfi_live[0, 0, 4] == pytest.approx(9.0)
+
+
+def test_stencilled_dark_row_carries_boundary_temp():
+    """The fabricated D_prev row carries the dark frame's OWN firmware
+    temperature stamp (via EnrichedCorrectedInterval.left_temp_c), not a
+    stencil interpolation and not None — the stamp is a cached ~100 ms
+    poll, equally valid on dark and light frames (issue #221)."""
+    from omotion.pipeline.batch import IntervalClosed
+    from omotion.pipeline.stages.dark import (
+        EnrichedCorrectedFrame, EnrichedCorrectedInterval,
+    )
+
+    def _light(abs_id, t, temp_c):
+        return EnrichedCorrectedFrame(
+            abs_frame_id=abs_id, t=t, side="left", cam_id=0,
+            mean=100.0, std=2.0, contrast=0.02, bfi=4.0, bvi=6.0,
+            temp_c=temp_c,
+        )
+
+    eci = EnrichedCorrectedInterval(
+        left_abs=10, right_abs=30, left_t=0.25, left_temp_c=36.6,
+        frames=[_light(11, 0.275, 36.7), _light(12, 0.300, 36.8)],
+    )
+    batch = _batch(["light"], [0], [0], [0.1], [5.0])
+    batch.events.append(IntervalClosed(corrected_batch=eci))
+    DarkFrameHoldStage().process(batch)
+
+    dark_row = eci.frames[0]
+    assert dark_row.abs_frame_id == 10            # D_prev was prepended
+    assert dark_row.temp_c == pytest.approx(36.6)  # boundary's own stamp
+    assert eci.frames[1].temp_c == pytest.approx(36.7)  # lights untouched

@@ -112,7 +112,8 @@ class DarkFrameHoldStage:
             first = eci.frames[0]
             key = (first.side, first.cam_id)
 
-            dark_ef = self._apply_stencil(key, eci.left_abs, eci.left_t, eci.frames)
+            dark_ef = self._apply_stencil(key, eci.left_abs, eci.left_t, eci.frames,
+                                          d_prev_temp_c=eci.left_temp_c)
 
             # Prepend the dark-frame corrected row (chronological order).
             if dark_ef is not None:
@@ -130,6 +131,7 @@ class DarkFrameHoldStage:
         d_prev_abs: int,
         d_prev_t: float,
         enriched_frames: list[EnrichedCorrectedFrame],
+        d_prev_temp_c: Optional[float] = None,
     ) -> Optional[EnrichedCorrectedFrame]:
         """Compute the stencil-interpolated corrected value for the dark frame D_prev.
 
@@ -143,6 +145,10 @@ class DarkFrameHoldStage:
         DarkFrameQuadraticStencil.interpolate_dark_value for the fallback chain).
 
         Returns None if there is no v(D+1) (interval has no corrected light frames).
+
+        temp_c is NOT stencilled: ``d_prev_temp_c`` is the dark frame's own
+        firmware temperature stamp (a cached ~100 ms-cadence poll, equally
+        valid on dark and light frames), carried via Interval.left.
         """
         if not enriched_frames:
             return None
@@ -175,6 +181,7 @@ class DarkFrameHoldStage:
             bfi=_interp("bfi"),
             bvi=_interp("bvi"),
             quality="ok",
+            temp_c=d_prev_temp_c,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────

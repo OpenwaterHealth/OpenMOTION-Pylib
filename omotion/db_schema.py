@@ -128,9 +128,11 @@ def _migration_001_baseline(conn) -> None:
 
 
 def _migration_002_session_data_temp(conn) -> None:
-    """Per-frame on-chip camera temperature (°C) in the corrected record
-    (issue #221). Light frames carry the reading; dark/stencilled rows and
-    reduced-mode side averages stay NULL, as do all pre-migration rows."""
+    """Per-frame camera temperature (°C) in the corrected record (issue
+    #221). Every per-camera row carries the firmware's cached temperature
+    stamp (dark rows included — the stamp is a ~100 ms-cadence I2C poll,
+    not a per-capture read). NULL on reduced-mode side averages and all
+    pre-migration rows."""
     _add_column_if_missing(conn, "session_data", "temp", "REAL")
 
 

@@ -47,10 +47,10 @@ def _read(path):
 
 
 def test_export_populates_temp_columns(tmp_path):
-    """Light rows carry their stored camera temperature; rows without one
-    (dark/stencilled, or recorded pre-#221) leave the cell empty."""
+    """Rows carry their stored camera temperature; rows without one (NULL —
+    e.g. recorded pre-#221) leave the cell empty."""
     db_path, sid = _make_db(tmp_path, [
-        _row(10, 0),                     # stencilled dark — no reading
+        _row(10, 0),                     # no stored stamp (NULL temp)
         _row(10, 1),
         _row(11, 0, temp=45.625),
         _row(11, 1, temp=44.5),

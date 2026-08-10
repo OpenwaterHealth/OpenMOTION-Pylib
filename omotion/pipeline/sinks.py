@@ -357,8 +357,8 @@ class CsvSink:
                 side_char = "l" if frame.side == "left" else "r"
                 cam_1 = cam_id % 8 + 1
                 if isinstance(frame, EnrichedCorrectedFrame):
-                    # temp_c is None on dark/stencilled frames — their cell
-                    # stays empty, matching the legacy corrected format.
+                    # temp_c is None only where no firmware stamp was
+                    # available; that cell stays empty.
                     for metric, val in (
                         ("bfi",      frame.bfi),
                         ("bvi",      frame.bvi),

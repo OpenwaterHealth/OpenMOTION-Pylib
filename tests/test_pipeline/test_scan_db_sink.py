@@ -235,14 +235,14 @@ def test_scan_db_sink_quality_persisted(tmp_path):
 
 
 def test_scan_db_sink_temp_persisted(tmp_path):
-    """Camera temperature rides the corrected record (issue #221). Frames
-    without a reading — dark/stencilled rows, whose chip read is
-    meaningless — store NULL, not 0."""
+    """Camera temperature rides the corrected record (issue #221). A frame
+    without a firmware stamp (e.g. temperature telemetry unavailable)
+    stores NULL, not 0."""
     db_path = str(tmp_path / "scan.db")
     sink = ScanDBSink(db_path=db_path)
     sink.on_scan_start(_meta_simple())
     sink.consume("final", _interval([
-        _frame(10, cam_id=0),                   # stencilled dark: no reading
+        _frame(10, cam_id=0),                   # no stamp available
         _frame(11, cam_id=0, temp_c=45.625),
     ]))
     sink.on_complete()

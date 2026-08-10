@@ -15,9 +15,10 @@ values instead — playback still works, but the values are the
 pre-refinement ones.
 
 The output matches what ``CsvSink`` writes during the scan
-(bfi, bvi, contrast, mean, temp). ``temp`` cells are empty for rows
-recorded before ``session_data.temp`` existed (schema v2, issue #221)
-and for dark/stencilled rows, whose chip reading is meaningless.
+(bfi, bvi, contrast, mean, temp). ``temp`` cells are empty only for
+rows recorded before ``session_data.temp`` existed (schema v2, issue
+#221) — dark rows included, since the firmware's temperature stamp is
+a cached poll that rides every frame alike.
 
 Reduced-mode column layout is recovered from
 ``session_meta.sdk_flags.reduced_mode`` (stamped by ScanDBSink).

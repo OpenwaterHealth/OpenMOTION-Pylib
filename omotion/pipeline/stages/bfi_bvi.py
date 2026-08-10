@@ -110,7 +110,7 @@ class BfiBviStage:
                 ))
             event.corrected_batch = EnrichedCorrectedInterval(
                 left_abs=ci.left_abs, right_abs=ci.right_abs,
-                left_t=ci.left_t,
+                left_t=ci.left_t, left_temp_c=ci.left_temp_c,
                 frames=enriched_frames,
             )
 
