@@ -1221,7 +1221,7 @@ class MotionConsole(SignalWrapper):
             if self.uart.demo_mode:
                 return rgb_state
 
-            logger.info("Setting RGB LED state.")
+            logger.debug("Setting RGB LED state.")
 
             # Send the RGB state as the reserved byte in the packet
             r = self.uart.send_packet(
@@ -1237,7 +1237,7 @@ class MotionConsole(SignalWrapper):
                 logger.error("Error setting RGB LED state")
                 return -1
 
-            logger.info(f"Set RGB LED state to {rgb_state}")
+            logger.debug(f"Set RGB LED state to {rgb_state}")
             return rgb_state
 
         except ValueError as v:
