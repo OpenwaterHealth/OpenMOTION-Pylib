@@ -170,10 +170,15 @@ def resolve_asset(
         return name
 
     if mode is BootMode.BOOTLOADER:
+        # Lead with the device state, not the release: an operator picking an
+        # old release is trying to roll back, and the real answer is that a
+        # converted unit cannot leave the bootloader over USB (#225).
         raise UnsupportedReleaseError(
-            f"this release has no signed image ({preferences[0]}), so it predates "
-            f"bootloader support; {kind.value} needs {_MIN_BOOTLOADER_TAG[kind]} "
-            "or newer to update a device that has the bootloader installed"
+            f"the bootloader is active on this {kind.value}, and rolling back to "
+            f"a pre-bootloader release is not possible over USB: the bootloader "
+            f"only accepts signed images, and this release has none "
+            f"({preferences[0]}). Use {_MIN_BOOTLOADER_TAG[kind]} or newer; "
+            "removing the bootloader requires SWD access to the board"
         )
     raise UnsupportedReleaseError(
         f"this release has none of {', '.join(preferences)}; cannot update a "
