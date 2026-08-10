@@ -39,10 +39,6 @@ class DarkObservation:
     t:   float
     u1:  float
     std: float
-    # Firmware temperature stamp riding this frame. The value is a cached
-    # ~100 ms-cadence I2C poll, not a per-capture read, so it is exactly as
-    # valid on a dark frame as on its light neighbours.
-    temp_c: Optional[float] = None
 
 
 class DarkHistory:
@@ -215,7 +211,6 @@ class CorrectedInterval:
     right_abs: int
     frames:    list[CorrectedFrame]
     left_t:    float = 0.0   # timestamp of the left dark boundary (for stencil)
-    left_temp_c: Optional[float] = None  # left boundary's own firmware temp stamp
 
 
 @dataclass
@@ -243,7 +238,6 @@ class EnrichedCorrectedInterval:
     right_abs: int
     frames:    list[EnrichedCorrectedFrame]
     left_t:    float = 0.0   # timestamp of the left dark boundary (for stencil)
-    left_temp_c: Optional[float] = None  # left boundary's own firmware temp stamp
 
 
 class PendingInterval:
@@ -446,7 +440,6 @@ class DarkCorrectionStage:
         side, cam_id = key
         corrected = self._batch.correct_interval(interval, side=side, cam_id=cam_id)
         corrected.left_t = interval.left.obs.t
-        corrected.left_temp_c = interval.left.obs.temp_c
         events.append(IntervalClosed(corrected_batch=corrected))
 
     def process(self, batch: FrameBatch) -> FrameBatch:
@@ -472,15 +465,6 @@ class DarkCorrectionStage:
             u1 = float(batch.mean_raw[i, side_idx, cam_id])
             std = float(batch.std_raw[i, side_idx, cam_id])
 
-            # Firmware temperature stamp — a cached ~100 ms-cadence poll the
-            # firmware writes into every frame footer, dark or light alike,
-            # so both branches below record it.
-            temp_c = None
-            if batch.temperature_c is not None:
-                tv = float(batch.temperature_c[i, side_idx, cam_id])
-                if np.isfinite(tv):
-                    temp_c = tv
-
             if ftype == "dark":
                 last_rt = self._last_realtime.get((side, cam_id))
                 if last_rt is not None:
@@ -501,13 +485,11 @@ class DarkCorrectionStage:
                 if pi is None:
                     pi = PendingInterval()
                     self._pending[(side, cam_id)] = pi
-                    pi.set_left_dark(
-                        DarkObservation(t=t, u1=u1, std=std, temp_c=temp_c),
-                        abs_frame_id=abs_id)
+                    pi.set_left_dark(DarkObservation(t=t, u1=u1, std=std),
+                                     abs_frame_id=abs_id)
                 else:
-                    pi.set_right_dark(
-                        DarkObservation(t=t, u1=u1, std=std, temp_c=temp_c),
-                        abs_frame_id=abs_id)
+                    pi.set_right_dark(DarkObservation(t=t, u1=u1, std=std),
+                                      abs_frame_id=abs_id)
                     if pi.is_closed():
                         interval = pi.flush()
                         # After flush, pi's left has rolled to the just-flushed right.
@@ -568,6 +550,11 @@ class DarkCorrectionStage:
                 if pi is not None:
                     u2 = std ** 2 + u1 ** 2
                     q = str(batch.quality[i]) if batch.quality is not None else "ok"
+                    temp_c = None
+                    if batch.temperature_c is not None:
+                        tv = float(batch.temperature_c[i, side_idx, cam_id])
+                        if np.isfinite(tv):
+                            temp_c = tv
                     pi.add_light(abs_frame_id=abs_id, t=t, u1=u1, u2=u2,
                                  quality=q, temp_c=temp_c)
 
@@ -713,7 +700,6 @@ class DarkCorrectionStage:
                 t=terminal_light.t,
                 u1=terminal_light.u1,
                 std=terminal_var ** 0.5,
-                temp_c=terminal_light.temp_c,
             )
 
             # Remove the terminal dark-like tail from pi._light so those frames

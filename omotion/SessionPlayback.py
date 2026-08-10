@@ -17,8 +17,8 @@ pre-refinement ones.
 The output matches what ``CsvSink`` writes during the scan
 (bfi, bvi, contrast, mean, temp). ``temp`` cells are empty only for
 rows recorded before ``session_data.temp`` existed (schema v2, issue
-#221) — dark rows included, since the firmware's temperature stamp is
-a cached poll that rides every frame alike.
+#221). Dark rows are covered too: the stencilled row's temp is
+fabricated by the same neighbour stencil as its other metrics.
 
 Reduced-mode column layout is recovered from
 ``session_meta.sdk_flags.reduced_mode`` (stamped by ScanDBSink).

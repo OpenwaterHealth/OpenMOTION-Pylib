@@ -112,8 +112,7 @@ class DarkFrameHoldStage:
             first = eci.frames[0]
             key = (first.side, first.cam_id)
 
-            dark_ef = self._apply_stencil(key, eci.left_abs, eci.left_t, eci.frames,
-                                          d_prev_temp_c=eci.left_temp_c)
+            dark_ef = self._apply_stencil(key, eci.left_abs, eci.left_t, eci.frames)
 
             # Prepend the dark-frame corrected row (chronological order).
             if dark_ef is not None:
@@ -131,7 +130,6 @@ class DarkFrameHoldStage:
         d_prev_abs: int,
         d_prev_t: float,
         enriched_frames: list[EnrichedCorrectedFrame],
-        d_prev_temp_c: Optional[float] = None,
     ) -> Optional[EnrichedCorrectedFrame]:
         """Compute the stencil-interpolated corrected value for the dark frame D_prev.
 
@@ -146,9 +144,10 @@ class DarkFrameHoldStage:
 
         Returns None if there is no v(D+1) (interval has no corrected light frames).
 
-        temp_c is NOT stencilled: ``d_prev_temp_c`` is the dark frame's own
-        firmware temperature stamp (a cached ~100 ms-cadence poll, equally
-        valid on dark and light frames), carried via Interval.left.
+        temp_c is fabricated by the same stencil as the other metrics
+        (issue #221). Unlike them it is Optional on the neighbours: a
+        missing stamp counts as a missing neighbour, and with no stamped
+        v(D+1) the dark row's temp stays None instead of raising.
         """
         if not enriched_frames:
             return None
@@ -170,6 +169,8 @@ class DarkFrameHoldStage:
                 v_plus_1=r1, v_plus_2=r2,
             )
 
+        temp_c = _interp("temp_c") if right1.temp_c is not None else None
+
         return EnrichedCorrectedFrame(
             abs_frame_id=d_prev_abs,
             t=d_prev_t,
@@ -181,7 +182,7 @@ class DarkFrameHoldStage:
             bfi=_interp("bfi"),
             bvi=_interp("bvi"),
             quality="ok",
-            temp_c=d_prev_temp_c,
+            temp_c=temp_c,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────
