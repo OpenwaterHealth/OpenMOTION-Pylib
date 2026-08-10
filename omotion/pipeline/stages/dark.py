@@ -157,6 +157,7 @@ class _LightSample:
     u1: float
     u2: float
     quality: str = "ok"
+    temp_c: Optional[float] = None  # on-chip camera temperature (°C)
 
 
 @dataclass
@@ -200,6 +201,7 @@ class CorrectedFrame:
     dark_var:      float     # interpolated dark baseline variance
     contrast:      Optional[float] = None  # set by ShotNoiseCorrectionStage
     quality:       str = "ok"
+    temp_c:        Optional[float] = None  # on-chip camera temperature (°C)
 
 
 @dataclass
@@ -224,6 +226,9 @@ class EnrichedCorrectedFrame:
     bfi:      float
     bvi:      float
     quality:  str = "ok"
+    temp_c:   Optional[float] = None  # on-chip camera temperature (°C);
+                                      # None only where no stamp was available
+                                      # (e.g. reduced-mode side averages)
 
 
 @dataclass
@@ -249,10 +254,11 @@ class PendingInterval:
         self._right = None
 
     def add_light(self, *, abs_frame_id: int, t: float, u1: float, u2: float,
-                  quality: str = "ok") -> None:
+                  quality: str = "ok",
+                  temp_c: Optional[float] = None) -> None:
         self._light.append(_LightSample(
             abs_frame_id=int(abs_frame_id), t=float(t), u1=float(u1), u2=float(u2),
-            quality=str(quality),
+            quality=str(quality), temp_c=temp_c,
         ))
 
     def set_right_dark(self, obs: DarkObservation, *, abs_frame_id: int) -> None:
@@ -320,7 +326,7 @@ class LinearInterpolation:
                 side=side, cam_id=cam_id,
                 mean=mean, std=std,
                 raw_u1=lf.u1, raw_var=raw_var, dark_var=baseline_var,
-                quality=lf.quality,
+                quality=lf.quality, temp_c=lf.temp_c,
             ))
 
         return CorrectedInterval(
@@ -544,8 +550,13 @@ class DarkCorrectionStage:
                 if pi is not None:
                     u2 = std ** 2 + u1 ** 2
                     q = str(batch.quality[i]) if batch.quality is not None else "ok"
+                    temp_c = None
+                    if batch.temperature_c is not None:
+                        tv = float(batch.temperature_c[i, side_idx, cam_id])
+                        if np.isfinite(tv):
+                            temp_c = tv
                     pi.add_light(abs_frame_id=abs_id, t=t, u1=u1, u2=u2,
-                                 quality=q)
+                                 quality=q, temp_c=temp_c)
 
         batch.dark_baseline_rt = baseline_rt
         batch.mean_dc_rt = mean_dc_rt

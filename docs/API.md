@@ -252,8 +252,8 @@ and the calibration workflow) carries `ok`, `error`, `canceled`,
 - **CSV** (if `data_dir` set): corrected, raw (duration-capped), and telemetry
   CSVs, gated by the per-scan flags. Corrected CSV is opt-in when a DB is set.
 - **Scan DB** (if `scan_db_path` set): `session_data` rows per frame — per-camera
-  BFI/BVI/mean/contrast in normal mode, or the per-side average (`cam_id=-1`) in
-  reduced mode. This is what §5 reads back for replay.
+  BFI/BVI/mean/contrast/temp in normal mode, or the per-side average (`cam_id=-1`)
+  in reduced mode. This is what §5 reads back for replay.
 
 ---
 
@@ -304,7 +304,7 @@ for s in db.iter_sessions():                 # {id, session_label, session_start
 
 session = db.get_session_by_label("20260528_211930_subj-001")
 for row in db.iter_session_data(session["id"], t_lo=0.0, t_hi=30.0):
-    # row: cam_id, side(0/1), frame_id, timestamp_s, bfi, bvi, mean, contrast
+    # row: cam_id, side(0/1), frame_id, timestamp_s, bfi, bvi, mean, contrast, temp
     ...
 db.close()
 ```
@@ -315,7 +315,7 @@ Key read methods:
 |---|---|
 | `iter_sessions()` / `stream_sessions(batch_size=100)` | All sessions, oldest first. |
 | `get_session(id)` / `get_session_by_label(label)` | One session. |
-| `iter_session_data(session_id, side=None, cam_id=None, t_lo=None, t_hi=None)` | Per-frame BFI/BVI/mean/contrast; optional side/camera/time-range filters. |
+| `iter_session_data(session_id, side=None, cam_id=None, t_lo=None, t_hi=None)` | Per-frame BFI/BVI/mean/contrast/temp; optional side/camera/time-range filters. |
 | `iter_raw_frames(...)` / `get_raw_frame(id)` | Raw histograms (only if `write_raw_to_db`). |
 
 **`session_data` layout:** `cam_id` 0..7 are per-camera rows (normal mode);

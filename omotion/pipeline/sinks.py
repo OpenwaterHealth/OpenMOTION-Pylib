@@ -357,12 +357,17 @@ class CsvSink:
                 side_char = "l" if frame.side == "left" else "r"
                 cam_1 = cam_id % 8 + 1
                 if isinstance(frame, EnrichedCorrectedFrame):
+                    # temp_c is None only where no firmware stamp was
+                    # available; that cell stays empty.
                     for metric, val in (
                         ("bfi",      frame.bfi),
                         ("bvi",      frame.bvi),
                         ("mean",     frame.mean),
                         ("contrast", frame.contrast),
+                        ("temp",     frame.temp_c),
                     ):
+                        if val is None:
+                            continue
                         col_idx = _NORMAL_COL_IDX[(metric, side_char, cam_1)]
                         row[col_idx] = round(float(val), 9)
                 else:
@@ -370,7 +375,6 @@ class CsvSink:
                     for metric, val in (("mean", frame.mean),):
                         col_idx = _NORMAL_COL_IDX[(metric, side_char, cam_1)]
                         row[col_idx] = round(float(val), 9)
-                # temp: leave empty (not propagated through corrected path yet)
 
             # Check whether this frame is complete (all expected cams seen for
             # sides that have non-empty masks).
@@ -751,6 +755,7 @@ class ScanDBSink:
                 "bvi": bvi,
                 "mean": mean_v,
                 "contrast": contrast_v,
+                "temp": _round(getattr(f, "temp_c", None)),
                 "quality": str(getattr(f, "quality", "ok") or "ok"),
             })
 
