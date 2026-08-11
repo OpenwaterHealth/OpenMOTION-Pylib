@@ -173,6 +173,7 @@ DEBUG_FLAG_HISTO_SPARSE = 0x08  # Send histogram data in small chunks over ~15 s
 DEBUG_FLAG_CAMERA_CROP = 0x200  # Crop camera output to 1720x1280 (drop right 200 columns) at camera (re)configure — misaligned-optic test (sensor-fw#86)
 DEBUG_FLAG_CAMERA_RAW = 0x400  # Raw "scientific sensor" mode: disable all on-sensor pixel corrections (BLC/DC-BLC/dither/OTP DPC) at camera (re)configure (sensor-fw#89)
 DEBUG_FLAG_FID_CORRUPT = 0x800  # Etch-a-sketch repro: periodic 3-frame bursts clearing the top two bits of one camera's frame_id byte (sensor-fw#123, sdk#220)
+DEBUG_FLAG_FID_CORRUPT_SUST = 0x1000  # Sustained etch-a-sketch repro: ~12.5%/cam/frame corruption all scan — non-resolving warning-flood presentation (sensor-fw#123)
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
