@@ -215,16 +215,16 @@ def test_default_tolerance_allows_two_ms_device_jitter():
     np.testing.assert_allclose(result.timestamp_s, [0.250, 0.277, 0.300])
 
 
-def test_buffer_force_flush_at_max():
-    """When buffer fills without a re-anchor, force-flush using nominal period."""
-    stage = TimestampRepairStage(max_buffer_frames=4)
-    # 1 good frame, then 5 bad frames (buffer size 4, so force-flush at frame 4)
-    ts = [0.025]
-    fids = [11]
-    # Bad frames: all have timestamp 0.050 (way off from expected 50ms, 75ms, 100ms, 125ms, 150ms)
-    for i in range(5):
-        ts.append(0.050)
-        fids.append(12 + i)
+def test_stuck_timestamp_run_corrected_via_nominal_fallback():
+    """A run of frames sharing one stuck timestamp (condition 2) has no
+    valid right anchor in the batch — each is corrected by nominal-period
+    steps from the genuine left anchor."""
+    stage = TimestampRepairStage()
+    # 1 good frame, then 5 frames all stuck at t=0.050 (a frozen timestamp
+    # counter): same-side rows sharing a timestamp with differing frame_ids
+    # are all condition-2-flagged, and none can serve as a re-anchor.
+    ts = [0.025] + [0.050] * 5
+    fids = [11, 12, 13, 14, 15, 16]
     batch = _make_batch(
         cam_ids=[0] * 6,
         frame_ids=fids,
@@ -234,9 +234,12 @@ def test_buffer_force_flush_at_max():
         frame_types=["light"] * 6,
     )
     result = stage.process(batch)
-    # The first 4 bad frames should be force-flushed as ts_corrected
-    corrected_count = sum(1 for q in result.quality if q == "ts_corrected")
-    assert corrected_count >= 4
+    np.testing.assert_array_equal(
+        result.quality, ["ok"] + ["ts_corrected"] * 5)
+    # Nominal-period steps from the genuine anchor (11, 0.025)
+    np.testing.assert_allclose(
+        result.timestamp_s, [0.025, 0.050, 0.075, 0.100, 0.125, 0.150],
+        atol=1e-9)
 
 
 def test_logging_one_warning_per_window(caplog):
@@ -425,6 +428,117 @@ def test_real_window_emits_diagnostics_event():
     assert events[0].side == 0
     assert events[0].n_corrected == 1
     assert events[0].onset_fid == 13
+
+
+def test_burst_right_anchor_must_be_condition1_clean():
+    """During a multi-frame burst, the frame after a bad frame is itself
+    still corrupted — it must NOT serve as the re-anchor (spec §4.5: both
+    anchors are real device timestamps of good frames). Corrections land on
+    the true frame grid, the first genuine frame after the burst stays
+    untouched, and the repaired timeline is monotonic."""
+    stage = TimestampRepairStage()
+    # fid 100 good; 101-102 corrupted (+4.5 s EMI offset); 103-104 good.
+    batch = _make_batch(
+        cam_ids=[0] * 5,
+        frame_ids=[100, 101, 102, 103, 104],
+        side_ids=[0] * 5,
+        timestamps=[2.500, 7.000, 7.025, 2.575, 2.600],
+        abs_frame_ids=[100, 101, 102, 103, 104],
+        frame_types=["light"] * 5,
+    )
+    result = stage.process(batch)
+    np.testing.assert_array_equal(
+        result.quality, ["ok", "ts_corrected", "ts_corrected", "ok", "ok"])
+    # Interpolated between the GENUINE anchors (100, 2.500) and (103, 2.575)
+    np.testing.assert_allclose(
+        result.timestamp_s, [2.500, 2.525, 2.550, 2.575, 2.600], atol=1e-9)
+    assert np.all(np.diff(result.timestamp_s) > 0)
+
+
+def test_single_camera_divergence_one_window_despite_interleaving(caplog):
+    """A healthy camera interleaved with a diverging one must not close
+    (and re-open) the side's window per row: one divergent episode on one
+    camera = one coalesced WARNING + one diagnostics event (spec R3)."""
+    stage = TimestampRepairStage()
+    # Captures fid 11..15 on two cameras. cam0's timestamps are +0.5 s for
+    # fids 12-14 (corrupt); cam1 stays clean throughout.
+    rows = []  # (cam, fid, ts)
+    for fid in range(11, 16):
+        t = 0.025 * (fid - 10)
+        t_cam0 = t + 0.5 if fid in (12, 13, 14) else t
+        rows.append((0, fid, t_cam0))
+        rows.append((1, fid, t))
+    batch = _make_batch(
+        cam_ids=[r[0] for r in rows],
+        frame_ids=[r[1] for r in rows],
+        side_ids=[0] * len(rows),
+        timestamps=[r[2] for r in rows],
+        abs_frame_ids=[r[1] for r in rows],
+        frame_types=["light"] * len(rows),
+    )
+    with caplog.at_level(logging.WARNING,
+                         logger="openmotion.sdk.pipeline.stages.timestamp_repair"):
+        stage.process(batch)
+    warnings = [r for r in caplog.records if "Misalignment window" in r.message]
+    assert len(warnings) == 1, [w.message for w in warnings]
+    events = [e for e in batch.events if isinstance(e, TimestampMisalignmentWindow)]
+    assert len(events) == 1
+    assert events[0].n_corrected == 3
+
+
+def test_persistent_timeline_shift_resyncs(caplog):
+    """A permanent timestamp shift (e.g. recovery after a long dropout) is
+    adopted as the new timeline after enough mutually-consistent flagged
+    frames, instead of being 'corrected' against the stale anchor for the
+    rest of the scan."""
+    stage = TimestampRepairStage()
+    # fid 10 on the original timeline, then fids 11..25 all +3.0 s but
+    # internally on a clean 25 ms cadence.
+    fids = list(range(10, 26))
+    ts = [0.250] + [0.250 + 0.025 * (f - 10) + 3.0 for f in fids[1:]]
+    batch = _make_batch(
+        cam_ids=[0] * len(fids),
+        frame_ids=[f & 0xFF for f in fids],
+        side_ids=[0] * len(fids),
+        timestamps=ts,
+        abs_frame_ids=fids,
+        frame_types=["light"] * len(fids),
+    )
+    with caplog.at_level(logging.WARNING,
+                         logger="openmotion.sdk.pipeline.stages.timestamp_repair"):
+        result = stage.process(batch)
+    # Frames 11..17 (_RESYNC_CONSISTENT_FRAMES - 1 of them) were corrected
+    # against the stale anchor; the 8th consistent frame (fid 18) triggers
+    # re-sync and the shifted device timestamps are accepted untouched.
+    assert result.quality[0] == "ok"
+    assert all(q == "ts_corrected" for q in result.quality[1:8])
+    assert all(q == "ok" for q in result.quality[8:])
+    np.testing.assert_allclose(result.timestamp_s[8:], ts[8:], atol=1e-9)
+    assert any("re-anchored" in r.message for r in caplog.records)
+
+
+def test_nan_fill_preserves_telemetry_stamps():
+    """Rebuilding the batch for NaN-fills keeps the TelemetryIngestStage
+    stamps (spec §4.6): original rows keep their values, fill rows get the
+    no-sample sentinels (NaN pdc, 0 tcm/tcl)."""
+    stage = TimestampRepairStage()
+    batch = _make_batch(
+        cam_ids=[0, 0],
+        frame_ids=[11, 14],
+        side_ids=[0, 0],
+        timestamps=[0.025, 0.100],
+        abs_frame_ids=[11, 14],
+        frame_types=["light", "light"],
+    )
+    batch.pdc = np.array([1.5, 2.5], dtype=np.float32)
+    batch.tcm = np.array([40, 41], dtype=np.int64)
+    batch.tcl = np.array([30, 31], dtype=np.int64)
+    result = stage.process(batch)
+    assert len(result.cam_ids) == 4
+    np.testing.assert_allclose(result.pdc[[0, 3]], [1.5, 2.5])
+    assert np.isnan(result.pdc[1]) and np.isnan(result.pdc[2])
+    np.testing.assert_array_equal(result.tcm, [40, 0, 0, 41])
+    np.testing.assert_array_equal(result.tcl, [30, 0, 0, 31])
 
 
 def test_warmup_and_stale_frames_pass_through_untouched():
