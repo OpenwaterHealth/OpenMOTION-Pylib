@@ -35,6 +35,9 @@ original timestamp.
 - Prevent a single raw-ID outlier from corrupting unwrapper state.
 - Accept the outlier histogram at its truthful packet timestamp.
 - Preserve the observed wire ID for raw export and forensic logging.
+- Capture suspicious inbound values in the ordinary log before any stage
+  rewrites, substitutes, or fills them, so a raw CSV is not required to
+  reconstruct the pipeline's decision.
 - Keep downstream `abs_frame_ids` aligned for dark scheduling, terminal-dark
   matching, and side averaging.
 - Emit self-contained diagnostics that make the fault root-causeable from an
@@ -49,6 +52,7 @@ original timestamp.
 - Store frame-ID forensic examples in SQLite or `session_meta`.
 - Change raw histogram contents or capture timestamps.
 - Redesign the 8-bit firmware counter protocol.
+- Log ordinary healthy packets or unbounded histogram payloads.
 
 ## Design
 
@@ -121,14 +125,28 @@ Consequences:
 - Condition 1, which detects genuine timestamp deviation from cadence, remains
   unchanged apart from the anchor corrections already present on #229.
 
-### 4. Emit bounded, self-contained log diagnostics
+### 4. Log suspicious input before mutation
 
-Two diagnostics-channel event types will describe packet-level ID faults:
+The observability rule is: **log the evidence first, then mutate**. A future
+investigation must be able to reconstruct why the pipeline acted even when the
+raw CSV was disabled or is no longer available.
+
+Every anomaly log begins with the explicit marker `INBOUND DATA ANOMALY` and
+states whether the associated histogram is being accepted, corrected,
+NaN-filled, or left for conservative downstream handling. Values in these
+records are captured before timestamp rewriting, frame-ID substitution, or
+synthetic-row insertion.
+
+Four diagnostics-channel event types describe suspicious inbound data:
 
 - `FrameIdConsensusCorrection`: one outlier was safely substituted by strict
   packet consensus.
 - `FrameIdPacketAnomaly`: the packet disagreed but was ambiguous and was not
   changed.
+- `TimestampRepairInputAnomaly`: a frame was flagged for timestamp repair by
+  cadence deviation, unresolved absolute-ID disagreement, or both.
+- `FrameGapFillAnomaly`: an accepted absolute-ID gap will cause synthetic NaN
+  rows to be inserted.
 
 A consensus-correction event contains:
 
@@ -145,20 +163,46 @@ An ambiguous-anomaly event contains the side, packet timestamp, complete packet
 snapshot, prior per-camera unwrap context where available, and the reason no
 substitution was made.
 
+A timestamp-input event contains:
+
+- side, camera, observed raw ID, classified absolute ID, and original timestamp;
+- the previous genuine anchor's raw ID, absolute ID, and timestamp;
+- the nominal period, frame-ID gap, expected timestamp, signed residual, and
+  configured tolerance;
+- all rows in the same side/timestamp group as ordered
+  `(camera_id, observed_raw_id, abs_frame_id)` triples;
+- which detector fired (`timestamp_deviation`, `frame_id_disagreement`, or
+  both); and
+- the action the stage will take.
+
+A gap-fill event contains:
+
+- side and camera;
+- the preceding and current observed raw IDs, classified absolute IDs, and
+  original timestamps;
+- the inferred missing-frame count and synthetic absolute-ID range; and
+- the action stating that NaN rows will be inserted because the accepted
+  absolute IDs indicate a gap.
+
+These events contain metadata only. Histogram bins are not copied into the log.
+The raw histogram remains available through the existing optional raw CSV, but
+the CSV is not necessary to see the IDs, timestamps, anchors, residuals, or
+pipeline decision.
+
 `DiagnosticsLogSink` will:
 
-- log the first eight events of each frame-ID diagnostic type in full;
+- log the first eight events of each inbound-anomaly type in full;
 - show raw IDs in decimal and hexadecimal;
 - emit one suppression notice when the per-type limit is exceeded;
 - continue counting suppressed events; and
-- include corrected and ambiguous totals in the scan-completion summary.
+- include per-type totals in the scan-completion summary.
 
 The eight-example cap applies per event type per scan. It gives complete
 evidence for the three-frame #220 burst while bounding a sustained fault.
 
-`ScanDBSink` will explicitly ignore these two event types. No frame-ID details,
-counts, or examples are added to SQLite `session_meta`; the ordinary application
-log is the forensic record.
+`ScanDBSink` will explicitly ignore all four inbound-anomaly event types. No
+details, counts, or examples are added to SQLite `session_meta`; the ordinary
+application log is the forensic record.
 
 ## Error handling and safety rules
 
@@ -170,7 +214,11 @@ log is the forensic record.
   existing unwrapper state is not applied.
 - A first-seen outlier camera has no history for validation and is not corrected.
 - Ambiguous cases retain current downstream behavior and gain detailed logging.
-- Raw IDs and timestamps are immutable evidence throughout the pipeline.
+- Anomaly events preserve observed raw IDs and pre-mutation timestamps as
+  immutable evidence even when a later stage repairs `batch.timestamp_s`.
+- An anomaly is logged even when consensus correction makes the resulting data
+  scientifically usable; successful healing never makes the input anomaly
+  invisible.
 
 ## Data flow
 
@@ -185,9 +233,10 @@ coalesced USB histogram packet
   -> TimestampRepairStage compares abs_frame_ids
        corrected consensus group passes unchanged
        genuine/ambiguous divergence remains detectable
+       timestamp deviations and inferred gaps emit pre-mutation evidence
   -> dark correction and side averaging consume aligned abs_frame_ids
   -> DiagnosticsLogSink writes bounded forensic detail
-  -> ScanDBSink ignores frame-ID packet diagnostics
+  -> ScanDBSink ignores inbound-data anomaly diagnostics
 ```
 
 ## Testing strategy
@@ -214,6 +263,10 @@ coalesced USB histogram packet
 - Condition 2 compares `abs_frame_ids`.
 - A consensus-corrected group produces no timestamp correction or NaN fill.
 - A genuine absolute-ID disagreement remains detected.
+- A genuine cadence deviation emits its original timestamp, genuine anchor,
+  expected timestamp, residual, tolerance, and packet context before repair.
+- A missing-ID gap emits its bounding observations and proposed synthetic range
+  before any NaN rows are inserted.
 - Existing condition-1 timestamp burst, terminal artifact, re-anchor, and
   NaN-gap tests continue to pass.
 
@@ -232,13 +285,18 @@ classification, timestamp repair, and side averaging. Assert:
 
 ### Logging and persistence
 
-- Full log lines contain side, timestamp, camera, observed/consensus IDs in
+- Every suspicious-input line begins with `INBOUND DATA ANOMALY`.
+- Frame-ID lines contain side, timestamp, camera, observed/consensus IDs in
   decimal and hex, prior state, corrected absolute ID, packet snapshot, and
   action.
+- Timestamp lines contain the original value, genuine anchor, expected value,
+  residual, tolerance, detector, packet snapshot, and action.
+- Gap-fill lines contain both bounding observations, missing count, synthetic
+  range, and action.
 - The ninth same-type event produces one suppression notice, not a ninth full
   record.
-- Completion reports full corrected/ambiguous totals.
-- `ScanDBSink` writes no frame-ID diagnostic entry into `session_meta`.
+- Completion reports full per-type anomaly totals.
+- `ScanDBSink` writes no inbound-anomaly diagnostic entry into `session_meta`.
 
 ## Compatibility and performance
 
@@ -249,4 +307,3 @@ classification, timestamp repair, and side averaging. Assert:
 - Consensus work is linear in each small packet group (at most eight cameras).
 - Packet-aligned batching can increase a batch by at most one packet and adds at
   most one packet interval of flush latency.
-
