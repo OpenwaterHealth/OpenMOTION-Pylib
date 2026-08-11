@@ -15,10 +15,15 @@ See docs/SciencePipeline.md §3 (unwrapping) and §4 (classification).
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
 
 import numpy as np
 
-from ..batch import FrameBatch
+from ..batch import (
+    FrameBatch,
+    FrameIdConsensusCorrection,
+    FrameIdPacketAnomaly,
+)
 
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.frame_classification")
@@ -69,17 +74,27 @@ class _FrameUnwrapper:
             self.last_raw = raw_frame_id
             return raw_frame_id, True
 
-        # Signed step in [-128, 127]: positive = forward, <= 0 = backward
-        # (stale leftover) or duplicate.
-        step = ((raw_frame_id - self.last_raw + 128) & 0xFF) - 128
-        if step <= 0:
-            return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, False
-
-        # Forward step (1..127). A wrap shows up as raw <= last_raw.
+        abs_id, accepted = self.preview(raw_frame_id)
+        if not accepted:
+            return abs_id, False
         if raw_frame_id <= self.last_raw:
             self.epoch += 1
         self.last_raw = raw_frame_id
-        return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, True
+        return abs_id, True
+
+    def preview(self, raw_frame_id: int) -> tuple[int, bool]:
+        """Return the unwrap result without advancing counter state."""
+        if not self.seen_first:
+            return raw_frame_id, True
+        step = ((raw_frame_id - self.last_raw + 128) & 0xFF) - 128
+        if step <= 0:
+            return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, False
+        epoch = self.epoch + int(raw_frame_id <= self.last_raw)
+        return epoch * _FRAME_ID_MODULUS + raw_frame_id, True
+
+    @property
+    def last_abs(self) -> int:
+        return self.epoch * _FRAME_ID_MODULUS + self.last_raw
 
 
 class FrameClassificationStage:
@@ -101,10 +116,12 @@ class FrameClassificationStage:
         n = batch.frame_ids.shape[0]
         abs_ids = np.zeros(n, dtype=np.int64)
         types = np.empty(n, dtype="<U8")
+        effective_ids = self._packet_consensus_ids(batch)
 
         for i in range(n):
             cam_id = int(batch.cam_ids[i])
             raw_id = int(batch.frame_ids[i])
+            effective_id = int(effective_ids[i])
             # Side is authoritatively set by the source (see FrameBatch.side_ids
             # docstring). Inferring from raw_histograms would misclassify any
             # zero-filled row — e.g. a firmware-dropped frame — as side 0.
@@ -116,7 +133,7 @@ class FrameClassificationStage:
                 unwrapper = _FrameUnwrapper()
                 self._unwrappers[key] = unwrapper
 
-            abs_id, accepted = unwrapper.unwrap(raw_id)
+            abs_id, accepted = unwrapper.unwrap(effective_id)
             abs_ids[i] = abs_id
 
             if not accepted:
@@ -140,6 +157,86 @@ class FrameClassificationStage:
         batch.abs_frame_ids = abs_ids
         batch.frame_type = types
         return batch
+
+    def _packet_consensus_ids(self, batch: FrameBatch) -> np.ndarray:
+        """Return effective IDs for unwrapping while preserving wire values.
+
+        Only a single outlier in a packet of at least three unique cameras is
+        corrected, and only when the consensus is a valid forward continuation
+        for that camera's existing unwrapper.
+        """
+        effective = batch.frame_ids.copy()
+        groups: dict[tuple[int, float], list[int]] = defaultdict(list)
+        for i in range(len(batch.cam_ids)):
+            groups[(int(batch.side_ids[i]), float(batch.timestamp_s[i]))].append(i)
+
+        for (side, timestamp_s), indices in groups.items():
+            raw_ids = [int(batch.frame_ids[i]) for i in indices]
+            if len(set(raw_ids)) == 1:
+                continue
+
+            packet = tuple(
+                (int(batch.cam_ids[i]), int(batch.frame_ids[i]))
+                for i in indices
+            )
+            camera_ids = [cam_id for cam_id, _ in packet]
+            reason = "no_single_outlier_consensus"
+            outlier_i = None
+            consensus = None
+
+            if len(set(camera_ids)) != len(camera_ids):
+                reason = "duplicate_camera_ids"
+            elif len(indices) < 3:
+                reason = "fewer_than_three_cameras"
+            else:
+                counts = Counter(raw_ids)
+                candidate, count = counts.most_common(1)[0]
+                outliers = [i for i in indices
+                            if int(batch.frame_ids[i]) != candidate]
+                if count == len(indices) - 1 and len(outliers) == 1:
+                    consensus = candidate
+                    outlier_i = outliers[0]
+                    cam_id = int(batch.cam_ids[outlier_i])
+                    unwrapper = self._unwrappers.get((side, cam_id))
+                    if unwrapper is None or not unwrapper.seen_first:
+                        reason = "outlier_has_no_prior_state"
+                    else:
+                        corrected_abs, accepted = unwrapper.preview(consensus)
+                        if accepted:
+                            batch.events.append(FrameIdConsensusCorrection(
+                                side=side,
+                                timestamp_s=timestamp_s,
+                                cam_id=cam_id,
+                                observed_raw_frame_id=int(batch.frame_ids[outlier_i]),
+                                consensus_raw_frame_id=consensus,
+                                previous_raw_frame_id=unwrapper.last_raw,
+                                previous_abs_frame_id=unwrapper.last_abs,
+                                corrected_abs_frame_id=corrected_abs,
+                                packet=packet,
+                            ))
+                            effective[outlier_i] = consensus
+                            continue
+                        reason = "consensus_is_not_forward_continuation"
+
+            cam_id = (int(batch.cam_ids[outlier_i])
+                      if outlier_i is not None else None)
+            unwrapper = (self._unwrappers.get((side, cam_id))
+                         if cam_id is not None else None)
+            batch.events.append(FrameIdPacketAnomaly(
+                side=side,
+                timestamp_s=timestamp_s,
+                reason=reason,
+                packet=packet,
+                cam_id=cam_id,
+                observed_raw_frame_id=(int(batch.frame_ids[outlier_i])
+                                       if outlier_i is not None else None),
+                consensus_raw_frame_id=consensus,
+                previous_raw_frame_id=(unwrapper.last_raw
+                                       if unwrapper is not None else None),
+                previous_abs_frame_id=(unwrapper.last_abs
+                                       if unwrapper is not None else None),
+            ))
+        return effective
 
     def _note_stale(self, side_idx: int, cam_id: int, raw_id: int,
                     reason: str) -> None:

@@ -118,6 +118,61 @@ def test_condition2_frame_id_disagreement_is_per_side():
     np.testing.assert_array_equal(result.quality, ["ok", "ok", "ok", "ok"])
 
 
+def test_condition2_uses_effective_absolute_ids_not_preserved_wire_ids():
+    """A classifier-consensus correction deliberately leaves the bad wire ID
+    intact. Timestamp repair must trust the aligned absolute IDs or it will
+    re-corrupt the packet that classification just recovered."""
+    stage = TimestampRepairStage()
+    batch = _make_batch(
+        cam_ids=[0, 1, 2, 0, 1, 2],
+        frame_ids=[1, 1, 1, 2, 130, 2],
+        side_ids=[0] * 6,
+        timestamps=[0.025] * 3 + [0.050] * 3,
+        abs_frame_ids=[1, 1, 1, 2, 2, 2],
+        frame_types=["light"] * 6,
+    )
+
+    result = stage.process(batch)
+
+    np.testing.assert_array_equal(result.quality, ["ok"] * 6)
+    np.testing.assert_allclose(result.timestamp_s, [0.025] * 3 + [0.050] * 3)
+
+
+def test_timestamp_deviation_emits_pre_mutation_evidence():
+    """Removing the anomaly event would again leave a production log unable
+    to distinguish a truthful timestamp from a bad ID or stale anchor."""
+    stage = TimestampRepairStage()
+    batch = _make_batch(
+        cam_ids=[0, 0, 0, 0],
+        frame_ids=[11, 12, 13, 14],
+        side_ids=[0] * 4,
+        timestamps=[0.025, 0.050, 0.130, 0.100],
+        abs_frame_ids=[11, 12, 13, 14],
+        frame_types=["light"] * 4,
+    )
+
+    stage.process(batch)
+
+    events = [e for e in batch.events
+              if type(e).__name__ == "TimestampRepairInputAnomaly"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.detector == "timestamp_deviation"
+    assert event.side == 0 and event.cam_id == 0
+    assert event.raw_frame_id == 13 and event.abs_frame_id == 13
+    assert event.original_timestamp_s == pytest.approx(0.130)
+    assert event.previous_raw_frame_id == 12
+    assert event.previous_abs_frame_id == 12
+    assert event.previous_timestamp_s == pytest.approx(0.050)
+    assert event.nominal_period_s == pytest.approx(0.025)
+    assert event.frame_id_gap == 1
+    assert event.expected_timestamp_s == pytest.approx(0.075)
+    assert event.signed_residual_s == pytest.approx(0.055)
+    assert event.tolerance_s == pytest.approx(0.008)
+    assert event.packet == ((0, 13, 13),)
+    assert event.action == "timestamp_corrected"
+
+
 def test_nan_fill_for_missing_frames():
     """Missing abs_frame_ids get synthetic NaN-fill rows inserted."""
     stage = TimestampRepairStage()
@@ -148,6 +203,22 @@ def test_nan_fill_for_missing_frames():
     assert result.timestamp_s[2] > result.timestamp_s[1]
     assert result.timestamp_s[2] < 0.100
 
+    events = [e for e in result.events
+              if type(e).__name__ == "FrameGapFillAnomaly"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.side == 0 and event.cam_id == 0
+    assert event.previous_raw_frame_id == 11
+    assert event.previous_abs_frame_id == 11
+    assert event.previous_timestamp_s == pytest.approx(0.025)
+    assert event.current_raw_frame_id == 14
+    assert event.current_abs_frame_id == 14
+    assert event.current_timestamp_s == pytest.approx(0.100)
+    assert event.missing_count == 2
+    assert (event.first_missing_abs_frame_id,
+            event.last_missing_abs_frame_id) == (12, 13)
+    assert event.action == "inserted_nan_fill_rows"
+
 
 def test_nan_fill_for_missing_frames_across_process_calls():
     """Missing abs_frame_ids are detected across source batch boundaries."""
@@ -177,6 +248,24 @@ def test_nan_fill_for_missing_frames_across_process_calls():
     np.testing.assert_array_equal(result.quality, ["nan_filled", "ok"])
     assert result.timestamp_s[0] == pytest.approx(0.050)
     assert result.timestamp_s[1] == pytest.approx(0.075)
+
+
+def test_gap_anomaly_keeps_original_timestamp_when_current_frame_is_repaired():
+    """Gap diagnostics describe inbound data, not the timestamp that repair
+    just fabricated for interpolation."""
+    stage = TimestampRepairStage()
+    batch = _make_batch(
+        cam_ids=[0, 0], frame_ids=[11, 14], side_ids=[0, 0],
+        timestamps=[0.025, 0.200], abs_frame_ids=[11, 14],
+        frame_types=["light", "light"],
+    )
+
+    result = stage.process(batch)
+
+    gap = next(e for e in result.events
+               if type(e).__name__ == "FrameGapFillAnomaly")
+    assert gap.current_timestamp_s == pytest.approx(0.200)
+    assert result.timestamp_s[-1] == pytest.approx(0.100)
 
 
 def test_default_tolerance_catches_ten_ms_timestamp_error():
@@ -363,6 +452,8 @@ def test_terminal_stop_frame_not_warned(caplog):
              and "Terminal stop frame" in r.message]
     assert len(infos) == 1
     assert not any(isinstance(e, TimestampMisalignmentWindow)
+                   for e in list(batch.events) + list(flush.events))
+    assert not any(type(e).__name__ == "TimestampRepairInputAnomaly"
                    for e in list(batch.events) + list(flush.events))
 
 

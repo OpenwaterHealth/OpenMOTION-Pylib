@@ -348,17 +348,33 @@ class LiveUsbSource(_BaseSource):
 
         side_idx = 0 if side_name == "left" else 1
         accumulated: list = []
+        packet_cams: set[int] = set()
+        packet_ts = None
         last_flush = time.monotonic()
 
         def on_row(cam_id, frame_id, ts, histogram, row_sum, temp):
-            nonlocal last_flush
-            accumulated.append((cam_id, frame_id, ts, histogram, row_sum, temp))
+            nonlocal last_flush, packet_ts
             now = time.monotonic()
-            if (len(accumulated) >= self._batch_size
-                    or now - last_flush >= self._flush_interval):
+            threshold_reached = (
+                len(accumulated) >= self._batch_size
+                or now - last_flush >= self._flush_interval
+            )
+            starts_new_packet = bool(packet_cams) and (
+                ts != packet_ts or cam_id in packet_cams
+            )
+            stuck_timestamp_boundary = starts_new_packet and ts == packet_ts
+            if starts_new_packet and (threshold_reached
+                                      or stuck_timestamp_boundary):
                 self._batch_queue.put(self._build_batch(side_idx, accumulated))
                 accumulated.clear()
                 last_flush = now
+            if starts_new_packet:
+                packet_cams.clear()
+                packet_ts = ts
+            elif packet_ts is None:
+                packet_ts = ts
+            packet_cams.add(cam_id)
+            accumulated.append((cam_id, frame_id, ts, histogram, row_sum, temp))
 
         buf = bytearray()
         parse_histogram_stream(

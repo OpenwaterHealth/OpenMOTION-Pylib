@@ -507,6 +507,36 @@ def _is_integrity_event(event) -> bool:
     return True
 
 
+def _is_inbound_data_anomaly(event) -> bool:
+    """True for high-detail acquisition anomalies retained in logs only."""
+    from .batch import (
+        FrameGapFillAnomaly,
+        FrameIdConsensusCorrection,
+        FrameIdPacketAnomaly,
+        TimestampRepairInputAnomaly,
+    )
+    return isinstance(event, (
+        FrameIdConsensusCorrection,
+        FrameIdPacketAnomaly,
+        TimestampRepairInputAnomaly,
+        FrameGapFillAnomaly,
+    ))
+
+
+def _format_inbound_data_anomaly(event) -> str:
+    """Render every captured field explicitly for production diagnosis."""
+    from dataclasses import fields
+
+    def display(value):
+        return value if isinstance(value, str) else repr(value)
+
+    evidence = ", ".join(
+        f"{item.name}={display(getattr(event, item.name))}"
+        for item in fields(event)
+    )
+    return f"INBOUND DATA ANOMALY [{type(event).__name__}]: {evidence}"
+
+
 def _event_frame(event):
     """Best-effort frame/time locator for an event, for summaries."""
     for attr in ("abs_frame_id", "onset_fid", "first_timestamp_s"):
@@ -525,10 +555,9 @@ class DiagnosticsLogSink:
     StencilFallback, PipelineError (batch dropped) — are logged at WARNING
     instead of silently evaporating, with a per-type summary at scan end.
 
-    The durable counterpart lives in ScanDBSink, which also subscribes to
-    "diagnostics" and writes the same summary into the session's
-    session_meta so the DB record itself shows whether a scan had
-    integrity warnings.
+    ScanDBSink retains ordinary integrity summaries. High-detail inbound-data
+    anomalies are deliberately log-only: raw acquisition evidence does not
+    belong in session_meta.
     """
 
     channels = {"diagnostics"}
@@ -547,6 +576,18 @@ class DiagnosticsLogSink:
         from .batch import TimestampMisalignmentWindow
         name = type(event).__name__
         self._counts[name] = self._counts.get(name, 0) + 1
+        count = self._counts[name]
+        if _is_inbound_data_anomaly(event):
+            if count <= 8:
+                logger.warning(_format_inbound_data_anomaly(event))
+            elif count == 9:
+                logger.warning(
+                    "INBOUND DATA ANOMALY [%s]: further detail suppressed "
+                    "after 8 events; total remains in the scan completion "
+                    "summary",
+                    name,
+                )
+            return
         # TimestampRepairStage already logs each window with full context
         # under its own logger — count it for the summary, don't double-log.
         if not isinstance(event, TimestampMisalignmentWindow):
@@ -571,10 +612,9 @@ class ScanDBSink:
                   stencilled leading dark frame — a gapless 40 Hz record.
                   Reduced mode: only the side-average frames (cam_id=-1)
                   emitted by SideAverageStage are persisted.
-        "diagnostics" — integrity events are tallied and a per-type summary
-                  (count + first/last frame) is written into the session's
-                  session_meta at scan end, so the DB record itself shows
-                  whether the scan had correction-integrity warnings.
+        "diagnostics" — ordinary integrity events are summarized in
+                  session_meta. Inbound-data anomalies are ignored here and
+                  retained only by DiagnosticsLogSink.
 
     The DB is the corrected (final-branch) record only. Realtime values
     reach the GUI via the "live" / "live_side" channels and are never
@@ -686,6 +726,8 @@ class ScanDBSink:
 
     def _consume_diagnostic(self, event) -> None:
         """Tally integrity events for the session_meta summary."""
+        if _is_inbound_data_anomaly(event):
+            return
         if not _is_integrity_event(event):
             return
         name = type(event).__name__

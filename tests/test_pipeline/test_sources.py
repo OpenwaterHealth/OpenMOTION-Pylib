@@ -204,6 +204,72 @@ def test_live_usb_source_reader_loop_builds_batches_from_packet_queue(monkeypatc
         assert b.raw_histograms.shape[-1] == 1024
 
 
+def test_live_usb_source_never_splits_a_coalesced_histogram_packet(monkeypatch):
+    """Crossing the batch-size threshold mid-packet must wait for the next
+    timestamp boundary. Otherwise classification cannot compare all sibling
+    histograms before unwrapping their frame IDs."""
+    import numpy as np
+
+    def _fake_parse(q, stop_evt, buf, *, on_row_fn=None,
+                    expected_row_sum=None, t0_normalizer=None):
+        rows = [
+            *((cam, 10, 0.025) for cam in range(6)),
+            *((cam, 11, 0.050) for cam in range(2)),
+        ]
+        for cam, frame_id, timestamp_s in rows:
+            on_row_fn(
+                cam, frame_id, timestamp_s,
+                np.ones(1024, dtype=np.uint32), 1024, 27.0,
+            )
+        return len(rows)
+
+    monkeypatch.setattr(
+        "omotion.MotionProcessing.parse_histogram_stream", _fake_parse,
+    )
+    src = LiveUsbSource(
+        console=None, left=object(), right=None,
+        batch_size_frames=4, metadata=_meta(),
+    )
+
+    src._reader_loop("left")
+    batches = [src._batch_queue.get_nowait(), src._batch_queue.get_nowait()]
+
+    assert [len(batch.cam_ids) for batch in batches] == [6, 2]
+    assert [set(batch.timestamp_s) for batch in batches] == [{0.025}, {0.050}]
+
+
+def test_live_usb_source_separates_packets_when_timestamp_is_stuck(monkeypatch):
+    """A repeated camera identifies the next packet even if its timestamp
+    counter is frozen. Without this boundary, batching would merge captures
+    and manufacture duplicate-camera packet anomalies downstream."""
+    import numpy as np
+
+    def _fake_parse(q, stop_evt, buf, *, on_row_fn=None,
+                    expected_row_sum=None, t0_normalizer=None):
+        for frame_id in (10, 11):
+            for cam in range(4):
+                on_row_fn(
+                    cam, frame_id, 0.025,
+                    np.ones(1024, dtype=np.uint32), 1024, 27.0,
+                )
+        return 8
+
+    monkeypatch.setattr(
+        "omotion.MotionProcessing.parse_histogram_stream", _fake_parse,
+    )
+    src = LiveUsbSource(
+        console=None, left=object(), right=None,
+        batch_size_frames=100, metadata=_meta(),
+    )
+
+    src._reader_loop("left")
+    batches = [src._batch_queue.get_nowait(), src._batch_queue.get_nowait()]
+
+    assert [batch.frame_ids.tolist() for batch in batches] == [
+        [10] * 4, [11] * 4,
+    ]
+
+
 def _consume_bounded(src, *, want_batches: int, timeout_s: float):
     """Consume FrameBatches from `src` on a worker thread, bounded by
     timeout_s. Returns (batches_seen, error).

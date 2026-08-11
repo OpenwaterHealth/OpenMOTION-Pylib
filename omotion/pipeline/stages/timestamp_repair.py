@@ -1,41 +1,10 @@
-"""TimestampRepairStage — EMI timestamp correction + NaN-fill.
+"""Repair timestamp EMI without letting a fabricated value become an anchor.
 
-Detects EMI-induced timestamp misalignment via two conditions:
-  1. Timestamp deviation: |actual_Δt - expected_Δt| > tolerance
-  2. In-packet frame_id disagreement: cameras at the same timestamp
-     report different frame_ids
-
-Bad frames get their timestamps corrected in-place by interpolating
-between the camera's last GENUINE good frame and the next frame in the
-batch that is cadence-consistent with that anchor (per spec §4.5 both
-anchors must be real device timestamps of good frames — a
-still-corrupted frame can never serve as a re-anchor, and a fabricated
-corrected value is never stored as the reference anchor). With no valid
-right anchor in the batch, the correction falls back to nominal-period
-steps from the left anchor. Missing abs_frame_id gaps get synthetic
-NaN-fill rows inserted (the only case that rebuilds the batch).
-
-A PERSISTENT timeline shift — e.g. a camera resuming after a long
-dropout with a different timestamp↔frame_id relationship — would
-otherwise be "corrected" against the stale anchor for the rest of the
-scan. After ``_RESYNC_CONSISTENT_FRAMES`` consecutive flagged frames
-whose ORIGINAL timestamps are mutually cadence-consistent, the stage
-re-anchors on the new timeline (one WARNING) and stops rewriting.
-Transient EMI signatures don't trip this: a stuck timestamp counter is
-never self-consistent, and short offset bursts end before the threshold.
-
-Misalignment windows are tracked PER SIDE but close only when every
-camera that diverged in the window has produced a good frame again — an
-interleaved healthy camera can't split one divergent episode into
-per-frame windows (spec R3: one coalesced WARNING per window, never one
-line per frame). Each window also emits a TimestampMisalignmentWindow
-diagnostics event so the scan DB's session_meta summary records it. The
-firmware's terminal stop frame — the laser-off frame fired ~150 ms off
-the 25 ms grid at every scan stop — is recognised at on_scan_stop and
-reclassified as an expected artifact (INFO, excluded from the
-misalignment record).
-
-See docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
+A frame is suspect when its timestamp departs from its camera's genuine
+frame-ID cadence or when one coalesced packet contains different absolute
+IDs. Suspect runs are re-anchored, persistent coherent shifts are accepted,
+and genuine ID gaps receive synthetic rows. Detector inputs are buffered with
+each window so the expected terminal stop artifact produces no false alarm.
 """
 
 from __future__ import annotations
@@ -47,7 +16,12 @@ from typing import Optional
 
 import numpy as np
 
-from ..batch import FrameBatch, TimestampMisalignmentWindow
+from ..batch import (
+    FrameBatch,
+    FrameGapFillAnomaly,
+    TimestampMisalignmentWindow,
+    TimestampRepairInputAnomaly,
+)
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.timestamp_repair")
 
@@ -63,10 +37,7 @@ _RESYNC_CONSISTENT_FRAMES = 8
 
 @dataclass
 class _WindowStats:
-    """Running stats for one contiguous per-side misalignment window, used
-    for coalesced logging: the frame-id/time span it spans, how many frames
-    within it were re-timestamped vs NaN-filled, and which (side, cam)
-    frames it flagged (for the terminal stop-frame check)."""
+    """One coalesced per-side repair window and its original evidence."""
     side: int
     onset_fid: int
     onset_t: float
@@ -77,39 +48,54 @@ class _WindowStats:
     # (key, abs_fid) of each flagged frame — consulted at scan stop to
     # recognise the firmware's terminal stop-frame artifact.
     frames: list = field(default_factory=list)
+    input_anomalies: list[TimestampRepairInputAnomaly] = field(
+        default_factory=list,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _FramePoint:
+    """One genuine frame as received, before any repair mutation."""
+    raw_id: int
+    abs_id: int
+    timestamp_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class _CadenceCheck:
+    """The evidence used by timestamp-deviation detection."""
+    anchor: _FramePoint
+    frame_id_gap: int
+    expected_timestamp_s: float
+    signed_residual_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class _GapPoint:
+    raw_id: int
+    abs_id: int
+    input_timestamp_s: float
+    timeline_timestamp_s: float
 
 
 class TimestampRepairStage:
-    """Pipeline stage that repairs EMI-corrupted capture timestamps.
-
-    See the module docstring for the algorithm. One instance per scan;
-    cross-batch state (nominal-period estimate, per-camera genuine
-    anchors, divergent-run tracking, the open misalignment windows)
-    persists across process() calls and is cleared by reset()."""
+    """Stateful, per-scan repair described in the module docstring."""
 
     name = "timestamp_repair"
 
     def __init__(self, *, tolerance_s: float = _DEFAULT_TOLERANCE_S):
-        """Configure the stage.
-
-        Args:
-            tolerance_s: max |actual Δt − expected Δt| (seconds) before a
-                frame's timestamp is treated as EMI-corrupted (condition 1).
-        """
+        """Set the maximum allowed timestamp-cadence residual in seconds."""
         self._tolerance = float(tolerance_s)
         self._reset_state()
 
     def _reset_state(self) -> None:
-        """Clear all per-scan state — nominal-period estimate, per-camera
-        genuine anchors and divergent-run tracking, the open per-side windows
-        with their divergent-camera sets, and the running totals. Called from
-        __init__ and reset()."""
+        """Clear anchors, divergence windows, and scan totals."""
         self._nominal_period = _INITIAL_NOMINAL_PERIOD_S
         # Last GENUINE good frame per (side, cam) — never a fabricated
         # corrected timestamp. Both condition 1 and re-anchor validation
         # measure against this, so a bad burst can't drag the reference
         # off the true timeline.
-        self._last_good: dict[tuple[int, int], tuple[int, float]] = {}
+        self._last_good: dict[tuple[int, int], _FramePoint] = {}
         # Divergent-run tracking per (side, cam) for timeline re-sync:
         # the last flagged frame's ORIGINAL (fid, ts) and the count of
         # consecutive mutually-consistent flagged frames.
@@ -122,7 +108,7 @@ class TimestampRepairStage:
         self._divergent: dict[int, set] = {0: set(), 1: set()}
         self._scan_windows: list[_WindowStats] = []
         self._total_frames_seen = 0
-        self._nan_last_seen: dict[tuple[int, int], tuple[int, float]] = {}
+        self._nan_last_seen: dict[tuple[int, int], _GapPoint] = {}
         self._total_corrected = 0
         self._total_nan = 0
         self._terminal_frames = 0
@@ -130,14 +116,7 @@ class TimestampRepairStage:
     # ── Main entry ──────────────────────────────────────────────────────
 
     def process(self, batch: FrameBatch) -> FrameBatch:
-        """Detect and repair EMI timestamp corruption for one batch.
-
-        Flags each non-warmup/stale frame via condition 2 (in-packet
-        frame_id disagreement) or condition 1 (timestamp deviation vs the
-        frame_id cadence), rewrites bad timestamps in place by re-anchoring
-        interpolation, and inserts synthetic NaN-fill rows for missing
-        abs_frame_id gaps. Sets ``batch.quality`` and returns the batch
-        (a new, larger batch when NaN-fills were inserted)."""
+        """Repair suspect timestamps and insert rows for absolute-ID gaps."""
         if batch.abs_frame_ids is None or batch.frame_type is None:
             return batch
 
@@ -148,9 +127,9 @@ class TimestampRepairStage:
 
         self._total_frames_seen += n
         quality = np.full(n, "ok", dtype="<U14")
+        input_timestamps = batch.timestamp_s.copy()
 
-        # Condition 2 (batch-wide): in-packet frame_id disagreement
-        bad_cond2 = self._detect_frame_id_disagreement(batch)
+        packet_by_row, bad_cond2 = self._packet_context(batch)
 
         # Per-camera row pool for re-anchoring. Condition 1 is validated
         # per candidate at interpolation time (needs _last_good context).
@@ -164,12 +143,19 @@ class TimestampRepairStage:
 
             cam_id = int(batch.cam_ids[i])
             side_idx = int(batch.side_ids[i])
+            raw_fid = int(batch.frame_ids[i])
             abs_fid = int(batch.abs_frame_ids[i])
             ts = float(batch.timestamp_s[i])
             key = (side_idx, cam_id)
 
             # Condition 1: timestamp deviation vs the genuine anchor
-            is_bad = i in bad_cond2 or self._deviates(key, abs_fid, ts)
+            cadence = self._cadence_check(key, abs_fid, ts)
+            cond1 = (cadence is not None and
+                     abs(cadence.signed_residual_s)
+                     > self._tolerance + _TOLERANCE_EPS_S)
+            detector = ("absolute_frame_id_disagreement"
+                        if i in bad_cond2 else "timestamp_deviation")
+            is_bad = i in bad_cond2 or cond1
 
             if is_bad and self._note_divergent_run(key, abs_fid, ts):
                 # RESYNC: enough consecutive flagged frames agree with
@@ -186,25 +172,38 @@ class TimestampRepairStage:
                 )
                 is_bad = False
 
+            anomaly = None
+            if i in bad_cond2 or cond1:
+                anomaly = self._make_input_anomaly(
+                    side_idx, cam_id, raw_fid, abs_fid, ts,
+                    cadence, packet_by_row[i], detector,
+                    "timestamp_corrected" if is_bad else "accepted_as_new_timeline",
+                )
+
             if is_bad:
                 corrected_ts = self._interpolate(key, abs_fid, cam_rows.get(key))
                 batch.timestamp_s[i] = corrected_ts
                 quality[i] = "ts_corrected"
                 self._total_corrected += 1
-                self._track_window_open(side_idx, key, abs_fid, ts)
+                self._track_window_open(
+                    side_idx, key, abs_fid, ts, anomaly,
+                )
                 # Deliberately NOT stored in _last_good: a fabricated
                 # timestamp must never become the reference anchor.
             else:
+                window = self._open_window[side_idx]
+                if anomaly is not None and window is not None:
+                    window.input_anomalies.append(anomaly)
                 self._run_last.pop(key, None)
                 self._run_len.pop(key, None)
                 self._update_nominal_period(key, abs_fid, ts)
-                self._last_good[key] = (abs_fid, ts)
+                self._last_good[key] = _FramePoint(raw_fid, abs_fid, ts)
                 self._note_good(side_idx, key, batch.events)
 
         batch.quality = quality
 
         # Insert NaN-fill rows for missing abs_frame_id gaps
-        nan_fills = self._collect_nan_fills(batch)
+        nan_fills = self._collect_nan_fills(batch, input_timestamps)
         if nan_fills:
             batch = self._insert_nan_fills(batch, nan_fills)
 
@@ -212,36 +211,86 @@ class TimestampRepairStage:
 
     # ── Detection ───────────────────────────────────────────────────────
 
-    def _detect_frame_id_disagreement(self, batch: FrameBatch) -> set[int]:
-        """Condition 2: cameras at the same timestamp with different frame_ids."""
-        bad: set[int] = set()
+    def _packet_context(
+        self, batch: FrameBatch,
+    ) -> tuple[dict[int, tuple[tuple[int, int, int], ...]], set[int]]:
+        """Return packet evidence and rows with disagreeing absolute IDs."""
         groups: dict[tuple[int, float], list[int]] = defaultdict(list)
         for i in range(len(batch.cam_ids)):
-            ft = str(batch.frame_type[i])
-            if ft in ("warmup", "stale"):
-                continue
             groups[(int(batch.side_ids[i]), float(batch.timestamp_s[i]))].append(i)
+        contexts = {}
+        bad = set()
         for indices in groups.values():
-            if len(indices) < 2:
-                continue
-            if len({int(batch.frame_ids[j]) for j in indices}) > 1:
-                bad.update(indices)
-        return bad
+            packet = tuple(
+                (int(batch.cam_ids[i]), int(batch.frame_ids[i]),
+                 int(batch.abs_frame_ids[i]))
+                for i in indices
+            )
+            contexts.update((i, packet) for i in indices)
+            active = [i for i in indices
+                      if str(batch.frame_type[i]) not in ("warmup", "stale")]
+            if len({int(batch.abs_frame_ids[i]) for i in active}) > 1:
+                bad.update(active)
+        return contexts, bad
 
-    def _deviates(self, key: tuple[int, int], abs_fid: int, ts: float) -> bool:
-        """Condition 1: does (abs_fid, ts) deviate from the frame-id cadence
-        implied by this camera's genuine anchor? False when the camera has
-        no anchor yet (nothing to measure against)."""
+    def _cadence_check(
+        self, key: tuple[int, int], abs_fid: int, ts: float,
+    ) -> Optional[_CadenceCheck]:
+        """Return expected timing and residual against the genuine anchor."""
         anchor = self._last_good.get(key)
         if anchor is None:
-            return False
-        prev_fid, prev_ts = anchor
-        fid_gap = abs_fid - prev_fid
+            return None
+        fid_gap = abs_fid - anchor.abs_id
         if fid_gap <= 0:
-            return False
-        expected_dt = fid_gap * self._nominal_period
-        actual_dt = ts - prev_ts
-        return abs(actual_dt - expected_dt) > self._tolerance + _TOLERANCE_EPS_S
+            return None
+        expected_ts = anchor.timestamp_s + fid_gap * self._nominal_period
+        return _CadenceCheck(
+            anchor=anchor,
+            frame_id_gap=fid_gap,
+            expected_timestamp_s=expected_ts,
+            signed_residual_s=ts - expected_ts,
+        )
+
+    def _deviates(self, key: tuple[int, int], abs_fid: int, ts: float) -> bool:
+        check = self._cadence_check(key, abs_fid, ts)
+        return (check is not None and
+                abs(check.signed_residual_s)
+                > self._tolerance + _TOLERANCE_EPS_S)
+
+    def _make_input_anomaly(
+        self,
+        side: int,
+        cam_id: int,
+        raw_fid: int,
+        abs_fid: int,
+        timestamp_s: float,
+        cadence: Optional[_CadenceCheck],
+        packet: tuple[tuple[int, int, int], ...],
+        detector: str,
+        action: str,
+    ) -> TimestampRepairInputAnomaly:
+        """Capture the detector inputs before timestamp mutation."""
+        anchor = cadence.anchor if cadence is not None else self._last_good.get((side, cam_id))
+        return TimestampRepairInputAnomaly(
+            side=side,
+            cam_id=cam_id,
+            raw_frame_id=raw_fid,
+            abs_frame_id=abs_fid,
+            original_timestamp_s=timestamp_s,
+            previous_raw_frame_id=anchor.raw_id if anchor else None,
+            previous_abs_frame_id=anchor.abs_id if anchor else None,
+            previous_timestamp_s=anchor.timestamp_s if anchor else None,
+            nominal_period_s=self._nominal_period,
+            frame_id_gap=cadence.frame_id_gap if cadence else None,
+            expected_timestamp_s=(cadence.expected_timestamp_s
+                                  if cadence else None),
+            signed_residual_s=(cadence.signed_residual_s
+                               if cadence else None),
+            tolerance_s=self._tolerance,
+            packet=packet,
+            detector=detector,
+            action=action,
+        )
 
     def _note_divergent_run(self, key: tuple[int, int],
                             abs_fid: int, ts: float) -> bool:
@@ -306,7 +355,6 @@ class TimestampRepairStage:
         anchor = self._last_good.get(key)
         if anchor is None:
             return abs_fid * self._nominal_period
-        left_fid, left_ts = anchor
 
         if rows:
             for right_fid, right_ts, c2bad in rows:
@@ -314,12 +362,15 @@ class TimestampRepairStage:
                     continue
                 if self._deviates(key, right_fid, right_ts):
                     continue  # still-corrupted — not a valid re-anchor
-                fid_span = right_fid - left_fid
+                fid_span = right_fid - anchor.abs_id
                 if fid_span > 0:
-                    return left_ts + (abs_fid - left_fid) / fid_span * (right_ts - left_ts)
+                    fraction = (abs_fid - anchor.abs_id) / fid_span
+                    return (anchor.timestamp_s
+                            + fraction * (right_ts - anchor.timestamp_s))
 
         # Fallback: nominal period from left anchor
-        return left_ts + (abs_fid - left_fid) * self._nominal_period
+        return (anchor.timestamp_s
+                + (abs_fid - anchor.abs_id) * self._nominal_period)
 
     # ── Nominal period tracking ─────────────────────────────────────────
 
@@ -331,9 +382,9 @@ class TimestampRepairStage:
         the expected-Δt check in process() doesn't drift off nominal."""
         if key not in self._last_good:
             return
-        prev_fid, prev_ts = self._last_good[key]
-        if abs_fid - prev_fid == 1:
-            dt = ts - prev_ts
+        previous = self._last_good[key]
+        if abs_fid - previous.abs_id == 1:
+            dt = ts - previous.timestamp_s
             if dt > 0:
                 self._nominal_period = (
                     (1 - _EMA_ALPHA) * self._nominal_period + _EMA_ALPHA * dt
@@ -342,7 +393,8 @@ class TimestampRepairStage:
     # ── Window tracking (coalesced logging) ─────────────────────────────
 
     def _track_window_open(self, side: int, key: tuple[int, int],
-                           abs_fid: int, ts: float) -> None:
+                           abs_fid: int, ts: float,
+                           anomaly: Optional[TimestampRepairInputAnomaly]) -> None:
         """Open this side's misalignment window (or extend it), mark the
         camera divergent, and count the re-timestamped frame for coalesced
         per-window logging. ``ts`` is the original pre-correction device
@@ -355,6 +407,8 @@ class TimestampRepairStage:
         w.end_t = ts
         w.n_corrected += 1
         w.frames.append((key, abs_fid))
+        if anomaly is not None:
+            w.input_anomalies.append(anomaly)
         self._divergent[side].add(key)
 
     def _note_good(self, side: int, key: tuple[int, int], events: list) -> None:
@@ -385,6 +439,7 @@ class TimestampRepairStage:
             w.side, w.onset_fid, w.end_fid, w.onset_t, w.end_t,
             w.n_corrected, w.n_nan,
         )
+        events.extend(w.input_anomalies)
         events.append(TimestampMisalignmentWindow(
             side=w.side, onset_fid=w.onset_fid, end_fid=w.end_fid,
             onset_t=w.onset_t, end_t=w.end_t,
@@ -407,13 +462,15 @@ class TimestampRepairStage:
                 return False  # >1 flagged frame for this camera — real run
             seen_keys.add(key)
             last = self._nan_last_seen.get(key)
-            if last is None or fid != last[0]:
+            if last is None or fid != last.abs_id:
                 return False  # frames followed it — not the terminal frame
         return True
 
     # ── NaN-fill for missing frames ─────────────────────────────────────
 
-    def _collect_nan_fills(self, batch: FrameBatch) -> list[tuple[int, dict]]:
+    def _collect_nan_fills(
+        self, batch: FrameBatch, input_timestamps: np.ndarray,
+    ) -> list[tuple[int, dict]]:
         """Find gaps in abs_frame_id per (side, cam) and build fill descriptors.
 
         Returns [(insert_after_idx, fill_dict), ...] sorted by insert position.
@@ -424,21 +481,37 @@ class TimestampRepairStage:
             if ft in ("warmup", "stale"):
                 continue
             key = (int(batch.side_ids[i]), int(batch.cam_ids[i]))
+            raw_fid = int(batch.frame_ids[i])
             abs_fid = int(batch.abs_frame_ids[i])
             ts = float(batch.timestamp_s[i])
+            input_ts = float(input_timestamps[i])
 
             if key in self._nan_last_seen:
-                prev_fid, prev_ts = self._nan_last_seen[key]
-                gap = abs_fid - prev_fid
+                previous = self._nan_last_seen[key]
+                gap = abs_fid - previous.abs_id
                 if gap > 1:
-                    for fid in range(prev_fid + 1, abs_fid):
-                        frac = (fid - prev_fid) / gap
+                    batch.events.append(FrameGapFillAnomaly(
+                        side=key[0],
+                        cam_id=key[1],
+                        previous_raw_frame_id=previous.raw_id,
+                        previous_abs_frame_id=previous.abs_id,
+                        previous_timestamp_s=previous.input_timestamp_s,
+                        current_raw_frame_id=raw_fid,
+                        current_abs_frame_id=abs_fid,
+                        current_timestamp_s=input_ts,
+                        missing_count=gap - 1,
+                        first_missing_abs_frame_id=previous.abs_id + 1,
+                        last_missing_abs_frame_id=abs_fid - 1,
+                    ))
+                    for fid in range(previous.abs_id + 1, abs_fid):
+                        frac = (fid - previous.abs_id) / gap
                         fills.append((i, {
                             "cam_id": key[1],
                             "frame_id": fid & 0xFF,
                             "side_idx": key[0],
                             "abs_frame_id": fid,
-                            "timestamp_s": prev_ts + frac * (ts - prev_ts),
+                            "timestamp_s": (previous.timeline_timestamp_s
+                                            + frac * (ts - previous.timeline_timestamp_s)),
                             "frame_type": "light",
                             "quality": "nan_filled",
                         }))
@@ -447,7 +520,9 @@ class TimestampRepairStage:
                         if w is not None:
                             w.n_nan += 1
 
-            self._nan_last_seen[key] = (abs_fid, ts)
+            self._nan_last_seen[key] = _GapPoint(
+                raw_fid, abs_fid, input_ts, ts,
+            )
 
         fills.sort(key=lambda x: x[0])
         return fills

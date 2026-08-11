@@ -3,6 +3,7 @@
 import logging
 
 import numpy as np
+import pytest
 from omotion.pipeline.batch import FrameBatch
 from omotion.pipeline.stages.classify import FrameClassificationStage
 
@@ -177,3 +178,109 @@ def test_reset_clears_unwrapper_state():
     stage.process(batch2)
     assert batch2.abs_frame_ids[0] == 1
     assert batch2.frame_type[0] == "warmup"
+
+
+def _packet(raw_ids, timestamp_s, *, side=0, cam_ids=None):
+    """One coalesced packet: camera index follows row position."""
+    n = len(raw_ids)
+    if cam_ids is None:
+        cam_ids = range(n)
+    return FrameBatch(
+        cam_ids=np.array(cam_ids, dtype=np.int8),
+        frame_ids=np.array(raw_ids, dtype=np.uint8),
+        side_ids=np.full(n, side, dtype=np.int8),
+        raw_histograms=np.zeros((n, 2, 8, 1024), dtype=np.uint32),
+        temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
+        timestamp_s=np.full(n, timestamp_s, dtype=np.float64),
+        pdc=None, tcm=None, tcl=None,
+    )
+
+
+def test_single_frame_id_outlier_uses_packet_consensus_without_changing_raw_id():
+    """A lone corrupt wire ID must not poison the outlier camera's unwrapper.
+
+    Removing the consensus pass would make camera 1 stale at the second
+    packet and leave its absolute ID at 130 instead of capture 2.
+    """
+    stage = FrameClassificationStage()
+    stage.process(_packet([1, 1, 1], 0.000))
+    batch = _packet([2, 130, 2], 0.025)
+
+    result = stage.process(batch)
+
+    np.testing.assert_array_equal(result.frame_ids, [2, 130, 2])
+    np.testing.assert_array_equal(result.abs_frame_ids, [2, 2, 2])
+    np.testing.assert_array_equal(result.frame_type, ["warmup"] * 3)
+    corrections = [e for e in result.events
+                   if type(e).__name__ == "FrameIdConsensusCorrection"]
+    assert len(corrections) == 1
+    event = corrections[0]
+    assert event.side == 0
+    assert event.timestamp_s == 0.025
+    assert event.cam_id == 1
+    assert event.observed_raw_frame_id == 130
+    assert event.consensus_raw_frame_id == 2
+    assert event.previous_raw_frame_id == 1
+    assert event.previous_abs_frame_id == 1
+    assert event.corrected_abs_frame_id == 2
+    assert event.packet == ((0, 2), (1, 130), (2, 2))
+
+
+def test_ambiguous_two_camera_packet_is_logged_but_not_guessed():
+    """With no strict packet consensus, keep ordinary stale handling and
+    record the pre-mutation packet evidence instead of inventing an ID."""
+    stage = FrameClassificationStage()
+    stage.process(_packet([1, 1], 0.000))
+    batch = _packet([2, 130], 0.025)
+
+    result = stage.process(batch)
+
+    np.testing.assert_array_equal(result.abs_frame_ids, [2, 130])
+    np.testing.assert_array_equal(result.frame_type, ["warmup", "stale"])
+    anomalies = [e for e in result.events
+                 if type(e).__name__ == "FrameIdPacketAnomaly"]
+    assert len(anomalies) == 1
+    assert anomalies[0].reason == "fewer_than_three_cameras"
+    assert anomalies[0].packet == ((0, 2), (1, 130))
+    assert anomalies[0].action == "left_unchanged"
+
+
+def test_first_seen_outlier_is_logged_but_not_consensus_corrected():
+    """Consensus cannot safely seed a camera whose prior counter is unknown."""
+    stage = FrameClassificationStage()
+    batch = _packet([1, 1, 130], 0.000)
+
+    result = stage.process(batch)
+
+    assert result.abs_frame_ids[2] == 130
+    assert result.frame_type[2] == "stale"
+    anomalies = [e for e in result.events
+                 if type(e).__name__ == "FrameIdPacketAnomaly"]
+    assert len(anomalies) == 1
+    assert anomalies[0].reason == "outlier_has_no_prior_state"
+
+
+@pytest.mark.parametrize(
+    ("raw_ids", "cam_ids", "reason"),
+    [
+        ([2, 2, 130, 130], None, "no_single_outlier_consensus"),
+        ([200, 200, 2], None, "consensus_is_not_forward_continuation"),
+        ([2, 130, 2], [0, 1, 1], "duplicate_camera_ids"),
+    ],
+)
+def test_unsafe_packet_shapes_are_logged_without_consensus_correction(
+        raw_ids, cam_ids, reason):
+    stage = FrameClassificationStage()
+    stage.process(_packet([1] * len(raw_ids), 0.000))
+    batch = _packet(raw_ids, 0.025, cam_ids=cam_ids)
+
+    stage.process(batch)
+
+    assert not any(type(e).__name__ == "FrameIdConsensusCorrection"
+                   for e in batch.events)
+    anomalies = [e for e in batch.events
+                 if type(e).__name__ == "FrameIdPacketAnomaly"]
+    assert len(anomalies) == 1
+    assert anomalies[0].reason == reason
+    if reason == "no_single_outlier_consensus":
+        assert anomalies[0].consensus_raw_frame_id is None

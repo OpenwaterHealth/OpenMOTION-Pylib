@@ -111,6 +111,78 @@ class TimestampMisalignmentWindow(BatchEvent):
 
 
 @dataclass
+class FrameIdConsensusCorrection(BatchEvent):
+    """One wire frame ID differed from an otherwise unanimous packet.
+
+    The raw ID remains in ``FrameBatch.frame_ids``; only the effective value
+    passed to that camera's unwrapper is replaced by the packet consensus.
+    """
+    side: int
+    timestamp_s: float
+    cam_id: int
+    observed_raw_frame_id: int
+    consensus_raw_frame_id: int
+    previous_raw_frame_id: int
+    previous_abs_frame_id: int
+    corrected_abs_frame_id: int
+    packet: tuple[tuple[int, int], ...]
+    action: str = "used_consensus_for_unwrap"
+
+
+@dataclass
+class FrameIdPacketAnomaly(BatchEvent):
+    """A packet contained mismatched frame IDs but was unsafe to correct."""
+    side: int
+    timestamp_s: float
+    reason: str
+    packet: tuple[tuple[int, int], ...]
+    action: str = "left_unchanged"
+    cam_id: Optional[int] = None
+    observed_raw_frame_id: Optional[int] = None
+    consensus_raw_frame_id: Optional[int] = None
+    previous_raw_frame_id: Optional[int] = None
+    previous_abs_frame_id: Optional[int] = None
+
+
+@dataclass
+class TimestampRepairInputAnomaly(BatchEvent):
+    """Pre-mutation evidence for one frame timestamp repair decision."""
+    side: int
+    cam_id: int
+    raw_frame_id: int
+    abs_frame_id: int
+    original_timestamp_s: float
+    previous_raw_frame_id: Optional[int]
+    previous_abs_frame_id: Optional[int]
+    previous_timestamp_s: Optional[float]
+    nominal_period_s: float
+    frame_id_gap: Optional[int]
+    expected_timestamp_s: Optional[float]
+    signed_residual_s: Optional[float]
+    tolerance_s: float
+    packet: tuple[tuple[int, int, int], ...]
+    detector: str
+    action: str
+
+
+@dataclass
+class FrameGapFillAnomaly(BatchEvent):
+    """Pre-mutation evidence for synthetic rows inserted across an ID gap."""
+    side: int
+    cam_id: int
+    previous_raw_frame_id: int
+    previous_abs_frame_id: int
+    previous_timestamp_s: float
+    current_raw_frame_id: int
+    current_abs_frame_id: int
+    current_timestamp_s: float
+    missing_count: int
+    first_missing_abs_frame_id: int
+    last_missing_abs_frame_id: int
+    action: str = "inserted_nan_fill_rows"
+
+
+@dataclass
 class PipelineError(BatchEvent):
     """A stage raised during pipeline.process(); the batch was dropped.
 
