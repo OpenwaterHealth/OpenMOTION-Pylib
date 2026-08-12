@@ -80,9 +80,9 @@ TEMP_PULSE_WIDTH_UL_US = 660.0      # WI step 23 temporary safety relaxation
 WI_PULSE_WIDTH_UL_US = 550.0        # WI default standing limit
 
 # --- Section 4.4 safety-limit derivation ---
-ADC_SAMPLES = 5            # ruling 9: average several reads (while firing)
+ADC_SAMPLES = 10           # ruling 9; BH 2026-08-12: "at least 10 or more"
 ADC_SAMPLE_GAP_S = 0.15
-EE_MULT = 1.10             # WI step 31; ruling 3: round DOWN
+EE_MULT = 1.10             # WI step 31; round NEAREST (BH 2026-08-12, supersedes ruling 3)
 OPT_MULT = 1.30            # WI step 30; round to NEAREST per WI text
 PW_UL_MULT = 1.10          # WI step 32; nearest
 
@@ -765,8 +765,9 @@ def phase_tune(args) -> int:
         final = {
             "adc_reads": adc,
             "ee_adc_mean_ma": ee_mean, "opt_adc_mean_ma": opt_mean,
-            # Ruling 3: EE 1.1x rounds DOWN. OPT 1.3x rounds NEAREST (WI text).
-            "EE_DRIVE_CL": int(ee_mean * EE_MULT),
+            # Both round to NEAREST (BH 2026-08-12, supersedes ruling 3's
+            # round-down for EE; one LSB is noise vs system variability).
+            "EE_DRIVE_CL": round(ee_mean * EE_MULT),
             "OPT_DRIVE_CL": round(opt_mean * OPT_MULT),
             "seated": args.seated,
         }
@@ -1189,7 +1190,7 @@ def build_pdf(st: dict, path: str) -> None:
             ["Quantity", "Value"],
             ["EE ADC reads (mA)", ee],
             ["EE ADC mean", f"{sec44['ee_adc_mean_ma']:.1f} mA"],
-            [f"EE_DRIVE_CL = floor({EE_MULT:g} x mean)", f"{sec44['EE_DRIVE_CL']} mA"],
+            [f"EE_DRIVE_CL = round({EE_MULT:g} x mean)", f"{sec44['EE_DRIVE_CL']} mA"],
             ["OPT ADC reads (mA)", opt],
             ["OPT ADC mean", f"{sec44['opt_adc_mean_ma']:.1f} mA"],
             [f"OPT_DRIVE_CL = round({OPT_MULT:g} x mean)", f"{sec44['OPT_DRIVE_CL']} mA"],
