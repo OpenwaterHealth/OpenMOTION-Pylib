@@ -101,6 +101,12 @@ OW_CAMERA_READ_SECURITY_UID = 0x53
 OW_CAMERA_GET_TELEMETRY = 0x54  # sensor-fw#94: cached cam_telemetry_response_t snapshot
 OW_CAMERA_STREAM = 0x07
 
+# Full-frame image (drip-scan) receive mode — camera-fpga#8. Firmware payload:
+# reserved byte = enable (0/1), data[0] = camera bitmask. 0x30 is free in the
+# OW_CAMERA command namespace (OW_IMU_INIT and FPGA_PROG_OPEN reuse the value
+# in their own packet-type namespaces — no conflict).
+OW_CAMERA_IMAGE_MODE = 0x30
+
 
 # IMU Commands
 OW_IMU_INIT = 0x30
@@ -128,6 +134,13 @@ TYPE_HISTO_CMP = 0x01  # RLE-compressed histogram packet
 # TYPE_HISTO_CMP packets have an extra 2-byte CRC-16 of the uncompressed
 # payload inserted before the normal footer.
 CMP_UNCMP_CRC_SIZE = 2
+
+# Image streaming packet type (byte[1] of stream packets on the HISTO
+# endpoint) — sibling of TYPE_HISTO / TYPE_HISTO_CMP above. Same numeric value
+# as OW_IMAGE_PACKET (0x03): that constant names the content class in the
+# OW_*_PACKET family; TYPE_IMAGE is the stream-envelope type byte the reader
+# thread dispatches on. Defined separately so each namespace stays coherent.
+TYPE_IMAGE = 0x03
 
 # Global Commands
 OW_CMD_PING = 0x00
@@ -353,3 +366,58 @@ def merge_trigger_config(*overrides) -> dict:
         if override:
             out.update(override)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Drip-scan sweep retiming (camera-fpga#8, design spec 2026-07-19 §4.2).
+#
+# Ordered (register, value) writes for the OX02C1B, applied inside a sensor
+# group-hold (0x3208) so they latch atomically at a frame boundary — see
+# omotion/ImageCapture.py write_timing_profile(). Values are pinned by the
+# cross-repo design; production values restore the shipped configuration in
+# openmotion-sensor-fw Core/Inc/X02C1B_Sensor_Config.h (HTS/VTS lines 723-726,
+# exposure 739-740, tc_r_initial 744-745).
+# ---------------------------------------------------------------------------
+OX02C1B_I2C_ADDR = 0x36
+"""7-bit I2C address of the OX02C1B image sensor (see MotionSensor.camera_set_gain)."""
+
+SWEEP_TIMING_PROFILE: tuple = (
+    (0x380C, 0x8C), (0x380D, 0xA0),   # HTS = 36000 (~0.75 ms/row: drain margin ~9%; frame fits the console's 1.00 Hz trigger floor)
+    (0x380E, 0x05), (0x380F, 0x20),   # VTS = 1312   (1280 active + minimal blanking; frame 0.987 s)
+    (0x3501, 0x00), (0x3502, 0x01),   # exposure = 1 row (~0.75 ms shutter window)
+)
+"""Sweep (drip-scan) sensor timing (HTS/VTS/exposure — bench-verified values).
+
+BENCH STATUS (2026-07-20, first HIL campaign): these timing values are correct
+and the sensor accepts them, but the frame CADENCE mechanism at stretched
+timing is still open: in the shipped trigger_mod streaming mode, changing VTS
+stops FSIN-triggered frames (unresolved VTS-coupled register set — NB
+0x3881-0x3883 is max_expo_a, NOT a sync point); the datasheet §3.7 snapshot
+mode (0x3050=0x06) produces correct slow frames but gaps the MIPI clock,
+which resets the camera FPGA (PLL-loss observed via STATUS bit0) and disarms
+the sweep after one line. Resolution candidates: a clock-continuous trigger
+register set, or a one-shot reset bridge in the FPGA so state survives clock
+gaps. Do not expect capture_full_frames to complete until one lands."""
+
+PRODUCTION_TIMING_PROFILE: tuple = (
+    (0x380C, 0x01), (0x380D, 0xB0),   # HTS = 432
+    (0x380E, 0x0A), (0x380F, 0xD0),   # VTS = 2768
+    (0x3501, 0x00), (0x3502, 0x48),   # exposure = 72 rows
+)
+"""Shipped production timing (X02C1B_Sensor_Config.h) — restore after a capture.
+
+tc_r_initial/0x388x registers are deliberately NOT touched in either profile:
+production runs auto-tc_r (0x3823 bit4=0) and 0x3881-83 is max_expo_a
+(bench-verified 2026-07-20; earlier spec/plan references to a "VTS-4 sync
+point" were wrong)."""
+
+SWEEP_FSIN_HZ: float = 1.0
+"""FSIN trigger rate during a drip-scan capture.
+
+Bench-pinned: the console firmware validates TriggerFrequencyHz to
+1.00-100.00 Hz (console-fw trigger.c) and silently rejects lower, so 1.0 Hz
+is the slowest possible external FSIN. The sweep profile (HTS=36000,
+VTS=1312) gives a 0.987 s frame readout, inside the 1.000 s period."""
+
+PRODUCTION_FSIN_HZ: float = 40.0
+"""Normal histogram-mode FSIN rate (DEFAULT_TRIGGER_CONFIG TriggerFrequencyHz)."""

@@ -71,6 +71,7 @@ from omotion.config import (
     OW_CAMERA_POWER_STATUS,
     OW_CAMERA_READ_SECURITY_UID,
     OW_CAMERA_GET_TELEMETRY,
+    OW_CAMERA_IMAGE_MODE,
     OW_CMD_DFU,
     OW_CMD_SERIAL,
     is_valid_serial,
@@ -1776,6 +1777,30 @@ class MotionSensor(SignalWrapper):
             reserved=0,
             addr=camera_position,
             timeout=0.3,
+        )
+        return r.packetType not in _ERROR_TYPES
+
+    def set_camera_image_mode(self, enable: bool, camera_mask: int) -> bool:
+        """Enter or exit drip-scan image receive mode (camera-fpga#8).
+
+        Wire contract (OW_CAMERA_IMAGE_MODE = 0x30): the ``reserved`` byte
+        carries enable (0/1) and ``data[0]`` carries the camera bitmask.
+
+        While enabled the firmware suspends histogram streaming (exclusive
+        modes) and arms a fixed 2408-B line DMA per enabled camera. The FIRST
+        histogram frame after exiting image mode contains counts accumulated
+        across the whole image session and must be discarded by any consumer
+        (spec §4.4 — the capture orchestrator in ImageCapture handles this).
+        """
+        self._check_camera_mask(camera_mask)
+        if self.demo_mode:
+            return True
+        r = self._send(
+            packetType=OW_CAMERA,
+            command=OW_CAMERA_IMAGE_MODE,
+            reserved=1 if enable else 0,
+            data=bytes([camera_mask]),
+            timeout=1.5,
         )
         return r.packetType not in _ERROR_TYPES
 

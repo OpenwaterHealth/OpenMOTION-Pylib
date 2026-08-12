@@ -5,7 +5,7 @@ import usb.core
 import usb.util
 import threading
 from omotion.USBInterfaceBase import USBInterfaceBase, is_usb_timeout
-from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP
+from omotion.config import TYPE_HISTO, TYPE_HISTO_CMP, TYPE_IMAGE
 from omotion import _log_root
 
 logger = logging.getLogger(
@@ -47,6 +47,50 @@ import binascii as _binascii
 def _util_crc16(buf) -> int:
     """CRC-CCITT (polynomial 0x1021, init 0xFFFF) via the C implementation in binascii."""
     return _binascii.crc_hqx(buf, 0xFFFF)
+
+
+# Largest legal stream envelope = USB_HISTO_MAX_SIZE in sensor-fw usbd_histo.h
+# (8-camera histogram packet). Image packets are 2424 B; both fit under this.
+_MAX_STREAM_PACKET = 32837
+
+
+def extract_stream_packets(buf: bytearray) -> tuple[list[bytes], list[bytes]]:
+    """Split ``buf`` (consumed in place) into complete stream envelopes.
+
+    An envelope is [SOF 0xAA][type][u32 LE total_len][...][CRC16][EOF 0xDD].
+    Complete envelopes are removed from ``buf``; a trailing partial packet is
+    left in place for the next chunk. Malformed candidates (implausible
+    length, missing EOF) resync by advancing one byte — same recovery policy
+    as parse_histogram_packet_structured's callers.
+
+    Returns ``(other_packets, image_packets)`` where image packets are those
+    with type byte TYPE_IMAGE (0x03); everything else (TYPE_HISTO,
+    TYPE_HISTO_CMP, unknown) goes in the first list untouched.
+    """
+    other: list[bytes] = []
+    image: list[bytes] = []
+    while True:
+        sof = buf.find(b"\xaa")
+        if sof < 0:
+            buf.clear()
+            break
+        if sof:
+            del buf[:sof]
+        if len(buf) < _HEADER_SIZE:
+            break
+        pkt_len = int.from_bytes(buf[2:6], "little")
+        if not (_HEADER_SIZE + _FOOTER_SIZE <= pkt_len <= _MAX_STREAM_PACKET):
+            del buf[:1]
+            continue
+        if len(buf) < pkt_len:
+            break
+        if buf[pkt_len - 1] != 0xDD:
+            del buf[:1]
+            continue
+        pkt = bytes(buf[:pkt_len])
+        del buf[:pkt_len]
+        (image if pkt[1] == TYPE_IMAGE else other).append(pkt)
+    return other, image
 
 
 def _decompress_histo_cmp(raw: bytes) -> bytes:
@@ -119,8 +163,15 @@ class StreamInterface(USBInterfaceBase):
         self.expected_size = None
         self.isStreaming = False
         self.packets_received: int = 0  # USB transfers queued since last start_streaming
+        # Optional second queue for drip-scan image packets (camera-fpga#8).
+        # None (the default) keeps the historical raw-chunk fast path; when
+        # set via start_streaming(image_queue=...), the reader thread frames
+        # packets and routes TYPE_IMAGE to it so histogram consumers never
+        # see image traffic.
+        self.image_queue = None
+        self._route_buf = bytearray()
 
-    def start_streaming(self, queue_obj, expected_size):
+    def start_streaming(self, queue_obj, expected_size, image_queue=None):
         # Recover from a stale thread left over by a previous scan whose
         # stop_streaming join timed out (e.g. queue was full at teardown,
         # or a pipe error left the loop mid-dev.read). Bailing silently
@@ -143,6 +194,8 @@ class StreamInterface(USBInterfaceBase):
         self.data_queue = queue_obj
         self.expected_size = expected_size
         self.packets_received = 0
+        self.image_queue = image_queue
+        self._route_buf = bytearray()
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._stream_loop, daemon=True)
         self.thread.start()
@@ -168,6 +221,8 @@ class StreamInterface(USBInterfaceBase):
         self.isStreaming = False
         self.data_queue = None
         self.expected_size = None
+        self.image_queue = None
+        self._route_buf = bytearray()
         logger.info(
             f"{self.desc}: Streaming stopped — "
             f"{self.packets_received} USB read chunk(s) received"
@@ -376,6 +431,41 @@ class StreamInterface(USBInterfaceBase):
             self.data_queue.put(raw)
         return cmp_count, cmp_errors
 
+    def _route_chunk(self, chunk: bytes, data_queue) -> None:
+        """Framed routing used while an image_queue is attached.
+
+        Accumulates chunks, extracts complete envelopes, and delivers
+        TYPE_IMAGE packets to image_queue and everything else to data_queue.
+        Bounded puts mirror _stream_loop's histogram policy: never block the
+        reader thread for more than 1 s per packet.
+        """
+        self._route_buf += chunk
+        other_pkts, image_pkts = extract_stream_packets(self._route_buf)
+        image_queue = self.image_queue
+        for pkt in image_pkts:
+            if image_queue is None:
+                break
+            try:
+                image_queue.put(pkt, timeout=1.0)
+            except queue.Full:
+                if self.stop_event.is_set():
+                    return
+                logger.warning(
+                    "%s: image_queue full for >1s; dropping %d-byte image "
+                    "packet (host retry will re-request the line)",
+                    self.desc, len(pkt),
+                )
+        for pkt in other_pkts:
+            try:
+                data_queue.put(pkt, timeout=1.0)
+            except queue.Full:
+                if self.stop_event.is_set():
+                    return
+                logger.warning(
+                    "%s: data_queue full for >1s during image session; "
+                    "dropping %d-byte packet", self.desc, len(pkt),
+                )
+
     def _stream_loop(self):
         # Read timeout must exceed the worst-case USB transfer latency for the
         # final frame.  Normal cadence is ~25 ms; the last frame of a scan can
@@ -416,22 +506,28 @@ class StreamInterface(USBInterfaceBase):
                 )
                 pipe_errors = 0
                 if data and data_queue is self.data_queue:
-                    # Use a bounded put so the loop can never block forever
-                    # on a stopped/slow parser. With self.stop_event set the
-                    # parser also drains until empty (see parse_histogram_stream),
-                    # so this drop window is only ever 1s of backlog at scan
-                    # teardown — small price for a guaranteed loop exit.
-                    try:
-                        data_queue.put(bytes(data), timeout=1.0)
+                    if self.image_queue is not None:
+                        # Drip-scan image session: framed routing so histogram
+                        # consumers never see TYPE_IMAGE packets.
+                        self._route_chunk(bytes(data), data_queue)
                         self.packets_received += 1
-                    except queue.Full:
-                        if self.stop_event.is_set():
-                            break
-                        logger.warning(
-                            "%s: data_queue full for >1s during streaming "
-                            "(parser falling behind?); dropping %d-byte chunk",
-                            self.desc, len(data),
-                        )
+                    else:
+                        # Use a bounded put so the loop can never block forever
+                        # on a stopped/slow parser. With self.stop_event set the
+                        # parser also drains until empty (see parse_histogram_stream),
+                        # so this drop window is only ever 1s of backlog at scan
+                        # teardown — small price for a guaranteed loop exit.
+                        try:
+                            data_queue.put(bytes(data), timeout=1.0)
+                            self.packets_received += 1
+                        except queue.Full:
+                            if self.stop_event.is_set():
+                                break
+                            logger.warning(
+                                "%s: data_queue full for >1s during streaming "
+                                "(parser falling behind?); dropping %d-byte chunk",
+                                self.desc, len(data),
+                            )
             except usb.core.USBError as e:
                 if is_usb_timeout(e):
                     # Timeout — no data arrived within the read window.
