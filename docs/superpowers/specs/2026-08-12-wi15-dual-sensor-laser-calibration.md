@@ -1,0 +1,256 @@
+# WI-00015 Dual-Sensor Laser Calibration Specification
+
+**Date:** 2026-08-12
+
+**Status:** Draft for written review
+
+**Procedure:** Dual-Sensor Laser Calibration
+
+## 1. Objective
+
+Tune the shared console laser for a unit that will ship with both left and
+right sensor modules. The procedure rejects an initial differential greater
+than 100 microjoules, adjusts the shared laser so the two-sensor midpoint is
+as close as practical to 350 microjoules, and passes only when both valid
+final readings are within 300-400 microjoules inclusive.
+
+It permits at most three complete post-adjustment cross-checks.
+
+## 2. Authority and related specifications
+
+This specification implements the Dual-Sensor Laser Calibration requirements
+in:
+
+- `docs/WI-00015-automated-process-addendum.md`;
+- `docs/superpowers/specs/2026-08-12-wi15-single-and-dual-runner-design.md`;
+  and
+- WI-00015 revision 2, as modified by the team-approved automated process.
+
+The process addendum controls if the sources conflict.
+
+## 3. Scope
+
+### Included
+
+- Exact two-sensor topology validation.
+- Console/sensor identity and serial validation.
+- Ophir connection, identity, configuration, and readback.
+- Pre-existing configuration capture and exact default configuration write.
+- Valid left and right 0 cm measurements.
+- Initial 100-microjoule differential gate.
+- Direction-specific tuning toward a 350-microjoule midpoint.
+- Up to three complete left/right cross-checks.
+- Final dual-energy and register-readback acceptance.
+- Structured state and report evidence.
+
+### Excluded
+
+- Processing either side as a standalone one-sensor unit.
+- Safety ADC calibration.
+- Static-phantom Measurement Calibration.
+- Final TestApp UI.
+
+## 4. Entry point and reusable API boundary
+
+The operator entry point is
+`scripts/wi15_dual_sensor_laser_calibration.py`. It guides every fixture swap
+but does not own the tuning calculations.
+
+Shared SDK code receives explicit declared sides, motion interface/session,
+Ophir adapter, configuration store, measurement settings, state/report sink,
+and progress/cancellation callbacks. It must not call `input()`.
+
+It returns a structured outcome containing the initial pair, differential,
+tuning choices, cross-checks, final settings, terminal disposition, and
+artifact references. Failure maps to a nonzero script exit code.
+
+## 5. Preconditions and fail-closed preflight
+
+Before configuration mutation or laser action:
+
+1. the console, left sensor, and right sensor must be connected and
+   responsive;
+2. console, left, and right serial numbers must be non-`None` and non-empty;
+3. available firmware, FPGA, hardware ID, and identity data must be recorded;
+4. Ophir COM instantiation, scan, open, energy-sensor presence, identity, and
+   calibration-due reads must pass; and
+5. all Ophir settings and readbacks in the process addendum must pass.
+
+Any failure stops before default configuration or firing. A missing side is
+not reinterpreted as a one-sensor unit.
+
+## 6. Default configuration setup
+
+1. Read and preserve the complete existing User Configuration.
+2. Write exactly the ten-key default object in the process addendum.
+3. Require successful SDK write and exact complete readback.
+4. Bring up and verify active TA pulse width, TA current, seed value, and 40
+   Hz trigger frequency.
+5. Correct only trigger frequency if needed; fail on another required
+   operating mismatch.
+
+Retain pre-existing, requested-default, and actual-default objects.
+
+## 7. Valid measurement definition
+
+Every left/right observation used for a calculation or decision must have:
+
+- more than 25 valid samples after Ophir sentinel filtering;
+- standard deviation below 40 microjoules;
+- repetition rate from 39 through 41 Hz inclusive; and
+- finite mean, standard deviation, rate, minimum, and maximum.
+
+Record invalid observations but stop rather than using their means.
+
+## 8. Initial pair and differential gate
+
+1. Prompt the operator to seat the left module and acquire a valid
+   measurement.
+2. Prompt the operator to seat the right module and acquire a valid
+   measurement.
+3. Calculate `difference = abs(left - right)` and
+   `midpoint = (left + right) / 2`.
+4. If `difference > 100`, record the pair and fail/NCR immediately.
+5. At exactly 100, continue; final acceptance still requires both readings
+   within 300-400.
+
+The initial pair is a baseline, not one of the three post-adjustment
+cross-checks.
+
+## 9. Approved midpoint-tuning algorithm
+
+For every tuning round, use the latest valid left/right pair.
+
+### 9.1 Midpoint above 350
+
+1. Select the higher-reading module.
+2. Calculate its expected target as `350 + difference / 2`.
+3. Keep TA pulse width fixed.
+4. Reduce `TA_CURRENT_DRV` by 50 mA per step.
+5. After each checked write/readback, acquire a valid measurement of the
+   selected module.
+6. Continue until the selected measurement reaches/crosses its expected
+   target or the conservative current floor is reached.
+7. If adjacent permitted settings straddle the target, select the one whose
+   measurement is closest, then reapply/read back it if necessary.
+8. Reaching the current floor without an acceptable reachable setting is a
+   terminal NCR.
+
+### 9.2 Midpoint below 350
+
+1. Select the lower-reading module.
+2. Calculate its expected target as `350 - difference / 2`.
+3. Temporarily set both pulse-width upper limits to 660 microseconds and
+   verify readback.
+4. Keep TA current fixed.
+5. Increase `TA_PULSE_WIDTH` by 10 microseconds per step.
+6. After each checked write/readback, acquire a valid measurement of the
+   selected module.
+7. Continue until the selected measurement reaches/crosses its expected
+   target or TA pulse width reaches 600 microseconds.
+8. If adjacent permitted settings straddle the target, select the closer one
+   and reapply/read back it if necessary.
+9. At 600 microseconds, a selected measurement below 300 is an immediate
+   terminal NCR.
+
+### 9.3 Midpoint at 350 or no improving discrete step
+
+Do not alter the setting when the midpoint is exactly 350 or when the current
+discrete setting is already the closest permitted setting. Continue to a
+complete cross-check.
+
+## 10. Complete cross-check loop
+
+After every adjustment decision, including no adjustment:
+
+1. apply and verify the selected final setting for that round;
+2. prompt for and measure left;
+3. prompt for and measure right;
+4. increment `crosscheck_count` only after both valid measurements exist;
+5. calculate difference, midpoint, midpoint distance from 350, and individual
+   signed offsets from 350; and
+6. pass immediately if both readings are within 300-400 inclusive.
+
+If either side is outside range and fewer than three complete cross-checks
+have run, recompute the next adjustment from the latest pair. If either side
+is outside range after cross-check three, fail/NCR immediately.
+
+An invalid measurement does not consume a complete cross-check, but it fails
+the current execution rather than silently retrying or tuning from partial
+data.
+
+## 11. Final readback and acceptance
+
+After a passing cross-check:
+
+1. require requested-versus-active `TA_CURRENT_DRV` within plus or minus 2
+   percent;
+2. require requested-versus-active `TA_PULSE_WIDTH` within plus or minus 2
+   percent;
+3. retain the passing left/right pair and all midpoint metrics; and
+4. construct the complete passing User Configuration with the final TA
+   current/pulse values, the other approved defaults, and provisional
+   pulse-width limits of 660 when upward pulse tuning was used (otherwise
+   550);
+5. require successful write and exact immediate complete readback; and
+6. mark that readback as the authoritative input to Safety Calibration.
+
+Both energy bounds and the readback-tolerance bounds are inclusive.
+Dual-Sensor Laser Calibration does not power-cycle; Safety Calibration owns
+final safety-limit calculation and persistence verification.
+
+## 12. Failure behavior
+
+Topology, identity, Ophir, default configuration, measurement-quality,
+initial differential, adjustment bound, third cross-check, or readback
+failure returns nonzero with an exact reason. Energy, differential,
+adjustment-bound, and third-cross-check failures are NCR dispositions.
+
+After terminal NCR, no final tuned/safety configuration write or later guided
+phase may execute. The required earlier default write remains recorded. The
+guided runner has no continue-anyway path.
+
+## 13. Report evidence
+
+In addition to common report requirements, record:
+
+- exact declared and actual dual topology;
+- initial left/right observations, differential, and midpoint;
+- selected tuning side and why;
+- target calculation for every round;
+- every current/pulse step and quantized readback;
+- each complete cross-check number and pair;
+- each pair's differential, midpoint, distance from 350, and asymmetry;
+- final 300/400 and 2 percent results;
+- passing tuned configuration and exact immediate readback;
+- highlighted default-versus-final changes; and
+- terminal outcome and NCR reason.
+
+## 14. Automated tests
+
+Unit tests cover:
+
+- valid dual topology and either-side-missing rejection;
+- all three required serial checks;
+- Ophir preflight failures and proof of no mutation/firing;
+- default configuration write/readback failures;
+- measurement-quality boundaries;
+- differential 100 accepted and greater than 100 NCR;
+- above-midpoint higher-side selection and current stepping;
+- below-midpoint lower-side selection and pulse stepping;
+- target-straddling closest-setting selection;
+- no-improvement/no-adjustment behavior;
+- first-, second-, and third-cross-check pass;
+- failure immediately after cross-check three;
+- invalid partial cross-check behavior;
+- 300/400 inclusive energy bounds and plus/minus 2 percent readback bounds;
+- tuned-configuration write failure and complete-readback mismatch;
+- proof NCR prevents final writes; and
+- required report contents.
+
+## 15. Future TestApp integration
+
+This procedure maps to one future TestApp button. The TestApp provides swap
+prompts and progress presentation but calls the same shared implementation.
+It may not duplicate or relax topology, differential, tuning, cross-check, or
+failure logic.
