@@ -132,10 +132,12 @@ def main() -> int:
         # --- Section 4.2: baselines --------------------------------------
         first = ask_side("Seat a sensor module in the 0 cm fixture, optics "
                          "up, cable perpendicular with minimal bend (WI "
-                         "Figure F). TIP: if you know which module reads "
-                         "lower, seat it FIRST - the higher one must be "
-                         "seated for the later safety-ADC step, so ending "
-                         "on it saves a swap. Which side is seated?",
+                         "Figure F). TIP to save a swap: tuning seats the "
+                         "HIGHEST-reading module (step 19) unless the unit "
+                         "is under-minimum, where it seats the LOWEST "
+                         "(step 23) - so on a normal unit seat the lower "
+                         "module first, on a dim/under-min unit seat the "
+                         "lower module LAST. Which side is seated?",
                          simple="📥 Put ONE sensor in the metal holder, glass side up ⬆️. Then press the button for that sensor: ⬅️ Left or Right ➡️")
         if first is None:
             return 1
