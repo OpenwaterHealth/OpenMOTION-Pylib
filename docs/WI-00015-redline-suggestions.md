@@ -9,7 +9,9 @@ automated runner (openmotion-sdk#214 / PR #215) on console QWW04Q10003,
 
 Ordered by consequence, worst first. BH returned an annotated response on
 2026-08-12 ("WI-15 automation response" doc); each item below now carries a
-**Disposition** line from it. Items 10 and 14 remain open.
+**Disposition** line from it. BH's follow-up confirmed item 10, the mA
+reading, the filenames, and nearest rounding; only item 14 remains
+uncommented.
 
 ## 1. Steps 30–31 — say the ADC value is in mA as displayed
 
@@ -216,16 +218,16 @@ WWW04Q40010 nothing rewrote TEC_TRIP.
 is the fleet convention, bloodflow-app `tecTripTempC`), and to step 33/37's
 expected final configuration. The automated runner already does this.
 
-**Disposition (BH, 2026-08-12): OPEN.** BH asked why 1 of the 4 preFDA
-units arrived with a TEC temp key and the others didn't. Answer: **only the
-bloodflow-app writes TEC_TRIP, and it does so on connect** (the
-`motion_config.py` guard rail); the test-app and any WI rig never write it.
-The one unit carrying it is simply the one that had been connected to the
-clinical app. That mechanism is the point of this item: a unit that only
-ever sees the factory path runs with the over-temp trip disabled. BH also
-said "everything should be wiped, so no other parameters should be present"
-— needs a clarification that TEC_TRIP is proposed as the tenth *intended*
-key in Figure Y, not a foreign leftover. Awaiting BH's confirmation.
+**Disposition (BH, 2026-08-12): accepted in follow-up.** BH asked why 1 of
+the 4 preFDA units arrived with a TEC temp key and the others didn't.
+Answer: **only the bloodflow-app writes TEC_TRIP, and it does so on
+connect** (the `motion_config.py` guard rail); the test-app and any WI rig
+never write it. The one unit carrying it is simply the one that had been
+connected to the clinical app. That mechanism is the point of this item: a
+unit that only ever sees the factory path runs with the over-temp trip
+disabled. After that explanation BH confirmed: "it's good if the TEC trip
+gets set at this phase." TEC_TRIP: 40 joins Figure Y as the tenth intended
+key.
 
 ## 11. Steps 19/23 module selection needs a closeness margin
 
