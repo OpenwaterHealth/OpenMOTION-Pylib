@@ -88,6 +88,17 @@ class TopologySnapshot:
     left_connected: bool
     right_connected: bool
 
+
+@dataclass(frozen=True)
+class PairMetrics:
+    left_mean_uj: float
+    right_mean_uj: float
+    difference_uj: float
+    midpoint_uj: float
+    midpoint_distance_uj: float
+    left_offset_uj: float
+    right_offset_uj: float
+
 TARGET_ENERGY_UJ = 350
 MIN_ACCEPTABLE_ENERGY_UJ = 300
 MAX_ACCEPTABLE_ENERGY_UJ = 400
@@ -205,6 +216,43 @@ def validate_exact_single_topology(
     )
 
 
+def validate_exact_dual_topology(topology: TopologySnapshot) -> CriterionResult:
+    """Require a console with both declared shipping sensors connected."""
+    return CriterionResult(
+        "topology",
+        topology.console_connected
+        and topology.left_connected
+        and topology.right_connected,
+        "Expected a console with both left and right sensors connected.",
+    )
+
+
+def calculate_pair_metrics(
+    left_mean_uj: float, right_mean_uj: float
+) -> PairMetrics:
+    """Calculate immutable, side-preserving evidence for one complete pair."""
+    difference = abs(left_mean_uj - right_mean_uj)
+    midpoint = (left_mean_uj + right_mean_uj) / 2.0
+    return PairMetrics(
+        left_mean_uj=left_mean_uj,
+        right_mean_uj=right_mean_uj,
+        difference_uj=difference,
+        midpoint_uj=midpoint,
+        midpoint_distance_uj=abs(midpoint - TARGET_ENERGY_UJ),
+        left_offset_uj=left_mean_uj - TARGET_ENERGY_UJ,
+        right_offset_uj=right_mean_uj - TARGET_ENERGY_UJ,
+    )
+
+
+def both_energies_accepted(left_mean_uj: float, right_mean_uj: float) -> bool:
+    """Return whether both finite side means satisfy the inclusive WI window."""
+    return all(
+        _is_finite(value)
+        and MIN_ACCEPTABLE_ENERGY_UJ <= value <= MAX_ACCEPTABLE_ENERGY_UJ
+        for value in (left_mean_uj, right_mean_uj)
+    )
+
+
 def validate_serial(serial: str | None) -> CriterionResult:
     """Require a nonblank textual serial number for reportable identity."""
     passed = isinstance(serial, str) and bool(serial.strip())
@@ -248,6 +296,32 @@ def select_closest_valid_setting(
         valid_candidates,
         key=lambda candidate: (
             abs(candidate[1].mean_uj - TARGET_ENERGY_UJ),
+            candidate[0],
+        ),
+    )
+
+
+def select_closest_valid_setting_to_target(
+    candidates: Iterable[tuple[float, EnergyMeasurement]],
+    target_uj: float,
+) -> tuple[float, EnergyMeasurement] | None:
+    """Select the valid observation nearest a finite, caller-supplied target."""
+    if not _is_finite(target_uj):
+        return None
+    valid_candidates = [
+        candidate
+        for candidate in candidates
+        if _is_finite(candidate[0])
+        and all(
+            result.passed for result in validate_energy_measurement(candidate[1])
+        )
+    ]
+    if not valid_candidates:
+        return None
+    return min(
+        valid_candidates,
+        key=lambda candidate: (
+            abs(candidate[1].mean_uj - target_uj),
             candidate[0],
         ),
     )

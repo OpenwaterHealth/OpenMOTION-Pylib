@@ -19,15 +19,20 @@ from omotion.WI15LaserCalibration import (
     MIN_PULSE_COUNT_EXCLUSIVE,
     MIN_RATE_HZ,
     OphirIdentity,
+    PairMetrics,
     PULSE_WIDTH_STEP_US,
     ProcedureStatus,
     SettingReadback,
     TARGET_ENERGY_UJ,
     TEMPORARY_PULSE_WIDTH_LIMIT_US,
     TopologySnapshot,
+    both_energies_accepted,
+    calculate_pair_metrics,
     percent_difference,
     select_closest_valid_setting,
+    select_closest_valid_setting_to_target,
     validate_energy_measurement,
+    validate_exact_dual_topology,
     validate_exact_single_topology,
     validate_serial,
     within_percent,
@@ -157,6 +162,49 @@ def test_exact_single_topology_requires_only_the_declared_side(topology, side, p
 
 
 @pytest.mark.parametrize(
+    ("topology", "passed"),
+    [
+        (TopologySnapshot(True, True, True), True),
+        (TopologySnapshot(True, True, False), False),
+        (TopologySnapshot(True, False, True), False),
+        (TopologySnapshot(False, True, True), False),
+    ],
+)
+def test_exact_dual_topology_requires_console_left_and_right(topology, passed):
+    """Dropping any device from the declared shipping topology must fail preflight."""
+    assert validate_exact_dual_topology(topology).passed is passed
+
+
+def test_pair_metrics_preserve_side_values_and_midpoint_math():
+    """Swapping sides or deriving midpoint/differential incorrectly breaks tuning."""
+    assert calculate_pair_metrics(300.0, 400.0) == PairMetrics(
+        left_mean_uj=300.0,
+        right_mean_uj=400.0,
+        difference_uj=100.0,
+        midpoint_uj=350.0,
+        midpoint_distance_uj=0.0,
+        left_offset_uj=-50.0,
+        right_offset_uj=50.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "accepted"),
+    [
+        (300.0, 400.0, True),
+        (299.999, 350.0, False),
+        (350.0, 400.001, False),
+        (math.nan, 350.0, False),
+    ],
+)
+def test_dual_acceptance_requires_both_finite_values_in_inclusive_window(
+    left, right, accepted
+):
+    """A single out-of-window or nonfinite sensor must reject the paired result."""
+    assert both_energies_accepted(left, right) is accepted
+
+
+@pytest.mark.parametrize(
     ("serial", "passed"),
     [(None, False), ("", False), ("  \t", False), (" SN-123 ", True)],
 )
@@ -219,3 +267,13 @@ def test_closest_valid_setting_minimizes_distance_from_350_uj():
 def test_closest_valid_setting_breaks_distance_ties_with_lower_setting(candidates, expected_index):
     """Unstable ties could reapply a higher current or wider pulse than necessary."""
     assert select_closest_valid_setting(candidates) == candidates[expected_index]
+
+
+def test_closest_setting_uses_supplied_dual_target_and_rejects_nonfinite_target():
+    """Using 350 instead of the calculated per-side target selects the wrong setting."""
+    candidates = [
+        (5000, _valid_measurement(mean_uj=390.0)),
+        (4950, _valid_measurement(mean_uj=370.0)),
+    ]
+    assert select_closest_valid_setting_to_target(candidates, 375.0) == candidates[1]
+    assert select_closest_valid_setting_to_target(candidates, math.nan) is None
