@@ -455,6 +455,7 @@ class HtmlRunReport:
             for name in (
                 "trigger_cleanup_failure",
                 "active_default_restore_failure",
+                "resource_cleanup_failure",
             )
             if result.get(name) is not None
         ]

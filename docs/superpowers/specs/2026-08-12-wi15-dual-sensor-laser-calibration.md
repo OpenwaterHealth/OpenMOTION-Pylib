@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Draft for written review
+**Status:** Implemented and software-verified; dual-sensor hardware execution pending
 
 **Procedure:** Dual-Sensor Laser Calibration
 
@@ -286,3 +286,39 @@ This procedure maps to one future TestApp button. The TestApp provides swap
 prompts and progress presentation but calls the same shared implementation.
 It may not duplicate or relax topology, differential, tuning, cross-check, or
 failure logic.
+
+## 16. Implementation mapping and verification
+
+The software implementation is divided at the intended reusable boundaries:
+
+- shared constants, validation, topology, paired metrics, and selection rules:
+  `omotion/WI15LaserCalibration.py`;
+- UI-neutral dual procedure and immutable evidence model:
+  `omotion/WI15DualSensorLaserCalibration.py`;
+- exact-dual Motion preflight, pre-fire topology guards, and shared Ophir
+  acquisition: `omotion/WI15LaserCalibrationHardware.py`;
+- auditor-readable HTML evidence:
+  `omotion/WI15DualSensorLaserCalibrationReport.py`;
+- operator CLI and artifact/resource finalization:
+  `scripts/wi15_dual_sensor_laser_calibration.py`; and
+- invocation guidance: `scripts/WI15_PROCEDURES.md`.
+
+Focused automated coverage is provided by:
+
+- `tests/test_wi15_laser_calibration.py`;
+- `tests/test_wi15_dual_sensor_laser_calibration.py`;
+- `tests/test_wi15_laser_calibration_hardware.py`;
+- `tests/test_wi15_dual_sensor_laser_calibration_report.py`; and
+- `tests/test_wi15_dual_sensor_laser_script.py`.
+
+Software verification on 2026-08-13 completed with 322 passing tests in the
+exact single/dual WI-00015 matrix and 1,125 passing tests with 207
+hardware-marked tests deselected in the repository hardware-independent
+suite. Static compilation, Ruff, forbidden-dependency, and diff checks also
+passed.
+
+No dual-sensor live execution was performed during software verification.
+The available bench had only one sensor module, so it could not satisfy this
+procedure's exact console-plus-left-plus-right topology. A successful run with
+both shipping sensor modules and the operator-directed Ophir 0 cm placement
+sequence remains required before hardware validation can be recorded.

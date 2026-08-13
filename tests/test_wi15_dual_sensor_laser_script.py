@@ -274,3 +274,37 @@ def test_declined_placement_is_passed_to_workflow_as_false(monkeypatch, tmp_path
     exit_code = script.main(complete_args(tmp_path), input_func=lambda _: next(replies))
     assert exit_code == 1
     assert captured["placement_results"] == [True, False]
+
+
+def test_hardware_close_failure_replaces_pending_pass_before_report_finalization(
+    monkeypatch, tmp_path
+):
+    script, recorder, _meter, bench, _captured = configured_script(
+        monkeypatch, tmp_path
+    )
+    reported_results = []
+
+    def fail_close():
+        bench.closed += 1
+        raise RuntimeError("Motion shutdown transport failed")
+
+    class CapturingReport(FakeReport):
+        def write(self, request, result, json_path):
+            reported_results.append(result)
+            return super().write(request, result, json_path)
+
+    bench.close = fail_close
+    monkeypatch.setattr(script, "report_factory", CapturingReport)
+
+    exit_code = script.main(complete_args(tmp_path), input_func=lambda _: "yes")
+
+    assert exit_code == 1
+    assert bench.closed == 1
+    terminal = recorder.checkpoints[-1]
+    assert terminal.status is ProcedureStatus.FAILED
+    assert terminal.failure_kind is FailureKind.MEASUREMENT
+    assert terminal.failure_reason == "Hardware resource cleanup failed."
+    assert terminal.resource_cleanup_failure == "Motion shutdown transport failed"
+    assert reported_results[-1].resource_cleanup_failure == (
+        "Motion shutdown transport failed"
+    )

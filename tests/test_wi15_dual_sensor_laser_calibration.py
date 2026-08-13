@@ -366,6 +366,30 @@ def test_three_complete_nonpassing_crosschecks_fail_ncr_and_never_start_fourth()
     assert len(bench.user_configuration_writes) == 1
 
 
+@pytest.mark.parametrize(
+    ("means", "passing_crosscheck"),
+    [
+        ([260, 340, 290, 310, 300, 370], 1),
+        ([260, 340, 290, 310, 299, 370, 315, 300, 380], 2),
+        (
+            [260, 340, 290, 310, 299, 370, 315, 299, 380, 310, 300, 390],
+            3,
+        ),
+    ],
+)
+def test_dual_workflow_may_pass_on_any_of_three_complete_crosschecks(
+    means, passing_crosscheck
+):
+    bench = FakeDualBench([valid_measurement(mean) for mean in means])
+
+    result, _, _ = run_workflow(bench)
+
+    assert result.status is ProcedureStatus.PASSED
+    assert len(result.crosschecks) == passing_crosscheck
+    assert result.crosschecks[-1].accepted is True
+    assert bench.calls.count("measure_energy") == len(means)
+
+
 def test_invalid_partial_crosscheck_does_not_create_a_complete_crosscheck():
     bench = FakeDualBench(
         [
@@ -604,3 +628,58 @@ def test_non_boolean_placement_response_cancels_fail_closed():
     assert len(placements.requests) == 1
     assert "measure_energy" not in bench.calls
     assert len(bench.user_configuration_writes) == 1
+
+
+def test_reused_workflow_starts_each_execution_with_an_unseated_fixture():
+    bench = FakeDualBench(
+        [
+            valid_measurement(350),
+            valid_measurement(340),
+            valid_measurement(360),
+            valid_measurement(340),
+            valid_measurement(360),
+        ]
+    )
+    recorder = FakeRecorder()
+    placements = PlacementResponses([True, False, True, True, True, True])
+    workflow = DualSensorLaserCalibrationWorkflow(bench, recorder, placements)
+
+    first = workflow.run(valid_request())
+    second = workflow.run(replace(valid_request(), run_id="DUAL-002"))
+
+    assert first.status is ProcedureStatus.CANCELED
+    assert second.status is ProcedureStatus.PASSED
+    assert [item.to_side for item in placements.requests] == [
+        "left",
+        "right",
+        "left",
+        "right",
+        "left",
+        "right",
+    ]
+
+
+def test_final_trigger_stop_failure_changes_pending_pass_to_failed():
+    class FailingFinalTriggerStopBench(FakeDualBench):
+        def stop_trigger(self):
+            self.calls.append("stop_trigger")
+            self.stop_count += 1
+            if self.stop_count == 5:
+                raise RuntimeError("trigger transport failed")
+
+    bench = FailingFinalTriggerStopBench(
+        [
+            valid_measurement(340),
+            valid_measurement(360),
+            valid_measurement(340),
+            valid_measurement(360),
+        ]
+    )
+
+    result, recorder, _ = run_workflow(bench)
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.MEASUREMENT
+    assert result.trigger_cleanup_failure == "Trigger stop failed."
+    assert result.requested_final_config is not None
+    assert recorder.checkpoints[-1] == result

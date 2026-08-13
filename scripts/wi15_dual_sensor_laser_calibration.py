@@ -147,6 +147,36 @@ def main(
             started_at=datetime.now(timezone.utc),
         )
         result = workflow.run(request)
+        try:
+            bench.close()
+        except Exception as exc:
+            cleanup_failure = str(exc) or exc.__class__.__name__
+        else:
+            cleanup_failure = None
+        finally:
+            bench = None
+            meter = None
+        if cleanup_failure is not None:
+            result = replace(
+                result,
+                status=(
+                    ProcedureStatus.FAILED
+                    if result.status is ProcedureStatus.PASSED
+                    else result.status
+                ),
+                failure_kind=(
+                    FailureKind.MEASUREMENT
+                    if result.status is ProcedureStatus.PASSED
+                    else result.failure_kind
+                ),
+                failure_reason=(
+                    "Hardware resource cleanup failed."
+                    if result.status is ProcedureStatus.PASSED
+                    else result.failure_reason
+                ),
+                resource_cleanup_failure=cleanup_failure,
+            )
+            recorder.checkpoint(result)
         report_path = Path(recorder.run_directory) / "report.html"
         incomplete_result = replace(
             result,

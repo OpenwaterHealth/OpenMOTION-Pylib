@@ -45,6 +45,9 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                 f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
                 self._table("Request metadata", request_data.items()),
                 self._topology(result_data.get("topology")),
+                self._topology_revalidation(
+                    result_data.get("topology_revalidation")
+                ),
                 self._identities(result_data.get("identities", [])),
                 self._ophir(
                     result_data.get("ophir_identity"),
@@ -53,6 +56,7 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                 self._configurations(result_data),
                 self._placements(result_data.get("placements", [])),
                 self._initial_pair(result_data.get("initial_pair")),
+                self._observations(result_data.get("observations", [])),
                 self._tuning_rounds(result_data.get("tuning_rounds", [])),
                 self._crosschecks(result_data.get("crosschecks", [])),
                 self._readbacks(
@@ -69,6 +73,16 @@ class DualSensorHtmlRunReport(HtmlRunReport):
             ]
         )
         return "\n".join(part for part in parts if part)
+
+    def _topology_revalidation(self, topology: object) -> str:
+        return (
+            self._table(
+                "Topology immediately before configuration mutation",
+                topology.items(),
+            )
+            if isinstance(topology, dict)
+            else ""
+        )
 
     def _placements(self, placements: object) -> str:
         rows = []
@@ -118,6 +132,80 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                 self._table("Initial differential and midpoint", metrics.items())
             )
         return "".join(parts)
+
+    def _observations(self, observations: object) -> str:
+        measurement_rows = []
+        criterion_rows = []
+        for observation in observations if isinstance(observations, list) else []:
+            if not isinstance(observation, dict):
+                continue
+            measurement = observation.get("measurement")
+            if isinstance(measurement, dict):
+                measurement_rows.append(
+                    (
+                        observation.get("label"),
+                        observation.get("side"),
+                        observation.get("sensor_serial"),
+                        measurement.get("n"),
+                        measurement.get("discarded"),
+                        measurement.get("mean_uj"),
+                        measurement.get("stdev_uj"),
+                        measurement.get("rate_hz"),
+                        measurement.get("min_uj"),
+                        measurement.get("max_uj"),
+                        measurement.get("duration_s"),
+                    )
+                )
+            criteria = observation.get("criteria", [])
+            for criterion in criteria if isinstance(criteria, list) else []:
+                if isinstance(criterion, dict):
+                    criterion_rows.append(
+                        (
+                            observation.get("label"),
+                            observation.get("side"),
+                            observation.get("sensor_serial"),
+                            criterion.get("name"),
+                            criterion.get("passed"),
+                            criterion.get("detail"),
+                        )
+                    )
+        sections = []
+        if measurement_rows:
+            sections.append(
+                self._table(
+                    "All energy observations",
+                    measurement_rows,
+                    (
+                        "Audit label",
+                        "Side",
+                        "Sensor serial",
+                        "Accepted samples",
+                        "Discarded samples",
+                        "Mean uJ",
+                        "Standard deviation uJ",
+                        "Rate Hz",
+                        "Minimum uJ",
+                        "Maximum uJ",
+                        "Duration s",
+                    ),
+                )
+            )
+        if criterion_rows:
+            sections.append(
+                self._table(
+                    "All energy observation quality criteria",
+                    criterion_rows,
+                    (
+                        "Audit label",
+                        "Side",
+                        "Sensor serial",
+                        "Criterion",
+                        "Passed",
+                        "Detail",
+                    ),
+                )
+            )
+        return "".join(sections)
 
     def _tuning_rounds(self, rounds: object) -> str:
         rows = []

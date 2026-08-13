@@ -193,6 +193,7 @@ class DualSensorLaserCalibrationResult:
     active_default_restore: tuple[SettingReadback, ...] = ()
     active_default_restore_failure: str | None = None
     trigger_cleanup_failure: str | None = None
+    resource_cleanup_failure: str | None = None
     events: tuple[ProcedureEvent, ...] = ()
     report_paths: tuple[Path | str, ...] = ()
     report_artifact: ReportArtifactEvidence | None = None
@@ -349,6 +350,7 @@ class DualSensorLaserCalibrationWorkflow:
     def run(
         self, request: DualSensorLaserCalibrationRequest
     ) -> DualSensorLaserCalibrationResult:
+        self._seated_side = None
         state = _RunState(request=request)
         failure: _ProcedureFailure | None = None
         stage = "setup"
@@ -406,17 +408,13 @@ class DualSensorLaserCalibrationWorkflow:
                 self._checkpoint(state)
                 if accepted:
                     self._write_passing_configuration(state)
-                    result = state.result(
-                        ProcedureStatus.PASSED, ended_at=datetime.now(timezone.utc)
-                    )
-                    self._recorder.checkpoint(result)
-                    return result
+                    break
                 latest_pair = pair
-
-            raise _ProcedureFailure(
-                FailureKind.NCR,
-                "Both sensors were not within 300 to 400 uJ after three complete cross-checks.",
-            )
+            else:
+                raise _ProcedureFailure(
+                    FailureKind.NCR,
+                    "Both sensors were not within 300 to 400 uJ after three complete cross-checks.",
+                )
         except _ProcedureFailure as caught:
             failure = caught
         except Exception as error:
@@ -440,6 +438,17 @@ class DualSensorLaserCalibrationWorkflow:
                 self._bench.stop_trigger()
             except Exception:
                 state.trigger_cleanup_failure = "Trigger stop failed."
+
+        if failure is None and state.trigger_cleanup_failure:
+            failure = _ProcedureFailure(
+                FailureKind.MEASUREMENT, state.trigger_cleanup_failure
+            )
+        if failure is None:
+            result = state.result(
+                ProcedureStatus.PASSED, ended_at=datetime.now(timezone.utc)
+            )
+            self._recorder.checkpoint(result)
+            return result
 
         assert failure is not None
         if state.active_defaults_established and state.measurement_started:
