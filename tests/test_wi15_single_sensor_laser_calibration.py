@@ -1785,7 +1785,7 @@ def test_adjustment_failure_records_best_effort_active_default_restore_after_sto
         "EE_PULSE_WIDTH_UL",
         "OPT_PULSE_WIDTH_UL",
     ]
-    assert "TA_CURRENT_DRV write returned no result" in result.active_default_restore_failure
+    assert "TA_CURRENT_DRV restore returned malformed evidence" in result.active_default_restore_failure
     cleanup_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
     assert bench.calls[cleanup_index - 1] == "stop_trigger"
 
@@ -1804,7 +1804,7 @@ def test_restore_immediate_mismatch_cannot_be_erased_by_matching_later_read():
 
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert result.active_default_restore[0] == mismatch
-    assert "TA_CURRENT_DRV readback was outside 2 percent" in (
+    assert "TA_CURRENT_DRV restore was outside 2 percent" in (
         result.active_default_restore_failure or ""
     )
     assert bench.calls.count("read_register:TA_CURRENT_DRV") == 1
@@ -1855,11 +1855,11 @@ def test_persistent_post_firing_restore_failures_do_not_replace_primary_ncr():
     assert result.failure_kind is FailureKind.NCR
     assert result.failure_reason == "Final energy must be between 300 and 400 uJ inclusive."
     assert result.active_default_restore_failure == (
-        "TA_CURRENT_DRV write returned no result; "
-        "TA_PULSE_WIDTH write returned no result; "
-        "SEED_CW_GAIN write returned no result; "
-        "EE_PULSE_WIDTH_UL write returned no result; "
-        "OPT_PULSE_WIDTH_UL write returned no result"
+        "TA_CURRENT_DRV restore returned malformed evidence; "
+        "TA_PULSE_WIDTH restore returned malformed evidence; "
+        "SEED_CW_GAIN restore returned malformed evidence; "
+        "EE_PULSE_WIDTH_UL restore returned malformed evidence; "
+        "OPT_PULSE_WIDTH_UL restore returned malformed evidence"
     )
     assert result.active_default_restore == ()
     restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")

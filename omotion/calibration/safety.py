@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import math
-from types import MappingProxyType
 from typing import Literal, Mapping
 
 from .laser import (
@@ -14,6 +13,10 @@ from .laser import (
     DeviceIdentity,
     TopologySnapshot,
     validate_serial,
+)
+from ._procedure import (
+    deeply_immutable as _deeply_immutable,
+    finite_number as _finite_number,
 )
 
 
@@ -48,26 +51,6 @@ REQUIRED_USER_CONFIGURATION_KEYS = (
     "OPT_DRIVE_CL",
     "TEC_TRIP",
 )
-
-
-def _deeply_immutable(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _deeply_immutable(item) for key, item in value.items()}
-        )
-    if isinstance(value, tuple | list):
-        return tuple(_deeply_immutable(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_deeply_immutable(item) for item in value)
-    return value
-
-
-def _finite_number(value: object) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int | float)
-        and math.isfinite(float(value))
-    )
 
 
 def _positive_integer(value: object) -> bool:

@@ -6,7 +6,6 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import math
 from pathlib import Path
-from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
 
 try:
@@ -36,33 +35,20 @@ from .laser import (
     TopologySnapshot,
     both_energies_accepted,
     calculate_pair_metrics,
-    default_user_configuration,
-    percent_difference,
     select_closest_valid_setting_to_target,
     validate_energy_measurement,
-    validate_console_fpga_revisions,
     validate_exact_dual_topology,
-    validate_serial,
-    within_percent,
 )
-from .single_sensor_laser import (
-    OphirEvidenceApplicability,
+from ._procedure import (
+    LaserBench,
+    LaserWorkflowBase,
     OphirSettingEvidence,
     ProcedureEvent,
+    ProcedureFailure,
     ReportArtifactEvidence,
+    RunRecorder,
+    deeply_immutable,
 )
-
-
-def _deeply_immutable(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _deeply_immutable(item) for key, item in value.items()}
-        )
-    if isinstance(value, tuple | list):
-        return tuple(_deeply_immutable(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_deeply_immutable(item) for item in value)
-    return value
 
 
 @dataclass(frozen=True)
@@ -214,48 +200,18 @@ class DualSensorLaserCalibrationResult:
         ):
             value = getattr(self, name)
             if value is not None:
-                object.__setattr__(self, name, _deeply_immutable(value))
+                object.__setattr__(self, name, deeply_immutable(value))
 
 
-class DualLaserCalibrationBench(Protocol):
+class DualLaserCalibrationBench(LaserBench, Protocol):
     def preflight_dual(self) -> DualPreflightSnapshot: ...
 
     def revalidate_dual_topology(self) -> TopologySnapshot: ...
 
-    def read_user_configuration(self) -> Mapping[str, float]: ...
 
-    def write_user_configuration(
-        self, configuration: Mapping[str, float]
-    ) -> Mapping[str, float] | None: ...
-
-    def bring_up_laser_configuration(self) -> None: ...
-
-    def read_register(self, name: str) -> float: ...
-
-    def write_register(self, name: str, value: float) -> SettingReadback | None: ...
-
-    def read_trigger_rate_hz(self) -> float: ...
-
-    def write_trigger_rate_hz(self, rate_hz: float) -> SettingReadback | None: ...
-
-    def measure_energy(self) -> EnergyMeasurement: ...
-
-    def stop_trigger(self) -> None: ...
-
-
-class DualRunRecorder(Protocol):
-    def record(self, event: ProcedureEvent) -> None: ...
-
-    def checkpoint(self, result: DualSensorLaserCalibrationResult) -> None: ...
-
+DualRunRecorder = RunRecorder
 
 PlacementCallback = Callable[[PlacementChangeRequest], bool]
-
-
-@dataclass(frozen=True)
-class _ProcedureFailure(Exception):
-    kind: FailureKind
-    reason: str
 
 
 @dataclass
@@ -293,7 +249,7 @@ class _RunState:
         self,
         status: ProcedureStatus,
         *,
-        failure: _ProcedureFailure | None = None,
+        failure: ProcedureFailure | None = None,
         ended_at: datetime | None = None,
     ) -> DualSensorLaserCalibrationResult:
         preflight = self.preflight
@@ -343,7 +299,7 @@ class _RunState:
         )
 
 
-class DualSensorLaserCalibrationWorkflow:
+class DualSensorLaserCalibrationWorkflow(LaserWorkflowBase):
     """Run the approved two-sensor midpoint calibration without owning UI."""
 
     _MAX_CROSSCHECKS = 3
@@ -396,12 +352,22 @@ class DualSensorLaserCalibrationWorkflow:
             minimum_accepted_energy_uj=self._minimum_accepted_energy_uj,
             maximum_accepted_energy_uj=self._maximum_accepted_energy_uj,
         )
-        failure: _ProcedureFailure | None = None
+        failure: ProcedureFailure | None = None
         stage = "setup"
         try:
             self._preflight(state)
             stage = "configuration"
-            self._establish_defaults(state)
+            self._establish_defaults(
+                state,
+                revalidate=self._bench.revalidate_dual_topology,
+                validate_topology=validate_exact_dual_topology,
+                revalidation_failure=(
+                    "Dual topology revalidation failed before configuration mutation."
+                ),
+                topology_changed_failure=(
+                    "Exact dual-sensor topology changed before configuration mutation."
+                ),
+            )
             stage = "measurement"
             state.measurement_started = True
             state.initial_pair = self._measure_pair(
@@ -416,7 +382,7 @@ class DualSensorLaserCalibrationWorkflow:
                     "initial_differential",
                     "Initial differential gate — NCR because the paired differential exceeded 100 uJ.",
                 )
-                raise _ProcedureFailure(
+                raise ProcedureFailure(
                     FailureKind.NCR,
                     "Initial left/right energy differential exceeded 100 uJ.",
                 )
@@ -454,32 +420,38 @@ class DualSensorLaserCalibrationWorkflow:
                 self._record_event(state, "crosscheck", crosscheck.label)
                 self._checkpoint(state)
                 if accepted:
-                    self._write_passing_configuration(state)
+                    self._write_passing_configuration(
+                        state,
+                        written_message=(
+                            "Final configuration verification — passing tuned "
+                            "User Configuration was written and read back exactly."
+                        ),
+                    )
                     break
                 latest_pair = pair
             else:
-                raise _ProcedureFailure(
+                raise ProcedureFailure(
                     FailureKind.NCR,
                     "Both sensors were not within "
                     f"{self._minimum_accepted_energy_uj:g} to "
                     f"{self._maximum_accepted_energy_uj:g} uJ after three "
                     "complete cross-checks.",
                 )
-        except _ProcedureFailure as caught:
+        except ProcedureFailure as caught:
             failure = caught
         except Exception as error:
             if stage == "measurement":
-                failure = _ProcedureFailure(
+                failure = ProcedureFailure(
                     FailureKind.MEASUREMENT,
                     str(error) or "Dual-sensor energy measurement failed.",
                 )
             elif stage == "configuration":
-                failure = _ProcedureFailure(
+                failure = ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     str(error) or "Dual-sensor configuration failed.",
                 )
             else:
-                failure = _ProcedureFailure(
+                failure = ProcedureFailure(
                     FailureKind.SETUP,
                     str(error) or "Dual-sensor bench preflight failed.",
                 )
@@ -490,7 +462,7 @@ class DualSensorLaserCalibrationWorkflow:
                 state.trigger_cleanup_failure = "Trigger stop failed."
 
         if failure is None and state.trigger_cleanup_failure:
-            failure = _ProcedureFailure(
+            failure = ProcedureFailure(
                 FailureKind.MEASUREMENT, state.trigger_cleanup_failure
             )
         if failure is None:
@@ -502,7 +474,12 @@ class DualSensorLaserCalibrationWorkflow:
 
         assert failure is not None
         if state.active_defaults_established and state.measurement_started:
-            self._restore_active_defaults(state)
+            self._restore_active_defaults(
+                state,
+                restored_message=(
+                    "Active default laser registers were restored after the failed run."
+                ),
+            )
         if state.trigger_cleanup_failure:
             self._record_event(
                 state, "trigger_cleanup", state.trigger_cleanup_failure
@@ -528,96 +505,15 @@ class DualSensorLaserCalibrationWorkflow:
         self._checkpoint(state)
         topology = validate_exact_dual_topology(preflight.topology)
         if not topology.passed:
-            raise _ProcedureFailure(FailureKind.SETUP, topology.detail)
-        if not preflight.console_responsive:
-            raise _ProcedureFailure(
-                FailureKind.SETUP, "Console must be responsive before continuing."
-            )
-        for identity, label in (
-            (preflight.console_identity, "Console"),
-            (preflight.left_sensor_identity, "Left-sensor"),
-            (preflight.right_sensor_identity, "Right-sensor"),
-        ):
-            if not validate_serial(identity.serial).passed:
-                raise _ProcedureFailure(
-                    FailureKind.SETUP, f"{label} serial must be nonblank text."
-                )
-        fpga_revisions = validate_console_fpga_revisions(
-            preflight.console_identity
+            raise ProcedureFailure(FailureKind.SETUP, topology.detail)
+        self._validate_shared_preflight(
+            preflight,
+            (
+                (preflight.console_identity, "Console"),
+                (preflight.left_sensor_identity, "Left-sensor"),
+                (preflight.right_sensor_identity, "Right-sensor"),
+            ),
         )
-        if not fpga_revisions.passed:
-            raise _ProcedureFailure(FailureKind.SETUP, fpga_revisions.detail)
-        if not preflight.ophir_ready:
-            raise _ProcedureFailure(
-                FailureKind.SETUP,
-                preflight.ophir_failure_reason or "Ophir preflight failed.",
-            )
-        if preflight.ophir_identity is None:
-            raise _ProcedureFailure(
-                FailureKind.SETUP, "Ophir identity must be present."
-            )
-        if not self._has_complete_ophir_identity(preflight.ophir_identity):
-            raise _ProcedureFailure(
-                FailureKind.SETUP, "Ophir identity fields must be nonblank text."
-            )
-        if not self._has_valid_ophir_setting_evidence(
-            preflight.ophir_setting_evidence
-        ):
-            raise _ProcedureFailure(
-                FailureKind.SETUP,
-                "Ophir setting evidence is incomplete or invalid.",
-            )
-
-    def _establish_defaults(self, state: _RunState) -> None:
-        approved = default_user_configuration()
-        state.pre_existing_config = dict(self._bench.read_user_configuration())
-        self._checkpoint(state)
-        state.requested_default_config = dict(approved)
-        self._checkpoint(state)
-        try:
-            topology = self._bench.revalidate_dual_topology()
-        except Exception as error:
-            raise _ProcedureFailure(
-                FailureKind.SETUP,
-                "Dual topology revalidation failed before configuration mutation.",
-            ) from error
-        state.topology_revalidation = topology
-        if not validate_exact_dual_topology(topology).passed:
-            raise _ProcedureFailure(
-                FailureKind.SETUP,
-                "Exact dual-sensor topology changed before configuration mutation.",
-            )
-        immediate = self._bench.write_user_configuration(dict(approved))
-        if not isinstance(immediate, Mapping):
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Default User Configuration write did not return a complete readback mapping.",
-            )
-        state.default_config_readback = dict(immediate)
-        self._checkpoint(state)
-        if state.default_config_readback != state.requested_default_config:
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Default User Configuration readback must exactly match the request.",
-            )
-        self._record_event(
-            state,
-            "default_configuration",
-            "Exact default User Configuration was written and read back.",
-        )
-        self._checkpoint(state)
-        self._bench.bring_up_laser_configuration()
-        self._record_event(
-            state,
-            "laser_configuration_bringup",
-            "Laser configuration bring-up completed.",
-        )
-        self._checkpoint(state)
-        self._verify_active_defaults(state, approved)
-        self._verify_trigger_rate(state)
-        state.current_requested_ma = float(approved["TA_CURRENT_DRV"])
-        state.pulse_requested_us = float(approved["TA_PULSE_WIDTH"])
-        state.active_defaults_established = True
 
     def _measure_pair(
         self, state: _RunState, *, phase: str, pair_label: str
@@ -644,7 +540,7 @@ class DualSensorLaserCalibrationWorkflow:
         try:
             measurement = self._bench.measure_energy()
         except Exception as error:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.MEASUREMENT,
                 f"{label} acquisition failed.",
             ) from error
@@ -653,7 +549,7 @@ class DualSensorLaserCalibrationWorkflow:
                 self._bench.stop_trigger()
             except Exception as error:
                 state.trigger_cleanup_failure = "Trigger stop failed."
-                raise _ProcedureFailure(
+                raise ProcedureFailure(
                     FailureKind.MEASUREMENT, state.trigger_cleanup_failure
                 ) from error
         serial = self._sensor_serial(state, side)
@@ -667,7 +563,7 @@ class DualSensorLaserCalibrationWorkflow:
         state.observations[-1] = observation
         self._checkpoint(state)
         if not all(item.passed for item in criteria):
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.MEASUREMENT,
                 f"{label} failed the WI-00015 measurement-quality criteria.",
             )
@@ -693,12 +589,12 @@ class DualSensorLaserCalibrationWorkflow:
         try:
             response = self._placement_callback(request)
         except (EOFError, KeyboardInterrupt) as error:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.CANCELED,
                 f"Operator canceled the requested switch to the {side} sensor.",
             ) from error
         except Exception as error:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.CANCELED,
                 f"Placement acknowledgement failed for the {side} sensor.",
             ) from error
@@ -710,7 +606,7 @@ class DualSensorLaserCalibrationWorkflow:
         state.placements.append(acknowledgement)
         self._checkpoint(state)
         if response is not True:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.CANCELED,
                 f"Operator did not confirm the requested switch to the {side} sensor.",
             )
@@ -823,7 +719,7 @@ class DualSensorLaserCalibrationWorkflow:
                 break
         selected = select_closest_valid_setting_to_target(candidates, target)
         if selected is None:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.MEASUREMENT,
                 "No valid downward-current candidate was available for selection.",
             )
@@ -837,7 +733,7 @@ class DualSensorLaserCalibrationWorkflow:
                 self._maximum_accepted_energy_uj,
             )
         ):
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.NCR,
                 "The current floor was reached without an acceptable selected-sensor setting.",
             )
@@ -894,7 +790,7 @@ class DualSensorLaserCalibrationWorkflow:
             state.pulse_requested_us >= MAX_PULSE_WIDTH_US
             and source.measurement.mean_uj < 300.0
         ):
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.NCR,
                 "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
             )
@@ -943,7 +839,7 @@ class DualSensorLaserCalibrationWorkflow:
                 active_setting == MAX_PULSE_WIDTH_US
                 and observation.measurement.mean_uj < 300.0
             ):
-                raise _ProcedureFailure(
+                raise ProcedureFailure(
                     FailureKind.NCR,
                     "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
                 )
@@ -951,7 +847,7 @@ class DualSensorLaserCalibrationWorkflow:
                 break
         selected = select_closest_valid_setting_to_target(candidates, target)
         if selected is None:
-            raise _ProcedureFailure(
+            raise ProcedureFailure(
                 FailureKind.MEASUREMENT,
                 "No valid upward-pulse candidate was available for selection.",
             )
@@ -976,192 +872,6 @@ class DualSensorLaserCalibrationWorkflow:
         self._checkpoint(state)
         return tuning_round
 
-    def _write_passing_configuration(self, state: _RunState) -> None:
-        for name, requested in (
-            ("TA_CURRENT_DRV", state.current_requested_ma),
-            ("TA_PULSE_WIDTH", state.pulse_requested_us),
-        ):
-            try:
-                actual = self._bench.read_register(name)
-            except Exception as error:
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    f"Final active {name} readback failed.",
-                ) from error
-            state.configurations.append(SettingReadback(name, requested, actual))
-            passed = within_percent(requested, actual, 2.0)
-            state.final_setting_checks.append(
-                FinalSettingCheck(
-                    name=name,
-                    requested=requested,
-                    actual=actual,
-                    absolute_difference=abs(actual - requested),
-                    percent_difference=percent_difference(requested, actual),
-                    tolerance_percent=2.0,
-                    passed=passed,
-                )
-            )
-            self._checkpoint(state)
-            if not passed:
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    f"Final active {name} is outside the allowed 2 percent tolerance.",
-                )
-        requested = default_user_configuration()
-        requested["TA_CURRENT_DRV"] = state.current_requested_ma
-        requested["TA_PULSE_WIDTH"] = state.pulse_requested_us
-        if state.used_upward_tuning:
-            requested["EE_PULSE_WIDTH_UL"] = TEMPORARY_PULSE_WIDTH_LIMIT_US
-            requested["OPT_PULSE_WIDTH_UL"] = TEMPORARY_PULSE_WIDTH_LIMIT_US
-        state.requested_final_config = requested
-        self._checkpoint(state)
-        try:
-            immediate = self._bench.write_user_configuration(dict(requested))
-        except Exception as error:
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Passing User Configuration write or readback failed.",
-            ) from error
-        if not isinstance(immediate, Mapping):
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Passing User Configuration write did not return a complete readback mapping.",
-            )
-        state.final_config_readback = dict(immediate)
-        self._checkpoint(state)
-        if state.final_config_readback != state.requested_final_config:
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Passing User Configuration readback must exactly match the request.",
-            )
-        self._record_event(
-            state,
-            "final_configuration",
-            "Final configuration verification — passing tuned User Configuration was written and read back exactly.",
-        )
-
-    def _verify_active_defaults(
-        self, state: _RunState, approved: Mapping[str, float]
-    ) -> None:
-        for name in (
-            "TA_CURRENT_DRV",
-            "TA_PULSE_WIDTH",
-            "SEED_CW_GAIN",
-            "EE_PULSE_WIDTH_UL",
-            "OPT_PULSE_WIDTH_UL",
-        ):
-            requested = approved[name]
-            actual = self._bench.read_register(name)
-            state.configurations.append(SettingReadback(name, requested, actual))
-            self._checkpoint(state)
-            if not within_percent(requested, actual, 2.0):
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    f"Active {name} is outside the allowed 2 percent tolerance.",
-                )
-
-    def _verify_trigger_rate(self, state: _RunState) -> None:
-        rate_hz = self._bench.read_trigger_rate_hz()
-        state.configurations.append(
-            SettingReadback("trigger_rate_hz_initial", 40.0, rate_hz)
-        )
-        self._checkpoint(state)
-        if rate_hz != 40.0:
-            write_result = self._bench.write_trigger_rate_hz(40.0)
-            if not isinstance(write_result, SettingReadback):
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    "Trigger-rate correction returned malformed readback evidence.",
-                )
-            state.configurations.append(write_result)
-            self._checkpoint(state)
-            if (
-                write_result.name != "trigger_rate_hz_write"
-                or write_result.requested != 40.0
-                or not math.isfinite(write_result.actual)
-                or write_result.actual != 40.0
-            ):
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    "Trigger-rate correction immediate readback must exactly match 40 Hz.",
-                )
-            rate_hz = self._bench.read_trigger_rate_hz()
-        state.configurations.append(SettingReadback("trigger_rate_hz", 40.0, rate_hz))
-        self._checkpoint(state)
-        if not self._valid_trigger_rate(rate_hz):
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                "Active trigger rate must be between 39 and 41 Hz inclusive.",
-            )
-
-    def _checked_register_write(
-        self, state: _RunState, name: str, requested: float
-    ) -> SettingReadback:
-        try:
-            result = self._bench.write_register(name, requested)
-        except Exception as error:
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION, f"Active {name} write failed."
-            ) from error
-        if not isinstance(result, SettingReadback):
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                f"Active {name} write returned malformed readback evidence.",
-            )
-        state.adjustments.append(result)
-        self._checkpoint(state)
-        if result.name != name or result.requested != requested:
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                f"Active {name} write returned mismatched readback identity.",
-            )
-        if not within_percent(requested, result.actual, 2.0):
-            raise _ProcedureFailure(
-                FailureKind.CONFIGURATION,
-                f"Active {name} is outside the allowed 2 percent tolerance.",
-            )
-        return result
-
-    def _restore_active_defaults(self, state: _RunState) -> None:
-        failures: list[str] = []
-        approved = default_user_configuration()
-        for name in (
-            "TA_CURRENT_DRV",
-            "TA_PULSE_WIDTH",
-            "SEED_CW_GAIN",
-            "EE_PULSE_WIDTH_UL",
-            "OPT_PULSE_WIDTH_UL",
-        ):
-            requested = approved[name]
-            try:
-                result = self._bench.write_register(name, requested)
-                if not isinstance(result, SettingReadback):
-                    failures.append(f"{name} restore returned malformed evidence")
-                else:
-                    state.active_default_restore.append(result)
-                    if result.name != name or result.requested != requested:
-                        failures.append(f"{name} restore identity did not match")
-                    elif not within_percent(requested, result.actual, 2.0):
-                        failures.append(f"{name} restore was outside 2 percent")
-            except Exception:
-                failures.append(f"{name} restore raised an exception")
-            state.active_default_restore_failure = "; ".join(failures) or None
-            self._checkpoint(state)
-        self._record_event(
-            state,
-            "active_default_restore",
-            state.active_default_restore_failure
-            or "Active default laser registers were restored after the failed run.",
-        )
-
-    def _checkpoint(self, state: _RunState) -> None:
-        self._recorder.checkpoint(state.result(ProcedureStatus.IN_PROGRESS))
-
-    def _record_event(self, state: _RunState, stage: str, message: str) -> None:
-        event = ProcedureEvent(datetime.now(timezone.utc), stage, message)
-        state.events.append(event)
-        self._recorder.record(event)
-
     def _crosscheck_label(self, number: int, accepted: bool) -> str:
         accepted_range = (
             f"{self._minimum_accepted_energy_uj:g}-"
@@ -1176,64 +886,6 @@ class DualSensorLaserCalibrationWorkflow:
             f"Cross-check {number} — paired result: at least one sensor was outside "
             f"the configured {accepted_range} range."
         )
-
-    @staticmethod
-    def _valid_trigger_rate(rate_hz: object) -> bool:
-        try:
-            return math.isfinite(float(rate_hz)) and 39.0 <= float(rate_hz) <= 41.0
-        except (TypeError, ValueError):
-            return False
-
-    @staticmethod
-    def _has_complete_ophir_identity(identity: OphirIdentity) -> bool:
-        return all(
-            isinstance(value, str) and bool(value.strip())
-            for value in (
-                identity.meter_model,
-                identity.meter_serial,
-                identity.sensor_model,
-                identity.sensor_serial,
-                identity.calibration_due,
-            )
-        )
-
-    @staticmethod
-    def _has_valid_ophir_setting_evidence(
-        evidence: tuple[OphirSettingEvidence, ...],
-    ) -> bool:
-        expected = {
-            "measurement_mode": ("Energy", OphirEvidenceApplicability.APPLICABLE),
-            "range_mj": (2.0, OphirEvidenceApplicability.APPLICABLE),
-            "wavelength_nm": (795, OphirEvidenceApplicability.APPLICABLE),
-            "pulse_length_ms": (1.0, OphirEvidenceApplicability.APPLICABLE),
-            "threshold": (
-                "minimum_available",
-                OphirEvidenceApplicability.APPLICABLE,
-            ),
-            "display_averaging_s": (3, None),
-            "graph_mode": ("Statistics", None),
-        }
-        if len(evidence) != len(expected):
-            return False
-        by_name = {item.name: item for item in evidence}
-        if len(by_name) != len(evidence) or set(by_name) != set(expected):
-            return False
-        for name, (requested, required_applicability) in expected.items():
-            item = by_name[name]
-            if item.requested != requested or not item.passed:
-                return False
-            if required_applicability is not None:
-                if (
-                    item.applicability is not required_applicability
-                    or item.actual != requested
-                ):
-                    return False
-            elif (
-                item.applicability is not OphirEvidenceApplicability.NOT_APPLICABLE
-                or item.actual is not None
-            ):
-                return False
-        return True
 
     @staticmethod
     def _sensor_serial(state: _RunState, side: SensorSide) -> str:

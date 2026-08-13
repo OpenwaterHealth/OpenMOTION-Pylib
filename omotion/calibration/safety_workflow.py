@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import time
-from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
 
 try:
@@ -45,30 +44,13 @@ from .safety import (
     validate_current_configuration,
     validate_shipping_topology,
 )
-from .single_sensor_laser import (
+from ._procedure import (
     ProcedureEvent,
+    ProcedureFailure as _ProcedureFailure,
     ReportArtifactEvidence,
+    deeply_immutable as _deeply_immutable,
+    finite_number as _finite_number,
 )
-
-
-def _deeply_immutable(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _deeply_immutable(item) for key, item in value.items()}
-        )
-    if isinstance(value, tuple | list):
-        return tuple(_deeply_immutable(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_deeply_immutable(item) for item in value)
-    return value
-
-
-def _finite_number(value: object) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int | float)
-        and math.isfinite(float(value))
-    )
 
 
 @dataclass(frozen=True)
@@ -211,12 +193,6 @@ class RunRecorder(Protocol):
     def record(self, event: ProcedureEvent) -> None: ...
 
     def checkpoint(self, result: SafetyCalibrationResult) -> None: ...
-
-
-@dataclass(frozen=True)
-class _ProcedureFailure(Exception):
-    kind: FailureKind
-    reason: str
 
 
 class SafetyCalibrationWorkflow:
