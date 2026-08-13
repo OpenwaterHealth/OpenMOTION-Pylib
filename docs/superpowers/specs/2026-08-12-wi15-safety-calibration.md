@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Approved for implementation
+**Status:** Implemented and software-verified; live hardware verification pending
 
 **Procedure:** Safety Calibration
 
@@ -247,3 +247,23 @@ This procedure maps to one future TestApp button. The TestApp presents
 connection, power-cycle, and scan progress while calling the same shared SDK
 implementation. It may not recalculate limits or weaken warning/persistence
 gates in UI code.
+
+## 16. Implementation mapping and verification status
+
+- Safety rules and immutable evidence records:
+  `omotion/WI15SafetyCalibration.py`.
+- UI-neutral procedure orchestration:
+  `omotion/WI15SafetyCalibrationWorkflow.py`.
+- Motion console, FPGA, power-cycle, and normal-scan adapter:
+  `omotion/WI15SafetyCalibrationHardware.py`.
+- Auditor-readable HTML evidence:
+  `omotion/WI15SafetyCalibrationReport.py`.
+- Current script-only operator entry point:
+  `scripts/wi15_safety_calibration.py`.
+
+The automated domain, workflow, adapter, report, and operator-script tests pass
+against simulated hardware. A supervised run on representative single- and
+dual-sensor hardware remains required before this procedure is released for
+production use. That verification must confirm scaled ADC register semantics,
+disconnect/reconnect observation, configuration persistence, ordinary scan
+duration, and live laser-safety telemetry.
