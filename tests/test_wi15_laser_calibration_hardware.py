@@ -385,6 +385,37 @@ def test_trigger_write_preserves_immediate_mismatching_readback_evidence():
     )
 
 
+@pytest.mark.parametrize(
+    "nonfinite", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"]
+)
+def test_trigger_write_preserves_numeric_nonfinite_immediate_readback(nonfinite):
+    bench, interface, _ = _bench()
+    interface.console.trigger_reads = [
+        {"TriggerFrequencyHz": 20.0},
+        {"TriggerFrequencyHz": nonfinite},
+    ]
+
+    result = bench.write_trigger_rate_hz(40.0)
+
+    assert result is not None
+    assert result.name == "trigger_rate_hz_write"
+    assert result.requested == 40.0
+    assert math.isfinite(result.actual) is False
+
+
+@pytest.mark.parametrize(
+    "readback", [{}, {"TriggerFrequencyHz": "not numeric"}], ids=["missing", "unparseable"]
+)
+def test_trigger_write_returns_none_for_unavailable_or_unparseable_readback(readback):
+    bench, interface, _ = _bench()
+    interface.console.trigger_reads = [
+        {"TriggerFrequencyHz": 20.0},
+        readback,
+    ]
+
+    assert bench.write_trigger_rate_hz(40.0) is None
+
+
 def test_fpga_write_requires_truthy_i2c_result_and_returns_immediate_scaled_readback():
     console = FakeConsole()
     register_io = FpgaRegisterIO(console, fpga_map=FakeMap())

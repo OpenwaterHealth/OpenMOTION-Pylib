@@ -1,6 +1,7 @@
 from dataclasses import replace
 import importlib
 import json
+import math
 
 import pytest
 
@@ -969,6 +970,33 @@ def test_trigger_write_requires_typed_identity_preserving_readback():
         "trigger_rate_hz_initial", 40.0, 37.0
     )
     assert "malformed readback evidence" in result.failure_reason
+    assert bench.calls.count("read_trigger_rate_hz") == 1
+
+
+def test_nonfinite_trigger_write_evidence_is_checkpointed_before_later_matching_read():
+    bench = FakeLaserBench(
+        [_preflight()],
+        trigger_rate=37.0,
+        trigger_write_result=SettingReadback(
+            "trigger_rate_hz_write", 40.0, float("nan")
+        ),
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.configurations[-1].name == "trigger_rate_hz_write"
+    assert result.configurations[-1].requested == 40.0
+    assert math.isnan(result.configurations[-1].actual)
+    assert any(
+        state.configurations
+        and state.configurations[-1].name == "trigger_rate_hz_write"
+        and math.isnan(state.configurations[-1].actual)
+        for state in recorder.states
+    )
+    assert bench.trigger_rate == 40.0
     assert bench.calls.count("read_trigger_rate_hz") == 1
 
 

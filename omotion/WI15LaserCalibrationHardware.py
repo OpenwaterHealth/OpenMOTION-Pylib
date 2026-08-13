@@ -610,7 +610,10 @@ class MotionLaserCalibrationBench:
             updated["TriggerFrequencyHz"] = requested
             if not self._console.set_trigger_json(updated):
                 return None
-            actual = self.read_trigger_rate_hz()
+            response = self._console.get_trigger_json()
+            if not isinstance(response, dict) or "TriggerFrequencyHz" not in response:
+                return None
+            actual = float(response["TriggerFrequencyHz"])
         except Exception:
             return None
         return SettingReadback("trigger_rate_hz_write", requested, actual)
