@@ -50,6 +50,7 @@ class OphirEnergyMeter:
 
     _CHANNEL = 0
     _MINIMUM_VALID_SAMPLES = 26
+    _TIMESTAMP_HOST_TOLERANCE_MS = 50.0
 
     def __init__(
         self,
@@ -324,8 +325,23 @@ class OphirEnergyMeter:
                     if status != 0:
                         discarded += 1
                         continue
+                    timestamp_ms = float(timestamp)
+                    if timestamps_ms and math.isfinite(timestamp_ms):
+                        timestamp_gap_ms = timestamp_ms - timestamps_ms[-1]
+                        if timestamp_gap_ms <= 0:
+                            discarded += 1
+                            continue
+                        host_elapsed_ms = (self._clock() - started_at) * 1000.0
+                        if timestamp_gap_ms > (
+                            host_elapsed_ms + self._TIMESTAMP_HOST_TOLERANCE_MS
+                        ):
+                            # The gap is longer than this stream has existed, so the
+                            # accepted prefix is buffered data from an earlier epoch.
+                            discarded += len(values_uj)
+                            values_uj.clear()
+                            timestamps_ms.clear()
                     values_uj.append(float(value) * 1e6)
-                    timestamps_ms.append(float(timestamp))
+                    timestamps_ms.append(timestamp_ms)
                 if len(values_uj) >= self._MINIMUM_VALID_SAMPLES:
                     break
         finally:

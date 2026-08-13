@@ -53,6 +53,27 @@ def _deeply_immutable(value):
     return value
 
 
+def _measurement_quality_failure_reason(
+    phase: str,
+    measurement: EnergyMeasurement,
+    criteria: tuple[CriterionResult, ...],
+) -> str:
+    failed = "; ".join(
+        f"{criterion.name} ({criterion.detail})"
+        for criterion in criteria
+        if not criterion.passed
+    )
+    return (
+        f"{phase} energy measurement failed quality criteria: {failed}. "
+        "Observed "
+        f"n={measurement.n}, discarded={measurement.discarded}, "
+        f"mean={measurement.mean_uj:.6g} uJ, "
+        f"stdev={measurement.stdev_uj:.6g} uJ, "
+        f"rate={measurement.rate_hz:.6g} Hz, "
+        f"duration={measurement.duration_s:.6g} s."
+    )
+
+
 @dataclass(frozen=True)
 class SingleSensorLaserCalibrationRequest:
     side: str | None
@@ -416,7 +437,9 @@ class SingleSensorLaserCalibrationWorkflow:
             if not all(criterion.passed for criterion in criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
-                    "Initial energy measurement failed quality criteria.",
+                    _measurement_quality_failure_reason(
+                        "Initial", measurement, criteria
+                    ),
                 )
             self._record_event(
                 events,
@@ -466,7 +489,11 @@ class SingleSensorLaserCalibrationWorkflow:
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
-                            "Adjustment energy measurement failed quality criteria.",
+                            _measurement_quality_failure_reason(
+                                "Adjustment",
+                                candidate_measurement,
+                                candidate_criteria,
+                            ),
                         )
                     candidates.append(
                         TuningCandidate(
@@ -558,7 +585,11 @@ class SingleSensorLaserCalibrationWorkflow:
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
-                            "Adjustment energy measurement failed quality criteria.",
+                            _measurement_quality_failure_reason(
+                                "Adjustment",
+                                candidate_measurement,
+                                candidate_criteria,
+                            ),
                         )
                     candidates.append(
                         TuningCandidate(
@@ -645,7 +676,9 @@ class SingleSensorLaserCalibrationWorkflow:
             if not all(criterion.passed for criterion in final_criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
-                    "Final energy measurement failed quality criteria.",
+                    _measurement_quality_failure_reason(
+                        "Final", final_measurement, final_criteria
+                    ),
                 )
             if not (
                 MIN_ACCEPTABLE_ENERGY_UJ

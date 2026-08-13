@@ -149,6 +149,14 @@ batch or a fresh below-target observation at timeout fails closed. Misaligned
 priming or fresh arrays fail immediately, and `StopStream` is always attempted
 for a stream that this adapter successfully started.
 
+Within fresh collection, exclude and count a non-increasing status-zero
+timestamp as discarded. If a positive timestamp jump is longer than the
+current stream's host-observed lifetime plus 50 milliseconds, exclude and
+count the preceding status-zero prefix as buffered data from an older epoch,
+then continue fresh collection inside the unchanged 2.0-second bound. Retain
+smaller positive gaps in the rate calculation so a genuine firing interruption
+still fails the 39-41 Hz criterion.
+
 ## 8. Tuning algorithm
 
 ### 8.1 Initial measurement

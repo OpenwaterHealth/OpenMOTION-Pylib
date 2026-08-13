@@ -37,6 +37,8 @@ def load_script():
 @dataclass(frozen=True)
 class FakeResult:
     status: ProcedureStatus
+    failure_kind: FailureKind | None = None
+    failure_reason: str | None = None
     report_paths: tuple[Path, ...] = ()
     report_artifact: object | None = None
 
@@ -241,6 +243,35 @@ def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, expec
     )
 
     assert exit_code == expected_exit
+
+
+def test_terminal_failure_prints_the_structured_category_and_exact_reason(
+    monkeypatch, tmp_path
+):
+    terminal_result = SingleSensorLaserCalibrationResult(
+        status=ProcedureStatus.FAILED,
+        side="left",
+        failure_kind=FailureKind.MEASUREMENT,
+        failure_reason="Adjustment energy measurement failed quality criteria.",
+    )
+    script, _recorder, _meter, _bench, _workflow, _report = configured_script(
+        monkeypatch, tmp_path, terminal_result
+    )
+    messages = []
+
+    exit_code = script.main(
+        complete_args(tmp_path),
+        input_func=answers("left", "yes", "yes"),
+        output_func=messages.append,
+    )
+
+    assert exit_code == 1
+    assert "Terminal status: failed" in messages
+    assert "Failure category: measurement" in messages
+    assert (
+        "Failure reason: Adjustment energy measurement failed quality criteria."
+        in messages
+    )
 
 
 def test_main_generates_one_run_id_for_recorder_and_workflow_request(

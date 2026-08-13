@@ -936,6 +936,35 @@ def test_ophir_measure_drains_stale_first_nonempty_batch_before_fresh_observatio
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
+def test_ophir_measure_restarts_after_stale_timestamp_prefix_in_fresh_batch():
+    """A delayed buffered prefix must not corrupt an otherwise fresh 40 Hz batch."""
+    meter, com, _ = _ophir_meter(duration_s=2.0)
+    meter.preflight()
+    com.calls.clear()
+    fresh_values_uj = list(range(340, 367))
+    com.data_batches = [
+        ([0.0001], [500.0], [0]),
+        (
+            [0.0002] + [value * 1e-6 for value in fresh_values_uj],
+            [1000.0] + [2045.0 + 25.0 * index for index in range(27)],
+            [0] * 28,
+        ),
+        pytest.fail,
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 27
+    assert measurement.discarded == 1
+    assert measurement.mean_uj == pytest.approx(statistics.fmean(fresh_values_uj))
+    assert measurement.stdev_uj == pytest.approx(statistics.stdev(fresh_values_uj))
+    assert measurement.rate_hz == pytest.approx(40.0)
+    assert measurement.min_uj == pytest.approx(340.0)
+    assert measurement.max_uj == pytest.approx(366.0)
+    assert com.calls.count(("GetData", 17, 0)) == 2
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
 def test_ophir_measure_does_not_accept_stale_only_priming_batch_at_timeout():
     meter, com, _ = _ophir_meter(duration_s=0.05)
     meter.preflight()

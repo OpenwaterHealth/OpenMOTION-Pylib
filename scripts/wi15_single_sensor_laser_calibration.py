@@ -222,6 +222,10 @@ def main(
             return 1
         recorder.checkpoint(finalized_result)
         output_func(f"Terminal status: {finalized_result.status.value}")
+        if finalized_result.failure_kind is not None:
+            output_func(f"Failure category: {finalized_result.failure_kind.value}")
+        if finalized_result.failure_reason is not None:
+            output_func(f"Failure reason: {finalized_result.failure_reason}")
         output_func(f"JSON evidence: {Path(recorder.json_path).resolve()}")
         output_func(f"HTML report: {Path(report_path).resolve()}")
         return 0 if finalized_result.status is ProcedureStatus.PASSED else 1

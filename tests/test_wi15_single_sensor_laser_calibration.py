@@ -1022,6 +1022,15 @@ def test_invalid_initial_measurement_is_recorded_checkpointed_and_never_advances
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert result.measurements == (measurement,)
+    failed_names = {
+        criterion.name
+        for criterion in result.measurement_criteria[0]
+        if not criterion.passed
+    }
+    assert failed_names
+    assert all(name in result.failure_reason for name in failed_names)
+    assert "Observed n=" in result.failure_reason
+    assert "rate=" in result.failure_reason
     assert {criterion.name for criterion in result.measurement_criteria[0]} == {
         "n",
         "pulse_count",
