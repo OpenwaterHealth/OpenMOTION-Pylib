@@ -338,6 +338,7 @@ def validate_shipping_topology(
     serials_valid = all(validate_serial(identity.serial).passed for identity in required_identities)
     passed = topology_matches and serials_valid
     detail = (
-        f"Expected {declared_topology.value} with nonblank required sensor serials."
+        f"Shipping topology expected {declared_topology.value} with nonblank "
+        "required sensor serials."
     )
     return CriterionResult("shipping_topology", passed, detail)
