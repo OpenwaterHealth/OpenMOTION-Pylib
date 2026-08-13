@@ -367,3 +367,17 @@ final active-setting checks, finalized both artifacts, and recorded no
 trigger, restoration, or resource-cleanup failure. This validation
 configuration is not an approved production calibration and requires a normal
 350-microjoule execution before unit release.
+
+The normal production rerun after the artificial validation passed on
+2026-08-13 using run `WI-00015-20260813T225916Z` and commit `fc20627`. Its
+console identity recorded TA `1.1.0`, Seed `0.1.1`, Safety EE `0.1.4`, and
+Safety OPT `0.1.4` FPGA firmware revisions before configuration mutation or
+firing. Initial means were 302.241 microjoules left and 293.630 microjoules
+right. Approved upward tuning selected 590 microseconds on the lower right
+side. Cross-check 1 passed at 362.074 microjoules left and 351.963
+microjoules right, with a 357.019-microjoule midpoint and 10.111-microjoule
+differential. The production 350-microjoule configuration read back exactly,
+both active-setting checks passed, and no trigger, restoration, resource,
+or report-artifact failure was recorded. The human report included all four
+console-board FPGA revisions while omitting sensor-camera FPGA revision
+fields, request metadata, and the redundant pre-mutation topology table.
