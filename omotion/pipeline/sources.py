@@ -207,6 +207,7 @@ class LiveUsbSource(_BaseSource):
         }
         self._batch_queue: queue.Queue = queue.Queue(maxsize=4)
         self._stop = threading.Event()
+        self._close_complete = threading.Event()
         self._reader_threads: list[threading.Thread] = []
 
     def __iter__(self) -> Iterator[FrameBatch]:
@@ -241,6 +242,8 @@ class LiveUsbSource(_BaseSource):
             try:
                 batch = self._batch_queue.get(timeout=1.0)
             except queue.Empty:
+                if self._close_complete.is_set():
+                    break
                 # Safety hatch: if close() crashed before pushing the
                 # sentinel, _stop will be set and the sentinel will never
                 # come. Bound the wait at 15s past stop so __iter__ can't
@@ -262,6 +265,8 @@ class LiveUsbSource(_BaseSource):
                 # through the parser and been delivered.
                 break
             yield batch
+            if self._close_complete.is_set() and self._batch_queue.empty():
+                break
 
     def close(self) -> None:
         # Idempotent + race-safe with ScanWorkflow's cancel/duration guard.
@@ -330,8 +335,14 @@ class LiveUsbSource(_BaseSource):
             for t in self._reader_threads:
                 t.join(timeout=5.0)
         finally:
-            # The sentinel MUST be pushed even if teardown raised, otherwise
-            # __iter__ blocks the runner indefinitely waiting for it.
+            # If every parser has stopped, an empty batch queue is itself a
+            # safe completion condition. This is the fallback for the bounded
+            # queue being full when the sentinel is offered below.
+            if all(not thread.is_alive() for thread in self._reader_threads):
+                self._close_complete.set()
+            # Prefer the sentinel so a waiting iterator wakes immediately.
+            # _close_complete is the safe fallback when this bounded queue
+            # has no free slot for the sentinel.
             try:
                 self._batch_queue.put(None, timeout=0.5)
             except queue.Full:
