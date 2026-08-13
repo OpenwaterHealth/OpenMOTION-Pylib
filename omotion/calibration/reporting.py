@@ -166,6 +166,10 @@ class HtmlRunReport:
             [
                 f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
                 self._table("Request metadata", request_data.items()),
+                self._table(
+                    "Calibration target",
+                    (("Target energy uJ", result_data.get("target_energy_uj")),),
+                ),
                 self._topology(result_data.get("topology")),
                 self._identities(result_data.get("identities", [])),
                 self._ophir(

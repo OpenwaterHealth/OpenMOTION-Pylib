@@ -17,7 +17,9 @@ except (ImportError, AttributeError):
 from .laser import (
     CURRENT_FLOOR_MA,
     CURRENT_STEP_MA,
+    MAX_ACCEPTABLE_ENERGY_UJ,
     MAX_PULSE_WIDTH_US,
+    MIN_ACCEPTABLE_ENERGY_UJ,
     PULSE_WIDTH_STEP_US,
     TARGET_ENERGY_UJ,
     TEMPORARY_PULSE_WIDTH_LIMIT_US,
@@ -195,6 +197,9 @@ class DualSensorLaserCalibrationResult:
     trigger_cleanup_failure: str | None = None
     resource_cleanup_failure: str | None = None
     events: tuple[ProcedureEvent, ...] = ()
+    target_energy_uj: float = TARGET_ENERGY_UJ
+    minimum_accepted_energy_uj: float = MIN_ACCEPTABLE_ENERGY_UJ
+    maximum_accepted_energy_uj: float = MAX_ACCEPTABLE_ENERGY_UJ
     report_paths: tuple[Path | str, ...] = ()
     report_artifact: ReportArtifactEvidence | None = None
 
@@ -255,6 +260,9 @@ class _ProcedureFailure(Exception):
 @dataclass
 class _RunState:
     request: DualSensorLaserCalibrationRequest
+    target_energy_uj: float = TARGET_ENERGY_UJ
+    minimum_accepted_energy_uj: float = MIN_ACCEPTABLE_ENERGY_UJ
+    maximum_accepted_energy_uj: float = MAX_ACCEPTABLE_ENERGY_UJ
     preflight: DualPreflightSnapshot | None = None
     topology_revalidation: TopologySnapshot | None = None
     pre_existing_config: Mapping[str, float] | None = None
@@ -299,6 +307,9 @@ class _RunState:
         )
         return DualSensorLaserCalibrationResult(
             status=status,
+            target_energy_uj=self.target_energy_uj,
+            minimum_accepted_energy_uj=self.minimum_accepted_energy_uj,
+            maximum_accepted_energy_uj=self.maximum_accepted_energy_uj,
             sdk_version=self.request.sdk_version,
             started_at=self.request.started_at,
             ended_at=ended_at,
@@ -341,17 +352,49 @@ class DualSensorLaserCalibrationWorkflow:
         bench: DualLaserCalibrationBench,
         recorder: DualRunRecorder,
         placement_callback: PlacementCallback,
+        *,
+        target_energy_uj: float = TARGET_ENERGY_UJ,
+        minimum_accepted_energy_uj: float = MIN_ACCEPTABLE_ENERGY_UJ,
+        maximum_accepted_energy_uj: float = MAX_ACCEPTABLE_ENERGY_UJ,
     ):
+        target_energy_uj = float(target_energy_uj)
+        minimum_accepted_energy_uj = float(minimum_accepted_energy_uj)
+        maximum_accepted_energy_uj = float(maximum_accepted_energy_uj)
+        if not (
+            all(
+                math.isfinite(value)
+                for value in (
+                    target_energy_uj,
+                    minimum_accepted_energy_uj,
+                    maximum_accepted_energy_uj,
+                )
+            )
+            and minimum_accepted_energy_uj
+            <= target_energy_uj
+            <= maximum_accepted_energy_uj
+        ):
+            raise ValueError(
+                "target and acceptance bounds must be finite with "
+                "minimum <= target <= maximum"
+            )
         self._bench = bench
         self._recorder = recorder
         self._placement_callback = placement_callback
+        self._target_energy_uj = target_energy_uj
+        self._minimum_accepted_energy_uj = minimum_accepted_energy_uj
+        self._maximum_accepted_energy_uj = maximum_accepted_energy_uj
         self._seated_side: SensorSide | None = None
 
     def run(
         self, request: DualSensorLaserCalibrationRequest
     ) -> DualSensorLaserCalibrationResult:
         self._seated_side = None
-        state = _RunState(request=request)
+        state = _RunState(
+            request=request,
+            target_energy_uj=self._target_energy_uj,
+            minimum_accepted_energy_uj=self._minimum_accepted_energy_uj,
+            maximum_accepted_energy_uj=self._maximum_accepted_energy_uj,
+        )
         failure: _ProcedureFailure | None = None
         stage = "setup"
         try:
@@ -395,7 +438,10 @@ class DualSensorLaserCalibrationWorkflow:
                     pair_label=f"Cross-check {crosscheck_number} — paired verification result",
                 )
                 accepted = both_energies_accepted(
-                    pair.metrics.left_mean_uj, pair.metrics.right_mean_uj
+                    pair.metrics.left_mean_uj,
+                    pair.metrics.right_mean_uj,
+                    self._minimum_accepted_energy_uj,
+                    self._maximum_accepted_energy_uj,
                 )
                 crosscheck = CrossCheck(
                     number=crosscheck_number,
@@ -413,7 +459,10 @@ class DualSensorLaserCalibrationWorkflow:
             else:
                 raise _ProcedureFailure(
                     FailureKind.NCR,
-                    "Both sensors were not within 300 to 400 uJ after three complete cross-checks.",
+                    "Both sensors were not within "
+                    f"{self._minimum_accepted_energy_uj:g} to "
+                    f"{self._maximum_accepted_energy_uj:g} uJ after three "
+                    "complete cross-checks.",
                 )
         except _ProcedureFailure as caught:
             failure = caught
@@ -574,7 +623,9 @@ class DualSensorLaserCalibrationWorkflow:
             left=left,
             right=right,
             metrics=calculate_pair_metrics(
-                left.measurement.mean_uj, right.measurement.mean_uj
+                left.measurement.mean_uj,
+                right.measurement.mean_uj,
+                self._target_energy_uj,
             ),
         )
         return pair
@@ -669,16 +720,22 @@ class DualSensorLaserCalibrationWorkflow:
         self, state: _RunState, pair: PairObservation, round_number: int
     ) -> TuningRound:
         midpoint = pair.metrics.midpoint_uj
-        if midpoint == TARGET_ENERGY_UJ:
-            reason = "the paired midpoint was already exactly 350 uJ"
+        if midpoint == self._target_energy_uj:
+            reason = (
+                "the paired midpoint was already exactly "
+                f"{self._target_energy_uj:g} uJ"
+            )
             selection = TuningSelection(
                 direction="none",
                 selected_side=None,
-                target_uj=TARGET_ENERGY_UJ,
+                target_uj=self._target_energy_uj,
                 requested_current_ma=state.current_requested_ma,
                 requested_pulse_width_us=state.pulse_requested_us,
                 selected_mean_uj=midpoint,
-                rationale="No setting changed because the paired midpoint was already exactly 350 uJ.",
+                rationale=(
+                    "No setting changed because the paired midpoint was already exactly "
+                    f"{self._target_energy_uj:g} uJ."
+                ),
             )
             tuning_round = TuningRound(
                 number=round_number,
@@ -687,14 +744,14 @@ class DualSensorLaserCalibrationWorkflow:
                 direction="none",
                 selected_side=None,
                 reason=reason,
-                target_uj=TARGET_ENERGY_UJ,
+                target_uj=self._target_energy_uj,
                 steps=(),
                 selection=selection,
             )
             state.tuning_rounds.append(tuning_round)
             self._checkpoint(state)
             return tuning_round
-        if midpoint > TARGET_ENERGY_UJ:
+        if midpoint > self._target_energy_uj:
             return self._tune_downward(state, pair, round_number)
         return self._tune_upward(state, pair, round_number)
 
@@ -707,7 +764,7 @@ class DualSensorLaserCalibrationWorkflow:
             else "right"
         )
         source = pair.left if side == "left" else pair.right
-        target = TARGET_ENERGY_UJ + pair.metrics.difference_uj / 2.0
+        target = self._target_energy_uj + pair.metrics.difference_uj / 2.0
         reason = f"the {side} sensor had the higher energy reading"
         tuning_round = TuningRound(
             number=round_number,
@@ -768,7 +825,10 @@ class DualSensorLaserCalibrationWorkflow:
         if (
             active_setting == CURRENT_FLOOR_MA
             and not both_energies_accepted(
-                selected_measurement.mean_uj, selected_measurement.mean_uj
+                selected_measurement.mean_uj,
+                selected_measurement.mean_uj,
+                self._minimum_accepted_energy_uj,
+                self._maximum_accepted_energy_uj,
             )
         ):
             raise _ProcedureFailure(
@@ -806,7 +866,7 @@ class DualSensorLaserCalibrationWorkflow:
             else "right"
         )
         source = pair.left if side == "left" else pair.right
-        target = TARGET_ENERGY_UJ - pair.metrics.difference_uj / 2.0
+        target = self._target_energy_uj - pair.metrics.difference_uj / 2.0
         reason = f"the {side} sensor had the lower energy reading"
         tuning_round = TuningRound(
             number=round_number,
@@ -1096,16 +1156,19 @@ class DualSensorLaserCalibrationWorkflow:
         state.events.append(event)
         self._recorder.record(event)
 
-    @staticmethod
-    def _crosscheck_label(number: int, accepted: bool) -> str:
+    def _crosscheck_label(self, number: int, accepted: bool) -> str:
+        accepted_range = (
+            f"{self._minimum_accepted_energy_uj:g}-"
+            f"{self._maximum_accepted_energy_uj:g} uJ"
+        )
         if accepted:
             return (
                 f"Cross-check {number} — paired result: both sensors were within "
-                "the approved 300-400 uJ range."
+                f"the configured {accepted_range} range."
             )
         return (
             f"Cross-check {number} — paired result: at least one sensor was outside "
-            "the approved 300-400 uJ range."
+            f"the configured {accepted_range} range."
         )
 
     @staticmethod

@@ -346,3 +346,20 @@ Run `WI-00015-20260813T221251Z` used an exact dual topology but returned
 `failed_ncr` when the selected sensor remained below 300 microjoules at the
 600-microsecond ceiling. Both runs finalized their evidence; the bound NCR
 restored active defaults and did not write the passing tuned configuration.
+
+A deliberately non-production bench validation exercised the downward-current
+path on 2026-08-13 in run `WI-00015-20260813T223817Z`. The injected midpoint
+target was 300 microjoules and the injected final acceptance window was
+250-350 microjoules; both values were recorded explicitly in JSON and HTML.
+The production defaults remained 350 and 300-400 microjoules. Initial means
+were 312.346 microjoules left and 295.815 microjoules right. One approved
+50-mA downward step on the higher left side produced a selected 306.077-
+microjoule observation at requested current 4950 mA. Cross-check 1 then passed
+at 305.423 microjoules left and 295.429 microjoules right, a 300.426-
+microjoule midpoint and 9.995-microjoule differential. The procedure stopped
+after that first cross-check with exactly four placement acknowledgements,
+persisted and read back the artificial 4950-mA configuration, passed both
+final active-setting checks, finalized both artifacts, and recorded no
+trigger, restoration, or resource-cleanup failure. This validation
+configuration is not an approved production calibration and requires a normal
+350-microjoule execution before unit release.

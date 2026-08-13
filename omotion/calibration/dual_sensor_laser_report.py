@@ -44,6 +44,20 @@ class DualSensorHtmlRunReport(HtmlRunReport):
             [
                 f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
                 self._table("Request metadata", request_data.items()),
+                self._table(
+                    "Calibration target",
+                    (
+                        ("Target midpoint energy uJ", result_data.get("target_energy_uj")),
+                        (
+                            "Minimum accepted energy uJ",
+                            result_data.get("minimum_accepted_energy_uj"),
+                        ),
+                        (
+                            "Maximum accepted energy uJ",
+                            result_data.get("maximum_accepted_energy_uj"),
+                        ),
+                    ),
+                ),
                 self._topology(result_data.get("topology")),
                 self._topology_revalidation(
                     result_data.get("topology_revalidation")
@@ -58,7 +72,10 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                 self._initial_pair(result_data.get("initial_pair")),
                 self._observations(result_data.get("observations", [])),
                 self._tuning_rounds(result_data.get("tuning_rounds", [])),
-                self._crosschecks(result_data.get("crosschecks", [])),
+                self._crosschecks(
+                    result_data.get("crosschecks", []),
+                    result_data.get("target_energy_uj"),
+                ),
                 self._readbacks(
                     "Active configuration readbacks",
                     result_data.get("configurations", []),
@@ -283,7 +300,7 @@ class DualSensorHtmlRunReport(HtmlRunReport):
             ),
         )
 
-    def _crosschecks(self, crosschecks: object) -> str:
+    def _crosschecks(self, crosschecks: object, target_energy_uj: object) -> str:
         rows = []
         for crosscheck in crosschecks if isinstance(crosschecks, list) else []:
             if not isinstance(crosscheck, dict):
@@ -315,7 +332,7 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                     "Right mean uJ",
                     "Difference uJ",
                     "Midpoint uJ",
-                    "Distance from 350 uJ",
+                    f"Distance from {target_energy_uj} uJ",
                     "Left offset uJ",
                     "Right offset uJ",
                     "Accepted",

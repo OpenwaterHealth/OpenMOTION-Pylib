@@ -1255,6 +1255,35 @@ def test_downward_tuning_uses_50_ma_steps_and_reapplies_the_closer_prior_candida
     }
 
 
+def test_injected_validation_target_exercises_downward_current_without_changing_default():
+    """A bench-only target seam must drive every branch and closest-setting choice."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[
+            _valid_measurement(mean_uj=325.0),
+            _valid_measurement(mean_uj=315.0),
+            _valid_measurement(mean_uj=300.0),
+            _valid_measurement(mean_uj=302.0),
+        ],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(
+        bench, FakeRecorder(), target_energy_uj=300.0
+    ).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert [item.requested for item in result.adjustments] == [4950, 4900]
+    assert result.selection is not None
+    assert result.selection.direction == "downward_current"
+    assert result.selection.selected_requested_current_ma == 4900
+    assert result.selection.selected_mean_uj == 300.0
+    assert "closest to 300 uJ" in result.selection.rationale
+    assert result.requested_final_config == {
+        **DEFAULT_USER_CONFIG,
+        "TA_CURRENT_DRV": 4900,
+    }
+
+
 def test_downward_tuning_can_pass_with_the_only_in_range_candidate_at_2000_ma():
     """Treating the floor itself as failure would discard an acceptable reachable result."""
     tuning_measurements = [

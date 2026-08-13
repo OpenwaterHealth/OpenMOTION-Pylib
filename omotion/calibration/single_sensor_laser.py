@@ -20,6 +20,7 @@ from .laser import (
     MAX_PULSE_WIDTH_US,
     MIN_ACCEPTABLE_ENERGY_UJ,
     PULSE_WIDTH_STEP_US,
+    TARGET_ENERGY_UJ,
     TEMPORARY_PULSE_WIDTH_LIMIT_US,
     CriterionResult,
     DeviceIdentity,
@@ -34,7 +35,7 @@ from .laser import (
     validate_energy_measurement,
     validate_exact_single_topology,
     validate_serial,
-    select_closest_valid_setting,
+    select_closest_valid_setting_to_target,
     within_percent,
     default_user_configuration,
     percent_difference,
@@ -192,6 +193,7 @@ class SingleSensorLaserCalibrationResult:
     active_default_restore: tuple[SettingReadback, ...] = ()
     active_default_restore_failure: str | None = None
     events: tuple[ProcedureEvent, ...] = ()
+    target_energy_uj: float = TARGET_ENERGY_UJ
     report_paths: tuple[Path | str, ...] = ()
     report_artifact: ReportArtifactEvidence | None = None
 
@@ -249,9 +251,24 @@ class _ProcedureFailure(Exception):
 class SingleSensorLaserCalibrationWorkflow:
     """Run fail-closed preflight before later configuration and firing phases."""
 
-    def __init__(self, bench: LaserCalibrationBench, recorder: RunRecorder):
+    def __init__(
+        self,
+        bench: LaserCalibrationBench,
+        recorder: RunRecorder,
+        *,
+        target_energy_uj: float = TARGET_ENERGY_UJ,
+    ):
+        target_energy_uj = float(target_energy_uj)
+        if not (
+            math.isfinite(target_energy_uj)
+            and MIN_ACCEPTABLE_ENERGY_UJ
+            <= target_energy_uj
+            <= MAX_ACCEPTABLE_ENERGY_UJ
+        ):
+            raise ValueError("target energy must be finite and between 300 and 400 uJ")
         self._bench = bench
         self._recorder = recorder
+        self._target_energy_uj = target_energy_uj
 
     def run(
         self, request: SingleSensorLaserCalibrationRequest
@@ -289,6 +306,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 SingleSensorLaserCalibrationResult(
                     status=ProcedureStatus.IN_PROGRESS,
                     side=side,
+                    target_energy_uj=self._target_energy_uj,
                     sdk_version=request.sdk_version,
                     started_at=request.started_at,
                     topology=preflight.topology if preflight else None,
@@ -458,7 +476,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
             )
             checkpoint_progress()
-            if measurement.mean_uj == 350.0:
+            if measurement.mean_uj == self._target_energy_uj:
                 selection = TuningSelection(
                     "none",
                     "no_adjustment",
@@ -466,9 +484,10 @@ class SingleSensorLaserCalibrationWorkflow:
                     requested_current,
                     requested_pulse,
                     measurement.mean_uj,
-                    "The initial valid mean was exactly 350 uJ; no adjustment was required.",
+                    f"The initial valid mean was exactly {self._target_energy_uj:g} uJ; "
+                    "no adjustment was required.",
                 )
-            elif measurement.mean_uj > 350.0:
+            elif measurement.mean_uj > self._target_energy_uj:
                 current_setting = requested_current
                 while True:
                     next_setting = max(
@@ -507,13 +526,16 @@ class SingleSensorLaserCalibrationWorkflow:
                     checkpoint_progress()
                     current_setting = next_setting
                     if (
-                        candidate_measurement.mean_uj <= 350.0
+                        candidate_measurement.mean_uj <= self._target_energy_uj
                         or current_setting == CURRENT_FLOOR_MA
                     ):
                         break
-                selected = select_closest_valid_setting(
-                    (candidate.requested_current_ma, candidate.measurement)
-                    for candidate in candidates
+                selected = select_closest_valid_setting_to_target(
+                    (
+                        (candidate.requested_current_ma, candidate.measurement)
+                        for candidate in candidates
+                    ),
+                    self._target_energy_uj,
                 )
                 assert selected is not None
                 requested_current, selected_measurement = selected
@@ -530,7 +552,8 @@ class SingleSensorLaserCalibrationWorkflow:
                     requested_pulse,
                     selected_measurement.mean_uj,
                     (
-                        "Selected the valid requested current closest to 350 uJ; "
+                        "Selected the valid requested current closest to "
+                        f"{self._target_energy_uj:g} uJ; "
                         "lower requested setting wins a tie."
                         if accepted
                         else "The closest valid requested current was outside the "
@@ -624,13 +647,16 @@ class SingleSensorLaserCalibrationWorkflow:
                             "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
                         )
                     if (
-                        candidate_measurement.mean_uj >= 350.0
+                        candidate_measurement.mean_uj >= self._target_energy_uj
                         or pulse_setting == MAX_PULSE_WIDTH_US
                     ):
                         break
-                selected = select_closest_valid_setting(
-                    (candidate.requested_pulse_width_us, candidate.measurement)
-                    for candidate in candidates
+                selected = select_closest_valid_setting_to_target(
+                    (
+                        (candidate.requested_pulse_width_us, candidate.measurement)
+                        for candidate in candidates
+                    ),
+                    self._target_energy_uj,
                 )
                 assert selected is not None
                 requested_pulse, selected_measurement = selected
@@ -647,7 +673,8 @@ class SingleSensorLaserCalibrationWorkflow:
                     requested_pulse,
                     selected_measurement.mean_uj,
                     (
-                        "Selected the valid requested pulse width closest to 350 uJ; "
+                        "Selected the valid requested pulse width closest to "
+                        f"{self._target_energy_uj:g} uJ; "
                         "lower requested setting wins a tie."
                         if accepted
                         else "The closest valid requested pulse width was outside the "
@@ -762,6 +789,7 @@ class SingleSensorLaserCalibrationWorkflow:
             result = SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
                 side=side,
+                target_energy_uj=self._target_energy_uj,
                 sdk_version=request.sdk_version,
                 started_at=request.started_at,
                 ended_at=datetime.now(timezone.utc),
@@ -1112,6 +1140,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 else ProcedureStatus.FAILED
             ),
             side=side,
+            target_energy_uj=self._target_energy_uj,
             sdk_version=request.sdk_version,
             started_at=request.started_at,
             ended_at=datetime.now(timezone.utc),

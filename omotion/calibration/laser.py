@@ -228,7 +228,9 @@ def validate_exact_dual_topology(topology: TopologySnapshot) -> CriterionResult:
 
 
 def calculate_pair_metrics(
-    left_mean_uj: float, right_mean_uj: float
+    left_mean_uj: float,
+    right_mean_uj: float,
+    target_energy_uj: float = TARGET_ENERGY_UJ,
 ) -> PairMetrics:
     """Calculate immutable, side-preserving evidence for one complete pair."""
     difference = abs(left_mean_uj - right_mean_uj)
@@ -238,17 +240,22 @@ def calculate_pair_metrics(
         right_mean_uj=right_mean_uj,
         difference_uj=difference,
         midpoint_uj=midpoint,
-        midpoint_distance_uj=abs(midpoint - TARGET_ENERGY_UJ),
-        left_offset_uj=left_mean_uj - TARGET_ENERGY_UJ,
-        right_offset_uj=right_mean_uj - TARGET_ENERGY_UJ,
+        midpoint_distance_uj=abs(midpoint - target_energy_uj),
+        left_offset_uj=left_mean_uj - target_energy_uj,
+        right_offset_uj=right_mean_uj - target_energy_uj,
     )
 
 
-def both_energies_accepted(left_mean_uj: float, right_mean_uj: float) -> bool:
+def both_energies_accepted(
+    left_mean_uj: float,
+    right_mean_uj: float,
+    minimum_energy_uj: float = MIN_ACCEPTABLE_ENERGY_UJ,
+    maximum_energy_uj: float = MAX_ACCEPTABLE_ENERGY_UJ,
+) -> bool:
     """Return whether both finite side means satisfy the inclusive WI window."""
     return all(
         _is_finite(value)
-        and MIN_ACCEPTABLE_ENERGY_UJ <= value <= MAX_ACCEPTABLE_ENERGY_UJ
+        and minimum_energy_uj <= value <= maximum_energy_uj
         for value in (left_mean_uj, right_mean_uj)
     )
 

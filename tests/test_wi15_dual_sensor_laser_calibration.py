@@ -204,11 +204,23 @@ def valid_request(tmp_path=Path("run-output")):
     )
 
 
-def run_workflow(bench, *, responses=()):
+def run_workflow(
+    bench,
+    *,
+    responses=(),
+    target_energy_uj=350.0,
+    minimum_accepted_energy_uj=300.0,
+    maximum_accepted_energy_uj=400.0,
+):
     recorder = FakeRecorder()
     placements = PlacementResponses(responses)
     result = DualSensorLaserCalibrationWorkflow(
-        bench, recorder, placements
+        bench,
+        recorder,
+        placements,
+        target_energy_uj=target_energy_uj,
+        minimum_accepted_energy_uj=minimum_accepted_energy_uj,
+        maximum_accepted_energy_uj=maximum_accepted_energy_uj,
     ).run(valid_request())
     return result, recorder, placements
 
@@ -464,6 +476,46 @@ def test_every_observation_has_an_auditor_facing_label_side_and_serial():
         ("right", "RIGHT-001"),
     ]
     assert any("because" in event.message for event in recorder.events if event.stage == "tuning")
+
+
+def test_injected_dual_validation_target_exercises_downward_current_path():
+    bench = FakeDualBench(
+        [
+            valid_measurement(296),
+            valid_measurement(310),
+            valid_measurement(307),
+            valid_measurement(293),
+            valid_measurement(305),
+        ]
+    )
+
+    result, _, placements = run_workflow(
+        bench,
+        target_energy_uj=300.0,
+        minimum_accepted_energy_uj=250.0,
+        maximum_accepted_energy_uj=350.0,
+    )
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.target_energy_uj == 300.0
+    assert result.minimum_accepted_energy_uj == 250.0
+    assert result.maximum_accepted_energy_uj == 350.0
+    assert result.initial_pair is not None
+    assert result.initial_pair.metrics.midpoint_distance_uj == pytest.approx(3.0)
+    assert result.tuning_rounds[0].direction == "downward_current"
+    assert result.tuning_rounds[0].target_uj == pytest.approx(307.0)
+    assert result.tuning_rounds[0].selection is not None
+    assert result.tuning_rounds[0].selection.requested_current_ma == 4950
+    assert result.requested_final_config["TA_CURRENT_DRV"] == 4950
+    assert len(result.crosschecks) == 1
+    assert result.crosschecks[0].accepted
+    assert "250-350 uJ" in result.crosschecks[0].label
+    assert [request.to_side for request in placements.requests] == [
+        "left",
+        "right",
+        "left",
+        "right",
+    ]
 
 
 def test_failed_sweep_retains_round_target_reason_and_completed_steps():
