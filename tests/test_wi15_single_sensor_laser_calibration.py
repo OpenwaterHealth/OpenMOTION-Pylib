@@ -1,6 +1,10 @@
+from dataclasses import replace
+
 import pytest
 
 from omotion.WI15SingleSensorLaserCalibration import (
+    OphirEvidenceApplicability,
+    OphirSettingEvidence,
     PreflightSnapshot,
     SingleSensorLaserCalibrationRequest,
     SingleSensorLaserCalibrationWorkflow,
@@ -9,7 +13,6 @@ from omotion.WI15LaserCalibration import (
     DeviceIdentity,
     OphirIdentity,
     ProcedureStatus,
-    SettingReadback,
     TopologySnapshot,
 )
 
@@ -84,9 +87,11 @@ def _preflight(
     console_responsive=True,
     ophir_ready=True,
     ophir_identity=OphirIdentity("meter", "meter-1", "sensor", "ophir-1", "2027-01-01"),
-    ophir_setup_readbacks=(SettingReadback("ophir_range", 1.0, 1.0),),
+    ophir_setting_evidence=None,
     ophir_failure_reason=None,
 ):
+    if ophir_setting_evidence is None:
+        ophir_setting_evidence = _valid_ophir_setting_evidence()
     return PreflightSnapshot(
         topology=topology,
         console_identity=DeviceIdentity("console", console_serial, "1.0", "console-hw"),
@@ -94,8 +99,50 @@ def _preflight(
         ophir_identity=ophir_identity,
         ophir_ready=ophir_ready,
         console_responsive=console_responsive,
-        ophir_setup_readbacks=ophir_setup_readbacks,
+        ophir_setting_evidence=ophir_setting_evidence,
         ophir_failure_reason=ophir_failure_reason,
+    )
+
+
+def _valid_ophir_setting_evidence():
+    return (
+        OphirSettingEvidence(
+            "measurement_mode",
+            "Energy",
+            "Energy",
+            OphirEvidenceApplicability.APPLICABLE,
+            True,
+        ),
+        OphirSettingEvidence(
+            "range_mj", 2.0, 2.0, OphirEvidenceApplicability.APPLICABLE, True
+        ),
+        OphirSettingEvidence(
+            "wavelength_nm", 795, 795, OphirEvidenceApplicability.APPLICABLE, True
+        ),
+        OphirSettingEvidence(
+            "pulse_length_ms", 1.0, 1.0, OphirEvidenceApplicability.APPLICABLE, True
+        ),
+        OphirSettingEvidence(
+            "threshold",
+            "minimum_available",
+            "minimum_available",
+            OphirEvidenceApplicability.APPLICABLE,
+            True,
+        ),
+        OphirSettingEvidence(
+            "display_averaging_s",
+            3,
+            None,
+            OphirEvidenceApplicability.NOT_APPLICABLE,
+            True,
+        ),
+        OphirSettingEvidence(
+            "graph_mode",
+            "Statistics",
+            None,
+            OphirEvidenceApplicability.NOT_APPLICABLE,
+            True,
+        ),
     )
 
 
@@ -212,7 +259,6 @@ def test_preflight_requires_an_explicitly_responsive_console(console_responsive)
     ("changes", "reason"),
     [
         ({"ophir_identity": None}, "Ophir identity must be present."),
-        ({"ophir_setup_readbacks": ()}, "Ophir setup readbacks must be present."),
         (
             {
                 "ophir_identity": OphirIdentity(
@@ -223,9 +269,7 @@ def test_preflight_requires_an_explicitly_responsive_console(console_responsive)
         ),
     ],
 )
-def test_preflight_requires_complete_ophir_identity_and_setup_readbacks(
-    changes, reason
-):
+def test_preflight_requires_complete_ophir_identity(changes, reason):
     """Incomplete Ophir evidence must not authorize configuration or firing."""
     snapshot = _preflight(**changes)
     bench = FakeLaserBench([snapshot])
@@ -235,6 +279,76 @@ def test_preflight_requires_complete_ophir_identity_and_setup_readbacks(
 
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_reason == reason
+    assert bench.calls == ["preflight:left", "stop_trigger"]
+    assert recorder.checkpoints == [result]
+
+
+def test_preflight_accepts_exact_complete_ophir_setting_evidence():
+    """Changing or omitting any approved Ophir setting must fail closed."""
+    snapshot = _preflight()
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.ophir_setting_evidence == snapshot.ophir_setting_evidence
+    assert bench.calls == ["preflight:left", "stop_trigger"]
+    assert recorder.checkpoints == []
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        _valid_ophir_setting_evidence()[:-1],
+        _valid_ophir_setting_evidence()
+        + (
+            OphirSettingEvidence(
+                "extra_setting",
+                1,
+                1,
+                OphirEvidenceApplicability.APPLICABLE,
+                True,
+            ),
+        ),
+        _valid_ophir_setting_evidence()[:-1] + (_valid_ophir_setting_evidence()[0],),
+        _valid_ophir_setting_evidence()[:1]
+        + (replace(_valid_ophir_setting_evidence()[1], actual=3.0),)
+        + _valid_ophir_setting_evidence()[2:],
+        (replace(_valid_ophir_setting_evidence()[0], passed=False),)
+        + _valid_ophir_setting_evidence()[1:],
+        (replace(_valid_ophir_setting_evidence()[0], name="arbitrary_name"),)
+        + _valid_ophir_setting_evidence()[1:],
+        (
+            replace(
+                _valid_ophir_setting_evidence()[0],
+                actual=None,
+                applicability=OphirEvidenceApplicability.NOT_APPLICABLE,
+            ),
+        )
+        + _valid_ophir_setting_evidence()[1:],
+    ],
+    ids=[
+        "missing",
+        "extra",
+        "duplicate",
+        "mismatched",
+        "failed",
+        "arbitrary-name",
+        "wrongly-applicable",
+    ],
+)
+def test_preflight_rejects_invalid_ophir_setting_evidence(evidence):
+    """Incomplete or unverified Ophir setup must not authorize laser work."""
+    snapshot = _preflight(ophir_setting_evidence=evidence)
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_reason == "Ophir setting evidence is incomplete or invalid."
+    assert result.ophir_setting_evidence == evidence
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == [result]
 
@@ -264,7 +378,7 @@ def test_completed_ophir_preflight_precedes_later_configuration_or_measurement_w
     assert result.topology == snapshot.topology
     assert result.identities == (snapshot.console_identity, snapshot.selected_sensor_identity)
     assert result.ophir_identity == snapshot.ophir_identity
-    assert result.ophir_setup_readbacks == snapshot.ophir_setup_readbacks
+    assert result.ophir_setting_evidence == snapshot.ophir_setting_evidence
     assert [event.stage for event in result.events] == ["confirmation", "preflight"]
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == []

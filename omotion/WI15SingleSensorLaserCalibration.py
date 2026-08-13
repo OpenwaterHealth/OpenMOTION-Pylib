@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Mapping, Protocol
 
@@ -41,6 +42,20 @@ class ProcedureEvent:
     data: Mapping[str, object] = field(default_factory=dict)
 
 
+class OphirEvidenceApplicability(str, Enum):
+    APPLICABLE = "applicable"
+    NOT_APPLICABLE = "not_applicable"
+
+
+@dataclass(frozen=True)
+class OphirSettingEvidence:
+    name: str
+    requested: str | float | int
+    actual: str | float | int | None
+    applicability: OphirEvidenceApplicability
+    passed: bool
+
+
 @dataclass(frozen=True)
 class PreflightSnapshot:
     topology: TopologySnapshot
@@ -49,7 +64,7 @@ class PreflightSnapshot:
     console_responsive: bool
     ophir_identity: OphirIdentity | None
     ophir_ready: bool
-    ophir_setup_readbacks: tuple[SettingReadback, ...]
+    ophir_setting_evidence: tuple[OphirSettingEvidence, ...]
     ophir_failure_reason: str | None = None
 
 
@@ -62,7 +77,7 @@ class SingleSensorLaserCalibrationResult:
     topology: TopologySnapshot | None = None
     identities: tuple[DeviceIdentity, ...] = ()
     ophir_identity: OphirIdentity | None = None
-    ophir_setup_readbacks: tuple[SettingReadback, ...] = ()
+    ophir_setting_evidence: tuple[OphirSettingEvidence, ...] = ()
     pre_existing_config: Mapping[str, float] | None = None
     requested_default_config: Mapping[str, float] | None = None
     default_config_readback: Mapping[str, float] | None = None
@@ -152,10 +167,12 @@ class SingleSensorLaserCalibrationWorkflow:
                     FailureKind.SETUP,
                     "Ophir identity fields must be nonblank text.",
                 )
-            if not preflight.ophir_setup_readbacks:
+            if not self._has_valid_ophir_setting_evidence(
+                preflight.ophir_setting_evidence
+            ):
                 raise _ProcedureFailure(
                     FailureKind.SETUP,
-                    "Ophir setup readbacks must be present.",
+                    "Ophir setting evidence is incomplete or invalid.",
                 )
             return SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
@@ -166,7 +183,7 @@ class SingleSensorLaserCalibrationWorkflow:
                     preflight.selected_sensor_identity,
                 ),
                 ophir_identity=preflight.ophir_identity,
-                ophir_setup_readbacks=preflight.ophir_setup_readbacks,
+                ophir_setting_evidence=preflight.ophir_setting_evidence,
                 events=tuple(events),
             )
         except _ProcedureFailure as failure:
@@ -215,6 +232,47 @@ class SingleSensorLaserCalibrationWorkflow:
             )
         )
 
+    @staticmethod
+    def _has_valid_ophir_setting_evidence(
+        evidence: tuple[OphirSettingEvidence, ...],
+    ) -> bool:
+        expected = {
+            "measurement_mode": ("Energy", OphirEvidenceApplicability.APPLICABLE),
+            "range_mj": (2.0, OphirEvidenceApplicability.APPLICABLE),
+            "wavelength_nm": (795, OphirEvidenceApplicability.APPLICABLE),
+            "pulse_length_ms": (1.0, OphirEvidenceApplicability.APPLICABLE),
+            "threshold": (
+                "minimum_available",
+                OphirEvidenceApplicability.APPLICABLE,
+            ),
+            "display_averaging_s": (3, None),
+            "graph_mode": ("Statistics", None),
+        }
+        if len(evidence) != len(expected):
+            return False
+        by_name = {item.name: item for item in evidence}
+        if len(by_name) != len(evidence) or set(by_name) != set(expected):
+            return False
+        for name, (requested, required_applicability) in expected.items():
+            item = by_name[name]
+            if item.requested != requested or not item.passed:
+                return False
+            if required_applicability is not None:
+                if (
+                    item.applicability is not required_applicability
+                    or item.actual != requested
+                ):
+                    return False
+            elif item.applicability is OphirEvidenceApplicability.APPLICABLE:
+                if item.actual != requested:
+                    return False
+            elif item.applicability is OphirEvidenceApplicability.NOT_APPLICABLE:
+                if item.actual is not None:
+                    return False
+            else:
+                return False
+        return True
+
     def _failed_result(
         self,
         events: list[ProcedureEvent],
@@ -235,8 +293,8 @@ class SingleSensorLaserCalibrationWorkflow:
                 else ()
             ),
             ophir_identity=preflight.ophir_identity if preflight else None,
-            ophir_setup_readbacks=(
-                preflight.ophir_setup_readbacks if preflight else ()
+            ophir_setting_evidence=(
+                preflight.ophir_setting_evidence if preflight else ()
             ),
             events=tuple(events),
         )
