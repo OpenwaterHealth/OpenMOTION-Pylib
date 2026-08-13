@@ -363,6 +363,19 @@ def test_only_out_of_range_trigger_rate_is_corrected_and_reverified():
     assert bench.mutations[0] == ("trigger", 40.0)
 
 
+def test_in_range_but_non_40_hz_trigger_is_still_corrected_to_40():
+    bench = FakeSafetyBench()
+    bench.trigger_rates = deque([39.5, 40.0])
+
+    result, bench, _ = _run(bench)
+
+    assert result.status is ProcedureStatus.PASSED
+    assert bench.mutations[0] == ("trigger", 40.0)
+    assert result.trigger_readbacks[-1] == SettingReadback(
+        "trigger_rate_hz_final", 40.0, 40.0
+    )
+
+
 @pytest.mark.parametrize(
     "write_result",
     [
@@ -485,6 +498,20 @@ def test_known_safety_fault_during_adc_firing_fails_before_write():
 
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert "OPT current limit" in result.failure_reason
+    assert bench.trigger_stops == 1
+    assert not any(item[0] == "configuration" for item in bench.mutations)
+
+
+def test_adc_firing_requires_at_least_one_known_safety_telemetry_observation():
+    bench = FakeSafetyBench()
+    bench.warnings = deque(
+        [SafetyWarningEvidence(NOW, False, True, (), {"error": "not sampled"})]
+    )
+
+    result, bench, _ = _run(bench)
+
+    assert result.failure_kind is FailureKind.MEASUREMENT
+    assert "telemetry" in result.failure_reason.lower()
     assert bench.trigger_stops == 1
     assert not any(item[0] == "configuration" for item in bench.mutations)
 

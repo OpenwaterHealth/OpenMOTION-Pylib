@@ -406,6 +406,11 @@ class SafetyCalibrationWorkflow:
                     "Laser safety fault observed during ADC acquisition: "
                     + ", ".join(faults),
                 )
+            if not any(item.safety_known for item in safety_observations):
+                raise _ProcedureFailure(
+                    FailureKind.MEASUREMENT,
+                    "ADC firing has no known laser safety telemetry observation.",
+                )
             if len(opt_samples) < self._sampling_policy.minimum_valid_samples:
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
@@ -608,7 +613,7 @@ class SafetyCalibrationWorkflow:
             ) from exc
         readbacks.append(SettingReadback("trigger_rate_hz_initial", 40.0, initial))
         checkpoint()
-        if self._valid_trigger_rate(initial):
+        if _finite_number(initial) and float(initial) == 40.0:
             return
         try:
             write_result = self._bench.write_trigger_rate_hz(40.0)
@@ -760,7 +765,7 @@ class SafetyCalibrationWorkflow:
     def _known_faults(warnings: list[SafetyWarningEvidence]) -> tuple[str, ...]:
         faults: list[str] = []
         for warning in warnings:
-            if warning.safety_known and not warning.safety_ok:
+            if warning.safety_known and (not warning.safety_ok or warning.faults):
                 faults.extend(warning.faults or ("unspecified laser safety fault",))
         return tuple(dict.fromkeys(faults))
 
