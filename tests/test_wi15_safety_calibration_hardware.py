@@ -502,6 +502,24 @@ def test_normal_scan_uses_exact_shipping_masks_and_no_overrides(topology, masks)
     assert interface.console.telemetry.listeners == []
 
 
+def test_normal_scan_default_wait_covers_pipeline_post_stop_drain_window():
+    clock = FakeClock()
+    interface = FakeInterface((True, True, True), clock=clock)
+    bench = MotionSafetyCalibrationBench(
+        interface_factory=lambda: interface,
+        power_cycle_coordinator=FakePowerCoordinator(),
+        fpga_map=FakeMap(),
+        clock=clock,
+        wall_clock=lambda: 2_000.0,
+        sleep=clock.sleep,
+    )
+
+    evidence = bench.run_normal_scan(ShippingTopology.DUAL, duration_s=30.0)
+
+    assert evidence.completed
+    assert ("await_complete", 50.0) in interface.calls
+
+
 def test_normal_scan_refused_start_returns_complete_failure_evidence_and_cleans_up():
     bench, interface, _, _ = _bench((True, True, False))
     interface.scan_workflow.start_result = False

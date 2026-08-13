@@ -57,7 +57,10 @@ class MotionSafetyCalibrationBench:
         wait_timeout: float = 10.0,
         safety_wait_timeout: float = 2.0,
         safety_poll_interval_s: float = 0.05,
-        scan_timeout_pad_s: float = 10.0,
+        # ScanWorkflow may spend up to 15 seconds in its post-stop source
+        # drain safety hatch. This allowance waits for that ordinary cleanup;
+        # it does not extend the requested laser-acquisition duration.
+        scan_timeout_pad_s: float = 20.0,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,

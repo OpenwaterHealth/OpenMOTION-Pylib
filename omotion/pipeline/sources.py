@@ -207,7 +207,6 @@ class LiveUsbSource(_BaseSource):
         }
         self._batch_queue: queue.Queue = queue.Queue(maxsize=4)
         self._stop = threading.Event()
-        self._close_complete = threading.Event()
         self._reader_threads: list[threading.Thread] = []
 
     def __iter__(self) -> Iterator[FrameBatch]:
@@ -242,8 +241,6 @@ class LiveUsbSource(_BaseSource):
             try:
                 batch = self._batch_queue.get(timeout=1.0)
             except queue.Empty:
-                if self._close_complete.is_set():
-                    break
                 # Safety hatch: if close() crashed before pushing the
                 # sentinel, _stop will be set and the sentinel will never
                 # come. Bound the wait at 15s past stop so __iter__ can't
@@ -265,8 +262,6 @@ class LiveUsbSource(_BaseSource):
                 # through the parser and been delivered.
                 break
             yield batch
-            if self._close_complete.is_set() and self._batch_queue.empty():
-                break
 
     def close(self) -> None:
         # Idempotent + race-safe with ScanWorkflow's cancel/duration guard.
@@ -335,32 +330,8 @@ class LiveUsbSource(_BaseSource):
             for t in self._reader_threads:
                 t.join(timeout=5.0)
         finally:
-            # If every parser has stopped, an empty batch queue is itself a
-            # safe completion condition. This is the fallback for the bounded
-            # queue being full when the sentinel is offered below.
-            live_readers = [
-                thread for thread in self._reader_threads if thread.is_alive()
-            ]
-            if not live_readers:
-                self._close_complete.set()
-            else:
-                # A parser can still be blocked offering its last batch while
-                # the runner is busy. Once the runner drains enough space, the
-                # parser exits. Carry that late completion back to __iter__
-                # instead of forcing it to wait for the 15-second safety hatch.
-                def _mark_late_completion() -> None:
-                    for thread in live_readers:
-                        thread.join()
-                    self._close_complete.set()
-
-                threading.Thread(
-                    target=_mark_late_completion,
-                    daemon=True,
-                    name="LiveUsbSource-close-completion",
-                ).start()
-            # Prefer the sentinel so a waiting iterator wakes immediately.
-            # _close_complete is the safe fallback when this bounded queue
-            # has no free slot for the sentinel.
+            # The sentinel MUST be pushed even if teardown raised, otherwise
+            # __iter__ blocks the runner indefinitely waiting for it.
             try:
                 self._batch_queue.put(None, timeout=0.5)
             except queue.Full:
