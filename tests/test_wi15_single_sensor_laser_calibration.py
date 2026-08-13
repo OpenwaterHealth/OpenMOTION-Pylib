@@ -31,10 +31,16 @@ class FakeLaserBench:
         trigger_rate=40.0,
         mutate_written_configuration=False,
         stop_trigger_outcomes=(),
+        register_readbacks=None,
+        register_write_result=object(),
+        user_configuration_write_outcomes=(),
+        register_write_outcomes=(),
     ):
         self.calls = []
         self.preflight_queue = list(preflight_queue)
-        self.measurements = list(measurements or [_valid_measurement()])
+        self.measurements = list(
+            measurements or [_valid_measurement(), _valid_measurement()]
+        )
         self.user_configuration_reads = list(
             user_configuration_reads
             if user_configuration_reads is not None
@@ -45,6 +51,15 @@ class FakeLaserBench:
         self.trigger_rate = trigger_rate
         self.mutate_written_configuration = mutate_written_configuration
         self.stop_trigger_outcomes = list(stop_trigger_outcomes)
+        self.register_readbacks = {
+            name: list(values) for name, values in (register_readbacks or {}).items()
+        }
+        self.register_write_result = register_write_result
+        self.user_configuration_write_outcomes = list(
+            user_configuration_write_outcomes
+        )
+        self.register_write_outcomes = list(register_write_outcomes)
+        self.written_user_configurations = []
 
     def preflight(self, side):
         self.calls.append(f"preflight:{side}")
@@ -59,23 +74,44 @@ class FakeLaserBench:
             configuration["TA_CURRENT_DRV"] = 1
             self.user_configuration_reads[0] = dict(configuration)
         self.written_user_configuration = dict(configuration)
+        self.written_user_configurations.append(dict(configuration))
+        if self.user_configuration_write_outcomes:
+            outcome = self.user_configuration_write_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         return self.write_result
 
     def read_user_configuration(self):
         self.calls.append("read_user_configuration")
-        return self.user_configuration_reads.pop(0)
+        if self.user_configuration_reads:
+            return self.user_configuration_reads.pop(0)
+        return dict(self.written_user_configuration)
 
     def bring_up_laser_configuration(self):
         self.calls.append("bring_up_laser_configuration")
 
     def read_register(self, name):
         self.calls.append(f"read_register:{name}")
+        if name in self.register_readbacks and self.register_readbacks[name]:
+            outcome = self.register_readbacks[name].pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         return self.active_registers[name]
 
     def write_register(self, name, value):
-        self.calls.append(f"write_register:{name}")
+        self.calls.append(f"write_register:{name}:{value}")
         self.active_registers[name] = value
-        return None
+        if self.register_write_outcomes:
+            outcome = self.register_write_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return self.register_write_result
+
+    def power_cycle(self):
+        self.calls.append("power_cycle")
 
     def read_trigger_rate_hz(self):
         self.calls.append("read_trigger_rate_hz")
@@ -355,7 +391,8 @@ def test_preflight_accepts_exact_complete_ophir_setting_evidence():
 
     assert result.status is ProcedureStatus.PASSED
     assert result.ophir_setting_evidence == snapshot.ophir_setting_evidence
-    assert bench.calls[-1] == "stop_trigger"
+    assert bench.calls.count("stop_trigger") == 2
+    assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
     assert "write_user_configuration" in bench.calls
     assert recorder.checkpoints == []
 
@@ -497,6 +534,7 @@ def test_completed_ophir_preflight_precedes_later_configuration_or_measurement_w
         "preflight",
         "default_configuration",
         "tuning",
+        "final_configuration",
     ]
     assert bench.calls == [
         "preflight:left",
@@ -512,6 +550,12 @@ def test_completed_ophir_preflight_precedes_later_configuration_or_measurement_w
         "read_trigger_rate_hz",
         "measure_energy",
         "stop_trigger",
+        "measure_energy",
+        "stop_trigger",
+        "read_register:TA_CURRENT_DRV",
+        "read_register:TA_PULSE_WIDTH",
+        "write_user_configuration",
+        "read_user_configuration",
     ]
 
 
@@ -658,8 +702,10 @@ def test_corrects_only_trigger_rate_to_40_hz_and_verifies_before_measurement():
         "measure_energy"
     )
     assert bench.calls.count("read_trigger_rate_hz") == 2
-    assert result.configurations[-1].name == "trigger_rate_hz"
-    assert result.configurations[-1].actual == 40.0
+    trigger_readback = [
+        item for item in result.configurations if item.name == "trigger_rate_hz"
+    ][-1]
+    assert trigger_readback.actual == 40.0
 
 
 def test_corrects_an_in_range_non_40_hz_trigger_to_40_before_measurement():
@@ -672,7 +718,10 @@ def test_corrects_an_in_range_non_40_hz_trigger_to_40_before_measurement():
     assert bench.calls.index("write_trigger_rate_hz:40.0") < bench.calls.index(
         "measure_energy"
     )
-    assert result.configurations[-1] == result.configurations[-1].__class__(
+    trigger_readback = [
+        item for item in result.configurations if item.name == "trigger_rate_hz"
+    ][-1]
+    assert trigger_readback == trigger_readback.__class__(
         "trigger_rate_hz", 40.0, 40.0
     )
 
@@ -691,7 +740,7 @@ def test_invalid_initial_measurement_is_recorded_checkpointed_and_never_advances
     measurement,
 ):
     """Using an invalid Ophir observation for tuning would bypass the quality gates."""
-    bench = FakeLaserBench([_preflight()], measurements=[measurement])
+    bench = FakeLaserBench([_preflight()], measurements=[measurement, measurement])
     recorder = FakeRecorder()
 
     result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
@@ -718,14 +767,14 @@ def test_invalid_initial_measurement_is_recorded_checkpointed_and_never_advances
 def test_valid_initial_measurement_records_criteria_and_advances_to_tuning():
     """Dropping valid measurement evidence would leave the next tuning stage unauditable."""
     measurement = _valid_measurement()
-    bench = FakeLaserBench([_preflight()], measurements=[measurement])
+    bench = FakeLaserBench([_preflight()], measurements=[measurement, measurement])
 
     result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
 
     assert result.status is ProcedureStatus.PASSED
-    assert result.measurements == (measurement,)
+    assert result.measurements == (measurement, measurement)
     assert all(criterion.passed for criterion in result.measurement_criteria[0])
-    assert result.events[-1].stage == "tuning"
+    assert "tuning" in [event.stage for event in result.events]
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
 
 
@@ -778,3 +827,495 @@ def test_persistent_measurement_stop_failure_is_reported_without_losing_failure_
     assert result.events[-2].stage == "trigger_cleanup"
     assert bench.calls.count("stop_trigger") == 2
     assert recorder.checkpoints == [result]
+
+
+@pytest.mark.parametrize("final_mean", [300.0, 400.0], ids=["lower", "upper"])
+def test_exact_350_uses_a_distinct_inclusive_final_measurement_without_tuning_writes(
+    final_mean,
+):
+    """Reusing the initial sample or excluding an endpoint would misstate acceptance."""
+    initial = _valid_measurement(mean_uj=350.0)
+    final = _valid_measurement(mean_uj=final_mean)
+    bench = FakeLaserBench([_preflight()], measurements=[initial, final])
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.measurements == (initial, final)
+    assert bench.calls.count("measure_energy") == 2
+    assert not any(call.startswith("write_register:") for call in bench.calls)
+    assert len(bench.written_user_configurations) == 2
+    assert result.requested_final_config == DEFAULT_USER_CONFIG
+    assert result.final_config_readback == DEFAULT_USER_CONFIG
+    assert "power_cycle" not in bench.calls
+
+
+@pytest.mark.parametrize("final_mean", [299.999, 400.001], ids=["below", "above"])
+def test_exact_350_rejects_a_distinct_final_measurement_outside_300_to_400(
+    final_mean,
+):
+    """Persisting settings outside the inclusive energy window would falsely pass."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=350.0), _valid_measurement(mean_uj=final_mean)],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED_NCR
+    assert result.failure_kind is FailureKind.NCR
+    assert bench.calls.count("measure_energy") == 2
+    assert len(bench.written_user_configurations) == 1
+    assert recorder.checkpoints == [result]
+
+
+@pytest.mark.parametrize(
+    ("name", "final_actual", "expected_status"),
+    [
+        ("TA_CURRENT_DRV", 5100.0, ProcedureStatus.PASSED),
+        ("TA_CURRENT_DRV", 5100.001, ProcedureStatus.FAILED),
+        ("TA_PULSE_WIDTH", 490.0, ProcedureStatus.PASSED),
+        ("TA_PULSE_WIDTH", 489.999, ProcedureStatus.FAILED),
+    ],
+)
+def test_final_requested_ta_settings_require_inclusive_two_percent_active_readback(
+    name, final_actual, expected_status
+):
+    """Skipping the final active-setting check could persist an unproved setting."""
+    requested = DEFAULT_USER_CONFIG[name]
+    bench = FakeLaserBench(
+        [_preflight()],
+        register_readbacks={name: [requested, final_actual]},
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is expected_status
+    final_readback = [item for item in result.configurations if item.name == name][-1]
+    assert final_readback.requested == requested
+    assert final_readback.actual == final_actual
+    assert len(bench.written_user_configurations) == (
+        2 if expected_status is ProcedureStatus.PASSED else 1
+    )
+    if expected_status is ProcedureStatus.FAILED:
+        assert result.failure_kind is FailureKind.CONFIGURATION
+        assert recorder.checkpoints == [result]
+
+
+def test_downward_tuning_uses_50_ma_steps_and_reapplies_the_closer_prior_candidate():
+    """Stopping on the crossing or changing pulse width would miss the closest safe setting."""
+    measurements = [
+        _valid_measurement(mean_uj=380.0),
+        _valid_measurement(mean_uj=360.0),
+        _valid_measurement(mean_uj=330.0),
+        _valid_measurement(mean_uj=355.0),
+    ]
+    bench = FakeLaserBench([_preflight()], measurements=measurements)
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    register_writes = [call for call in bench.calls if call.startswith("write_register:")]
+    assert register_writes == [
+        "write_register:TA_CURRENT_DRV:4950",
+        "write_register:TA_CURRENT_DRV:4900",
+        "write_register:TA_CURRENT_DRV:4950",
+    ]
+    for write in register_writes[:2]:
+        write_index = bench.calls.index(write)
+        assert bench.calls[write_index + 1 : write_index + 3] == [
+            "read_register:TA_CURRENT_DRV",
+            "measure_energy",
+        ]
+    assert all(item.name == "TA_CURRENT_DRV" for item in result.adjustments)
+    assert [item.requested for item in result.adjustments] == [4950, 4900, 4950]
+    assert [candidate.measurement.mean_uj for candidate in result.candidates] == [
+        380.0,
+        360.0,
+        330.0,
+    ]
+    assert result.selection is not None
+    assert result.selection.direction == "downward_current"
+    assert result.selection.selected_requested_current_ma == 4950
+    assert result.selection.selected_mean_uj == 360.0
+    assert result.requested_final_config == {
+        **DEFAULT_USER_CONFIG,
+        "TA_CURRENT_DRV": 4950,
+    }
+
+
+def test_downward_tuning_can_pass_with_the_only_in_range_candidate_at_2000_ma():
+    """Treating the floor itself as failure would discard an acceptable reachable result."""
+    tuning_measurements = [
+        _valid_measurement(mean_uj=450.0) for _ in range(59)
+    ] + [_valid_measurement(mean_uj=320.0)]
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=450.0), *tuning_measurements, _valid_measurement(mean_uj=325.0)],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    current_writes = [
+        call for call in bench.calls if call.startswith("write_register:TA_CURRENT_DRV:")
+    ]
+    assert current_writes[-1] == "write_register:TA_CURRENT_DRV:2000"
+    assert len(current_writes) == 60
+    assert result.selection is not None
+    assert result.selection.selected_requested_current_ma == 2000
+    assert result.requested_final_config["TA_CURRENT_DRV"] == 2000
+
+
+def test_downward_tuning_fails_ncr_at_2000_when_every_candidate_is_out_of_range():
+    """Continuing below the conservative floor or persisting an unsafe candidate is forbidden."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=450.0)]
+        + [_valid_measurement(mean_uj=410.0) for _ in range(60)],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED_NCR
+    assert result.failure_kind is FailureKind.NCR
+    current_writes = [
+        call for call in bench.calls if call.startswith("write_register:TA_CURRENT_DRV:")
+    ]
+    tuning_current_writes = [call for call in current_writes if not call.endswith(":5000")]
+    assert tuning_current_writes[-1] == "write_register:TA_CURRENT_DRV:2000"
+    assert not any(call.endswith(":1950") for call in tuning_current_writes)
+    assert bench.calls.count("measure_energy") == 61
+    assert len(bench.written_user_configurations) == 1
+    assert len(result.active_default_restore) == 5
+    assert result.active_default_restore_failure is None
+    assert recorder.checkpoints == [result]
+
+
+@pytest.mark.parametrize(
+    ("measurements", "write_result", "expected_kind"),
+    [
+        (
+            [_valid_measurement(mean_uj=380.0), _valid_measurement(n=25)],
+            object(),
+            FailureKind.MEASUREMENT,
+        ),
+        (
+            [_valid_measurement(mean_uj=380.0)],
+            None,
+            FailureKind.CONFIGURATION,
+        ),
+    ],
+    ids=["invalid-measurement", "missing-write-result"],
+)
+def test_downward_tuning_quality_or_write_error_fails_without_passing_handoff(
+    measurements, write_result, expected_kind
+):
+    """An unchecked adjustment cannot become a selected or persisted candidate."""
+    bench = FakeLaserBench(
+        [_preflight()], measurements=measurements, register_write_result=write_result
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is expected_kind
+    assert len(bench.written_user_configurations) == 1
+    assert recorder.checkpoints == [result]
+
+
+def test_upward_tuning_stages_660_limits_uses_10_us_steps_and_reapplies_closer_prior():
+    """Changing current or selecting the crossing instead of the closer prior pulse is wrong."""
+    measurements = [
+        _valid_measurement(mean_uj=320.0),
+        _valid_measurement(mean_uj=340.0),
+        _valid_measurement(mean_uj=370.0),
+        _valid_measurement(mean_uj=345.0),
+    ]
+    bench = FakeLaserBench([_preflight()], measurements=measurements)
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    register_writes = [call for call in bench.calls if call.startswith("write_register:")]
+    assert register_writes == [
+        "write_register:EE_PULSE_WIDTH_UL:660",
+        "write_register:OPT_PULSE_WIDTH_UL:660",
+        "write_register:TA_PULSE_WIDTH:510",
+        "write_register:TA_PULSE_WIDTH:520",
+        "write_register:TA_PULSE_WIDTH:510",
+    ]
+    assert not any("TA_CURRENT_DRV" in call for call in register_writes)
+    for name in ("EE_PULSE_WIDTH_UL", "OPT_PULSE_WIDTH_UL"):
+        write_index = bench.calls.index(f"write_register:{name}:660")
+        assert bench.calls[write_index + 1] == f"read_register:{name}"
+    assert [item.requested for item in result.adjustments] == [660, 660, 510, 520, 510]
+    assert [candidate.measurement.mean_uj for candidate in result.candidates] == [
+        320.0,
+        340.0,
+        370.0,
+    ]
+    assert result.selection is not None
+    assert result.selection.direction == "upward_pulse"
+    assert result.selection.selected_requested_pulse_width_us == 510
+    assert result.selection.selected_mean_uj == 340.0
+    assert result.requested_final_config == {
+        **DEFAULT_USER_CONFIG,
+        "TA_PULSE_WIDTH": 510,
+        "EE_PULSE_WIDTH_UL": 660,
+        "OPT_PULSE_WIDTH_UL": 660,
+    }
+
+
+def test_upward_tuning_at_600_below_300_is_immediate_ncr_and_never_exceeds_ceiling():
+    """Persisting or incrementing beyond an underpowered 600 us ceiling is unsafe."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=250.0)]
+        + [_valid_measurement(mean_uj=290.0) for _ in range(10)],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED_NCR
+    assert result.failure_kind is FailureKind.NCR
+    tuning_pulse_writes = [
+        int(call.rsplit(":", 1)[1])
+        for call in bench.calls
+        if call.startswith("write_register:TA_PULSE_WIDTH:")
+        and int(call.rsplit(":", 1)[1]) >= 510
+    ]
+    assert tuning_pulse_writes == list(range(510, 601, 10))
+    assert max(tuning_pulse_writes) == 600
+    assert bench.calls.count("measure_energy") == 11
+    assert len(bench.written_user_configurations) == 1
+    assert len(result.active_default_restore) == 5
+    assert result.active_default_restore_failure is None
+    assert recorder.checkpoints == [result]
+
+
+def test_upward_tuning_can_pass_with_an_in_range_candidate_at_600_us():
+    """The pulse ceiling remains selectable when its measured energy is acceptable."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=250.0)]
+        + [_valid_measurement(mean_uj=250.0) for _ in range(9)]
+        + [_valid_measurement(mean_uj=320.0), _valid_measurement(mean_uj=325.0)],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.selection is not None
+    assert result.selection.selected_requested_pulse_width_us == 600
+    assert result.requested_final_config["TA_PULSE_WIDTH"] == 600
+    assert result.requested_final_config["EE_PULSE_WIDTH_UL"] == 660
+    assert result.requested_final_config["OPT_PULSE_WIDTH_UL"] == 660
+    assert not any(call.endswith(":610") for call in bench.calls)
+
+
+def test_upward_temporary_limit_readback_error_fails_before_any_pulse_adjustment():
+    """Pulse tuning must not begin unless both temporary safety limits are active."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=320.0)],
+        register_readbacks={"EE_PULSE_WIDTH_UL": [550, 674.0]},
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    writes_before_cleanup = bench.calls[: bench.calls.index("write_register:TA_CURRENT_DRV:5000")]
+    assert "write_register:TA_PULSE_WIDTH:510" not in writes_before_cleanup
+    assert len(bench.written_user_configurations) == 1
+    assert recorder.checkpoints == [result]
+
+
+def test_downward_handoff_persists_requested_current_after_final_acceptance_not_quantized_actual():
+    """Writing the active quantized current would silently change the selected request."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[
+            _valid_measurement(mean_uj=380.0),
+            _valid_measurement(mean_uj=340.0),
+            _valid_measurement(mean_uj=345.0),
+        ],
+        register_readbacks={"TA_CURRENT_DRV": [5000, 4949, 4949]},
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.candidates[-1].requested_current_ma == 4950
+    assert result.candidates[-1].actual_current_ma == 4949
+    assert result.requested_final_config["TA_CURRENT_DRV"] == 4950
+    assert result.requested_final_config["EE_PULSE_WIDTH_UL"] == 550
+    assert result.requested_final_config["OPT_PULSE_WIDTH_UL"] == 550
+    assert result.final_config_readback == result.requested_final_config
+    final_measure_index = [
+        index for index, call in enumerate(bench.calls) if call == "measure_energy"
+    ][-1]
+    final_write_index = [
+        index
+        for index, call in enumerate(bench.calls)
+        if call == "write_user_configuration"
+    ][-1]
+    assert bench.calls[final_measure_index + 1] == "stop_trigger"
+    assert bench.calls[final_write_index - 2 : final_write_index] == [
+        "read_register:TA_CURRENT_DRV",
+        "read_register:TA_PULSE_WIDTH",
+    ]
+    assert final_write_index > final_measure_index
+    assert "power_cycle" not in bench.calls
+
+
+def test_upward_handoff_persists_requested_pulse_and_provisional_660_limits():
+    """Persisting quantized pulse readback or default limits would corrupt upward tuning."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[
+            _valid_measurement(mean_uj=320.0),
+            _valid_measurement(mean_uj=360.0),
+            _valid_measurement(mean_uj=350.0),
+        ],
+        register_readbacks={
+            "TA_PULSE_WIDTH": [500, 509, 509],
+            "EE_PULSE_WIDTH_UL": [550, 659],
+            "OPT_PULSE_WIDTH_UL": [550, 659],
+        },
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.candidates[-1].requested_pulse_width_us == 510
+    assert result.candidates[-1].actual_pulse_width_us == 509
+    assert result.requested_final_config["TA_PULSE_WIDTH"] == 510
+    assert result.requested_final_config["EE_PULSE_WIDTH_UL"] == 660
+    assert result.requested_final_config["OPT_PULSE_WIDTH_UL"] == 660
+    assert result.final_config_readback == result.requested_final_config
+    assert "power_cycle" not in bench.calls
+
+
+def test_passing_configuration_write_failure_returns_failed_after_final_acceptance():
+    """A missing final SDK write result cannot produce a passing tuned handoff."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        user_configuration_write_outcomes=[object(), None],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.requested_final_config == DEFAULT_USER_CONFIG
+    assert result.final_config_readback is None
+    assert len(bench.written_user_configurations) == 2
+    assert bench.calls.count("measure_energy") == 2
+    assert recorder.checkpoints == [result]
+
+
+def test_passing_configuration_write_exception_is_a_configuration_failure():
+    """A transport exception during persistence must not be mislabeled as measurement."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        user_configuration_write_outcomes=[object(), RuntimeError("USB write failed")],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.final_config_readback is None
+    assert len(bench.written_user_configurations) == 2
+
+
+@pytest.mark.parametrize(
+    "final_readback",
+    [
+        {key: value for key, value in DEFAULT_USER_CONFIG.items() if key != "TEC_TRIP"},
+        {**DEFAULT_USER_CONFIG, "UNAPPROVED_KEY": 1},
+        {**DEFAULT_USER_CONFIG, "TA_PULSE_WIDTH": 501},
+    ],
+    ids=["missing-key", "extra-key", "mismatched-value"],
+)
+def test_passing_configuration_requires_exact_complete_immediate_readback(final_readback):
+    """A partial or altered persisted object cannot become safety-calibration input."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        user_configuration_reads=[
+            {"LEGACY_SETTING": 1},
+            dict(DEFAULT_USER_CONFIG),
+            final_readback,
+        ],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.requested_final_config == DEFAULT_USER_CONFIG
+    assert result.final_config_readback == final_readback
+    assert len(bench.written_user_configurations) == 2
+    assert "power_cycle" not in bench.calls
+    assert recorder.checkpoints == [result]
+
+
+def test_adjustment_failure_records_best_effort_active_default_restore_after_stop():
+    """A failed tuning step must leave evidence of fail-closed active-register cleanup."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=380.0), _valid_measurement(n=25)],
+        register_write_outcomes=[object(), None, object(), object(), object(), object()],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.MEASUREMENT
+    assert [item.name for item in result.active_default_restore] == [
+        "TA_CURRENT_DRV",
+        "TA_PULSE_WIDTH",
+        "SEED_CW_GAIN",
+        "EE_PULSE_WIDTH_UL",
+        "OPT_PULSE_WIDTH_UL",
+    ]
+    assert "TA_CURRENT_DRV write returned no result" in result.active_default_restore_failure
+    cleanup_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[cleanup_index - 1] == "stop_trigger"
+    assert len(bench.written_user_configurations) == 1
+
+
+@pytest.mark.parametrize(
+    "bench",
+    [
+        FakeLaserBench(
+            [_preflight()],
+            measurements=[_valid_measurement(mean_uj=380.0)],
+            register_write_outcomes=[RuntimeError("register write failed")],
+        ),
+        FakeLaserBench(
+            [_preflight()],
+            register_readbacks={
+                "TA_CURRENT_DRV": [5000, RuntimeError("register read failed")]
+            },
+        ),
+    ],
+    ids=["adjustment-write", "final-readback"],
+)
+def test_register_transport_exceptions_are_configuration_failures(bench):
+    """Register transport errors must not inherit the surrounding measurement stage."""
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert len(bench.written_user_configurations) == 1
