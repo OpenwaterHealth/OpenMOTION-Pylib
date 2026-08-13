@@ -47,21 +47,29 @@ class OphirEnergyMeter:
     """Channel-0 Ophir COM adapter with exact WI setting evidence."""
 
     _CHANNEL = 0
+    _MINIMUM_VALID_SAMPLES = 26
 
     def __init__(
         self,
         *,
         com_factory=_default_ophir_com_factory,
-        duration_s: float = 0.65,
+        duration_s: float = 2.0,
         poll_interval_s: float = 0.05,
         clock=time.monotonic,
         sleep=time.sleep,
     ):
-        if duration_s <= 0 or poll_interval_s <= 0:
-            raise ValueError("duration and poll interval must be positive")
+        duration_s = float(duration_s)
+        poll_interval_s = float(poll_interval_s)
+        if (
+            not math.isfinite(duration_s)
+            or duration_s <= 0
+            or not math.isfinite(poll_interval_s)
+            or poll_interval_s <= 0
+        ):
+            raise ValueError("duration and poll interval must be finite and positive")
         self._com_factory = com_factory
-        self._duration_s = float(duration_s)
-        self._poll_interval_s = float(poll_interval_s)
+        self._duration_s = duration_s
+        self._poll_interval_s = poll_interval_s
         self._clock = clock
         self._sleep = sleep
         self._com = None
@@ -309,6 +317,8 @@ class OphirEnergyMeter:
                         continue
                     values_uj.append(float(value) * 1e6)
                     timestamps_ms.append(float(timestamp))
+                if len(values_uj) >= self._MINIMUM_VALID_SAMPLES:
+                    break
         finally:
             self._com.StopStream(self._handle, self._CHANNEL)
         duration = self._clock() - started_at

@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-12
 
-**Status:** Implemented and software-verified; hardware execution pending
+**Status:** Live execution exposed and informed a bounded-acquisition fix;
+software verification complete, successful hardware rerun pending
 
 **Procedure:** Single-Sensor Laser Calibration
 
@@ -130,6 +131,14 @@ Every energy observation used for adjustment or acceptance must contain:
 Samples with nonzero Ophir status are discarded and counted. If an
 observation fails, record it and stop the procedure; do not tune from its
 mean.
+
+Direct-stream acquisition continues until a returned batch brings the total
+to at least 26 valid status-zero samples, or until the bounded 2.0-second
+maximum acquisition duration expires. Stop immediately after processing the
+batch that reaches the target and use every accepted sample in that batch for
+the reported statistics and repetition rate. Always stop the stream. At
+timeout, retain and report the below-target observation so the existing
+measurement-quality criteria fail closed.
 
 ## 8. Tuning algorithm
 

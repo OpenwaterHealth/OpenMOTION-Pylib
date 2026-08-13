@@ -1,4 +1,5 @@
 import math
+import statistics
 
 import pytest
 
@@ -599,6 +600,22 @@ def _ophir_meter(com=None, *, duration_s=0.1):
     return meter, com, clock
 
 
+@pytest.mark.parametrize(
+    "option, value",
+    [
+        ("duration_s", float("nan")),
+        ("duration_s", float("inf")),
+        ("poll_interval_s", float("nan")),
+        ("poll_interval_s", float("inf")),
+    ],
+)
+def test_ophir_acquisition_bounds_must_be_finite(option, value):
+    arguments = {option: value}
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        OphirEnergyMeter(**arguments)
+
+
 def test_ophir_preflight_reports_com_construction_failure():
     def fail_factory():
         raise OSError("COM class unavailable")
@@ -854,6 +871,105 @@ def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statist
     assert measurement.min_uj == pytest.approx(300.0)
     assert measurement.max_uj == pytest.approx(400.0)
     assert measurement.duration_s == pytest.approx(0.1)
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_continues_after_23_valid_plus_discarded_until_target():
+    meter, com, _ = _ophir_meter(duration_s=2.0)
+    meter.preflight()
+    com.calls.clear()
+    first_values_uj = list(range(300, 323))
+    second_values_uj = list(range(323, 327))
+    com.data_batches = [
+        (
+            [value * 1e-6 for value in first_values_uj] + [9.9],
+            [1000.0 + 25.0 * index for index in range(23)] + [1560.0],
+            [0] * 23 + [1],
+        ),
+        (
+            [value * 1e-6 for value in second_values_uj],
+            [1575.0 + 25.0 * index for index in range(4)],
+            [0] * 4,
+        ),
+        ([], [], []),
+    ]
+
+    measurement = meter.measure()
+
+    accepted_values_uj = first_values_uj + second_values_uj
+    assert measurement.n == 27
+    assert measurement.discarded == 1
+    assert measurement.mean_uj == pytest.approx(statistics.fmean(accepted_values_uj))
+    assert measurement.stdev_uj == pytest.approx(statistics.stdev(accepted_values_uj))
+    assert measurement.min_uj == 300.0
+    assert measurement.max_uj == 326.0
+    assert measurement.rate_hz == pytest.approx(40.0)
+    assert measurement.duration_s == pytest.approx(0.1)
+    assert com.calls.count(("GetData", 17, 0)) == 2
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_stops_early_immediately_after_valid_target_is_met():
+    meter, com, _ = _ophir_meter(duration_s=2.0)
+    meter.preflight()
+    com.calls.clear()
+    com.data_batches = [
+        (
+            [0.00035] * 26,
+            [1000.0 + 25.0 * index for index in range(26)],
+            [0] * 26,
+        ),
+        pytest.fail,
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 26
+    assert measurement.duration_s == pytest.approx(0.05)
+    assert com.calls.count(("GetData", 17, 0)) == 1
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_times_out_with_below_target_evidence_for_fail_closed_gate():
+    meter, com, _ = _ophir_meter(duration_s=0.1)
+    meter.preflight()
+    com.calls.clear()
+    com.data_batches = [
+        (
+            [0.00035] * 23 + [9.9],
+            [1000.0 + 25.0 * index for index in range(24)],
+            [0] * 23 + [1],
+        ),
+        ([], [], []),
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 23
+    assert measurement.discarded == 1
+    assert measurement.duration_s == pytest.approx(0.1)
+    assert not all(item.passed for item in validate_energy_measurement(measurement))
+    assert com.calls.count(("GetData", 17, 0)) == 2
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_default_timeout_is_bounded_at_two_seconds():
+    com = FakeOphirCOM()
+    clock = FakeClock()
+    meter = OphirEnergyMeter(
+        com_factory=lambda: com,
+        poll_interval_s=0.05,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    meter.preflight()
+    com.calls.clear()
+
+    measurement = meter.measure()
+
+    assert measurement.n == 0
+    assert measurement.duration_s == pytest.approx(2.0)
+    assert com.calls.count(("GetData", 17, 0)) == 40
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 

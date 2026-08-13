@@ -132,6 +132,14 @@ excluded. An observation that fails any measurement-quality criterion is
 recorded but may not be used to tune or pass the unit. The stage fails and
 requires a new valid execution.
 
+For each observation, direct streaming continues until at least 26 valid
+status-zero samples have been collected or the bounded 2.0-second acquisition
+maximum expires. The stream stops as soon as the returned batch reaches the
+target; all valid samples in that batch are included in the statistics and
+rate calculation. Nonzero-status samples remain discarded and counted. The
+stream is always stopped. If the timeout expires below 26 valid samples, the
+partial observation is recorded and fails the existing criteria.
+
 The energy acceptance interval is 300 through 400 microjoules, inclusive.
 
 ### 3.4 Approved laser adjustment algorithm
