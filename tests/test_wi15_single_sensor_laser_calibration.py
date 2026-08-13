@@ -1,7 +1,9 @@
 from dataclasses import replace
+import json
 
 import pytest
 
+from omotion.WI15LaserCalibrationReport import HtmlRunReport, JsonRunRecorder
 from omotion.WI15SingleSensorLaserCalibration import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
@@ -394,7 +396,7 @@ def test_preflight_accepts_exact_complete_ophir_setting_evidence():
     assert bench.calls.count("stop_trigger") == 2
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
     assert "write_user_configuration" in bench.calls
-    assert recorder.checkpoints == []
+    assert recorder.checkpoints == [result]
 
 
 @pytest.mark.parametrize(
@@ -1437,3 +1439,203 @@ def test_persistent_post_firing_restore_failures_do_not_replace_primary_ncr():
     assert bench.calls[restore_index - 1] == "stop_trigger"
     assert len(bench.written_user_configurations) == 1
     assert recorder.checkpoints == [result]
+
+
+def test_end_to_end_downward_pass_persists_and_reports_the_final_handoff(tmp_path):
+    """Losing the terminal pass or reordering firing and persistence would hide unsafe evidence."""
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", "downward-pass")
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[
+            _valid_measurement(mean_uj=380.0),
+            _valid_measurement(mean_uj=360.0),
+            _valid_measurement(mean_uj=330.0),
+            _valid_measurement(mean_uj=355.0),
+        ],
+    )
+    incremental_payloads = []
+    real_preflight = bench.preflight
+
+    def observe_incremental_json(side):
+        incremental_payloads.append(
+            json.loads(recorder.json_path.read_text(encoding="utf-8"))
+        )
+        return real_preflight(side)
+
+    bench.preflight = observe_incremental_json
+    request = _request(output_root=tmp_path, run_id="downward-pass")
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(request)
+
+    assert incremental_payloads[0]["events"][0]["stage"] == "confirmation"
+    persisted_result = json.loads(recorder.json_path.read_text(encoding="utf-8"))
+    assert persisted_result["status"] == "passed"
+    assert persisted_result["selection"]["direction"] == "downward_current"
+    assert persisted_result["selection"]["selected_requested_current_ma"] == 4950
+    assert bench.calls == [
+        "preflight:left",
+        "read_user_configuration",
+        "write_user_configuration",
+        "read_user_configuration",
+        "bring_up_laser_configuration",
+        "read_register:TA_CURRENT_DRV",
+        "read_register:TA_PULSE_WIDTH",
+        "read_register:SEED_CW_GAIN",
+        "read_register:EE_PULSE_WIDTH_UL",
+        "read_register:OPT_PULSE_WIDTH_UL",
+        "read_trigger_rate_hz",
+        "measure_energy",
+        "stop_trigger",
+        "write_register:TA_CURRENT_DRV:4950",
+        "read_register:TA_CURRENT_DRV",
+        "measure_energy",
+        "stop_trigger",
+        "write_register:TA_CURRENT_DRV:4900",
+        "read_register:TA_CURRENT_DRV",
+        "measure_energy",
+        "stop_trigger",
+        "write_register:TA_CURRENT_DRV:4950",
+        "read_register:TA_CURRENT_DRV",
+        "measure_energy",
+        "stop_trigger",
+        "read_register:TA_CURRENT_DRV",
+        "read_register:TA_PULSE_WIDTH",
+        "write_user_configuration",
+        "read_user_configuration",
+    ]
+    expected_handoff = {**DEFAULT_USER_CONFIG, "TA_CURRENT_DRV": 4950}
+    assert bench.written_user_configurations == [
+        dict(DEFAULT_USER_CONFIG),
+        expected_handoff,
+    ]
+    report = HtmlRunReport(recorder.run_directory)
+    terminal_result = replace(
+        result,
+        report_paths=(recorder.json_path, report.report_path),
+    )
+    recorder.checkpoint(terminal_result)
+    report.write(request, terminal_result, recorder.json_path)
+    recorder.checkpoint(terminal_result)
+
+    final_json = json.loads(recorder.json_path.read_text(encoding="utf-8"))
+    html = report.report_path.read_text(encoding="utf-8")
+    assert final_json["requested_final_config"] == expected_handoff
+    assert final_json["final_config_readback"] == expected_handoff
+    assert [path.rsplit("/", 1)[-1] for path in final_json["report_paths"]] == [
+        "run.json",
+        "report.html",
+    ]
+    assert "Status: passed" in html
+    assert "Passing tuned User Configuration" in html
+    assert "downward_current" in html
+    assert "4950" in html
+    assert 'href="run.json"' in html
+
+
+def test_end_to_end_upward_ceiling_ncr_restores_defaults_without_handoff(tmp_path):
+    """A ceiling NCR must remain terminal in bench calls, JSON, and the HTML report."""
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", "upward-ceiling-ncr")
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=250.0)]
+        + [_valid_measurement(mean_uj=290.0) for _ in range(10)],
+    )
+    incremental_payloads = []
+    real_preflight = bench.preflight
+
+    def observe_incremental_json(side):
+        incremental_payloads.append(
+            json.loads(recorder.json_path.read_text(encoding="utf-8"))
+        )
+        return real_preflight(side)
+
+    bench.preflight = observe_incremental_json
+    request = _request(output_root=tmp_path, run_id="upward-ceiling-ncr")
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(request)
+
+    assert incremental_payloads[0]["events"][0]["stage"] == "confirmation"
+    persisted_result = json.loads(recorder.json_path.read_text(encoding="utf-8"))
+    assert persisted_result["status"] == "failed_ncr"
+    assert persisted_result["failure_kind"] == "ncr"
+    assert persisted_result["requested_final_config"] is None
+    assert persisted_result["final_config_readback"] is None
+    assert persisted_result["selection"] == {
+        "accepted": False,
+        "decision_kind": "bound",
+        "direction": "upward_pulse",
+        "rationale": (
+            "The 600 us pulse-width bound was reached with energy below 300 uJ, "
+            "so closest-candidate selection was intentionally bypassed."
+        ),
+        "selected_mean_uj": 290.0,
+        "selected_requested_current_ma": 5000,
+        "selected_requested_pulse_width_us": 600,
+    }
+    assert bench.calls[:13] == [
+        "preflight:left",
+        "read_user_configuration",
+        "write_user_configuration",
+        "read_user_configuration",
+        "bring_up_laser_configuration",
+        "read_register:TA_CURRENT_DRV",
+        "read_register:TA_PULSE_WIDTH",
+        "read_register:SEED_CW_GAIN",
+        "read_register:EE_PULSE_WIDTH_UL",
+        "read_register:OPT_PULSE_WIDTH_UL",
+        "read_trigger_rate_hz",
+        "measure_energy",
+        "stop_trigger",
+    ]
+    assert bench.calls[13:17] == [
+        "write_register:EE_PULSE_WIDTH_UL:660",
+        "read_register:EE_PULSE_WIDTH_UL",
+        "write_register:OPT_PULSE_WIDTH_UL:660",
+        "read_register:OPT_PULSE_WIDTH_UL",
+    ]
+    pulse_calls = bench.calls[17:57]
+    expected_pulse_calls = []
+    for pulse_width in (510, 520, 530, 540, 550, 560, 570, 580, 590, 600):
+        expected_pulse_calls.extend(
+            [
+                f"write_register:TA_PULSE_WIDTH:{pulse_width}",
+                "read_register:TA_PULSE_WIDTH",
+                "measure_energy",
+                "stop_trigger",
+            ]
+        )
+    assert pulse_calls == expected_pulse_calls
+    assert bench.calls[57:] == [
+        "write_register:TA_CURRENT_DRV:5000",
+        "read_register:TA_CURRENT_DRV",
+        "write_register:TA_PULSE_WIDTH:500",
+        "read_register:TA_PULSE_WIDTH",
+        "write_register:SEED_CW_GAIN:140",
+        "read_register:SEED_CW_GAIN",
+        "write_register:EE_PULSE_WIDTH_UL:550",
+        "read_register:EE_PULSE_WIDTH_UL",
+        "write_register:OPT_PULSE_WIDTH_UL:550",
+        "read_register:OPT_PULSE_WIDTH_UL",
+    ]
+    assert bench.written_user_configurations == [dict(DEFAULT_USER_CONFIG)]
+    report = HtmlRunReport(recorder.run_directory)
+    terminal_result = replace(
+        result,
+        report_paths=(recorder.json_path, report.report_path),
+    )
+    recorder.checkpoint(terminal_result)
+    report.write(request, terminal_result, recorder.json_path)
+    recorder.checkpoint(terminal_result)
+
+    final_json = json.loads(recorder.json_path.read_text(encoding="utf-8"))
+    html = report.report_path.read_text(encoding="utf-8")
+    assert final_json["status"] == "failed_ncr"
+    assert len(final_json["active_default_restore"]) == 5
+    assert final_json["requested_final_config"] is None
+    assert final_json["final_config_readback"] is None
+    assert "Status: failed_ncr" in html
+    assert "600 us pulse-width ceiling" in html
+    assert "Active default restoration" in html
+    assert "Passing tuned User Configuration" not in html
+    assert "Final User Configuration readback" not in html
+    assert 'href="run.json"' in html

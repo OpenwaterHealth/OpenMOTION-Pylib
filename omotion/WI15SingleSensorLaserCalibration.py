@@ -642,6 +642,8 @@ class SingleSensorLaserCalibrationWorkflow:
             )
             self._recorder.checkpoint(result)
         assert result is not None
+        if failure is None:
+            self._recorder.checkpoint(result)
         return result
 
     @staticmethod
