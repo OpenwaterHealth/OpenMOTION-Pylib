@@ -21,8 +21,10 @@ from omotion.WI15LaserCalibration import (
     OphirIdentity,
     SettingReadback,
     TopologySnapshot,
+    validate_exact_dual_topology,
     validate_exact_single_topology,
 )
+from omotion.WI15DualSensorLaserCalibration import DualPreflightSnapshot
 from omotion.WI15SingleSensorLaserCalibration import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
@@ -483,15 +485,21 @@ class MotionLaserCalibrationBench:
         self._sleep = sleep
         self._started = False
         self._declared_side: str | None = None
+        self._declared_dual = False
+        self._ready_sensor_count = 0
 
-    def _ensure_started(self) -> None:
-        if self._started:
+    def _ensure_started(self, required_sensor_count: int = 1) -> None:
+        if not self._started:
+            self._interface.start(wait=False)
+            self._started = True
+        if self._ready_sensor_count >= required_sensor_count:
             return
-        self._interface.start(wait=False)
-        self._started = True
         self._interface.wait_for_ready(
-            console=True, sensors=1, timeout=self._wait_timeout
+            console=True,
+            sensors=required_sensor_count,
+            timeout=self._wait_timeout,
         )
+        self._ready_sensor_count = required_sensor_count
 
     @staticmethod
     def _safe_call(device, method_name: str):
@@ -562,6 +570,7 @@ class MotionLaserCalibrationBench:
             ophir_failure_reason = str(exc) or exc.__class__.__name__
         topology = self._wait_for_stable_topology()
         self._declared_side = side
+        self._declared_dual = False
         selected = self._interface.left if side == "left" else self._interface.right
         return PreflightSnapshot(
             topology=topology,
@@ -574,10 +583,44 @@ class MotionLaserCalibrationBench:
             ophir_failure_reason=ophir_failure_reason,
         )
 
+    def preflight_dual(self) -> DualPreflightSnapshot:
+        """Preflight the console, both shipping sensors, and common Ophir meter."""
+        self._ensure_started(required_sensor_count=2)
+        ophir_identity = None
+        ophir_evidence = ()
+        ophir_ready = False
+        ophir_failure_reason = None
+        try:
+            ophir_identity, ophir_evidence = self._meter.preflight()
+            ophir_evidence = tuple(ophir_evidence)
+            ophir_ready = True
+        except Exception as exc:
+            ophir_failure_reason = str(exc) or exc.__class__.__name__
+        topology = self._wait_for_stable_topology()
+        self._declared_side = None
+        self._declared_dual = True
+        return DualPreflightSnapshot(
+            topology=topology,
+            console_identity=self._identity("console", self._console),
+            left_sensor_identity=self._identity("left sensor", self._interface.left),
+            right_sensor_identity=self._identity(
+                "right sensor", self._interface.right
+            ),
+            console_responsive=self._console_responsive(),
+            ophir_identity=ophir_identity,
+            ophir_ready=ophir_ready,
+            ophir_setting_evidence=ophir_evidence,
+            ophir_failure_reason=ophir_failure_reason,
+        )
+
     def revalidate_topology(self, side: str) -> TopologySnapshot:
         if side not in ("left", "right"):
             raise ValueError("side must be 'left' or 'right'")
         self._ensure_started()
+        return self._wait_for_stable_topology()
+
+    def revalidate_dual_topology(self) -> TopologySnapshot:
+        self._ensure_started(required_sensor_count=2)
         return self._wait_for_stable_topology()
 
     def read_user_configuration(self) -> Mapping[str, float]:
@@ -653,8 +696,14 @@ class MotionLaserCalibrationBench:
             raise RuntimeError(
                 "TA pulse width must be finite and below both active safety limits"
             )
-        if self._declared_side is None or not validate_exact_single_topology(
-            self._wait_for_stable_topology(), self._declared_side
+        topology = self._wait_for_stable_topology()
+        if self._declared_dual:
+            if not validate_exact_dual_topology(topology).passed:
+                raise RuntimeError(
+                    "Motion topology must match the exact declared dual topology before firing"
+                )
+        elif self._declared_side is None or not validate_exact_single_topology(
+            topology, self._declared_side
         ).passed:
             raise RuntimeError(
                 "Motion topology must match the exact declared topology before firing"

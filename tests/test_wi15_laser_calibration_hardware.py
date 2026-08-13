@@ -242,6 +242,37 @@ def test_preflight_waits_for_console_and_one_sensor_then_reports_exact_topology(
     ]
 
 
+def test_dual_preflight_waits_for_two_sensors_and_reports_both_identities():
+    """Waiting for only one module would authorize an incomplete shipping topology."""
+    bench, interface, _ = _bench((True, True, True))
+
+    snapshot = bench.preflight_dual()
+
+    assert interface.calls[:2] == [
+        ("interface.start", {"wait": False}),
+        (
+            "interface.wait_for_ready",
+            {"console": True, "sensors": 2, "timeout": 3.5},
+        ),
+    ]
+    assert snapshot.topology.left_connected is True
+    assert snapshot.topology.right_connected is True
+    assert snapshot.left_sensor_identity.serial == "left-serial"
+    assert snapshot.right_sensor_identity.serial == "right-serial"
+    assert snapshot.ophir_ready is True
+
+
+def test_dual_topology_revalidation_returns_the_current_quiet_snapshot():
+    bench, interface, _ = _bench((True, True, True))
+    bench.preflight_dual()
+    interface.right.connected = False
+
+    snapshot = bench.revalidate_dual_topology()
+
+    assert snapshot.left_connected is True
+    assert snapshot.right_connected is False
+
+
 def test_preflight_captures_quiet_topology_after_late_sensor_arrives_during_ophir_setup():
     """Sampling before Ophir setup would miss a deterministic late opposite sensor."""
     interface = FakeInterface((True, True, False))
@@ -1220,6 +1251,22 @@ def _firing_bench():
     return bench, interface, meter, calls
 
 
+def _dual_firing_bench():
+    calls = []
+    interface = SafetyInterface(calls)
+    interface.right.connected = True
+    meter = FakeMeter(calls)
+    bench = MotionLaserCalibrationBench(
+        meter,
+        interface_factory=lambda: interface,
+        fpga_map=SafetyMap(),
+        topology_quiet_period_s=0.0,
+    )
+    bench.preflight_dual()
+    calls.clear()
+    return bench, interface, meter, calls
+
+
 def test_measure_energy_verifies_exact_rate_and_both_limits_before_guaranteed_trigger_stop():
     bench, _, _, calls = _firing_bench()
 
@@ -1246,6 +1293,19 @@ def test_measure_energy_revalidates_declared_topology_before_firing_authorizatio
     with pytest.raises(RuntimeError, match="exact declared topology"):
         bench.measure_energy()
 
+    assert "start_trigger" not in calls
+
+
+def test_dual_measurement_allows_exact_pair_and_rejects_a_missing_side_before_firing():
+    bench, interface, _, calls = _dual_firing_bench()
+
+    assert bench.measure_energy().mean_uj == 350.0
+    assert "start_trigger" in calls
+
+    calls.clear()
+    interface.left.connected = False
+    with pytest.raises(RuntimeError, match="exact declared dual topology"):
+        bench.measure_energy()
     assert "start_trigger" not in calls
 
 
