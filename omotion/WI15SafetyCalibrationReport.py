@@ -19,6 +19,16 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
         result_data = json_safe_value(result)
         if not isinstance(request_data, dict) or not isinstance(result_data, dict):
             raise TypeError("WI15 safety report inputs must be dataclass-like records.")
+        nested_request = request_data.get("request")
+        if isinstance(nested_request, dict):
+            request_data = {
+                **nested_request,
+                **{
+                    key: value
+                    for key, value in request_data.items()
+                    if key != "request"
+                },
+            }
 
         status = result_data.get("status", "unknown")
         failure_reason = result_data.get("failure_reason")
