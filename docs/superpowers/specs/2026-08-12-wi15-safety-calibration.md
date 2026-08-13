@@ -265,8 +265,18 @@ gates in UI code.
   `scripts/wi15_safety_calibration.py`.
 
 The automated domain, workflow, adapter, report, and operator-script tests pass
-against simulated hardware. A supervised run on representative single- and
-dual-sensor hardware remains required before this procedure is released for
-production use. That verification must confirm scaled ADC register semantics,
-disconnect/reconnect observation, configuration persistence, ordinary scan
-duration, and live laser-safety telemetry.
+against simulated hardware. A live dual-sensor execution passed on 2026-08-13
+using run `WI-00015-20260813T204811Z` and commit `712199f`. Ten accepted samples
+per controller produced an OPT mean of 1991.874 mA and rounded 1.3x limit of
+2589 mA, plus an EE mean of 4163.610 mA and rounded 1.1x limit of 4580 mA. The
+complete immediate readback matched the intended configuration. The procedure
+then observed console disconnection, measured 15.000 seconds off, reconnected
+to the same `ZZZ99Z99999` console, and verified an identical complete persisted
+configuration. The ordinary dual-sensor scan requested 30 seconds with no
+overrides, completed without cancellation or error after normal pipeline
+drain, recorded 34 known-clear safety observations, and finalized both JSON and
+HTML artifacts with a passing disposition.
+
+A representative single-sensor live run remains required before production
+release for that shipping topology. It must exercise the same persistence,
+ordinary-scan, topology, and live laser-safety gates without overrides.
