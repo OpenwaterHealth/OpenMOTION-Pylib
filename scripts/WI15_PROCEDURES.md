@@ -32,8 +32,11 @@ The safety script asks for the declared shipping topology before constructing
 hardware. Connect exactly that topology for the final normal scan; the sensor
 modules may remain connected during the console-only ADC portion. The script
 does not use an external energy meter. During the persistence check it asks
-the operator to power the console off, independently observes disconnection,
-measures at least 15 seconds, and only then asks the operator to restore power.
+the operator to confirm readiness while the console is still connected, starts
+observing, and then instructs the operator to power the console off. It
+independently observes disconnection, measures at least 15 seconds, and uses
+the same observe-before-action sequence when asking the operator to restore
+power.
 
 Keep the console plus both left and right sensor modules connected. The dual
 script asks the operator to move the identified sensor module into the Ophir

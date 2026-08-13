@@ -239,20 +239,35 @@ def test_manual_power_cycle_observes_disconnect_before_measured_dwell_and_power_
     assert evidence.off_duration_s == pytest.approx(15.0)
     assert prompts[0][1] == 0.0
     assert "power off" in prompts[0][0].lower()
+    assert "after confirming" in prompts[0][0].lower()
     assert prompts[1][1] == pytest.approx(16.0)
     assert "power on" in prompts[1][0].lower()
+    assert "after confirming" in prompts[1][0].lower()
     assert evidence.console_serial_before == "C-1"
     assert evidence.console_serial_after == "C-1"
     assert any("15-second" in message for message in outputs)
+    assert any(
+        "now switch console main power off" in message.lower()
+        and "waiting up to 5 seconds" in message.lower()
+        and "console disconnection" in message.lower()
+        for message in outputs
+    )
+    assert any(
+        "now switch console main power on" in message.lower()
+        and "waiting up to 5 seconds" in message.lower()
+        and "console reconnection" in message.lower()
+        for message in outputs
+    )
 
 
 def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect():
     script = load_script()
     clock = FakeClock()
     prompts = []
+    outputs = []
     coordinator = script.ManualPowerCycleCoordinator(
         input_func=lambda prompt: prompts.append(prompt) or "yes",
-        output_func=lambda _message: None,
+        output_func=outputs.append,
         clock=clock,
         wall_clock=lambda: 2_000.0 + clock.now,
         sleep=clock.sleep,
@@ -273,6 +288,11 @@ def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect()
     assert evidence.off_duration_s is None
     assert len(prompts) == 1
     assert all("power on" not in prompt.lower() for prompt in prompts)
+    assert any(
+        "console remained connected" in message.lower()
+        and "1-second timeout" in message.lower()
+        for message in outputs
+    )
 
 
 @pytest.mark.parametrize(

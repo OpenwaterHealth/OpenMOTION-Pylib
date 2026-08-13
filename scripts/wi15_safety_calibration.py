@@ -122,7 +122,9 @@ class ManualPowerCycleCoordinator:
             "6A. Console power-off: laser and scan activity are stopped."
         )
         if not _confirmed(
-            "Please switch console power OFF, then confirm [y/N]: ", self._input
+            "Ready for the observed power-off step? After confirming, immediately "
+            "switch console main power OFF [y/N]: ",
+            self._input,
         ):
             return PowerCycleEvidence(
                 off_requested_at,
@@ -139,11 +141,18 @@ class ManualPowerCycleCoordinator:
                 None,
             )
 
+        self._output(
+            f"Now switch console main power OFF. Waiting up to "
+            f"{self._disconnect_timeout_s:g} seconds for Motion to observe console "
+            "disconnection."
+        )
         if not self._wait_for_state(
             is_console_connected, False, self._disconnect_timeout_s
         ):
             self._output(
-                "Console disconnection was not observed; power restoration was not requested."
+                f"Console remained connected through the "
+                f"{self._disconnect_timeout_s:g}-second timeout; power restoration "
+                "was not requested."
             )
             return PowerCycleEvidence(
                 off_requested_at,
@@ -174,8 +183,8 @@ class ManualPowerCycleCoordinator:
         on_requested_at = self._utc_now()
         off_duration_s = self._clock() - disconnected_at_clock
         if not _confirmed(
-            "The measured off interval is complete. Please switch console power ON, "
-            "then confirm [y/N]: ",
+            "The measured off interval is complete. Ready to restore power? After "
+            "confirming, immediately switch console main power ON [y/N]: ",
             self._input,
         ):
             return PowerCycleEvidence(
@@ -193,6 +202,11 @@ class ManualPowerCycleCoordinator:
                 None,
             )
 
+        self._output(
+            f"Now switch console main power ON. Waiting up to "
+            f"{self._reconnect_timeout_s:g} seconds for Motion to observe console "
+            "reconnection."
+        )
         if not self._wait_for_state(
             is_console_connected, True, self._reconnect_timeout_s
         ):

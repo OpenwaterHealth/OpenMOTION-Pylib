@@ -157,10 +157,13 @@ highlighted comparison.
 ## 10. Power-cycle persistence verification
 
 1. Stop all laser/scan activity.
-2. Power the unit off using the configured power-cycle adapter or an
-   operator-confirmed manual cycle.
+2. For a manual cycle, have the operator confirm readiness while the unit is
+   still connected, begin connection-state observation, and only then instruct
+   the operator to power the unit off. Do not require the operator to complete
+   the power transition before observation begins.
 3. Keep power off for at least 15 measured seconds.
-4. Restore power and wait for the console to reconnect.
+4. After the dwell, again begin observation before instructing the operator to
+   restore power, then wait for the console to reconnect.
 5. Use firmware uptime or equivalent evidence to prove a restart occurred.
 6. Read the complete User Configuration.
 7. Require every intended key/value to be unchanged.
