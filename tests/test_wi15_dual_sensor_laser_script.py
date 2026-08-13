@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -188,6 +189,31 @@ def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, exit_
         monkeypatch, tmp_path, result(status)
     )
     assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == exit_code
+
+
+def test_terminal_failure_prints_the_structured_category_and_exact_reason(
+    monkeypatch, tmp_path
+):
+    terminal_result = replace(
+        result(ProcedureStatus.FAILED),
+        failure_kind=FailureKind.SETUP,
+        failure_reason="Right-sensor serial must be nonblank text.",
+    )
+    script, _recorder, _meter, _bench, _captured = configured_script(
+        monkeypatch, tmp_path, terminal_result
+    )
+    messages = []
+
+    exit_code = script.main(
+        complete_args(tmp_path),
+        input_func=lambda _: "yes",
+        output_func=messages.append,
+    )
+
+    assert exit_code == 1
+    assert "Terminal status: failed" in messages
+    assert "Failure category: setup" in messages
+    assert "Failure reason: Right-sensor serial must be nonblank text." in messages
 
 
 def test_metadata_prompts_finish_before_hardware_construction(monkeypatch, tmp_path):
