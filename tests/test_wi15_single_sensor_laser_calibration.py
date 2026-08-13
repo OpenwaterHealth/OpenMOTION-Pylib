@@ -9,6 +9,7 @@ from omotion.WI15LaserCalibration import (
     DeviceIdentity,
     OphirIdentity,
     ProcedureStatus,
+    SettingReadback,
     TopologySnapshot,
 )
 
@@ -80,15 +81,20 @@ def _preflight(
     topology=TopologySnapshot(True, True, False),
     console_serial="console-1",
     sensor_serial="sensor-1",
+    console_responsive=True,
     ophir_ready=True,
+    ophir_identity=OphirIdentity("meter", "meter-1", "sensor", "ophir-1", "2027-01-01"),
+    ophir_setup_readbacks=(SettingReadback("ophir_range", 1.0, 1.0),),
     ophir_failure_reason=None,
 ):
     return PreflightSnapshot(
         topology=topology,
         console_identity=DeviceIdentity("console", console_serial, "1.0", "console-hw"),
         selected_sensor_identity=DeviceIdentity("sensor", sensor_serial, "1.0", "sensor-hw"),
-        ophir_identity=OphirIdentity("meter", "meter-1", "sensor", "ophir-1", "2027-01-01"),
+        ophir_identity=ophir_identity,
         ophir_ready=ophir_ready,
+        console_responsive=console_responsive,
+        ophir_setup_readbacks=ophir_setup_readbacks,
         ophir_failure_reason=ophir_failure_reason,
     )
 
@@ -187,6 +193,52 @@ def test_preflight_returns_an_ophir_failure_as_a_structured_setup_result():
     assert recorder.checkpoints == [result]
 
 
+@pytest.mark.parametrize("console_responsive", [False, None])
+def test_preflight_requires_an_explicitly_responsive_console(console_responsive):
+    """A connected-but-unresponsive console cannot safely authorize a run."""
+    snapshot = _preflight(console_responsive=console_responsive)
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_reason == "Console must be responsive before continuing."
+    assert bench.calls == ["preflight:left", "stop_trigger"]
+    assert recorder.checkpoints == [result]
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"ophir_identity": None}, "Ophir identity must be present."),
+        ({"ophir_setup_readbacks": ()}, "Ophir setup readbacks must be present."),
+        (
+            {
+                "ophir_identity": OphirIdentity(
+                    "meter", None, "sensor", "ophir-1", "2027-01-01"
+                )
+            },
+            "Ophir identity fields must be nonblank text.",
+        ),
+    ],
+)
+def test_preflight_requires_complete_ophir_identity_and_setup_readbacks(
+    changes, reason
+):
+    """Incomplete Ophir evidence must not authorize configuration or firing."""
+    snapshot = _preflight(**changes)
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_reason == reason
+    assert bench.calls == ["preflight:left", "stop_trigger"]
+    assert recorder.checkpoints == [result]
+
+
 def test_preflight_exception_becomes_a_checkpointed_setup_failure_and_stops_trigger():
     """Leaking a bench preflight exception would skip the procedure evidence."""
     bench = FakeLaserBench([RuntimeError("meter startup failed")])
@@ -212,6 +264,7 @@ def test_completed_ophir_preflight_precedes_later_configuration_or_measurement_w
     assert result.topology == snapshot.topology
     assert result.identities == (snapshot.console_identity, snapshot.selected_sensor_identity)
     assert result.ophir_identity == snapshot.ophir_identity
+    assert result.ophir_setup_readbacks == snapshot.ophir_setup_readbacks
     assert [event.stage for event in result.events] == ["confirmation", "preflight"]
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == []

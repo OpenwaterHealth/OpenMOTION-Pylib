@@ -46,8 +46,10 @@ class PreflightSnapshot:
     topology: TopologySnapshot
     console_identity: DeviceIdentity
     selected_sensor_identity: DeviceIdentity
+    console_responsive: bool
     ophir_identity: OphirIdentity | None
     ophir_ready: bool
+    ophir_setup_readbacks: tuple[SettingReadback, ...]
     ophir_failure_reason: str | None = None
 
 
@@ -60,6 +62,7 @@ class SingleSensorLaserCalibrationResult:
     topology: TopologySnapshot | None = None
     identities: tuple[DeviceIdentity, ...] = ()
     ophir_identity: OphirIdentity | None = None
+    ophir_setup_readbacks: tuple[SettingReadback, ...] = ()
     pre_existing_config: Mapping[str, float] | None = None
     requested_default_config: Mapping[str, float] | None = None
     default_config_readback: Mapping[str, float] | None = None
@@ -121,6 +124,11 @@ class SingleSensorLaserCalibrationWorkflow:
             topology_result = validate_exact_single_topology(preflight.topology, side)
             if not topology_result.passed:
                 raise _ProcedureFailure(FailureKind.SETUP, topology_result.detail)
+            if not preflight.console_responsive:
+                raise _ProcedureFailure(
+                    FailureKind.SETUP,
+                    "Console must be responsive before continuing.",
+                )
             if not validate_serial(preflight.console_identity.serial).passed:
                 raise _ProcedureFailure(
                     FailureKind.SETUP, "Console serial must be nonblank text."
@@ -135,6 +143,20 @@ class SingleSensorLaserCalibrationWorkflow:
                     FailureKind.SETUP,
                     preflight.ophir_failure_reason or "Ophir preflight failed.",
                 )
+            if preflight.ophir_identity is None:
+                raise _ProcedureFailure(
+                    FailureKind.SETUP, "Ophir identity must be present."
+                )
+            if not self._has_complete_ophir_identity(preflight.ophir_identity):
+                raise _ProcedureFailure(
+                    FailureKind.SETUP,
+                    "Ophir identity fields must be nonblank text.",
+                )
+            if not preflight.ophir_setup_readbacks:
+                raise _ProcedureFailure(
+                    FailureKind.SETUP,
+                    "Ophir setup readbacks must be present.",
+                )
             return SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
                 side=side,
@@ -144,6 +166,7 @@ class SingleSensorLaserCalibrationWorkflow:
                     preflight.selected_sensor_identity,
                 ),
                 ophir_identity=preflight.ophir_identity,
+                ophir_setup_readbacks=preflight.ophir_setup_readbacks,
                 events=tuple(events),
             )
         except _ProcedureFailure as failure:
@@ -179,6 +202,19 @@ class SingleSensorLaserCalibrationWorkflow:
         events.append(event)
         self._recorder.record(event)
 
+    @staticmethod
+    def _has_complete_ophir_identity(identity: OphirIdentity) -> bool:
+        return all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (
+                identity.meter_model,
+                identity.meter_serial,
+                identity.sensor_model,
+                identity.sensor_serial,
+                identity.calibration_due,
+            )
+        )
+
     def _failed_result(
         self,
         events: list[ProcedureEvent],
@@ -199,5 +235,8 @@ class SingleSensorLaserCalibrationWorkflow:
                 else ()
             ),
             ophir_identity=preflight.ophir_identity if preflight else None,
+            ophir_setup_readbacks=(
+                preflight.ophir_setup_readbacks if preflight else ()
+            ),
             events=tuple(events),
         )
