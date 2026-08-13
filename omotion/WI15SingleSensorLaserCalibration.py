@@ -263,13 +263,10 @@ class SingleSensorLaserCalibrationWorkflow:
                     or item.actual != requested
                 ):
                     return False
-            elif item.applicability is OphirEvidenceApplicability.APPLICABLE:
-                if item.actual != requested:
-                    return False
-            elif item.applicability is OphirEvidenceApplicability.NOT_APPLICABLE:
-                if item.actual is not None:
-                    return False
-            else:
+            elif (
+                item.applicability is not OphirEvidenceApplicability.NOT_APPLICABLE
+                or item.actual is not None
+            ):
                 return False
         return True
 

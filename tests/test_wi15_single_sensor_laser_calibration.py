@@ -353,6 +353,56 @@ def test_preflight_rejects_invalid_ophir_setting_evidence(evidence):
     assert recorder.checkpoints == [result]
 
 
+@pytest.mark.parametrize(
+    ("display_applicability", "graph_applicability"),
+    [
+        (
+            OphirEvidenceApplicability.APPLICABLE,
+            OphirEvidenceApplicability.NOT_APPLICABLE,
+        ),
+        (
+            OphirEvidenceApplicability.NOT_APPLICABLE,
+            OphirEvidenceApplicability.APPLICABLE,
+        ),
+        (
+            OphirEvidenceApplicability.APPLICABLE,
+            OphirEvidenceApplicability.APPLICABLE,
+        ),
+    ],
+    ids=["display-applicable", "graph-applicable", "both-applicable"],
+)
+def test_preflight_rejects_non_direct_streaming_optional_ophir_evidence(
+    display_applicability, graph_applicability
+):
+    """Direct streaming requires both display-only settings to be inapplicable."""
+    evidence = _valid_ophir_setting_evidence()
+    evidence = evidence[:5] + (
+        replace(
+            evidence[5],
+            actual=3 if display_applicability is OphirEvidenceApplicability.APPLICABLE else None,
+            applicability=display_applicability,
+        ),
+        replace(
+            evidence[6],
+            actual="Statistics"
+            if graph_applicability is OphirEvidenceApplicability.APPLICABLE
+            else None,
+            applicability=graph_applicability,
+        ),
+    )
+    snapshot = _preflight(ophir_setting_evidence=evidence)
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_reason == "Ophir setting evidence is incomplete or invalid."
+    assert result.ophir_setting_evidence == evidence
+    assert bench.calls == ["preflight:left", "stop_trigger"]
+    assert recorder.checkpoints == [result]
+
+
 def test_preflight_exception_becomes_a_checkpointed_setup_failure_and_stops_trigger():
     """Leaking a bench preflight exception would skip the procedure evidence."""
     bench = FakeLaserBench([RuntimeError("meter startup failed")])
