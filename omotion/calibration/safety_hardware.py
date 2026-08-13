@@ -7,11 +7,14 @@ import math
 import time
 from typing import Callable, Mapping, Protocol
 
-from omotion.MotionConfig import MotionConfig
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ScanRequest
-from .laser import DeviceIdentity, SettingReadback, TopologySnapshot
-from .laser_hardware import FpgaRegisterIO, read_console_fpga_firmware_revisions
+from .laser import DeviceIdentity
+from .motion_bench import (
+    FpgaRegisterIO,
+    MotionConsoleBenchBase,
+    default_interface_factory as _default_interface_factory,
+)
 from .safety import (
     NormalScanEvidence,
     PowerCycleEvidence,
@@ -21,10 +24,6 @@ from .safety import (
     validate_shipping_topology,
 )
 from .safety_workflow import ConsolePreflightSnapshot
-
-
-def _default_interface_factory() -> MotionInterface:
-    return MotionInterface()
 
 
 class PowerCycleCoordinator(Protocol):
@@ -40,7 +39,7 @@ class PowerCycleCoordinator(Protocol):
     ) -> PowerCycleEvidence: ...
 
 
-class MotionSafetyCalibrationBench:
+class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
     """One long-lived Motion session for console calibration and final scan."""
 
     _ADC_REGISTER_NAMES: Mapping[SafetyController, str] = {
@@ -115,48 +114,6 @@ class MotionSafetyCalibrationBench:
         self._console_ready = True
         self._ready_sensor_count = max(self._ready_sensor_count, required_sensor_count)
 
-    @staticmethod
-    def _safe_call(device, method_name: str):
-        try:
-            return getattr(device, method_name)()
-        except Exception:
-            return None
-
-    def _identity(self, role: str, device) -> DeviceIdentity:
-        return DeviceIdentity(
-            role=role,
-            serial=self._safe_call(device, "read_serial_number"),
-            firmware=self._safe_call(device, "get_version"),
-            hardware_id=self._safe_call(device, "get_hardware_id"),
-        )
-
-    def _console_identity(self) -> DeviceIdentity:
-        identity = self._identity("console", self._console)
-        return DeviceIdentity(
-            role=identity.role,
-            serial=identity.serial,
-            firmware=identity.firmware,
-            hardware_id=identity.hardware_id,
-            fpga_firmware=identity.fpga_firmware,
-            fpga_firmware_revisions=read_console_fpga_firmware_revisions(
-                self._registers
-            ),
-        )
-
-    def _topology_snapshot(self) -> TopologySnapshot:
-        return TopologySnapshot(
-            console_connected=bool(self._console.is_connected()),
-            left_connected=bool(self._interface.left.is_connected()),
-            right_connected=bool(self._interface.right.is_connected()),
-        )
-
-    def _console_responsive(self) -> bool:
-        try:
-            echoed, length = self._console.echo(b"WI15")
-            return echoed == b"WI15" and length == 4
-        except Exception:
-            return False
-
     def preflight_console(self) -> ConsolePreflightSnapshot:
         self._ensure_started(required_sensor_count=0)
         return ConsolePreflightSnapshot(
@@ -164,59 +121,6 @@ class MotionSafetyCalibrationBench:
             console_identity=self._console_identity(),
             console_responsive=self._console_responsive(),
         )
-
-    def read_user_configuration(self) -> Mapping[str, object]:
-        config = self._console.read_config()
-        if not isinstance(config, MotionConfig) or not isinstance(config.json_data, dict):
-            raise RuntimeError("Complete MotionConfig readback was not returned")
-        return dict(config.json_data)
-
-    def write_user_configuration(
-        self, configuration: Mapping[str, object]
-    ) -> Mapping[str, object] | None:
-        write_result = self._console.write_config(
-            MotionConfig(json_data=dict(configuration))
-        )
-        if not isinstance(write_result, MotionConfig):
-            return None
-        try:
-            return self.read_user_configuration()
-        except Exception:
-            return None
-
-    def bring_up_laser_configuration(self) -> None:
-        if not self._interface.apply_laser_power():
-            raise RuntimeError("Laser configuration bring-up failed")
-
-    def read_register(self, name: str) -> float:
-        return self._registers.read(name)
-
-    def read_trigger_rate_hz(self) -> float:
-        response = self._console.get_trigger_json()
-        if not isinstance(response, dict) or "TriggerFrequencyHz" not in response:
-            raise RuntimeError("Trigger-frequency readback was unavailable")
-        rate = float(response["TriggerFrequencyHz"])
-        if not math.isfinite(rate):
-            raise RuntimeError("Trigger-frequency readback was not finite")
-        return rate
-
-    def write_trigger_rate_hz(self, rate_hz: float) -> SettingReadback | None:
-        requested = float(rate_hz)
-        try:
-            current = self._console.get_trigger_json()
-            if not isinstance(current, dict):
-                return None
-            updated = dict(current)
-            updated["TriggerFrequencyHz"] = requested
-            if not self._console.set_trigger_json(updated):
-                return None
-            response = self._console.get_trigger_json()
-            if not isinstance(response, dict) or "TriggerFrequencyHz" not in response:
-                return None
-            actual = float(response["TriggerFrequencyHz"])
-        except Exception:
-            return None
-        return SettingReadback("trigger_rate_hz_write", requested, actual)
 
     def start_trigger(self) -> None:
         rate_hz = self.read_trigger_rate_hz()
