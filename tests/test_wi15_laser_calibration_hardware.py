@@ -634,6 +634,103 @@ def test_ophir_preflight_fails_when_any_setting_does_not_read_back(setting):
         meter.preflight()
 
 
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["missing_sensor", "incomplete_identity", "setting_mismatch"],
+)
+def test_failed_post_open_preflight_closes_handle_and_cannot_measure(failure_kind):
+    meter, com, _ = _ophir_meter()
+    if failure_kind == "missing_sensor":
+        com.sensor_exists = False
+    elif failure_kind == "incomplete_identity":
+        com.device_due = None
+    else:
+        com.ignore_set.add("Ranges")
+
+    with pytest.raises(RuntimeError):
+        meter.preflight()
+
+    assert ("Close", 17) in com.calls
+    assert meter._preflight_passed is False
+    assert meter._handle is None
+    com.calls.clear()
+    with pytest.raises(RuntimeError, match="preflight must pass"):
+        meter.measure()
+    assert not any(
+        isinstance(call, tuple) and call[0] == "StartStream" for call in com.calls
+    )
+
+
+def test_failed_repreflight_cannot_inherit_prior_success_or_measure():
+    meter, com, _ = _ophir_meter()
+    meter.preflight()
+    com.sensor_exists = False
+    com.calls.clear()
+
+    with pytest.raises(RuntimeError, match="channel 0 energy sensor"):
+        meter.preflight()
+
+    assert ("Close", 17) in com.calls
+    assert meter._preflight_passed is False
+    assert meter._handle is None
+    com.calls.clear()
+    with pytest.raises(RuntimeError, match="preflight must pass"):
+        meter.measure()
+    assert not any(
+        isinstance(call, tuple) and call[0] == "StartStream" for call in com.calls
+    )
+
+
+def test_failed_post_open_preflight_preserves_primary_error_when_close_raises():
+    meter, com, _ = _ophir_meter()
+    com.sensor_exists = False
+
+    def fail_close(handle):
+        com.calls.append(("Close", handle))
+        raise OSError("close also failed")
+
+    com.Close = fail_close
+
+    with pytest.raises(RuntimeError, match="channel 0 energy sensor"):
+        meter.preflight()
+
+    assert meter._preflight_passed is False
+    assert meter._handle is None
+    with pytest.raises(RuntimeError, match="preflight must pass"):
+        meter.measure()
+
+
+@pytest.mark.parametrize(
+    ("setting", "options"),
+    [
+        ("Ranges", ["10.0mJ", "2", "200uJ"]),
+        ("Ranges", ["10.0mJ", "2ms", "200uJ"]),
+        ("Ranges", ["10.0mJ", "2.0mJ?", "200uJ"]),
+        ("PulseLengths", ["1", "5.0ms"]),
+        ("PulseLengths", ["1.0mJ", "5.0ms"]),
+        ("PulseLengths", ["1.0ms?", "5.0ms"]),
+    ],
+)
+def test_ophir_preflight_rejects_unitless_wrong_unit_and_malformed_range_or_pulse(
+    setting, options
+):
+    meter, com, _ = _ophir_meter()
+    com.settings[setting] = [0, options]
+
+    with pytest.raises(RuntimeError, match="option is unavailable"):
+        meter.preflight()
+
+
+def test_ophir_preflight_preserves_documented_unitless_wavelength_labels():
+    meter, com, _ = _ophir_meter()
+    assert com.settings["Wavelengths"][1][3] == "795"
+
+    _, evidence = meter.preflight()
+
+    wavelength = next(item for item in evidence if item.name == "wavelength_nm")
+    assert wavelength.actual == 795
+
+
 def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statistics():
     meter, com, _ = _ophir_meter()
     meter.preflight()
@@ -698,6 +795,35 @@ def test_ophir_close_stops_streams_and_closes_open_device():
         ("Close", 17),
         "CloseAll",
     ]
+
+
+@pytest.mark.parametrize("failing_cleanup", ["StopStream", "Close"])
+def test_ophir_close_clears_measurement_authorization_and_handle_when_cleanup_raises(
+    failing_cleanup,
+):
+    meter, com, _ = _ophir_meter()
+    meter.preflight()
+    com.calls.clear()
+    original = getattr(com, failing_cleanup)
+
+    def fail_cleanup(*args):
+        original(*args)
+        raise OSError(f"{failing_cleanup} failed")
+
+    setattr(com, failing_cleanup, fail_cleanup)
+
+    with pytest.raises(OSError, match=f"{failing_cleanup} failed"):
+        meter.close()
+
+    assert meter._preflight_passed is False
+    assert meter._handle is None
+    com.calls.clear()
+    with pytest.raises(RuntimeError, match="preflight must pass"):
+        meter.measure()
+    assert com.calls == []
+    setattr(com, failing_cleanup, original)
+    meter.close()
+    assert com.calls == ["StopAllStreams", "CloseAll"]
 
 
 class SafetyMap:

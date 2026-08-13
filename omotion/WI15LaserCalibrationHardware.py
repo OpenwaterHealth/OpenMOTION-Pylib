@@ -65,6 +65,7 @@ class OphirEnergyMeter:
         self._sleep = sleep
         self._com = None
         self._handle = None
+        self._preflight_passed = False
 
     def _ensure_com(self):
         if self._com is not None:
@@ -87,15 +88,33 @@ class OphirEnergyMeter:
         return text
 
     @staticmethod
-    def _option_number(option, expected_unit: str | None = None) -> float | None:
+    def _option_number(
+        option,
+        expected_unit: str | None = None,
+        *,
+        allow_unitless: bool = False,
+    ) -> float | None:
         text = str(option).strip().lower().replace(" ", "")
         match = re.fullmatch(r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))([a-z%]*)", text)
         if match is None:
             return None
         unit = match.group(2)
-        if expected_unit is not None and unit not in ("", expected_unit):
+        if expected_unit is not None and unit != expected_unit:
+            if not (allow_unitless and unit == ""):
+                return None
+        elif expected_unit is None and unit:
             return None
         return float(match.group(1))
+
+    def _close_handle_best_effort(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if self._com is None or handle is None:
+            return
+        try:
+            self._com.Close(handle)
+        except Exception:
+            pass
 
     @staticmethod
     def _options_response(response, setting_name: str) -> tuple[int, list]:
@@ -150,6 +169,8 @@ class OphirEnergyMeter:
         )
 
     def preflight(self) -> tuple[OphirIdentity, tuple[OphirSettingEvidence, ...]]:
+        self._preflight_passed = False
+        self._close_handle_best_effort()
         com = self._ensure_com()
         serials = com.ScanUSB()
         if not serials:
@@ -165,98 +186,105 @@ class OphirEnergyMeter:
         ):
             raise RuntimeError("Ophir meter did not return a valid handle")
         self._handle = handle
-        if not com.IsSensorExists(handle, self._CHANNEL):
-            raise RuntimeError("Ophir channel 0 energy sensor is missing")
-
         try:
-            device_info = com.GetDeviceInfo(handle)
-            sensor_info = com.GetSensorInfo(handle, self._CHANNEL)
-            if len(device_info) < 3 or len(sensor_info) < 3:
-                raise ValueError
-            meter_model = self._required_text(device_info[0])
-            meter_serial = self._required_text(device_info[2])
-            sensor_serial = self._required_text(sensor_info[0])
-            sensor_model = self._required_text(sensor_info[2])
-            device_due = self._required_text(com.GetDeviceCalibrationDueDate(handle))
-            sensor_due = self._required_text(
-                com.GetSensorCalibrationDueDate(handle, self._CHANNEL)
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                "Ophir identity and calibration due information is incomplete"
-            ) from exc
+            if not com.IsSensorExists(handle, self._CHANNEL):
+                raise RuntimeError("Ophir channel 0 energy sensor is missing")
 
-        evidence = (
-            self._configure_setting(
-                name="measurement_mode",
-                requested="Energy",
-                getter_name="GetMeasurementMode",
-                setter_name="SetMeasurementMode",
-                matches=lambda option: str(option).strip().lower() == "energy",
-                actual_value=lambda option: "Energy",
-            ),
-            self._configure_setting(
-                name="range_mj",
-                requested=2.0,
-                getter_name="GetRanges",
-                setter_name="SetRange",
-                matches=lambda option: self._option_number(option, "mj") == 2.0,
-                actual_value=lambda option: 2.0,
-            ),
-            self._configure_setting(
-                name="wavelength_nm",
-                requested=795,
-                getter_name="GetWavelengths",
-                setter_name="SetWavelength",
-                matches=lambda option: self._option_number(option, "nm") == 795.0,
-                actual_value=lambda option: 795,
-            ),
-            self._configure_setting(
-                name="pulse_length_ms",
-                requested=1.0,
-                getter_name="GetPulseLengths",
-                setter_name="SetPulseLength",
-                matches=lambda option: self._option_number(option, "ms") == 1.0,
-                actual_value=lambda option: 1.0,
-            ),
-            self._configure_setting(
-                name="threshold",
-                requested="minimum_available",
-                getter_name="GetThreshold",
-                setter_name="SetThreshold",
-                matches=lambda option: (
-                    str(option).strip().lower() in ("min", "minimum")
+            try:
+                device_info = com.GetDeviceInfo(handle)
+                sensor_info = com.GetSensorInfo(handle, self._CHANNEL)
+                if len(device_info) < 3 or len(sensor_info) < 3:
+                    raise ValueError
+                meter_model = self._required_text(device_info[0])
+                meter_serial = self._required_text(device_info[2])
+                sensor_serial = self._required_text(sensor_info[0])
+                sensor_model = self._required_text(sensor_info[2])
+                device_due = self._required_text(
+                    com.GetDeviceCalibrationDueDate(handle)
+                )
+                sensor_due = self._required_text(
+                    com.GetSensorCalibrationDueDate(handle, self._CHANNEL)
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Ophir identity and calibration due information is incomplete"
+                ) from exc
+
+            evidence = (
+                self._configure_setting(
+                    name="measurement_mode",
+                    requested="Energy",
+                    getter_name="GetMeasurementMode",
+                    setter_name="SetMeasurementMode",
+                    matches=lambda option: str(option).strip().lower() == "energy",
+                    actual_value=lambda option: "Energy",
                 ),
-                actual_value=lambda option: "minimum_available",
-            ),
-            OphirSettingEvidence(
-                "display_averaging_s",
-                3,
-                None,
-                OphirEvidenceApplicability.NOT_APPLICABLE,
-                True,
-            ),
-            OphirSettingEvidence(
-                "graph_mode",
-                "Statistics",
-                None,
-                OphirEvidenceApplicability.NOT_APPLICABLE,
-                True,
-            ),
-        )
-        return (
-            OphirIdentity(
+                self._configure_setting(
+                    name="range_mj",
+                    requested=2.0,
+                    getter_name="GetRanges",
+                    setter_name="SetRange",
+                    matches=lambda option: self._option_number(option, "mj") == 2.0,
+                    actual_value=lambda option: 2.0,
+                ),
+                self._configure_setting(
+                    name="wavelength_nm",
+                    requested=795,
+                    getter_name="GetWavelengths",
+                    setter_name="SetWavelength",
+                    matches=lambda option: (
+                        self._option_number(option, "nm", allow_unitless=True) == 795.0
+                    ),
+                    actual_value=lambda option: 795,
+                ),
+                self._configure_setting(
+                    name="pulse_length_ms",
+                    requested=1.0,
+                    getter_name="GetPulseLengths",
+                    setter_name="SetPulseLength",
+                    matches=lambda option: self._option_number(option, "ms") == 1.0,
+                    actual_value=lambda option: 1.0,
+                ),
+                self._configure_setting(
+                    name="threshold",
+                    requested="minimum_available",
+                    getter_name="GetThreshold",
+                    setter_name="SetThreshold",
+                    matches=lambda option: (
+                        str(option).strip().lower() in ("min", "minimum")
+                    ),
+                    actual_value=lambda option: "minimum_available",
+                ),
+                OphirSettingEvidence(
+                    "display_averaging_s",
+                    3,
+                    None,
+                    OphirEvidenceApplicability.NOT_APPLICABLE,
+                    True,
+                ),
+                OphirSettingEvidence(
+                    "graph_mode",
+                    "Statistics",
+                    None,
+                    OphirEvidenceApplicability.NOT_APPLICABLE,
+                    True,
+                ),
+            )
+            identity = OphirIdentity(
                 meter_model,
                 meter_serial,
                 sensor_model,
                 sensor_serial,
                 f"meter: {device_due}; sensor: {sensor_due}",
-            ),
-            evidence,
-        )
+            )
+        except Exception:
+            self._close_handle_best_effort()
+            raise
+        self._preflight_passed = True
+        return identity, evidence
 
     def measure(self) -> EnergyMeasurement:
-        if self._com is None or self._handle is None:
+        if not self._preflight_passed or self._com is None or self._handle is None:
             raise RuntimeError("Ophir preflight must pass before measurement")
         values_uj: list[float] = []
         timestamps_ms: list[float] = []
@@ -304,16 +332,19 @@ class OphirEnergyMeter:
         )
 
     def close(self) -> None:
+        self._preflight_passed = False
+        handle = self._handle
+        self._handle = None
         if self._com is None:
             return
         first_error = None
         cleanups = []
-        if self._handle is not None:
+        if handle is not None:
             cleanups.extend(
                 (
-                    lambda: self._com.StopStream(self._handle, self._CHANNEL),
+                    lambda: self._com.StopStream(handle, self._CHANNEL),
                     self._com.StopAllStreams,
-                    lambda: self._com.Close(self._handle),
+                    lambda: self._com.Close(handle),
                 )
             )
         else:
@@ -325,7 +356,6 @@ class OphirEnergyMeter:
             except Exception as exc:
                 if first_error is None:
                     first_error = exc
-        self._handle = None
         if first_error is not None:
             raise first_error
 
