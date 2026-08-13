@@ -853,12 +853,12 @@ def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statist
     meter.preflight()
     com.calls.clear()
     com.data_batches = [
+        ([0.0001], [500.0], [0]),
         (
             [0.0003, 9.9, 0.0004, 8.8],
             [1000.0, 1010.0, 1025.0, 1030.0],
             [0, 1, 0, 2],
         ),
-        ([], [], []),
     ]
 
     measurement = meter.measure()
@@ -874,6 +874,62 @@ def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statist
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
+def test_ophir_measure_drains_stale_first_nonempty_batch_before_fresh_observation():
+    meter, com, _ = _ophir_meter(duration_s=2.0)
+    meter.preflight()
+    com.calls.clear()
+    stale_timestamps = [217707950.0, 217707974.999]
+    fresh_timestamps = [217711184.0 + 25.0 * index for index in range(26)]
+    fresh_values_uj = list(range(340, 366))
+    com.data_batches = [
+        ([], [], []),
+        ([0.0001, 9.9], stale_timestamps, [0, 1]),
+        (
+            [value * 1e-6 for value in fresh_values_uj],
+            fresh_timestamps,
+            [0] * 26,
+        ),
+        pytest.fail,
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 26
+    assert measurement.discarded == 0
+    assert measurement.mean_uj == pytest.approx(statistics.fmean(fresh_values_uj))
+    assert measurement.stdev_uj == pytest.approx(statistics.stdev(fresh_values_uj))
+    assert measurement.min_uj == pytest.approx(340.0)
+    assert measurement.max_uj == pytest.approx(365.0)
+    assert measurement.rate_hz == pytest.approx(40.0)
+    assert com.calls.count(("GetData", 17, 0)) == 3
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_does_not_accept_stale_only_priming_batch_at_timeout():
+    meter, com, _ = _ophir_meter(duration_s=0.05)
+    meter.preflight()
+    com.calls.clear()
+    com.data_batches = [
+        (
+            [0.00035] * 30 + [9.9],
+            [217707950.0 + 25.0 * index for index in range(31)],
+            [0] * 30 + [1],
+        ),
+        pytest.fail,
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 0
+    assert measurement.discarded == 0
+    assert math.isnan(measurement.mean_uj)
+    assert math.isnan(measurement.rate_hz)
+    assert measurement.duration_s == pytest.approx(0.05)
+    assert not all(item.passed for item in validate_energy_measurement(measurement))
+    assert com.calls.count(("GetData", 17, 0)) == 1
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
 def test_ophir_measure_continues_after_23_valid_plus_discarded_until_target():
     meter, com, _ = _ophir_meter(duration_s=2.0)
     meter.preflight()
@@ -881,6 +937,7 @@ def test_ophir_measure_continues_after_23_valid_plus_discarded_until_target():
     first_values_uj = list(range(300, 323))
     second_values_uj = list(range(323, 327))
     com.data_batches = [
+        ([0.0001], [500.0], [0]),
         (
             [value * 1e-6 for value in first_values_uj] + [9.9],
             [1000.0 + 25.0 * index for index in range(23)] + [1560.0],
@@ -904,8 +961,8 @@ def test_ophir_measure_continues_after_23_valid_plus_discarded_until_target():
     assert measurement.min_uj == 300.0
     assert measurement.max_uj == 326.0
     assert measurement.rate_hz == pytest.approx(40.0)
-    assert measurement.duration_s == pytest.approx(0.1)
-    assert com.calls.count(("GetData", 17, 0)) == 2
+    assert measurement.duration_s == pytest.approx(0.15)
+    assert com.calls.count(("GetData", 17, 0)) == 3
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
@@ -914,19 +971,19 @@ def test_ophir_measure_stops_early_immediately_after_valid_target_is_met():
     meter.preflight()
     com.calls.clear()
     com.data_batches = [
+        ([0.0001], [500.0], [0]),
         (
             [0.00035] * 26,
             [1000.0 + 25.0 * index for index in range(26)],
             [0] * 26,
         ),
-        pytest.fail,
     ]
 
     measurement = meter.measure()
 
     assert measurement.n == 26
-    assert measurement.duration_s == pytest.approx(0.05)
-    assert com.calls.count(("GetData", 17, 0)) == 1
+    assert measurement.duration_s == pytest.approx(0.1)
+    assert com.calls.count(("GetData", 17, 0)) == 2
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
@@ -935,12 +992,12 @@ def test_ophir_measure_times_out_with_below_target_evidence_for_fail_closed_gate
     meter.preflight()
     com.calls.clear()
     com.data_batches = [
+        ([0.0001], [500.0], [0]),
         (
             [0.00035] * 23 + [9.9],
             [1000.0 + 25.0 * index for index in range(24)],
             [0] * 23 + [1],
         ),
-        ([], [], []),
     ]
 
     measurement = meter.measure()
@@ -976,7 +1033,10 @@ def test_ophir_measure_default_timeout_is_bounded_at_two_seconds():
 def test_ophir_measure_with_fewer_than_two_valid_values_returns_finite_gate_failure_data():
     meter, com, _ = _ophir_meter()
     meter.preflight()
-    com.data_batches = [([0.00035], [1000.0], [0]), ([], [], [])]
+    com.data_batches = [
+        ([0.0001], [500.0], [0]),
+        ([0.00035], [1000.0], [0]),
+    ]
 
     measurement = meter.measure()
 
@@ -998,9 +1058,68 @@ def test_ophir_measure_stops_stream_when_data_read_raises():
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
-def test_ophir_close_stops_streams_and_closes_open_device():
+def test_ophir_measure_rejects_misaligned_priming_batch_and_stops_stream():
     meter, com, _ = _ophir_meter()
     meter.preflight()
+    com.calls.clear()
+    com.data_batches = [([0.00035], [], [0])]
+
+    with pytest.raises(RuntimeError, match="misaligned"):
+        meter.measure()
+
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_close_without_active_stream_closes_open_device():
+    meter, com, _ = _ophir_meter()
+    meter.preflight()
+    com.calls.clear()
+
+    meter.close()
+
+    assert com.calls == [
+        "StopAllStreams",
+        ("Close", 17),
+        "CloseAll",
+    ]
+
+
+def test_ophir_close_does_not_redundantly_stop_successfully_stopped_measurement():
+    meter, com, _ = _ophir_meter(duration_s=0.15)
+    meter.preflight()
+    com.data_batches = [
+        ([0.0001], [100.0], [0]),
+        ([0.00035] * 26, [1000.0 + 25.0 * index for index in range(26)], [0] * 26),
+    ]
+    meter.measure()
+    com.calls.clear()
+
+    meter.close()
+
+    assert com.calls == ["StopAllStreams", ("Close", 17), "CloseAll"]
+
+
+def test_ophir_close_retries_measure_time_stop_failure_and_continues_cleanup():
+    meter, com, _ = _ophir_meter(duration_s=0.15)
+    meter.preflight()
+    com.data_batches = [
+        ([0.0001], [100.0], [0]),
+        ([0.00035] * 26, [1000.0 + 25.0 * index for index in range(26)], [0] * 26),
+    ]
+    original_stop = com.StopStream
+    stop_attempts = 0
+
+    def fail_first_stop(handle, channel):
+        nonlocal stop_attempts
+        stop_attempts += 1
+        original_stop(handle, channel)
+        if stop_attempts == 1:
+            raise OSError("measure stop failed")
+
+    com.StopStream = fail_first_stop
+
+    with pytest.raises(OSError, match="measure stop failed"):
+        meter.measure()
     com.calls.clear()
 
     meter.close()
@@ -1011,6 +1130,7 @@ def test_ophir_close_stops_streams_and_closes_open_device():
         ("Close", 17),
         "CloseAll",
     ]
+    assert stop_attempts == 2
 
 
 @pytest.mark.parametrize("failing_cleanup", ["StopStream", "Close"])
@@ -1027,6 +1147,8 @@ def test_ophir_close_clears_measurement_authorization_and_handle_when_cleanup_ra
         raise OSError(f"{failing_cleanup} failed")
 
     setattr(com, failing_cleanup, fail_cleanup)
+    if failing_cleanup == "StopStream":
+        meter._stream_active = True
 
     with pytest.raises(OSError, match=f"{failing_cleanup} failed"):
         meter.close()

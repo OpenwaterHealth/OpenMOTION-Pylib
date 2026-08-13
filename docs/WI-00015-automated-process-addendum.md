@@ -140,6 +140,16 @@ rate calculation. Nonzero-status samples remain discarded and counted. The
 stream is always stopped. If the timeout expires below 26 valid samples, the
 partial observation is recorded and fails the existing criteria.
 
+Because the Ophir API may return buffered samples from an earlier stream, the
+first nonempty, complete `GetData` batch after each `StartStream` is drained as
+session-priming data. The complete priming batch is excluded: its values,
+timestamps, and statuses do not contribute to statistics, repetition rate,
+valid count, or discarded count. Fresh-sample collection starts after the
+drain and remains subject to the same 2.0-second overall maximum. If no fresh
+observation reaches 26 valid samples, the result fails the unchanged criteria.
+Misaligned arrays still fail immediately, and every successfully started
+stream is stopped or its stop failure is propagated for cleanup retry.
+
 The energy acceptance interval is 300 through 400 microjoules, inclusive.
 
 ### 3.4 Approved laser adjustment algorithm

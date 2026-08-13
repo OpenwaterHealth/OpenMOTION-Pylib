@@ -75,6 +75,7 @@ class OphirEnergyMeter:
         self._com = None
         self._handle = None
         self._preflight_passed = False
+        self._stream_active = False
 
     def _ensure_com(self):
         if self._com is not None:
@@ -298,9 +299,11 @@ class OphirEnergyMeter:
         values_uj: list[float] = []
         timestamps_ms: list[float] = []
         discarded = 0
+        priming_batch_drained = False
         started_at = self._clock()
         try:
             self._com.StartStream(self._handle, self._CHANNEL)
+            self._stream_active = True
             while True:
                 elapsed = self._clock() - started_at
                 if elapsed >= self._duration_s:
@@ -311,6 +314,10 @@ class OphirEnergyMeter:
                 )
                 if not (len(values) == len(timestamps) == len(statuses)):
                     raise RuntimeError("Ophir stream returned misaligned sample arrays")
+                if not priming_batch_drained:
+                    if len(values) > 0:
+                        priming_batch_drained = True
+                    continue
                 for value, timestamp, status in zip(values, timestamps, statuses):
                     if status != 0:
                         discarded += 1
@@ -320,7 +327,9 @@ class OphirEnergyMeter:
                 if len(values_uj) >= self._MINIMUM_VALID_SAMPLES:
                     break
         finally:
-            self._com.StopStream(self._handle, self._CHANNEL)
+            if self._stream_active:
+                self._com.StopStream(self._handle, self._CHANNEL)
+                self._stream_active = False
         duration = self._clock() - started_at
         n = len(values_uj)
         mean = statistics.fmean(values_uj) if values_uj else math.nan
@@ -351,13 +360,13 @@ class OphirEnergyMeter:
         first_error = None
         cleanups = []
         if handle is not None:
-            cleanups.extend(
-                (
-                    lambda: self._com.StopStream(handle, self._CHANNEL),
-                    self._com.StopAllStreams,
-                    lambda: self._com.Close(handle),
-                )
-            )
+            def stop_active_stream() -> None:
+                self._com.StopStream(handle, self._CHANNEL)
+                self._stream_active = False
+
+            if self._stream_active:
+                cleanups.append(stop_active_stream)
+            cleanups.extend((self._com.StopAllStreams, lambda: self._com.Close(handle)))
         else:
             cleanups.append(self._com.StopAllStreams)
         cleanups.append(self._com.CloseAll)
@@ -367,6 +376,7 @@ class OphirEnergyMeter:
             except Exception as exc:
                 if first_error is None:
                     first_error = exc
+        self._stream_active = False
         if first_error is not None:
             raise first_error
 

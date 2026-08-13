@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-12
 
-**Status:** Live execution exposed and informed a bounded-acquisition fix;
-software verification complete, successful hardware rerun pending
+**Status:** Two live executions exposed bounded-acquisition and stale-session
+buffer issues; software verification complete, successful hardware rerun pending
 
 **Procedure:** Single-Sensor Laser Calibration
 
@@ -139,6 +139,15 @@ batch that reaches the target and use every accepted sample in that batch for
 the reported statistics and repetition rate. Always stop the stream. At
 timeout, retain and report the below-target observation so the existing
 measurement-quality criteria fail closed.
+
+The first nonempty, complete `GetData` batch after each `StartStream` is a
+session-priming drain and is excluded in full. Its values, timestamps, and
+statuses do not contribute to statistics, repetition rate, valid count, or
+discarded count. Collection of the fresh 26-valid observation begins only
+after that drain, within the same 2.0-second overall bound. A missing fresh
+batch or a fresh below-target observation at timeout fails closed. Misaligned
+priming or fresh arrays fail immediately, and `StopStream` is always attempted
+for a stream that this adapter successfully started.
 
 ## 8. Tuning algorithm
 
