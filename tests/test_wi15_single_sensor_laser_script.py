@@ -194,6 +194,32 @@ def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, expec
     assert exit_code == expected_exit
 
 
+def test_main_generates_one_run_id_for_recorder_and_workflow_request(
+    monkeypatch, tmp_path
+):
+    """A crossed second must not split request evidence from its artifact directory."""
+    script, recorder, _meter, _bench, workflow, _report = configured_script(
+        monkeypatch, tmp_path
+    )
+    generated_ids = iter(("first-run-id", "second-run-id"))
+    recorder_run_ids = []
+    monkeypatch.setattr(script, "_run_id", lambda: next(generated_ids))
+    monkeypatch.setattr(
+        script,
+        "recorder_factory",
+        lambda output_dir, procedure_id, run_id: recorder_run_ids.append(run_id)
+        or recorder,
+    )
+
+    exit_code = script.main(
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+    )
+
+    assert exit_code == 0
+    assert recorder_run_ids == ["first-run-id"]
+    assert workflow.requests[0].run_id == "first-run-id"
+
+
 def test_metadata_prompts_complete_before_hardware_and_cleanup_survives_workflow_error(
     monkeypatch, tmp_path
 ):

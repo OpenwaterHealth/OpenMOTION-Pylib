@@ -138,7 +138,8 @@ def main(
     meter = None
     bench = None
     try:
-        recorder = recorder_factory(args.output_dir, PROCEDURE_ID, _run_id())
+        run_id = _run_id()
+        recorder = recorder_factory(args.output_dir, PROCEDURE_ID, run_id)
         meter = meter_factory()
         bench = bench_factory(meter)
         workflow = workflow_factory(bench, recorder)
@@ -152,7 +153,7 @@ def main(
             fixture_calibration_status=fixture_calibration_status,
             procedure_id=PROCEDURE_ID,
             output_root=Path(args.output_dir),
-            run_id=_run_id(),
+            run_id=run_id,
         )
         result = workflow.run(request)
         report = report_factory(recorder.run_directory)
