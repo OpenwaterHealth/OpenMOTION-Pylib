@@ -5,20 +5,20 @@ import math
 
 import pytest
 
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     DeviceIdentity,
     FailureKind,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
 )
-from omotion.WI15SafetyCalibration import (
+from omotion.calibration.safety import (
     NormalScanEvidence,
     PowerCycleEvidence,
     SafetyWarningEvidence,
     ShippingTopology,
 )
-from omotion.WI15SafetyCalibrationWorkflow import (
+from omotion.calibration.safety_workflow import (
     AdcSamplingPolicy,
     ConsolePreflightSnapshot,
     SafetyCalibrationRequest,

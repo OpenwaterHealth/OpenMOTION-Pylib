@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
-from omotion.WI15SafetyCalibration import ShippingTopology
-from omotion.WI15SafetyCalibrationWorkflow import SafetyCalibrationResult
-from omotion.WI15SingleSensorLaserCalibration import ReportArtifactStatus
+from omotion.calibration.laser import FailureKind, ProcedureStatus
+from omotion.calibration.safety import ShippingTopology
+from omotion.calibration.safety_workflow import SafetyCalibrationResult
+from omotion.calibration.single_sensor_laser import ReportArtifactStatus
 
 
 SCRIPT_PATH = (

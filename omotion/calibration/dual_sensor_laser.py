@@ -14,7 +14,7 @@ try:
 except (ImportError, AttributeError):
     _RUNTIME_SDK_VERSION = "unavailable"
 
-from omotion.WI15LaserCalibration import (
+from .laser import (
     CURRENT_FLOOR_MA,
     CURRENT_STEP_MA,
     MAX_PULSE_WIDTH_US,
@@ -42,7 +42,7 @@ from omotion.WI15LaserCalibration import (
     validate_serial,
     within_percent,
 )
-from omotion.WI15SingleSensorLaserCalibration import (
+from .single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
     ProcedureEvent,

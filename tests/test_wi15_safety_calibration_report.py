@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
     FailureKind,
@@ -9,7 +9,7 @@ from omotion.WI15LaserCalibration import (
     SettingReadback,
     TopologySnapshot,
 )
-from omotion.WI15SafetyCalibration import (
+from omotion.calibration.safety import (
     ADC_ROUNDING_RULE,
     AdcReadEvidence,
     NormalScanEvidence,
@@ -19,12 +19,12 @@ from omotion.WI15SafetyCalibration import (
     SafetyWarningEvidence,
     ShippingTopology,
 )
-from omotion.WI15SafetyCalibrationReport import SafetyCalibrationHtmlRunReport
-from omotion.WI15SafetyCalibrationWorkflow import (
+from omotion.calibration.safety_report import SafetyCalibrationHtmlRunReport
+from omotion.calibration.safety_workflow import (
     SafetyCalibrationRequest,
     SafetyCalibrationResult,
 )
-from omotion.WI15SingleSensorLaserCalibration import ProcedureEvent
+from omotion.calibration.single_sensor_laser import ProcedureEvent
 
 
 NOW = datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc)

@@ -4,18 +4,18 @@ import statistics
 import pytest
 
 from omotion.MotionConfig import MotionConfig
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     EnergyMeasurement,
     OphirIdentity,
     SettingReadback,
     validate_energy_measurement,
 )
-from omotion.WI15LaserCalibrationHardware import (
+from omotion.calibration.laser_hardware import (
     FpgaRegisterIO,
     MotionLaserCalibrationBench,
     OphirEnergyMeter,
 )
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
 )

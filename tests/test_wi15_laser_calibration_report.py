@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
     EnergyMeasurement,
@@ -15,8 +15,8 @@ from omotion.WI15LaserCalibration import (
     SettingReadback,
     TopologySnapshot,
 )
-from omotion.WI15LaserCalibrationReport import HtmlRunReport, JsonRunRecorder
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.reporting import HtmlRunReport, JsonRunRecorder
+from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
     ProcedureEvent,

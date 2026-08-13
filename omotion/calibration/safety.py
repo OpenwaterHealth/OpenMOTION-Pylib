@@ -9,7 +9,7 @@ import math
 from types import MappingProxyType
 from typing import Literal, Mapping
 
-from omotion.WI15LaserCalibration import (
+from .laser import (
     CriterionResult,
     DeviceIdentity,
     TopologySnapshot,

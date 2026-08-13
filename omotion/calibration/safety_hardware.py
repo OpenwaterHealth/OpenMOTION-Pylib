@@ -10,9 +10,9 @@ from typing import Callable, Mapping, Protocol
 from omotion.MotionConfig import MotionConfig
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ScanRequest
-from omotion.WI15LaserCalibration import DeviceIdentity, SettingReadback, TopologySnapshot
-from omotion.WI15LaserCalibrationHardware import FpgaRegisterIO
-from omotion.WI15SafetyCalibration import (
+from .laser import DeviceIdentity, SettingReadback, TopologySnapshot
+from .laser_hardware import FpgaRegisterIO
+from .safety import (
     NormalScanEvidence,
     PowerCycleEvidence,
     SafetyController,
@@ -20,7 +20,7 @@ from omotion.WI15SafetyCalibration import (
     ShippingTopology,
     validate_shipping_topology,
 )
-from omotion.WI15SafetyCalibrationWorkflow import ConsolePreflightSnapshot
+from .safety_workflow import ConsolePreflightSnapshot
 
 
 def _default_interface_factory() -> MotionInterface:

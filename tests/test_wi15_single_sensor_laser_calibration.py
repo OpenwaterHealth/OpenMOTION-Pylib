@@ -5,15 +5,15 @@ import math
 
 import pytest
 
-from omotion.WI15LaserCalibrationReport import HtmlRunReport, JsonRunRecorder
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.reporting import HtmlRunReport, JsonRunRecorder
+from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
     PreflightSnapshot,
     SingleSensorLaserCalibrationRequest,
     SingleSensorLaserCalibrationWorkflow,
 )
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     DEFAULT_USER_CONFIG,
     DeviceIdentity,
     EnergyMeasurement,
@@ -2119,7 +2119,7 @@ def test_each_raw_measurement_path_is_durable_before_criterion_derivation(
     monkeypatch, tmp_path, measurements, validation_call
 ):
     workflow_module = importlib.import_module(
-        "omotion.WI15SingleSensorLaserCalibration"
+        "omotion.calibration.single_sensor_laser"
     )
     original_validator = workflow_module.validate_energy_measurement
     recorder = JsonRunRecorder(tmp_path, "WI-00015", f"raw-{validation_call}")

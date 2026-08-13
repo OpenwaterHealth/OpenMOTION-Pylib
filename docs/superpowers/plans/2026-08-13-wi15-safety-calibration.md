@@ -29,12 +29,12 @@
 
 **Files:**
 
-- Create: `omotion/WI15SafetyCalibration.py`
+- Create: `omotion/calibration/safety.py`
 - Create: `tests/test_wi15_safety_calibration.py`
 
 **Interfaces:**
 
-- Consumes: `CriterionResult`, `DeviceIdentity`, `FinalSettingCheck`, `ProcedureStatus`, `FailureKind`, `SettingReadback`, and `TopologySnapshot` from `omotion.WI15LaserCalibration`.
+- Consumes: `CriterionResult`, `DeviceIdentity`, `FinalSettingCheck`, `ProcedureStatus`, `FailureKind`, `SettingReadback`, and `TopologySnapshot` from `omotion.calibration.laser`.
 - Produces: `ShippingTopology`, `AdcReadEvidence`, `SafetyLimitCalculation`, `PulseLimitCalculation`, `PowerCycleEvidence`, `SafetyWarningEvidence`, `NormalScanEvidence`, `nearest_integer_half_up()`, `validate_current_configuration()`, `calculate_safety_limit()`, `calculate_pulse_limits()`, and `validate_shipping_topology()`.
 
 - [ ] **Step 1: Write failing nearest-integer and safety-limit tests**
@@ -57,7 +57,7 @@ def test_safety_limit_records_every_calculation_input():
 
 Run: `python -m pytest tests/test_wi15_safety_calibration.py -q`
 
-Expected: import failure because `omotion.WI15SafetyCalibration` does not exist.
+Expected: import failure because `omotion.calibration.safety` does not exist.
 
 - [ ] **Step 3: Implement the pure helpers and frozen records**
 
@@ -84,7 +84,7 @@ Run: `python -m pytest tests/test_wi15_safety_calibration.py tests/test_wi15_las
 - [ ] **Step 6: Commit the domain increment**
 
 ```powershell
-git add omotion/WI15SafetyCalibration.py tests/test_wi15_safety_calibration.py
+git add omotion/calibration/safety.py tests/test_wi15_safety_calibration.py
 git commit -m "feat: add WI15 safety calibration rules"
 ```
 
@@ -94,7 +94,7 @@ git commit -m "feat: add WI15 safety calibration rules"
 
 **Files:**
 
-- Create: `omotion/WI15SafetyCalibrationWorkflow.py`
+- Create: `omotion/calibration/safety_workflow.py`
 - Create: `tests/test_wi15_safety_calibration_workflow.py`
 
 **Interfaces:**
@@ -135,7 +135,7 @@ Read the full User Configuration, validate required keys, call normal persisted 
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration.py tests/test_wi15_safety_calibration_workflow.py tests/test_wi15_single_sensor_laser_calibration.py tests/test_wi15_dual_sensor_laser_calibration.py -q
-git add omotion/WI15SafetyCalibrationWorkflow.py tests/test_wi15_safety_calibration_workflow.py
+git add omotion/calibration/safety_workflow.py tests/test_wi15_safety_calibration_workflow.py
 git commit -m "feat: preflight WI15 safety calibration"
 ```
 
@@ -145,7 +145,7 @@ git commit -m "feat: preflight WI15 safety calibration"
 
 **Files:**
 
-- Modify: `omotion/WI15SafetyCalibrationWorkflow.py`
+- Modify: `omotion/calibration/safety_workflow.py`
 - Modify: `tests/test_wi15_safety_calibration_workflow.py`
 
 **Interfaces:**
@@ -177,7 +177,7 @@ Use Task 1 helpers with multipliers 1.3 and 1.1. No intended configuration exist
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration_workflow.py -q
-git add omotion/WI15SafetyCalibrationWorkflow.py tests/test_wi15_safety_calibration_workflow.py
+git add omotion/calibration/safety_workflow.py tests/test_wi15_safety_calibration_workflow.py
 git commit -m "feat: sample WI15 safety ADC limits"
 ```
 
@@ -187,7 +187,7 @@ git commit -m "feat: sample WI15 safety ADC limits"
 
 **Files:**
 
-- Modify: `omotion/WI15SafetyCalibrationWorkflow.py`
+- Modify: `omotion/calibration/safety_workflow.py`
 - Modify: `tests/test_wi15_safety_calibration_workflow.py`
 
 **Interfaces:**
@@ -215,7 +215,7 @@ Require `PowerCycleEvidence(disconnect_observed=True, off_duration_s>=15.0, reco
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration_workflow.py -q
-git add omotion/WI15SafetyCalibrationWorkflow.py tests/test_wi15_safety_calibration_workflow.py
+git add omotion/calibration/safety_workflow.py tests/test_wi15_safety_calibration_workflow.py
 git commit -m "feat: persist WI15 safety limits"
 ```
 
@@ -225,7 +225,7 @@ git commit -m "feat: persist WI15 safety limits"
 
 **Files:**
 
-- Modify: `omotion/WI15SafetyCalibrationWorkflow.py`
+- Modify: `omotion/calibration/safety_workflow.py`
 - Modify: `tests/test_wi15_safety_calibration_workflow.py`
 
 **Interfaces:**
@@ -249,7 +249,7 @@ The workflow passes only after a complete `NormalScanEvidence` has exact topolog
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration_workflow.py -q
-git add omotion/WI15SafetyCalibrationWorkflow.py tests/test_wi15_safety_calibration_workflow.py
+git add omotion/calibration/safety_workflow.py tests/test_wi15_safety_calibration_workflow.py
 git commit -m "feat: verify WI15 normal safety scan"
 ```
 
@@ -259,9 +259,9 @@ git commit -m "feat: verify WI15 normal safety scan"
 
 **Files:**
 
-- Create: `omotion/WI15SafetyCalibrationHardware.py`
+- Create: `omotion/calibration/safety_hardware.py`
 - Create: `tests/test_wi15_safety_calibration_hardware.py`
-- Reuse without semantic changes: `omotion/WI15LaserCalibrationHardware.py`, `omotion/ScanWorkflow.py`, and `omotion/ConsoleTelemetry.py`
+- Reuse without semantic changes: `omotion/calibration/laser_hardware.py`, `omotion/ScanWorkflow.py`, and `omotion/ConsoleTelemetry.py`
 
 **Interfaces:**
 
@@ -292,8 +292,8 @@ Subscribe before `start_scan`, await completion with a bounded pad, measure mono
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration_hardware.py tests/test_wi15_laser_calibration_hardware.py -q
-python -m ruff check omotion/WI15SafetyCalibrationHardware.py tests/test_wi15_safety_calibration_hardware.py
-git add omotion/WI15SafetyCalibrationHardware.py tests/test_wi15_safety_calibration_hardware.py
+python -m ruff check omotion/calibration/safety_hardware.py tests/test_wi15_safety_calibration_hardware.py
+git add omotion/calibration/safety_hardware.py tests/test_wi15_safety_calibration_hardware.py
 git commit -m "feat: adapt Motion for WI15 safety calibration"
 ```
 
@@ -303,7 +303,7 @@ git commit -m "feat: adapt Motion for WI15 safety calibration"
 
 **Files:**
 
-- Create: `omotion/WI15SafetyCalibrationReport.py`
+- Create: `omotion/calibration/safety_report.py`
 - Create: `tests/test_wi15_safety_calibration_report.py`
 
 **Interfaces:**
@@ -327,7 +327,7 @@ Subclass `HtmlRunReport` only for escaping/table/atomic-write helpers. Render ev
 
 ```powershell
 python -m pytest tests/test_wi15_safety_calibration_report.py tests/test_wi15_laser_calibration_report.py tests/test_wi15_dual_sensor_laser_calibration_report.py -q
-git add omotion/WI15SafetyCalibrationReport.py tests/test_wi15_safety_calibration_report.py
+git add omotion/calibration/safety_report.py tests/test_wi15_safety_calibration_report.py
 git commit -m "feat: report WI15 safety calibration"
 ```
 

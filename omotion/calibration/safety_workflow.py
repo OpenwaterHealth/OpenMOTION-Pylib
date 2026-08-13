@@ -15,7 +15,7 @@ try:
 except (ImportError, AttributeError):
     _RUNTIME_SDK_VERSION = "unavailable"
 
-from omotion.WI15LaserCalibration import (
+from .laser import (
     CriterionResult,
     DeviceIdentity,
     FailureKind,
@@ -27,7 +27,7 @@ from omotion.WI15LaserCalibration import (
     validate_serial,
     within_percent,
 )
-from omotion.WI15SafetyCalibration import (
+from .safety import (
     MINIMUM_ADC_SAMPLES,
     SAFETY_EE_MULTIPLIER,
     SAFETY_OPT_MULTIPLIER,
@@ -44,7 +44,7 @@ from omotion.WI15SafetyCalibration import (
     validate_current_configuration,
     validate_shipping_topology,
 )
-from omotion.WI15SingleSensorLaserCalibration import (
+from .single_sensor_laser import (
     ProcedureEvent,
     ReportArtifactEvidence,
 )

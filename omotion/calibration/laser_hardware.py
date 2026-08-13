@@ -15,7 +15,7 @@ from typing import Callable, Mapping
 
 from omotion.MotionConfig import MotionConfig
 from omotion.MotionInterface import MotionInterface
-from omotion.WI15LaserCalibration import (
+from .laser import (
     DeviceIdentity,
     EnergyMeasurement,
     OphirIdentity,
@@ -24,8 +24,8 @@ from omotion.WI15LaserCalibration import (
     validate_exact_dual_topology,
     validate_exact_single_topology,
 )
-from omotion.WI15DualSensorLaserCalibration import DualPreflightSnapshot
-from omotion.WI15SingleSensorLaserCalibration import (
+from .dual_sensor_laser import DualPreflightSnapshot
+from .single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
     PreflightSnapshot,

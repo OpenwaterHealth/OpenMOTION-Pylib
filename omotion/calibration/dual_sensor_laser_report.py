@@ -6,7 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from omotion.WI15LaserCalibrationReport import HtmlRunReport, json_safe_value
+from .reporting import HtmlRunReport, json_safe_value
 
 
 class DualSensorHtmlRunReport(HtmlRunReport):

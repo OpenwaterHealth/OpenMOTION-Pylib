@@ -5,12 +5,12 @@ import pytest
 
 from omotion.ConsoleTelemetry import ConsoleTelemetry
 from omotion.MotionConfig import MotionConfig
-from omotion.WI15LaserCalibration import SettingReadback
-from omotion.WI15SafetyCalibration import (
+from omotion.calibration.laser import SettingReadback
+from omotion.calibration.safety import (
     PowerCycleEvidence,
     ShippingTopology,
 )
-from omotion.WI15SafetyCalibrationHardware import MotionSafetyCalibrationBench
+from omotion.calibration.safety_hardware import MotionSafetyCalibrationBench
 
 
 NOW = datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)

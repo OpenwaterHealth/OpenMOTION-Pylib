@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from omotion.WI15DualSensorLaserCalibration import (
+from omotion.calibration.dual_sensor_laser import (
     DualSensorLaserCalibrationResult,
     PlacementChangeRequest,
 )
-from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
-from omotion.WI15SingleSensorLaserCalibration import ReportArtifactStatus
+from omotion.calibration.laser import FailureKind, ProcedureStatus
+from omotion.calibration.single_sensor_laser import ReportArtifactStatus
 
 
 SCRIPT_PATH = (

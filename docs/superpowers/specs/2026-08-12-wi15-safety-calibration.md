@@ -254,13 +254,13 @@ gates in UI code.
 ## 16. Implementation mapping and verification status
 
 - Safety rules and immutable evidence records:
-  `omotion/WI15SafetyCalibration.py`.
+  `omotion/calibration/safety.py`.
 - UI-neutral procedure orchestration:
-  `omotion/WI15SafetyCalibrationWorkflow.py`.
+  `omotion/calibration/safety_workflow.py`.
 - Motion console, FPGA, power-cycle, and normal-scan adapter:
-  `omotion/WI15SafetyCalibrationHardware.py`.
+  `omotion/calibration/safety_hardware.py`.
 - Auditor-readable HTML evidence:
-  `omotion/WI15SafetyCalibrationReport.py`.
+  `omotion/calibration/safety_report.py`.
 - Current script-only operator entry point:
   `scripts/wi15_safety_calibration.py`.
 

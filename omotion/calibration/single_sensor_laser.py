@@ -13,7 +13,7 @@ try:
 except (ImportError, AttributeError):
     _RUNTIME_SDK_VERSION = "unavailable"
 
-from omotion.WI15LaserCalibration import (
+from .laser import (
     CURRENT_FLOOR_MA,
     CURRENT_STEP_MA,
     MAX_ACCEPTABLE_ENERGY_UJ,

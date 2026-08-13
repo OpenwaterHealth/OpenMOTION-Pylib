@@ -5,11 +5,11 @@ from types import MappingProxyType
 
 import pytest
 
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     DeviceIdentity,
     TopologySnapshot,
 )
-from omotion.WI15SafetyCalibration import (
+from omotion.calibration.safety import (
     ADC_ROUNDING_RULE,
     AdcReadEvidence,
     NormalScanEvidence,

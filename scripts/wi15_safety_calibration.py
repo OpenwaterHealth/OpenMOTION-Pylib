@@ -11,16 +11,16 @@ import time
 from typing import Callable, Sequence
 
 import omotion
-from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
-from omotion.WI15LaserCalibrationReport import JsonRunRecorder
-from omotion.WI15SafetyCalibration import PowerCycleEvidence, ShippingTopology
-from omotion.WI15SafetyCalibrationHardware import MotionSafetyCalibrationBench
-from omotion.WI15SafetyCalibrationReport import SafetyCalibrationHtmlRunReport
-from omotion.WI15SafetyCalibrationWorkflow import (
+from omotion.calibration.laser import FailureKind, ProcedureStatus
+from omotion.calibration.reporting import JsonRunRecorder
+from omotion.calibration.safety import PowerCycleEvidence, ShippingTopology
+from omotion.calibration.safety_hardware import MotionSafetyCalibrationBench
+from omotion.calibration.safety_report import SafetyCalibrationHtmlRunReport
+from omotion.calibration.safety_workflow import (
     SafetyCalibrationRequest,
     SafetyCalibrationWorkflow,
 )
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.single_sensor_laser import (
     ReportArtifactEvidence,
     ReportArtifactStatus,
 )
