@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Sequence
 
-from omotion.WI15LaserCalibration import ProcedureStatus
+import omotion
+from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
 from omotion.WI15LaserCalibrationHardware import (
     MotionLaserCalibrationBench,
     OphirEnergyMeter,
@@ -16,6 +17,8 @@ from omotion.WI15LaserCalibrationHardware import (
 from omotion.WI15LaserCalibrationReport import HtmlRunReport, JsonRunRecorder
 from omotion.WI15SingleSensorLaserCalibration import (
     SingleSensorLaserCalibrationRequest,
+    ReportArtifactEvidence,
+    ReportArtifactStatus,
     SingleSensorLaserCalibrationWorkflow,
 )
 
@@ -154,25 +157,73 @@ def main(
             procedure_id=PROCEDURE_ID,
             output_root=Path(args.output_dir),
             run_id=run_id,
+            sdk_version=getattr(omotion, "__version__", "unavailable"),
+            started_at=datetime.now(timezone.utc),
         )
         result = workflow.run(request)
-        report = report_factory(recorder.run_directory)
-        report_path = report.report_path
-        terminal_result = replace(
+        report_path = Path(recorder.run_directory) / "report.html"
+        incomplete_result = replace(
             result,
-            report_paths=(Path(recorder.json_path), Path(report_path)),
+            report_paths=(Path(recorder.json_path),),
+            report_artifact=ReportArtifactEvidence(
+                report_path, ReportArtifactStatus.INCOMPLETE
+            ),
         )
-        recorder.checkpoint(terminal_result)
-        report.write(
-            OperatorRunReportRequest(request, procedure_revision),
-            terminal_result,
-            recorder.json_path,
-        )
-        recorder.checkpoint(terminal_result)
-        output_func(f"Terminal status: {terminal_result.status.value}")
+        recorder.checkpoint(incomplete_result)
+        try:
+            report = report_factory(recorder.run_directory)
+            report_path = Path(report.report_path)
+            finalized_result = replace(
+                incomplete_result,
+                report_paths=(Path(recorder.json_path), report_path),
+                report_artifact=ReportArtifactEvidence(
+                    report_path, ReportArtifactStatus.FINALIZED
+                ),
+            )
+            written_report = report.write(
+                OperatorRunReportRequest(request, procedure_revision),
+                finalized_result,
+                recorder.json_path,
+            )
+            if (
+                Path(written_report).resolve() != report_path.resolve()
+                or not report_path.is_file()
+            ):
+                raise RuntimeError("HTML report writer did not create the expected file")
+        except Exception as exc:
+            report_failure = str(exc) or exc.__class__.__name__
+            failed_result = replace(
+                incomplete_result,
+                status=(
+                    ProcedureStatus.FAILED
+                    if result.status is ProcedureStatus.PASSED
+                    else result.status
+                ),
+                failure_kind=(
+                    FailureKind.REPORT
+                    if result.status is ProcedureStatus.PASSED
+                    else result.failure_kind
+                ),
+                failure_reason=(
+                    "HTML report generation failed."
+                    if result.status is ProcedureStatus.PASSED
+                    else result.failure_reason
+                ),
+                report_paths=(Path(recorder.json_path),),
+                report_artifact=ReportArtifactEvidence(
+                    Path(report_path),
+                    ReportArtifactStatus.FAILED,
+                    report_failure,
+                ),
+            )
+            recorder.checkpoint(failed_result)
+            output_func(f"HTML report generation failed: {report_failure}")
+            return 1
+        recorder.checkpoint(finalized_result)
+        output_func(f"Terminal status: {finalized_result.status.value}")
         output_func(f"JSON evidence: {Path(recorder.json_path).resolve()}")
         output_func(f"HTML report: {Path(report_path).resolve()}")
-        return 0 if terminal_result.status is ProcedureStatus.PASSED else 1
+        return 0 if finalized_result.status is ProcedureStatus.PASSED else 1
     except Exception as exc:
         output_func(f"Calibration failed before a terminal report: {exc}")
         return 1

@@ -3,11 +3,17 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import math
 from pathlib import Path
-from typing import Mapping, Protocol
+from types import MappingProxyType
+from typing import Callable, Mapping, Protocol
+
+try:
+    from omotion import __version__ as _RUNTIME_SDK_VERSION
+except (ImportError, AttributeError):
+    _RUNTIME_SDK_VERSION = "unavailable"
 
 from omotion.WI15LaserCalibration import (
-    DEFAULT_USER_CONFIG,
     CURRENT_FLOOR_MA,
     CURRENT_STEP_MA,
     MAX_ACCEPTABLE_ENERGY_UJ,
@@ -19,6 +25,7 @@ from omotion.WI15LaserCalibration import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FinalSettingCheck,
     OphirIdentity,
     ProcedureStatus,
     SensorSide,
@@ -29,7 +36,21 @@ from omotion.WI15LaserCalibration import (
     validate_serial,
     select_closest_valid_setting,
     within_percent,
+    default_user_configuration,
+    percent_difference,
 )
+
+
+def _deeply_immutable(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deeply_immutable(item) for key, item in value.items()}
+        )
+    if isinstance(value, tuple | list):
+        return tuple(_deeply_immutable(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_deeply_immutable(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -44,6 +65,10 @@ class SingleSensorLaserCalibrationRequest:
     output_root: Path | str
     run_id: str
     fixture_calibration_status: str | None = None
+    sdk_version: str = _RUNTIME_SDK_VERSION
+    started_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 @dataclass(frozen=True)
@@ -53,10 +78,26 @@ class ProcedureEvent:
     message: str
     data: Mapping[str, object] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", _deeply_immutable(self.data))
+
 
 class OphirEvidenceApplicability(str, Enum):
     APPLICABLE = "applicable"
     NOT_APPLICABLE = "not_applicable"
+
+
+class ReportArtifactStatus(str, Enum):
+    INCOMPLETE = "incomplete"
+    FINALIZED = "finalized"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ReportArtifactEvidence:
+    path: Path | str
+    status: ReportArtifactStatus
+    failure: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,9 +145,13 @@ class TuningSelection:
 class SingleSensorLaserCalibrationResult:
     status: ProcedureStatus
     side: SensorSide | None
+    sdk_version: str = _RUNTIME_SDK_VERSION
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     failure_kind: FailureKind | None = None
     failure_reason: str | None = None
     topology: TopologySnapshot | None = None
+    topology_revalidation: TopologySnapshot | None = None
     identities: tuple[DeviceIdentity, ...] = ()
     ophir_identity: OphirIdentity | None = None
     ophir_setting_evidence: tuple[OphirSettingEvidence, ...] = ()
@@ -122,14 +167,30 @@ class SingleSensorLaserCalibrationResult:
     selection: TuningSelection | None = None
     requested_final_config: Mapping[str, float] | None = None
     final_config_readback: Mapping[str, float] | None = None
+    final_setting_checks: tuple[FinalSettingCheck, ...] = ()
     active_default_restore: tuple[SettingReadback, ...] = ()
     active_default_restore_failure: str | None = None
     events: tuple[ProcedureEvent, ...] = ()
     report_paths: tuple[Path | str, ...] = ()
+    report_artifact: ReportArtifactEvidence | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "pre_existing_config",
+            "requested_default_config",
+            "default_config_readback",
+            "requested_final_config",
+            "final_config_readback",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _deeply_immutable(value))
 
 
 class LaserCalibrationBench(Protocol):
     def preflight(self, side: SensorSide) -> PreflightSnapshot: ...
+
+    def revalidate_topology(self, side: SensorSide) -> TopologySnapshot: ...
 
     def read_user_configuration(self) -> Mapping[str, float]: ...
 
@@ -177,6 +238,7 @@ class SingleSensorLaserCalibrationWorkflow:
         events: list[ProcedureEvent] = []
         side: SensorSide | None = None
         preflight: PreflightSnapshot | None = None
+        topology_revalidation: TopologySnapshot | None = None
         pre_existing_config: Mapping[str, float] | None = None
         requested_default_config: Mapping[str, float] | None = None
         default_config_readback: Mapping[str, float] | None = None
@@ -188,6 +250,7 @@ class SingleSensorLaserCalibrationWorkflow:
         selection: TuningSelection | None = None
         requested_final_config: Mapping[str, float] | None = None
         final_config_readback: Mapping[str, float] | None = None
+        final_setting_checks: list[FinalSettingCheck] = []
         active_default_restore: list[SettingReadback] = []
         active_default_restore_failure: str | None = None
         result: SingleSensorLaserCalibrationResult | None = None
@@ -198,11 +261,54 @@ class SingleSensorLaserCalibrationWorkflow:
         measurement_started = False
         active_defaults_established = False
         used_upward_tuning = False
+        approved_defaults = default_user_configuration()
+
+        def checkpoint_progress() -> None:
+            self._recorder.checkpoint(
+                SingleSensorLaserCalibrationResult(
+                    status=ProcedureStatus.IN_PROGRESS,
+                    side=side,
+                    sdk_version=request.sdk_version,
+                    started_at=request.started_at,
+                    topology=preflight.topology if preflight else None,
+                    topology_revalidation=topology_revalidation,
+                    identities=(
+                        (
+                            preflight.console_identity,
+                            preflight.selected_sensor_identity,
+                        )
+                        if preflight
+                        else ()
+                    ),
+                    ophir_identity=preflight.ophir_identity if preflight else None,
+                    ophir_setting_evidence=(
+                        preflight.ophir_setting_evidence if preflight else ()
+                    ),
+                    pre_existing_config=pre_existing_config,
+                    requested_default_config=requested_default_config,
+                    default_config_readback=default_config_readback,
+                    configurations=tuple(configurations),
+                    measurements=tuple(measurements),
+                    measurement_criteria=tuple(measurement_criteria),
+                    adjustments=tuple(adjustments),
+                    candidates=tuple(candidates),
+                    selection=selection,
+                    requested_final_config=requested_final_config,
+                    final_config_readback=final_config_readback,
+                    final_setting_checks=tuple(final_setting_checks),
+                    active_default_restore=tuple(active_default_restore),
+                    active_default_restore_failure=active_default_restore_failure,
+                    events=tuple(events),
+                )
+            )
+
         try:
             side = self._confirmed_side(request)
             self._record_event(events, "confirmation", "Operator confirmations accepted.")
+            checkpoint_progress()
             preflight = self._bench.preflight(side)
             self._record_event(events, "preflight", "Bench preflight completed.")
+            checkpoint_progress()
             topology_result = validate_exact_single_topology(preflight.topology, side)
             if not topology_result.passed:
                 raise _ProcedureFailure(FailureKind.SETUP, topology_result.detail)
@@ -243,18 +349,33 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
             configuration_started = True
             pre_existing_config = dict(self._bench.read_user_configuration())
-            requested_default_config = dict(DEFAULT_USER_CONFIG)
-            if (
-                self._bench.write_user_configuration(
-                    dict(requested_default_config)
+            checkpoint_progress()
+            try:
+                topology_revalidation = self._bench.revalidate_topology(side)
+            except Exception as error:
+                raise _ProcedureFailure(
+                    FailureKind.SETUP,
+                    "Topology revalidation failed before configuration mutation.",
+                ) from error
+            checkpoint_progress()
+            if not validate_exact_single_topology(
+                topology_revalidation, side
+            ).passed:
+                raise _ProcedureFailure(
+                    FailureKind.SETUP,
+                    "Exact single-sensor topology changed before configuration mutation.",
                 )
-                is None
-            ):
+            requested_default_config = dict(approved_defaults)
+            default_write_readback = self._bench.write_user_configuration(
+                dict(requested_default_config)
+            )
+            if not isinstance(default_write_readback, Mapping):
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
-                    "Default User Configuration write did not return a result.",
+                    "Default User Configuration write did not return a complete readback mapping.",
                 )
-            default_config_readback = dict(self._bench.read_user_configuration())
+            default_config_readback = dict(default_write_readback)
+            checkpoint_progress()
             if default_config_readback != requested_default_config:
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
@@ -265,9 +386,18 @@ class SingleSensorLaserCalibrationWorkflow:
                 "default_configuration",
                 "Exact default User Configuration was written and read back.",
             )
+            checkpoint_progress()
             self._bench.bring_up_laser_configuration()
-            self._verify_active_default_configuration(configurations)
-            self._verify_trigger_rate(configurations)
+            self._record_event(
+                events,
+                "laser_configuration_bringup",
+                "Laser configuration bring-up completed.",
+            )
+            checkpoint_progress()
+            self._verify_active_default_configuration(
+                configurations, approved_defaults, checkpoint_progress
+            )
+            self._verify_trigger_rate(configurations, checkpoint_progress)
             active_defaults_established = True
             measurement_started = True
             measurement = self._measure_once()
@@ -275,6 +405,7 @@ class SingleSensorLaserCalibrationWorkflow:
             criteria = validate_energy_measurement(measurement)
             measurements.append(measurement)
             measurement_criteria.append(criteria)
+            checkpoint_progress()
             if not all(criterion.passed for criterion in criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
@@ -285,8 +416,8 @@ class SingleSensorLaserCalibrationWorkflow:
                 "tuning",
                 "Initial energy measurement passed quality criteria; tuning is next.",
             )
-            requested_current = DEFAULT_USER_CONFIG["TA_CURRENT_DRV"]
-            requested_pulse = DEFAULT_USER_CONFIG["TA_PULSE_WIDTH"]
+            requested_current = approved_defaults["TA_CURRENT_DRV"]
+            requested_pulse = approved_defaults["TA_PULSE_WIDTH"]
             candidates.append(
                 TuningCandidate(
                     requested_current,
@@ -296,6 +427,7 @@ class SingleSensorLaserCalibrationWorkflow:
                     measurement,
                 )
             )
+            checkpoint_progress()
             if measurement.mean_uj == 350.0:
                 selection = TuningSelection(
                     "none",
@@ -313,7 +445,10 @@ class SingleSensorLaserCalibrationWorkflow:
                         CURRENT_FLOOR_MA, current_setting - CURRENT_STEP_MA
                     )
                     actual_current = self._checked_register_write(
-                        "TA_CURRENT_DRV", next_setting, adjustments
+                        "TA_CURRENT_DRV",
+                        next_setting,
+                        adjustments,
+                        checkpoint_progress,
                     )
                     trigger_stopped_after_measurement = False
                     candidate_measurement = self._measure_once()
@@ -323,6 +458,7 @@ class SingleSensorLaserCalibrationWorkflow:
                     )
                     measurements.append(candidate_measurement)
                     measurement_criteria.append(candidate_criteria)
+                    checkpoint_progress()
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
@@ -337,6 +473,7 @@ class SingleSensorLaserCalibrationWorkflow:
                             candidate_measurement,
                         )
                     )
+                    checkpoint_progress()
                     current_setting = next_setting
                     if (
                         candidate_measurement.mean_uj <= 350.0
@@ -370,6 +507,7 @@ class SingleSensorLaserCalibrationWorkflow:
                         "wins a tie."
                     ),
                 )
+                checkpoint_progress()
                 if not accepted:
                     raise _ProcedureFailure(
                         FailureKind.NCR,
@@ -377,7 +515,10 @@ class SingleSensorLaserCalibrationWorkflow:
                     )
                 if requested_current != current_setting:
                     self._checked_register_write(
-                        "TA_CURRENT_DRV", requested_current, adjustments
+                        "TA_CURRENT_DRV",
+                        requested_current,
+                        adjustments,
+                        checkpoint_progress,
                     )
             else:
                 used_upward_tuning = True
@@ -385,11 +526,13 @@ class SingleSensorLaserCalibrationWorkflow:
                     "EE_PULSE_WIDTH_UL",
                     TEMPORARY_PULSE_WIDTH_LIMIT_US,
                     adjustments,
+                    checkpoint_progress,
                 )
                 self._checked_register_write(
                     "OPT_PULSE_WIDTH_UL",
                     TEMPORARY_PULSE_WIDTH_LIMIT_US,
                     adjustments,
+                    checkpoint_progress,
                 )
                 pulse_setting = requested_pulse
                 while True:
@@ -397,7 +540,10 @@ class SingleSensorLaserCalibrationWorkflow:
                         MAX_PULSE_WIDTH_US, pulse_setting + PULSE_WIDTH_STEP_US
                     )
                     actual_pulse = self._checked_register_write(
-                        "TA_PULSE_WIDTH", next_setting, adjustments
+                        "TA_PULSE_WIDTH",
+                        next_setting,
+                        adjustments,
+                        checkpoint_progress,
                     )
                     trigger_stopped_after_measurement = False
                     candidate_measurement = self._measure_once()
@@ -407,6 +553,7 @@ class SingleSensorLaserCalibrationWorkflow:
                     )
                     measurements.append(candidate_measurement)
                     measurement_criteria.append(candidate_criteria)
+                    checkpoint_progress()
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
@@ -421,6 +568,7 @@ class SingleSensorLaserCalibrationWorkflow:
                             candidate_measurement,
                         )
                     )
+                    checkpoint_progress()
                     pulse_setting = next_setting
                     if (
                         pulse_setting == MAX_PULSE_WIDTH_US
@@ -438,6 +586,7 @@ class SingleSensorLaserCalibrationWorkflow:
                             "below 300 uJ, so closest-candidate selection was "
                             "intentionally bypassed.",
                         )
+                        checkpoint_progress()
                         raise _ProcedureFailure(
                             FailureKind.NCR,
                             "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
@@ -474,6 +623,7 @@ class SingleSensorLaserCalibrationWorkflow:
                         "a tie."
                     ),
                 )
+                checkpoint_progress()
                 if not accepted:
                     raise _ProcedureFailure(
                         FailureKind.NCR,
@@ -481,14 +631,19 @@ class SingleSensorLaserCalibrationWorkflow:
                     )
                 if requested_pulse != pulse_setting:
                     self._checked_register_write(
-                        "TA_PULSE_WIDTH", requested_pulse, adjustments
+                        "TA_PULSE_WIDTH",
+                        requested_pulse,
+                        adjustments,
+                        checkpoint_progress,
                     )
+            checkpoint_progress()
             trigger_stopped_after_measurement = False
             final_measurement = self._measure_once()
             trigger_stopped_after_measurement = True
             final_criteria = validate_energy_measurement(final_measurement)
             measurements.append(final_measurement)
             measurement_criteria.append(final_criteria)
+            checkpoint_progress()
             if not all(criterion.passed for criterion in final_criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
@@ -516,12 +671,25 @@ class SingleSensorLaserCalibrationWorkflow:
                     ) from error
                 readback = SettingReadback(name, requested, actual)
                 configurations.append(readback)
-                if not within_percent(requested, actual, 2.0):
+                passed = within_percent(requested, actual, 2.0)
+                final_setting_checks.append(
+                    FinalSettingCheck(
+                        name=name,
+                        requested=requested,
+                        actual=actual,
+                        absolute_difference=abs(actual - requested),
+                        percent_difference=percent_difference(requested, actual),
+                        tolerance_percent=2.0,
+                        passed=passed,
+                    )
+                )
+                checkpoint_progress()
+                if not passed:
                     raise _ProcedureFailure(
                         FailureKind.CONFIGURATION,
                         f"Final active {name} is outside the allowed 2 percent tolerance.",
                     )
-            requested_final_config = dict(DEFAULT_USER_CONFIG)
+            requested_final_config = dict(approved_defaults)
             requested_final_config["TA_CURRENT_DRV"] = requested_current
             requested_final_config["TA_PULSE_WIDTH"] = requested_pulse
             if used_upward_tuning:
@@ -532,17 +700,16 @@ class SingleSensorLaserCalibrationWorkflow:
                     TEMPORARY_PULSE_WIDTH_LIMIT_US
                 )
             try:
-                if (
-                    self._bench.write_user_configuration(
-                        dict(requested_final_config)
-                    )
-                    is None
-                ):
+                final_write_readback = self._bench.write_user_configuration(
+                    dict(requested_final_config)
+                )
+                if not isinstance(final_write_readback, Mapping):
                     raise _ProcedureFailure(
                         FailureKind.CONFIGURATION,
-                        "Passing User Configuration write did not return a result.",
+                        "Passing User Configuration write did not return a complete readback mapping.",
                     )
-                final_config_readback = dict(self._bench.read_user_configuration())
+                final_config_readback = dict(final_write_readback)
+                checkpoint_progress()
             except _ProcedureFailure:
                 raise
             except Exception as error:
@@ -560,10 +727,15 @@ class SingleSensorLaserCalibrationWorkflow:
                 "final_configuration",
                 "Passing tuned User Configuration was written and read back exactly.",
             )
+            checkpoint_progress()
             result = SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
                 side=side,
+                sdk_version=request.sdk_version,
+                started_at=request.started_at,
+                ended_at=datetime.now(timezone.utc),
                 topology=preflight.topology,
+                topology_revalidation=topology_revalidation,
                 identities=(
                     preflight.console_identity,
                     preflight.selected_sensor_identity,
@@ -581,6 +753,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 selection=selection,
                 requested_final_config=requested_final_config,
                 final_config_readback=final_config_readback,
+                final_setting_checks=tuple(final_setting_checks),
                 events=tuple(events),
             )
         except _ProcedureFailure as caught_failure:
@@ -609,10 +782,14 @@ class SingleSensorLaserCalibrationWorkflow:
                 trigger_cleanup_failure,
             )
         if failure is not None and active_defaults_established and measurement_started:
-            (
-                active_default_restore,
-                active_default_restore_failure,
-            ) = self._restore_active_defaults()
+            def checkpoint_restore(failure_reason: str | None) -> None:
+                nonlocal active_default_restore_failure
+                active_default_restore_failure = failure_reason
+                checkpoint_progress()
+
+            active_default_restore_failure = self._restore_active_defaults(
+                active_default_restore, checkpoint_restore
+            )
             self._record_event(
                 events,
                 "active_default_restore",
@@ -624,7 +801,9 @@ class SingleSensorLaserCalibrationWorkflow:
                 events,
                 side,
                 preflight,
+                topology_revalidation,
                 failure,
+                request,
                 pre_existing_config,
                 requested_default_config,
                 default_config_readback,
@@ -637,6 +816,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 selection,
                 requested_final_config,
                 final_config_readback,
+                final_setting_checks,
                 active_default_restore,
                 active_default_restore_failure,
             )
@@ -719,7 +899,10 @@ class SingleSensorLaserCalibrationWorkflow:
         return True
 
     def _verify_active_default_configuration(
-        self, configurations: list[SettingReadback]
+        self,
+        configurations: list[SettingReadback],
+        approved_defaults: Mapping[str, float],
+        checkpoint: Callable[[], None],
     ) -> None:
         for name in (
             "TA_CURRENT_DRV",
@@ -728,27 +911,55 @@ class SingleSensorLaserCalibrationWorkflow:
             "EE_PULSE_WIDTH_UL",
             "OPT_PULSE_WIDTH_UL",
         ):
-            requested = DEFAULT_USER_CONFIG[name]
+            requested = approved_defaults[name]
             actual = self._bench.read_register(name)
             readback = SettingReadback(name, requested, actual)
             configurations.append(readback)
+            checkpoint()
             if not within_percent(requested, actual, 2.0):
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     f"Active {name} is outside the allowed 2 percent tolerance.",
                 )
 
-    def _verify_trigger_rate(self, configurations: list[SettingReadback]) -> None:
+    def _verify_trigger_rate(
+        self,
+        configurations: list[SettingReadback],
+        checkpoint: Callable[[], None],
+    ) -> None:
         rate_hz = self._bench.read_trigger_rate_hz()
+        configurations.append(
+            SettingReadback("trigger_rate_hz_initial", 40.0, rate_hz)
+        )
+        checkpoint()
         if rate_hz != 40.0:
-            if self._bench.write_trigger_rate_hz(40.0) is None:
+            write_result = self._bench.write_trigger_rate_hz(40.0)
+            if write_result is None:
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     "Trigger-rate correction did not return a result.",
                 )
+            if isinstance(write_result, bool) or not isinstance(
+                write_result, int | float
+            ):
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Trigger-rate correction returned malformed readback evidence.",
+                )
+            write_readback = SettingReadback(
+                "trigger_rate_hz_write", 40.0, float(write_result)
+            )
+            configurations.append(write_readback)
+            checkpoint()
+            if not math.isfinite(write_readback.actual) or write_readback.actual != 40.0:
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Trigger-rate correction immediate readback must exactly match 40 Hz.",
+                )
             rate_hz = self._bench.read_trigger_rate_hz()
         readback = SettingReadback("trigger_rate_hz", 40.0, rate_hz)
         configurations.append(readback)
+        checkpoint()
         if not self._is_valid_trigger_rate(rate_hz):
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
@@ -773,6 +984,7 @@ class SingleSensorLaserCalibrationWorkflow:
         name: str,
         requested: float,
         adjustments: list[SettingReadback],
+        checkpoint: Callable[[], None],
     ) -> float:
         try:
             write_result = self._bench.write_register(name, requested)
@@ -786,27 +998,32 @@ class SingleSensorLaserCalibrationWorkflow:
                 FailureKind.CONFIGURATION,
                 f"Active {name} write did not return a result.",
             )
-        try:
-            actual = self._bench.read_register(name)
-        except Exception as error:
+        if not isinstance(write_result, SettingReadback):
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
-                f"Active {name} readback failed.",
-            ) from error
-        readback = SettingReadback(name, requested, actual)
-        adjustments.append(readback)
-        if not within_percent(requested, actual, 2.0):
+                f"Active {name} write returned malformed readback evidence.",
+            )
+        adjustments.append(write_result)
+        checkpoint()
+        if write_result.name != name or write_result.requested != requested:
+            raise _ProcedureFailure(
+                FailureKind.CONFIGURATION,
+                f"Active {name} write returned mismatched readback identity.",
+            )
+        if not within_percent(requested, write_result.actual, 2.0):
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
                 f"Active {name} is outside the allowed 2 percent tolerance.",
             )
-        return actual
+        return write_result.actual
 
     def _restore_active_defaults(
         self,
-    ) -> tuple[list[SettingReadback], str | None]:
-        restored: list[SettingReadback] = []
+        restored: list[SettingReadback],
+        checkpoint: Callable[[str | None], None],
+    ) -> str | None:
         failures: list[str] = []
+        approved_defaults = default_user_configuration()
         for name in (
             "TA_CURRENT_DRV",
             "TA_PULSE_WIDTH",
@@ -814,24 +1031,35 @@ class SingleSensorLaserCalibrationWorkflow:
             "EE_PULSE_WIDTH_UL",
             "OPT_PULSE_WIDTH_UL",
         ):
-            requested = DEFAULT_USER_CONFIG[name]
+            requested = approved_defaults[name]
             try:
-                if self._bench.write_register(name, requested) is None:
+                write_result = self._bench.write_register(name, requested)
+                if write_result is None:
                     failures.append(f"{name} write returned no result")
-                actual = self._bench.read_register(name)
-                restored.append(SettingReadback(name, requested, actual))
-                if not within_percent(requested, actual, 2.0):
-                    failures.append(f"{name} readback was outside 2 percent")
+                elif not isinstance(write_result, SettingReadback):
+                    failures.append(f"{name} write returned malformed readback evidence")
+                else:
+                    restored.append(write_result)
+                    if (
+                        write_result.name != name
+                        or write_result.requested != requested
+                    ):
+                        failures.append(f"{name} readback identity did not match request")
+                    if not within_percent(requested, write_result.actual, 2.0):
+                        failures.append(f"{name} readback was outside 2 percent")
             except Exception:
                 failures.append(f"{name} restore raised an exception")
-        return restored, "; ".join(failures) or None
+            checkpoint("; ".join(failures) or None)
+        return "; ".join(failures) or None
 
     def _failed_result(
         self,
         events: list[ProcedureEvent],
         side: SensorSide | None,
         preflight: PreflightSnapshot | None,
+        topology_revalidation: TopologySnapshot | None,
         failure: _ProcedureFailure,
+        request: SingleSensorLaserCalibrationRequest,
         pre_existing_config: Mapping[str, float] | None,
         requested_default_config: Mapping[str, float] | None,
         default_config_readback: Mapping[str, float] | None,
@@ -844,6 +1072,7 @@ class SingleSensorLaserCalibrationWorkflow:
         selection: TuningSelection | None,
         requested_final_config: Mapping[str, float] | None,
         final_config_readback: Mapping[str, float] | None,
+        final_setting_checks: list[FinalSettingCheck],
         active_default_restore: list[SettingReadback],
         active_default_restore_failure: str | None,
     ) -> SingleSensorLaserCalibrationResult:
@@ -857,9 +1086,13 @@ class SingleSensorLaserCalibrationWorkflow:
                 else ProcedureStatus.FAILED
             ),
             side=side,
+            sdk_version=request.sdk_version,
+            started_at=request.started_at,
+            ended_at=datetime.now(timezone.utc),
             failure_kind=failure.kind,
             failure_reason=failure.reason,
             topology=preflight.topology if preflight else None,
+            topology_revalidation=topology_revalidation,
             identities=(
                 (preflight.console_identity, preflight.selected_sensor_identity)
                 if preflight
@@ -881,6 +1114,7 @@ class SingleSensorLaserCalibrationWorkflow:
             selection=selection,
             requested_final_config=requested_final_config,
             final_config_readback=final_config_readback,
+            final_setting_checks=tuple(final_setting_checks),
             active_default_restore=tuple(active_default_restore),
             active_default_restore_failure=active_default_restore_failure,
             events=tuple(events),

@@ -71,6 +71,7 @@ def test_domain_records_are_frozen_and_status_values_are_stable():
     )
     assert all(is_dataclass(record) and record.__dataclass_params__.frozen for record in records)
     assert [status.value for status in ProcedureStatus] == [
+        "in_progress",
         "passed",
         "failed",
         "failed_ncr",
@@ -82,6 +83,7 @@ def test_domain_records_are_frozen_and_status_values_are_stable():
         "measurement",
         "ncr",
         "canceled",
+        "report",
     ]
 
 

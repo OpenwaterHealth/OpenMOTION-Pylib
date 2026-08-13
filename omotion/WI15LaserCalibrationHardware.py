@@ -21,6 +21,7 @@ from omotion.WI15LaserCalibration import (
     OphirIdentity,
     SettingReadback,
     TopologySnapshot,
+    validate_exact_single_topology,
 )
 from omotion.WI15SingleSensorLaserCalibration import (
     OphirEvidenceApplicability,
@@ -431,13 +432,37 @@ class MotionLaserCalibrationBench:
         interface_factory: Callable[[], MotionInterface] = _default_interface_factory,
         fpga_map=None,
         wait_timeout: float = 10.0,
+        topology_quiet_period_s: float = 0.3,
+        topology_poll_interval_s: float = 0.05,
+        clock=time.monotonic,
+        sleep=time.sleep,
     ):
+        if not all(
+            math.isfinite(value)
+            for value in (
+                wait_timeout,
+                topology_quiet_period_s,
+                topology_poll_interval_s,
+            )
+        ):
+            raise ValueError("topology timing values must be finite")
+        if wait_timeout <= 0:
+            raise ValueError("wait_timeout must be positive")
+        if topology_quiet_period_s < 0 or topology_poll_interval_s <= 0:
+            raise ValueError(
+                "topology quiet period must be nonnegative and poll interval positive"
+            )
         self._meter = energy_meter
         self._interface = interface_factory()
         self._console = self._interface.console
         self._registers = FpgaRegisterIO(self._console, fpga_map=fpga_map)
         self._wait_timeout = float(wait_timeout)
+        self._topology_quiet_period_s = float(topology_quiet_period_s)
+        self._topology_poll_interval_s = float(topology_poll_interval_s)
+        self._clock = clock
+        self._sleep = sleep
         self._started = False
+        self._declared_side: str | None = None
 
     def _ensure_started(self) -> None:
         if self._started:
@@ -472,16 +497,39 @@ class MotionLaserCalibrationBench:
         except Exception:
             return False
 
-    def preflight(self, side: str) -> PreflightSnapshot:
-        if side not in ("left", "right"):
-            raise ValueError("side must be 'left' or 'right'")
-        self._ensure_started()
-        topology = TopologySnapshot(
+    def _topology_snapshot(self) -> TopologySnapshot:
+        return TopologySnapshot(
             console_connected=bool(self._console.is_connected()),
             left_connected=bool(self._interface.left.is_connected()),
             right_connected=bool(self._interface.right.is_connected()),
         )
-        selected = self._interface.left if side == "left" else self._interface.right
+
+    def _wait_for_stable_topology(self) -> TopologySnapshot:
+        snapshot = self._topology_snapshot()
+        stable_since = self._clock()
+        deadline = stable_since + self._wait_timeout
+        while self._clock() - stable_since < self._topology_quiet_period_s:
+            now = self._clock()
+            if now >= deadline:
+                raise RuntimeError("Motion topology did not become stable before timeout")
+            remaining_quiet = self._topology_quiet_period_s - (now - stable_since)
+            self._sleep(
+                min(
+                    self._topology_poll_interval_s,
+                    remaining_quiet,
+                    deadline - now,
+                )
+            )
+            current = self._topology_snapshot()
+            if current != snapshot:
+                snapshot = current
+                stable_since = self._clock()
+        return snapshot
+
+    def preflight(self, side: str) -> PreflightSnapshot:
+        if side not in ("left", "right"):
+            raise ValueError("side must be 'left' or 'right'")
+        self._ensure_started()
         ophir_identity = None
         ophir_evidence = ()
         ophir_ready = False
@@ -492,6 +540,9 @@ class MotionLaserCalibrationBench:
             ophir_ready = True
         except Exception as exc:
             ophir_failure_reason = str(exc) or exc.__class__.__name__
+        topology = self._wait_for_stable_topology()
+        self._declared_side = side
+        selected = self._interface.left if side == "left" else self._interface.right
         return PreflightSnapshot(
             topology=topology,
             console_identity=self._identity("console", self._console),
@@ -502,6 +553,12 @@ class MotionLaserCalibrationBench:
             ophir_setting_evidence=ophir_evidence,
             ophir_failure_reason=ophir_failure_reason,
         )
+
+    def revalidate_topology(self, side: str) -> TopologySnapshot:
+        if side not in ("left", "right"):
+            raise ValueError("side must be 'left' or 'right'")
+        self._ensure_started()
+        return self._wait_for_stable_topology()
 
     def read_user_configuration(self) -> Mapping[str, float]:
         config = self._console.read_config()
@@ -572,6 +629,12 @@ class MotionLaserCalibrationBench:
         ):
             raise RuntimeError(
                 "TA pulse width must be finite and below both active safety limits"
+            )
+        if self._declared_side is None or not validate_exact_single_topology(
+            self._wait_for_stable_topology(), self._declared_side
+        ).passed:
+            raise RuntimeError(
+                "Motion topology must match the exact declared topology before firing"
             )
         try:
             if not self._console.start_trigger():

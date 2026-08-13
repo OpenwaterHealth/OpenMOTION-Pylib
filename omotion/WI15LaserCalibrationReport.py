@@ -171,6 +171,9 @@ class HtmlRunReport:
                     "Active configuration readbacks",
                     result_data.get("configurations", []),
                 ),
+                self._final_setting_checks(
+                    result_data.get("final_setting_checks", [])
+                ),
                 self._readbacks("Adjustments", result_data.get("adjustments", [])),
                 self._candidates(
                     result_data.get("candidates", []), result_data.get("selection")
@@ -178,6 +181,7 @@ class HtmlRunReport:
                 self._restoration(result_data),
                 self._events(result_data.get("events", [])),
                 self._artifacts(result_data.get("report_paths", [])),
+                self._report_artifact(result_data.get("report_artifact")),
                 "</body></html>",
             ]
         )
@@ -361,6 +365,42 @@ class HtmlRunReport:
             self._table(title, rows, ("Setting", "Requested", "Actual")) if rows else ""
         )
 
+    def _final_setting_checks(self, checks: object) -> str:
+        rows = []
+        for check in checks if isinstance(checks, list) else []:
+            if isinstance(check, dict):
+                rows.append(
+                    tuple(
+                        check.get(key)
+                        for key in (
+                            "name",
+                            "requested",
+                            "actual",
+                            "absolute_difference",
+                            "percent_difference",
+                            "tolerance_percent",
+                            "passed",
+                        )
+                    )
+                )
+        return (
+            self._table(
+                "Final 2 percent setting checks",
+                rows,
+                (
+                    "Setting",
+                    "Requested",
+                    "Actual",
+                    "Absolute difference",
+                    "Percent difference",
+                    "Tolerance percent",
+                    "Passed",
+                ),
+            )
+            if rows
+            else ""
+        )
+
     def _candidates(self, candidates: object, selection: object) -> str:
         rows = []
         for candidate in candidates if isinstance(candidates, list) else []:
@@ -435,3 +475,10 @@ class HtmlRunReport:
     def _artifacts(self, artifacts: object) -> str:
         rows = [(artifact,) for artifact in artifacts if isinstance(artifacts, list)]
         return self._table("Artifacts", rows, ("Artifact",)) if rows else ""
+
+    def _report_artifact(self, artifact: object) -> str:
+        return (
+            self._table("HTML report artifact state", artifact.items())
+            if isinstance(artifact, dict)
+            else ""
+        )

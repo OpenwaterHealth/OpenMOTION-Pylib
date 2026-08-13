@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import math
+from types import MappingProxyType
 from typing import Iterable, Literal
 
 
@@ -10,6 +11,7 @@ SensorSide = Literal["left", "right"]
 
 
 class ProcedureStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
     PASSED = "passed"
     FAILED = "failed"
     FAILED_NCR = "failed_ncr"
@@ -22,6 +24,7 @@ class FailureKind(str, Enum):
     MEASUREMENT = "measurement"
     NCR = "ncr"
     CANCELED = "canceled"
+    REPORT = "report"
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,17 @@ class SettingReadback:
     name: str
     requested: float
     actual: float
+
+
+@dataclass(frozen=True)
+class FinalSettingCheck:
+    name: str
+    requested: float
+    actual: float
+    absolute_difference: float
+    percent_difference: float
+    tolerance_percent: float
+    passed: bool
 
 
 @dataclass(frozen=True)
@@ -87,7 +101,7 @@ PULSE_WIDTH_STEP_US = 10
 MAX_PULSE_WIDTH_US = 600
 TEMPORARY_PULSE_WIDTH_LIMIT_US = 660
 
-DEFAULT_USER_CONFIG = {
+_CANONICAL_DEFAULT_USER_CONFIG = MappingProxyType({
     "TA_PULSE_WIDTH": 500,
     "TA_CURRENT_DRV": 5000,
     "SEED_CW_GAIN": 140,
@@ -98,7 +112,16 @@ DEFAULT_USER_CONFIG = {
     "OPT_RATE_LL": 23125,
     "OPT_DRIVE_CL": 9999,
     "TEC_TRIP": 40,
-}
+})
+
+# Compatibility export: callers may compare, copy, or even mutate this dict,
+# but workflow runs always obtain a fresh copy of the private canonical data.
+DEFAULT_USER_CONFIG = dict(_CANONICAL_DEFAULT_USER_CONFIG)
+
+
+def default_user_configuration() -> dict[str, int]:
+    """Return a fresh copy of the approved ten-key WI-00015 defaults."""
+    return dict(_CANONICAL_DEFAULT_USER_CONFIG)
 
 
 def _is_finite(value: object) -> bool:

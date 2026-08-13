@@ -90,21 +90,33 @@ Preflight runs before step-9 configuration or laser action.
 8. Meter/sensor identity and calibration-due fields must be readable.
 9. Every Ophir setting and readback in the process addendum must pass.
 
+After Ophir setup, the Motion discovery topology must remain unchanged for an
+injectable quiet period before the preflight snapshot is accepted. The same
+stable exact topology is revalidated immediately before the first User
+Configuration mutation and immediately before each firing authorization. A
+late opposite-side sensor fails setup without configuration mutation or
+firing.
+
 Any failure stops the procedure before configuration mutation or firing.
 
 ## 6. Default configuration setup
 
 1. Read and preserve the complete existing User Configuration.
-2. Write exactly the ten-key default object in the process addendum.
+2. Obtain a fresh run-local copy of the private immutable canonical ten-key
+   defaults, then write exactly that object from the process addendum.
 3. Require a successful SDK write result.
-4. Read back the complete object and require exact keys and values.
+4. Treat the adapter-returned complete write readback as authoritative and
+   require exact keys and values. A later corroborating read may not erase an
+   immediate mismatch.
 5. Bring up the laser configuration and verify active TA pulse width, TA
    current, seed value, and 40 Hz trigger frequency.
 6. Correct only trigger frequency when necessary. A mismatch in another
    required operating value fails the procedure.
 
 The pre-existing, requested-default, and actual-default objects are retained
-for the report.
+as deeply immutable, run-local report evidence. Mutation of a public
+compatibility export or a caller/adapter-owned mapping cannot redefine a run
+or change its recorded result.
 
 ## 7. Valid measurement definition
 
@@ -177,7 +189,9 @@ With the selected final settings active:
    minus 2 percent;
 4. compare requested `TA_PULSE_WIDTH` with active readback and require plus or
    minus 2 percent; and
-5. record requested values, readbacks, differences, and percent differences.
+5. record workflow-owned typed checks containing requested value, actual
+   value, absolute difference, percent difference, 2 percent tolerance, and
+   explicit pass/fail for each attempted final TA check.
 
 Only after all five checks pass, construct and write the complete passing
 User Configuration:
@@ -222,15 +236,35 @@ addendum and, specifically:
 - highlighted default-versus-final changes; and
 - terminal outcome/NCR reason.
 
+Structured evidence also records the runtime `omotion.__version__` (using the
+explicit value `unavailable` only when no runtime version is available),
+separate operator build revision, and run start/end timestamps. The workflow
+atomically checkpoints a current `in_progress` structured result after every
+acquired observation and checked mutation, including immediate adapter write
+readbacks, measurement criteria, candidates, selections, and cleanup
+readbacks. JSON serialization consumes this workflow-owned evidence without
+recomputing acceptance.
+
+`report.html` is not listed as finalized in durable JSON until its atomic
+write has produced a file. Report construction or rendering failure records a
+failed report-artifact state, replaces a prior workflow pass with a structured
+report failure, and exits nonzero. Live UI/report consumers use the same
+workflow checkpoints and do not own duplicate acceptance logic.
+
 ## 12. Automated tests
 
 Unit tests cover:
 
 - left and right success;
 - neither, both, and wrong-side topology rejection;
+- late opposite-side discovery, pre-mutation topology revalidation, and
+  pre-firing topology revalidation;
 - `None`, empty, and valid serials;
 - every Ophir preflight failure and proof of no mutation/firing;
 - default write failure, extra/missing key, and value mismatch;
+- immediate default, adjustment, trigger-correction, cleanup, and final
+  handoff readback mismatches that cannot be erased by later matching reads;
+- pre-run public-default mutation and post-run nested mapping mutation;
 - exactly 25 versus 26 valid pulses;
 - standard-deviation, rate, and non-finite boundaries;
 - initial 350 no-adjustment;
@@ -238,8 +272,12 @@ Unit tests cover:
 - upward steps, crossing selection, 600-microsecond success, and ceiling NCR;
 - final 300/400 inclusive acceptance and outside failure;
 - plus/minus 2 percent readback boundaries;
+- exact workflow-owned final-check fields in JSON and HTML;
 - tuned-configuration write failure and complete-readback mismatch;
 - proof terminal NCR cannot reach final persistence; and
+- interruption-safe in-progress observation/mutation evidence; report
+  construction/rendering failure with real JSON/HTML components; runtime SDK
+  metadata; and
 - required report fields and change highlighting.
 
 ## 13. Future TestApp integration

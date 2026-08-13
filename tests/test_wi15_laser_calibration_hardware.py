@@ -196,7 +196,7 @@ class FakeMap:
         return None
 
 
-def _bench(topology=(True, True, False), *, meter=None, fpga_map=None):
+def _bench(topology=(True, True, False), *, meter=None, fpga_map=None, **bench_options):
     interface = FakeInterface(topology)
     meter = meter or FakeMeter(interface.calls)
     bench = MotionLaserCalibrationBench(
@@ -204,6 +204,8 @@ def _bench(topology=(True, True, False), *, meter=None, fpga_map=None):
         interface_factory=lambda: interface,
         fpga_map=fpga_map or FakeMap(),
         wait_timeout=3.5,
+        topology_quiet_period_s=0.0,
+        **bench_options,
     )
     return bench, interface, meter
 
@@ -236,6 +238,61 @@ def test_preflight_waits_for_console_and_one_sensor_then_reports_exact_topology(
             {"console": True, "sensors": 1, "timeout": 3.5},
         ),
     ]
+
+
+def test_preflight_captures_quiet_topology_after_late_sensor_arrives_during_ophir_setup():
+    """Sampling before Ophir setup would miss a deterministic late opposite sensor."""
+    interface = FakeInterface((True, True, False))
+    clock = FakeClock()
+
+    class LateOppositeMeter(FakeMeter):
+        def preflight(self):
+            self.calls.append("meter.preflight")
+            interface.right.connected = True
+            return _ophir_preflight()
+
+    meter = LateOppositeMeter(interface.calls)
+    bench = MotionLaserCalibrationBench(
+        meter,
+        interface_factory=lambda: interface,
+        fpga_map=FakeMap(),
+        wait_timeout=3.5,
+        topology_quiet_period_s=0.2,
+        topology_poll_interval_s=0.05,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    snapshot = bench.preflight("left")
+
+    assert snapshot.topology.right_connected is True
+    assert clock.now == pytest.approx(0.2)
+    assert interface.calls.index("meter.preflight") < len(interface.calls)
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("wait_timeout", float("nan")),
+        ("wait_timeout", float("inf")),
+        ("topology_quiet_period_s", float("nan")),
+        ("topology_quiet_period_s", float("inf")),
+        ("topology_poll_interval_s", float("nan")),
+        ("topology_poll_interval_s", float("inf")),
+    ],
+)
+def test_topology_timing_strategy_rejects_nonfinite_values(option, value):
+    """Nonfinite timing inputs could bypass stability or defeat the bound."""
+    interface = FakeInterface((True, True, False))
+    options = {option: value}
+
+    with pytest.raises(ValueError, match="finite"):
+        MotionLaserCalibrationBench(
+            FakeMeter(interface.calls),
+            interface_factory=lambda: interface,
+            fpga_map=FakeMap(),
+            **options,
+        )
 
 
 def test_preflight_keeps_valid_serials_when_an_independent_identity_read_fails():
@@ -875,7 +932,10 @@ def _firing_bench():
         meter,
         interface_factory=lambda: interface,
         fpga_map=SafetyMap(),
+        topology_quiet_period_s=0.0,
     )
+    bench.preflight("left")
+    calls.clear()
     return bench, interface, meter, calls
 
 
@@ -895,6 +955,17 @@ def test_measure_energy_verifies_exact_rate_and_both_limits_before_guaranteed_tr
         "meter.measure",
         "stop_trigger",
     ]
+
+
+def test_measure_energy_revalidates_declared_topology_before_firing_authorization():
+    """A sensor attached after configuration must prevent trigger start."""
+    bench, interface, _, calls = _firing_bench()
+    interface.right.connected = True
+
+    with pytest.raises(RuntimeError, match="exact declared topology"):
+        bench.measure_energy()
+
+    assert "start_trigger" not in calls
 
 
 @pytest.mark.parametrize("rate", [39.0, 40.1])

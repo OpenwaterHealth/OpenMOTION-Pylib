@@ -9,6 +9,7 @@ from omotion.WI15LaserCalibration import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FinalSettingCheck,
     OphirIdentity,
     ProcedureStatus,
     SettingReadback,
@@ -117,6 +118,14 @@ def _result(**changes):
         ),
         "requested_final_config": {"TA_CURRENT_DRV": 4950.0, "TA_PULSE_WIDTH": 500.0},
         "final_config_readback": {"TA_CURRENT_DRV": 4950.0, "TA_PULSE_WIDTH": 500.0},
+        "final_setting_checks": (
+            FinalSettingCheck(
+                "TA_CURRENT_DRV", 4950.0, 4949.0, 1.0, 0.020202, 2.0, True
+            ),
+            FinalSettingCheck(
+                "TA_PULSE_WIDTH", 500.0, 510.0, 10.0, 2.0, 2.0, True
+            ),
+        ),
         "active_default_restore": (SettingReadback("TA_CURRENT_DRV", 5000.0, 5000.0),),
         "trigger_cleanup_failure": "cleanup note",
         "active_default_restore_failure": "restore note",
@@ -228,6 +237,31 @@ def test_html_report_escapes_and_shows_complete_passing_evidence(tmp_path):
         assert expected in text
     assert 'href="run.json"' in text
     assert text.count('class="changed"') == 1
+
+
+def test_html_report_renders_workflow_owned_final_setting_checks_verbatim(tmp_path):
+    """The report must expose each final acceptance input without recomputation."""
+    text = (
+        HtmlRunReport(tmp_path)
+        .write(_request(), _result(), "run.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "Final 2 percent setting checks" in text
+    for expected in (
+        "TA_CURRENT_DRV",
+        "4950.0",
+        "4949.0",
+        "1.0",
+        "0.020202",
+        "TA_PULSE_WIDTH",
+        "500.0",
+        "510.0",
+        "10.0",
+        "2.0",
+        "True",
+    ):
+        assert expected in text
 
 
 def test_html_report_marks_terminal_ncr_without_claiming_unexecuted_later_stages(
