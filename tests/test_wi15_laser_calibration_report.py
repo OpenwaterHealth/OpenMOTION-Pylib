@@ -210,6 +210,27 @@ def test_recorder_checkpoints_each_event_and_terminal_failure_without_overwritin
     assert not list(recorder.run_directory.glob("*.tmp"))
 
 
+def test_event_after_rich_checkpoint_preserves_all_structured_state(tmp_path):
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", "rich-state")
+    result = _result()
+    later_event = ProcedureEvent(
+        datetime(2026, 8, 12, 1, tzinfo=timezone.utc), "later", "still durable"
+    )
+
+    recorder.checkpoint(result)
+    recorder.record(later_event)
+
+    payload = json.loads(recorder.json_path.read_text(encoding="utf-8"))
+    assert payload["measurements"]
+    assert payload["measurement_criteria"]
+    assert payload["adjustments"]
+    assert payload["candidates"]
+    assert payload["configurations"]
+    assert payload["requested_default_config"]
+    assert payload["final_setting_checks"]
+    assert [event["stage"] for event in payload["events"]] == ["preflight", "later"]
+
+
 def test_html_report_escapes_and_shows_complete_passing_evidence(tmp_path):
     """Unescaped or omitted evidence would make a passing record unsafe to review."""
     request = _request(operator="<operator & co>")

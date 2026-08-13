@@ -206,7 +206,7 @@ class LaserCalibrationBench(Protocol):
 
     def read_trigger_rate_hz(self) -> float: ...
 
-    def write_trigger_rate_hz(self, rate_hz: float) -> float | None: ...
+    def write_trigger_rate_hz(self, rate_hz: float) -> SettingReadback | None: ...
 
     def measure_energy(self) -> EnergyMeasurement: ...
 
@@ -302,6 +302,16 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
             )
 
+        def validate_checkpointed_measurement(
+            measurement: EnergyMeasurement,
+        ) -> tuple[CriterionResult, ...]:
+            measurements.append(measurement)
+            checkpoint_progress()
+            criteria = validate_energy_measurement(measurement)
+            measurement_criteria.append(criteria)
+            checkpoint_progress()
+            return criteria
+
         try:
             side = self._confirmed_side(request)
             self._record_event(events, "confirmation", "Operator confirmations accepted.")
@@ -350,6 +360,8 @@ class SingleSensorLaserCalibrationWorkflow:
             configuration_started = True
             pre_existing_config = dict(self._bench.read_user_configuration())
             checkpoint_progress()
+            requested_default_config = dict(approved_defaults)
+            checkpoint_progress()
             try:
                 topology_revalidation = self._bench.revalidate_topology(side)
             except Exception as error:
@@ -357,7 +369,6 @@ class SingleSensorLaserCalibrationWorkflow:
                     FailureKind.SETUP,
                     "Topology revalidation failed before configuration mutation.",
                 ) from error
-            checkpoint_progress()
             if not validate_exact_single_topology(
                 topology_revalidation, side
             ).passed:
@@ -365,7 +376,6 @@ class SingleSensorLaserCalibrationWorkflow:
                     FailureKind.SETUP,
                     "Exact single-sensor topology changed before configuration mutation.",
                 )
-            requested_default_config = dict(approved_defaults)
             default_write_readback = self._bench.write_user_configuration(
                 dict(requested_default_config)
             )
@@ -402,10 +412,7 @@ class SingleSensorLaserCalibrationWorkflow:
             measurement_started = True
             measurement = self._measure_once()
             trigger_stopped_after_measurement = True
-            criteria = validate_energy_measurement(measurement)
-            measurements.append(measurement)
-            measurement_criteria.append(criteria)
-            checkpoint_progress()
+            criteria = validate_checkpointed_measurement(measurement)
             if not all(criterion.passed for criterion in criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
@@ -453,12 +460,9 @@ class SingleSensorLaserCalibrationWorkflow:
                     trigger_stopped_after_measurement = False
                     candidate_measurement = self._measure_once()
                     trigger_stopped_after_measurement = True
-                    candidate_criteria = validate_energy_measurement(
+                    candidate_criteria = validate_checkpointed_measurement(
                         candidate_measurement
                     )
-                    measurements.append(candidate_measurement)
-                    measurement_criteria.append(candidate_criteria)
-                    checkpoint_progress()
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
@@ -548,12 +552,9 @@ class SingleSensorLaserCalibrationWorkflow:
                     trigger_stopped_after_measurement = False
                     candidate_measurement = self._measure_once()
                     trigger_stopped_after_measurement = True
-                    candidate_criteria = validate_energy_measurement(
+                    candidate_criteria = validate_checkpointed_measurement(
                         candidate_measurement
                     )
-                    measurements.append(candidate_measurement)
-                    measurement_criteria.append(candidate_criteria)
-                    checkpoint_progress()
                     if not all(item.passed for item in candidate_criteria):
                         raise _ProcedureFailure(
                             FailureKind.MEASUREMENT,
@@ -640,10 +641,7 @@ class SingleSensorLaserCalibrationWorkflow:
             trigger_stopped_after_measurement = False
             final_measurement = self._measure_once()
             trigger_stopped_after_measurement = True
-            final_criteria = validate_energy_measurement(final_measurement)
-            measurements.append(final_measurement)
-            measurement_criteria.append(final_criteria)
-            checkpoint_progress()
+            final_criteria = validate_checkpointed_measurement(final_measurement)
             if not all(criterion.passed for criterion in final_criteria):
                 raise _ProcedureFailure(
                     FailureKind.MEASUREMENT,
@@ -934,24 +932,19 @@ class SingleSensorLaserCalibrationWorkflow:
         checkpoint()
         if rate_hz != 40.0:
             write_result = self._bench.write_trigger_rate_hz(40.0)
-            if write_result is None:
-                raise _ProcedureFailure(
-                    FailureKind.CONFIGURATION,
-                    "Trigger-rate correction did not return a result.",
-                )
-            if isinstance(write_result, bool) or not isinstance(
-                write_result, int | float
-            ):
+            if not isinstance(write_result, SettingReadback):
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     "Trigger-rate correction returned malformed readback evidence.",
                 )
-            write_readback = SettingReadback(
-                "trigger_rate_hz_write", 40.0, float(write_result)
-            )
-            configurations.append(write_readback)
+            configurations.append(write_result)
             checkpoint()
-            if not math.isfinite(write_readback.actual) or write_readback.actual != 40.0:
+            if (
+                write_result.name != "trigger_rate_hz_write"
+                or write_result.requested != 40.0
+                or not math.isfinite(write_result.actual)
+                or write_result.actual != 40.0
+            ):
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     "Trigger-rate correction immediate readback must exactly match 40 Hz.",

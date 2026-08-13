@@ -130,7 +130,8 @@ def main(
         ):
             raise _OperatorCanceled
         if not _confirmed(
-            "Confirm fixture placement and beam containment (yes/no): ", input_func
+            "Confirm the sensor is placed in the Ophir 0 cm fixture (yes/no): ",
+            input_func,
         ):
             raise _OperatorCanceled
     except (EOFError, KeyboardInterrupt, _OperatorCanceled):

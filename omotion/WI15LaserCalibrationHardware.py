@@ -600,7 +600,7 @@ class MotionLaserCalibrationBench:
             raise RuntimeError("Trigger-frequency readback was not finite")
         return rate
 
-    def write_trigger_rate_hz(self, rate_hz: float) -> float | None:
+    def write_trigger_rate_hz(self, rate_hz: float) -> SettingReadback | None:
         requested = float(rate_hz)
         try:
             current = self._console.get_trigger_json()
@@ -613,7 +613,7 @@ class MotionLaserCalibrationBench:
             actual = self.read_trigger_rate_hz()
         except Exception:
             return None
-        return actual if actual == requested else None
+        return SettingReadback("trigger_rate_hz_write", requested, actual)
 
     def measure_energy(self) -> EnergyMeasurement:
         rate_hz = self.read_trigger_rate_hz()

@@ -6,6 +6,7 @@ from omotion.MotionConfig import MotionConfig
 from omotion.WI15LaserCalibration import (
     EnergyMeasurement,
     OphirIdentity,
+    SettingReadback,
     validate_energy_measurement,
 )
 from omotion.WI15LaserCalibrationHardware import (
@@ -351,7 +352,9 @@ def test_trigger_write_requires_successful_response_and_verified_fresh_readback(
         {"TriggerFrequencyHz": 40.0, "TriggerStatus": 2},
     ]
 
-    assert bench.write_trigger_rate_hz(40.0) == 40.0
+    assert bench.write_trigger_rate_hz(40.0) == SettingReadback(
+        "trigger_rate_hz_write", 40.0, 40.0
+    )
     assert interface.calls == [
         "get_trigger_json",
         ("set_trigger_json", {"TriggerFrequencyHz": 40.0, "TriggerStatus": 2}),
@@ -359,18 +362,27 @@ def test_trigger_write_requires_successful_response_and_verified_fresh_readback(
     ]
 
 
-@pytest.mark.parametrize("response, readback", [(None, 40.0), ({"ok": True}, 39.0)])
-def test_trigger_write_fails_closed_on_bad_response_or_mismatched_rate(
-    response, readback
-):
+def test_trigger_write_fails_closed_on_bad_response():
     bench, interface, _ = _bench()
-    interface.console.trigger_set_result = response
+    interface.console.trigger_set_result = None
     interface.console.trigger_reads = [
         {"TriggerFrequencyHz": 20.0},
-        {"TriggerFrequencyHz": readback},
+        {"TriggerFrequencyHz": 40.0},
     ]
 
     assert bench.write_trigger_rate_hz(40.0) is None
+
+
+def test_trigger_write_preserves_immediate_mismatching_readback_evidence():
+    bench, interface, _ = _bench()
+    interface.console.trigger_reads = [
+        {"TriggerFrequencyHz": 20.0},
+        {"TriggerFrequencyHz": 39.0},
+    ]
+
+    assert bench.write_trigger_rate_hz(40.0) == SettingReadback(
+        "trigger_rate_hz_write", 40.0, 39.0
+    )
 
 
 def test_fpga_write_requires_truthy_i2c_result_and_returns_immediate_scaled_readback():

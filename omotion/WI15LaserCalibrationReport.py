@@ -88,15 +88,25 @@ class JsonRunRecorder:
             break
         self.json_path = self.run_directory / "run.json"
         self._events: list[object] = []
+        self._latest_checkpoint: dict[str, object] | None = None
 
     def record(self, event: object) -> None:
         """Append an event and immediately make its evidence durable."""
         self._events.append(event)
-        self._write({"events": self._events})
+        if self._latest_checkpoint is None:
+            self._write({"events": self._events})
+            return
+        self._write({**self._latest_checkpoint, "events": self._events})
 
     def checkpoint(self, result: object) -> None:
         """Persist the exact result supplied by the workflow without interpretation."""
-        self._write(result)
+        payload = json_safe_value(result)
+        if isinstance(payload, dict):
+            self._latest_checkpoint = payload
+            events = payload.get("events")
+            if isinstance(events, list):
+                self._events = list(events)
+        self._write(payload)
 
     def _write(self, value: object) -> None:
         serialized = json.dumps(

@@ -158,6 +158,27 @@ def test_main_reprompts_side_echoes_it_and_requires_both_confirmations(monkeypat
     assert recorder.checkpoints[-1].report_paths == (recorder.json_path, report.report_path)
 
 
+def test_fixture_confirmation_requires_only_ophir_zero_cm_placement(monkeypatch, tmp_path):
+    script, _recorder, _meter, _bench, workflow, _report = configured_script(
+        monkeypatch, tmp_path
+    )
+    prompts = []
+    replies = iter(("left", "yes", "yes"))
+
+    def capture_prompt(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    exit_code = script.main(complete_args(tmp_path), input_func=capture_prompt)
+
+    assert exit_code == 0
+    assert prompts[-1] == (
+        "Confirm the sensor is placed in the Ophir 0 cm fixture (yes/no): "
+    )
+    assert all("containment" not in prompt.lower() for prompt in prompts)
+    assert workflow.requests[0].fixture_confirmed is True
+
+
 def test_main_uses_explicit_sdk_fallback_only_when_runtime_version_is_unavailable(
     monkeypatch, tmp_path
 ):

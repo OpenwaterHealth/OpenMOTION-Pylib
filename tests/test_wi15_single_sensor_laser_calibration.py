@@ -1,4 +1,5 @@
 from dataclasses import replace
+import importlib
 import json
 
 import pytest
@@ -159,7 +160,7 @@ class FakeLaserBench:
         self.trigger_rate = rate_hz
         if self.trigger_write_result is not _DEFAULT_TRIGGER_WRITE_RESULT:
             return self.trigger_write_result
-        return rate_hz
+        return SettingReadback("trigger_rate_hz_write", rate_hz, rate_hz)
 
     def measure_energy(self):
         self.calls.append("measure_energy")
@@ -307,7 +308,7 @@ def test_preflight_rejects_an_unconfirmed_or_invalid_sensor_side_before_bench_ac
 
 
 def test_preflight_requires_confirmed_fixture_placement_before_bench_access():
-    """Skipping fixture confirmation could fire a laser outside containment."""
+    """Skipping fixture confirmation could measure the sensor at the wrong position."""
     bench = FakeLaserBench()
     recorder = FakeRecorder()
     request = _request(side="right", fixture_confirmed=False)
@@ -626,6 +627,46 @@ def test_topology_is_revalidated_immediately_before_the_first_configuration_muta
     assert "measure_energy" not in bench.calls
 
 
+def test_no_checkpoint_or_late_topology_seam_occurs_between_revalidation_and_write():
+    timeline = []
+
+    class WindowBench(FakeLaserBench):
+        opposite_sensor_connected = False
+        topology_at_first_write = None
+
+        def revalidate_topology(self, side):
+            timeline.append("revalidate_topology")
+            return super().revalidate_topology(side)
+
+        def write_user_configuration(self, configuration):
+            timeline.append("write_user_configuration")
+            if self.topology_at_first_write is None:
+                self.topology_at_first_write = self.opposite_sensor_connected
+            return super().write_user_configuration(configuration)
+
+    bench = WindowBench([_preflight()])
+
+    class WindowRecorder(FakeRecorder):
+        def checkpoint(self, result):
+            if (
+                result.topology_revalidation is not None
+                and "write_user_configuration" not in timeline
+            ):
+                timeline.append("checkpoint")
+                bench.opposite_sensor_connected = True
+            super().checkpoint(result)
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, WindowRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.PASSED
+    revalidation_index = timeline.index("revalidate_topology")
+    assert timeline[revalidation_index : revalidation_index + 2] == [
+        "revalidate_topology",
+        "write_user_configuration",
+    ]
+    assert bench.topology_at_first_write is False
+
+
 def test_checked_default_configuration_preserves_prior_config_and_requires_exact_readback():
     """Skipping any configuration evidence can conceal a partial default write."""
     snapshot = _preflight()
@@ -898,7 +939,9 @@ def test_trigger_write_immediate_mismatch_cannot_be_erased_by_matching_later_rea
     bench = FakeLaserBench(
         [_preflight()],
         trigger_rate=37.0,
-        trigger_write_result=39.5,
+        trigger_write_result=SettingReadback(
+            "trigger_rate_hz_write", 40.0, 39.5
+        ),
     )
 
     result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
@@ -908,6 +951,24 @@ def test_trigger_write_immediate_mismatch_cannot_be_erased_by_matching_later_rea
     assert result.configurations[-1] == SettingReadback(
         "trigger_rate_hz_write", 40.0, 39.5
     )
+    assert bench.calls.count("read_trigger_rate_hz") == 1
+
+
+def test_trigger_write_requires_typed_identity_preserving_readback():
+    bench = FakeLaserBench(
+        [_preflight()],
+        trigger_rate=37.0,
+        trigger_write_result=40.0,
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.configurations[-1] == SettingReadback(
+        "trigger_rate_hz_initial", 40.0, 37.0
+    )
+    assert "malformed readback evidence" in result.failure_reason
     assert bench.calls.count("read_trigger_rate_hz") == 1
 
 
@@ -2001,5 +2062,62 @@ def test_raw_measurement_is_checkpointed_before_candidate_derivation(tmp_path):
     payload = json.loads(recorder.json_path.read_text(encoding="utf-8"))
     assert payload["status"] == "in_progress"
     assert [item["mean_uj"] for item in payload["measurements"]] == [380.0, 360.0]
-    assert len(payload["measurement_criteria"]) == 2
+    assert len(payload["measurement_criteria"]) == 1
     assert len(payload["candidates"]) == 1
+
+
+@pytest.mark.parametrize(
+    "measurements, validation_call",
+    [
+        ([_valid_measurement(mean_uj=350.0)], 1),
+        (
+            [
+                _valid_measurement(mean_uj=380.0),
+                _valid_measurement(mean_uj=360.0),
+            ],
+            2,
+        ),
+        (
+            [
+                _valid_measurement(mean_uj=350.0),
+                _valid_measurement(mean_uj=350.0),
+            ],
+            2,
+        ),
+    ],
+    ids=["initial", "sweep-candidate", "final"],
+)
+def test_each_raw_measurement_path_is_durable_before_criterion_derivation(
+    monkeypatch, tmp_path, measurements, validation_call
+):
+    workflow_module = importlib.import_module(
+        "omotion.WI15SingleSensorLaserCalibration"
+    )
+    original_validator = workflow_module.validate_energy_measurement
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", f"raw-{validation_call}")
+    observed_payloads = []
+    calls = 0
+
+    def interrupting_validator(measurement):
+        nonlocal calls
+        calls += 1
+        if calls == validation_call:
+            observed_payloads.append(
+                json.loads(recorder.json_path.read_text(encoding="utf-8"))
+            )
+            raise KeyboardInterrupt
+        return original_validator(measurement)
+
+    monkeypatch.setattr(
+        workflow_module, "validate_energy_measurement", interrupting_validator
+    )
+    bench = FakeLaserBench([_preflight()], measurements=measurements)
+
+    with pytest.raises(KeyboardInterrupt):
+        SingleSensorLaserCalibrationWorkflow(bench, recorder).run(
+            _request(output_root=tmp_path, run_id=f"raw-{validation_call}")
+        )
+
+    payload = observed_payloads[0]
+    assert len(payload["measurements"]) == validation_call
+    assert len(payload["measurement_criteria"]) == validation_call - 1
