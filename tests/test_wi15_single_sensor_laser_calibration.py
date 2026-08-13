@@ -29,6 +29,8 @@ class FakeLaserBench:
         write_result=object(),
         active_registers=None,
         trigger_rate=40.0,
+        mutate_written_configuration=False,
+        stop_trigger_outcomes=(),
     ):
         self.calls = []
         self.preflight_queue = list(preflight_queue)
@@ -41,6 +43,8 @@ class FakeLaserBench:
         self.write_result = write_result
         self.active_registers = dict(active_registers or DEFAULT_USER_CONFIG)
         self.trigger_rate = trigger_rate
+        self.mutate_written_configuration = mutate_written_configuration
+        self.stop_trigger_outcomes = list(stop_trigger_outcomes)
 
     def preflight(self, side):
         self.calls.append(f"preflight:{side}")
@@ -51,6 +55,9 @@ class FakeLaserBench:
 
     def write_user_configuration(self, configuration):
         self.calls.append("write_user_configuration")
+        if self.mutate_written_configuration:
+            configuration["TA_CURRENT_DRV"] = 1
+            self.user_configuration_reads[0] = dict(configuration)
         self.written_user_configuration = dict(configuration)
         return self.write_result
 
@@ -85,6 +92,10 @@ class FakeLaserBench:
 
     def stop_trigger(self):
         self.calls.append("stop_trigger")
+        if self.stop_trigger_outcomes:
+            outcome = self.stop_trigger_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
 
 
 def _valid_measurement(**changes):
@@ -567,6 +578,25 @@ def test_default_readback_mismatch_fails_before_bringup_or_measurement(readback)
     assert "measure_energy" not in bench.calls
 
 
+def test_mutating_bench_write_cannot_change_the_approved_default_readback_contract():
+    """A mutable SDK write argument must not redefine the approved default object."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        mutate_written_configuration=True,
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert result.requested_default_config == DEFAULT_USER_CONFIG
+    assert result.default_config_readback == {**DEFAULT_USER_CONFIG, "TA_CURRENT_DRV": 1}
+    assert "bring_up_laser_configuration" not in bench.calls
+    assert "measure_energy" not in bench.calls
+    assert recorder.checkpoints == [result]
+
+
 @pytest.mark.parametrize(
     ("actual_current", "expected_status"),
     [(5100.0, ProcedureStatus.PASSED), (5101.0, ProcedureStatus.FAILED)],
@@ -709,4 +739,42 @@ def test_measurement_exception_still_stops_trigger_and_becomes_a_measurement_fai
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
+    assert recorder.checkpoints == [result]
+
+
+def test_failed_measurement_stop_is_retried_and_returns_a_structured_failure():
+    """Marking cleanup complete before stop succeeds can leave a laser firing."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        stop_trigger_outcomes=[RuntimeError("first stop failed"), None],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.MEASUREMENT
+    assert bench.calls.count("stop_trigger") == 2
+    assert recorder.checkpoints == [result]
+
+
+def test_persistent_measurement_stop_failure_is_reported_without_losing_failure_state():
+    """A second stop failure must remain reportable after the best-effort retry."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        stop_trigger_outcomes=[
+            RuntimeError("first stop failed"),
+            RuntimeError("retry stop failed"),
+        ],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.MEASUREMENT
+    assert result.failure_reason == "Energy measurement failed."
+    assert result.trigger_cleanup_failure == "Trigger stop failed."
+    assert result.events[-2].stage == "trigger_cleanup"
+    assert bench.calls.count("stop_trigger") == 2
     assert recorder.checkpoints == [result]

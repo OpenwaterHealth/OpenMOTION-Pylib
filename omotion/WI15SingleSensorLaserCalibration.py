@@ -88,6 +88,7 @@ class SingleSensorLaserCalibrationResult:
     configurations: tuple[SettingReadback, ...] = ()
     measurements: tuple[EnergyMeasurement, ...] = ()
     measurement_criteria: tuple[tuple[CriterionResult, ...], ...] = ()
+    trigger_cleanup_failure: str | None = None
     adjustments: tuple[SettingReadback, ...] = ()
     events: tuple[ProcedureEvent, ...] = ()
     report_paths: tuple[Path | str, ...] = ()
@@ -148,6 +149,9 @@ class SingleSensorLaserCalibrationWorkflow:
         configurations: list[SettingReadback] = []
         measurements: list[EnergyMeasurement] = []
         measurement_criteria: list[tuple[CriterionResult, ...]] = []
+        result: SingleSensorLaserCalibrationResult | None = None
+        failure: _ProcedureFailure | None = None
+        trigger_cleanup_failure: str | None = None
         trigger_stopped_after_measurement = False
         configuration_started = False
         measurement_started = False
@@ -197,7 +201,12 @@ class SingleSensorLaserCalibrationWorkflow:
             configuration_started = True
             pre_existing_config = dict(self._bench.read_user_configuration())
             requested_default_config = dict(DEFAULT_USER_CONFIG)
-            if self._bench.write_user_configuration(requested_default_config) is None:
+            if (
+                self._bench.write_user_configuration(
+                    dict(requested_default_config)
+                )
+                is None
+            ):
                 raise _ProcedureFailure(
                     FailureKind.CONFIGURATION,
                     "Default User Configuration write did not return a result.",
@@ -216,9 +225,9 @@ class SingleSensorLaserCalibrationWorkflow:
             self._bench.bring_up_laser_configuration()
             self._verify_active_default_configuration(configurations)
             self._verify_trigger_rate(configurations)
-            trigger_stopped_after_measurement = True
             measurement_started = True
             measurement = self._measure_once()
+            trigger_stopped_after_measurement = True
             criteria = validate_energy_measurement(measurement)
             measurements.append(measurement)
             measurement_criteria.append(criteria)
@@ -232,7 +241,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 "tuning",
                 "Initial energy measurement passed quality criteria; tuning is next.",
             )
-            return SingleSensorLaserCalibrationResult(
+            result = SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
                 side=side,
                 topology=preflight.topology,
@@ -250,21 +259,8 @@ class SingleSensorLaserCalibrationWorkflow:
                 measurement_criteria=tuple(measurement_criteria),
                 events=tuple(events),
             )
-        except _ProcedureFailure as failure:
-            result = self._failed_result(
-                events,
-                side,
-                preflight,
-                failure,
-                pre_existing_config,
-                requested_default_config,
-                default_config_readback,
-                configurations,
-                measurements,
-                measurement_criteria,
-            )
-            self._recorder.checkpoint(result)
-            return result
+        except _ProcedureFailure as caught_failure:
+            failure = caught_failure
         except Exception:
             if measurement_started:
                 failure = _ProcedureFailure(
@@ -277,6 +273,18 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
             else:
                 failure = _ProcedureFailure(FailureKind.SETUP, "Bench preflight failed.")
+        finally:
+            if not trigger_stopped_after_measurement:
+                try:
+                    self._bench.stop_trigger()
+                except Exception:
+                    trigger_cleanup_failure = "Trigger stop failed."
+        if failure is None and trigger_cleanup_failure is not None:
+            failure = _ProcedureFailure(
+                FailureKind.MEASUREMENT if measurement_started else FailureKind.SETUP,
+                trigger_cleanup_failure,
+            )
+        if failure is not None:
             result = self._failed_result(
                 events,
                 side,
@@ -288,12 +296,11 @@ class SingleSensorLaserCalibrationWorkflow:
                 configurations,
                 measurements,
                 measurement_criteria,
+                trigger_cleanup_failure,
             )
             self._recorder.checkpoint(result)
-            return result
-        finally:
-            if not trigger_stopped_after_measurement:
-                self._bench.stop_trigger()
+        assert result is not None
+        return result
 
     @staticmethod
     def _confirmed_side(request: SingleSensorLaserCalibrationRequest) -> SensorSide:
@@ -429,7 +436,10 @@ class SingleSensorLaserCalibrationWorkflow:
         configurations: list[SettingReadback],
         measurements: list[EnergyMeasurement],
         measurement_criteria: list[tuple[CriterionResult, ...]],
+        trigger_cleanup_failure: str | None,
     ) -> SingleSensorLaserCalibrationResult:
+        if trigger_cleanup_failure is not None:
+            self._record_event(events, "trigger_cleanup", trigger_cleanup_failure)
         self._record_event(events, "failure", failure.reason)
         return SingleSensorLaserCalibrationResult(
             status=ProcedureStatus.FAILED,
@@ -452,5 +462,6 @@ class SingleSensorLaserCalibrationWorkflow:
             configurations=tuple(configurations),
             measurements=tuple(measurements),
             measurement_criteria=tuple(measurement_criteria),
+            trigger_cleanup_failure=trigger_cleanup_failure,
             events=tuple(events),
         )
