@@ -761,6 +761,11 @@ def test_invalid_initial_measurement_is_recorded_checkpointed_and_never_advances
     }
     assert "tuning" not in [event.stage for event in result.events]
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert max(
+        index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+    ) < restore_index
     assert recorder.checkpoints == [result]
 
 
@@ -788,6 +793,7 @@ def test_measurement_exception_still_stops_trigger_and_becomes_a_measurement_fai
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
+    assert len(result.active_default_restore) == 5
     assert recorder.checkpoints == [result]
 
 
@@ -804,6 +810,7 @@ def test_failed_measurement_stop_is_retried_and_returns_a_structured_failure():
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert bench.calls.count("stop_trigger") == 2
+    assert len(result.active_default_restore) == 5
     assert recorder.checkpoints == [result]
 
 
@@ -826,6 +833,11 @@ def test_persistent_measurement_stop_failure_is_reported_without_losing_failure_
     assert result.trigger_cleanup_failure == "Trigger stop failed."
     assert result.events[-2].stage == "trigger_cleanup"
     assert bench.calls.count("stop_trigger") == 2
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert max(
+        index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+    ) < restore_index
     assert recorder.checkpoints == [result]
 
 
@@ -867,6 +879,9 @@ def test_exact_350_rejects_a_distinct_final_measurement_outside_300_to_400(
     assert result.failure_kind is FailureKind.NCR
     assert bench.calls.count("measure_energy") == 2
     assert len(bench.written_user_configurations) == 1
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[restore_index - 1] == "stop_trigger"
     assert recorder.checkpoints == [result]
 
 
@@ -901,6 +916,11 @@ def test_final_requested_ta_settings_require_inclusive_two_percent_active_readba
     )
     if expected_status is ProcedureStatus.FAILED:
         assert result.failure_kind is FailureKind.CONFIGURATION
+        assert len(result.active_default_restore) == 5
+        restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+        assert max(
+            index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+        ) < restore_index
         assert recorder.checkpoints == [result]
 
 
@@ -992,6 +1012,17 @@ def test_downward_tuning_fails_ncr_at_2000_when_every_candidate_is_out_of_range(
     assert len(bench.written_user_configurations) == 1
     assert len(result.active_default_restore) == 5
     assert result.active_default_restore_failure is None
+    assert result.selection is not None
+    assert result.selection.direction == "downward_current"
+    assert result.selection.decision_kind == "closest_candidate"
+    assert result.selection.accepted is False
+    assert result.selection.selected_requested_current_ma == 2000
+    assert result.selection.selected_requested_pulse_width_us == 500
+    assert result.selection.selected_mean_uj == 410.0
+    assert "closest" in result.selection.rationale.lower()
+    assert "outside" in result.selection.rationale.lower()
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[restore_index - 1] == "stop_trigger"
     assert recorder.checkpoints == [result]
 
 
@@ -1096,6 +1127,16 @@ def test_upward_tuning_at_600_below_300_is_immediate_ncr_and_never_exceeds_ceili
     assert len(bench.written_user_configurations) == 1
     assert len(result.active_default_restore) == 5
     assert result.active_default_restore_failure is None
+    assert result.selection is not None
+    assert result.selection.direction == "upward_pulse"
+    assert result.selection.decision_kind == "bound"
+    assert result.selection.accepted is False
+    assert result.selection.selected_requested_pulse_width_us == 600
+    assert result.selection.selected_mean_uj == 290.0
+    assert "600" in result.selection.rationale
+    assert "below 300" in result.selection.rationale
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[restore_index - 1] == "stop_trigger"
     assert recorder.checkpoints == [result]
 
 
@@ -1117,6 +1158,37 @@ def test_upward_tuning_can_pass_with_an_in_range_candidate_at_600_us():
     assert result.requested_final_config["EE_PULSE_WIDTH_UL"] == 660
     assert result.requested_final_config["OPT_PULSE_WIDTH_UL"] == 660
     assert not any(call.endswith(":610") for call in bench.calls)
+
+
+def test_upward_closest_outside_at_ceiling_retains_rejected_selection_evidence():
+    """Rejecting an out-of-range closest pulse must not erase the decision trail."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[_valid_measurement(mean_uj=250.0)]
+        + [_valid_measurement(mean_uj=280.0) for _ in range(9)]
+        + [_valid_measurement(mean_uj=410.0)],
+    )
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED_NCR
+    assert result.failure_kind is FailureKind.NCR
+    assert len(result.candidates) == 11
+    assert result.candidates[-1].requested_pulse_width_us == 600
+    assert result.candidates[-1].measurement.mean_uj == 410.0
+    assert result.selection is not None
+    assert result.selection.direction == "upward_pulse"
+    assert result.selection.decision_kind == "closest_candidate"
+    assert result.selection.accepted is False
+    assert result.selection.selected_requested_current_ma == 5000
+    assert result.selection.selected_requested_pulse_width_us == 600
+    assert result.selection.selected_mean_uj == 410.0
+    assert "closest" in result.selection.rationale.lower()
+    assert "outside" in result.selection.rationale.lower()
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[restore_index - 1] == "stop_trigger"
+    assert len(bench.written_user_configurations) == 1
 
 
 def test_upward_temporary_limit_readback_error_fails_before_any_pulse_adjustment():
@@ -1220,6 +1292,11 @@ def test_passing_configuration_write_failure_returns_failed_after_final_acceptan
     assert result.final_config_readback is None
     assert len(bench.written_user_configurations) == 2
     assert bench.calls.count("measure_energy") == 2
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert max(
+        index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+    ) < restore_index
     assert recorder.checkpoints == [result]
 
 
@@ -1236,6 +1313,11 @@ def test_passing_configuration_write_exception_is_a_configuration_failure():
     assert result.failure_kind is FailureKind.CONFIGURATION
     assert result.final_config_readback is None
     assert len(bench.written_user_configurations) == 2
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert max(
+        index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+    ) < restore_index
 
 
 @pytest.mark.parametrize(
@@ -1266,6 +1348,11 @@ def test_passing_configuration_requires_exact_complete_immediate_readback(final_
     assert result.requested_final_config == DEFAULT_USER_CONFIG
     assert result.final_config_readback == final_readback
     assert len(bench.written_user_configurations) == 2
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert max(
+        index for index, call in enumerate(bench.calls) if call == "stop_trigger"
+    ) < restore_index
     assert "power_cycle" not in bench.calls
     assert recorder.checkpoints == [result]
 
@@ -1319,3 +1406,34 @@ def test_register_transport_exceptions_are_configuration_failures(bench):
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.CONFIGURATION
     assert len(bench.written_user_configurations) == 1
+
+
+def test_persistent_post_firing_restore_failures_do_not_replace_primary_ncr():
+    """Cleanup diagnostics must survive without masking the final-energy NCR."""
+    bench = FakeLaserBench(
+        [_preflight()],
+        measurements=[
+            _valid_measurement(mean_uj=350.0),
+            _valid_measurement(mean_uj=299.0),
+        ],
+        register_write_outcomes=[None, None, None, None, None],
+    )
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED_NCR
+    assert result.failure_kind is FailureKind.NCR
+    assert result.failure_reason == "Final energy must be between 300 and 400 uJ inclusive."
+    assert result.active_default_restore_failure == (
+        "TA_CURRENT_DRV write returned no result; "
+        "TA_PULSE_WIDTH write returned no result; "
+        "SEED_CW_GAIN write returned no result; "
+        "EE_PULSE_WIDTH_UL write returned no result; "
+        "OPT_PULSE_WIDTH_UL write returned no result"
+    )
+    assert len(result.active_default_restore) == 5
+    restore_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
+    assert bench.calls[restore_index - 1] == "stop_trigger"
+    assert len(bench.written_user_configurations) == 1
+    assert recorder.checkpoints == [result]

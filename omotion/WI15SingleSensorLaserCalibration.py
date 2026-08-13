@@ -92,6 +92,8 @@ class TuningCandidate:
 @dataclass(frozen=True)
 class TuningSelection:
     direction: str
+    decision_kind: str
+    accepted: bool
     selected_requested_current_ma: float
     selected_requested_pulse_width_us: float
     selected_mean_uj: float
@@ -194,7 +196,7 @@ class SingleSensorLaserCalibrationWorkflow:
         trigger_stopped_after_measurement = False
         configuration_started = False
         measurement_started = False
-        active_mutation_started = False
+        active_defaults_established = False
         used_upward_tuning = False
         try:
             side = self._confirmed_side(request)
@@ -266,6 +268,7 @@ class SingleSensorLaserCalibrationWorkflow:
             self._bench.bring_up_laser_configuration()
             self._verify_active_default_configuration(configurations)
             self._verify_trigger_rate(configurations)
+            active_defaults_established = True
             measurement_started = True
             measurement = self._measure_once()
             trigger_stopped_after_measurement = True
@@ -296,6 +299,8 @@ class SingleSensorLaserCalibrationWorkflow:
             if measurement.mean_uj == 350.0:
                 selection = TuningSelection(
                     "none",
+                    "no_adjustment",
+                    True,
                     requested_current,
                     requested_pulse,
                     measurement.mean_uj,
@@ -303,7 +308,6 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
             elif measurement.mean_uj > 350.0:
                 current_setting = requested_current
-                active_mutation_started = True
                 while True:
                     next_setting = max(
                         CURRENT_FLOOR_MA, current_setting - CURRENT_STEP_MA
@@ -345,29 +349,38 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
                 assert selected is not None
                 requested_current, selected_measurement = selected
-                if not (
+                accepted = (
                     MIN_ACCEPTABLE_ENERGY_UJ
                     <= selected_measurement.mean_uj
                     <= MAX_ACCEPTABLE_ENERGY_UJ
-                ):
+                )
+                selection = TuningSelection(
+                    "downward_current",
+                    "closest_candidate",
+                    accepted,
+                    requested_current,
+                    requested_pulse,
+                    selected_measurement.mean_uj,
+                    (
+                        "Selected the valid requested current closest to 350 uJ; "
+                        "lower requested setting wins a tie."
+                        if accepted
+                        else "The closest valid requested current was outside the "
+                        "accepted 300 to 400 uJ range; lower requested setting "
+                        "wins a tie."
+                    ),
+                )
+                if not accepted:
                     raise _ProcedureFailure(
                         FailureKind.NCR,
                         "No downward-current candidate is within 300 to 400 uJ.",
                     )
-                selection = TuningSelection(
-                    "downward_current",
-                    requested_current,
-                    requested_pulse,
-                    selected_measurement.mean_uj,
-                    "Selected the valid requested current closest to 350 uJ; lower requested setting wins a tie.",
-                )
                 if requested_current != current_setting:
                     self._checked_register_write(
                         "TA_CURRENT_DRV", requested_current, adjustments
                     )
             else:
                 used_upward_tuning = True
-                active_mutation_started = True
                 self._checked_register_write(
                     "EE_PULSE_WIDTH_UL",
                     TEMPORARY_PULSE_WIDTH_LIMIT_US,
@@ -409,7 +422,22 @@ class SingleSensorLaserCalibrationWorkflow:
                         )
                     )
                     pulse_setting = next_setting
-                    if pulse_setting == MAX_PULSE_WIDTH_US and candidate_measurement.mean_uj < MIN_ACCEPTABLE_ENERGY_UJ:
+                    if (
+                        pulse_setting == MAX_PULSE_WIDTH_US
+                        and candidate_measurement.mean_uj
+                        < MIN_ACCEPTABLE_ENERGY_UJ
+                    ):
+                        selection = TuningSelection(
+                            "upward_pulse",
+                            "bound",
+                            False,
+                            requested_current,
+                            pulse_setting,
+                            candidate_measurement.mean_uj,
+                            "The 600 us pulse-width bound was reached with energy "
+                            "below 300 uJ, so closest-candidate selection was "
+                            "intentionally bypassed.",
+                        )
                         raise _ProcedureFailure(
                             FailureKind.NCR,
                             "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
@@ -425,22 +453,32 @@ class SingleSensorLaserCalibrationWorkflow:
                 )
                 assert selected is not None
                 requested_pulse, selected_measurement = selected
-                if not (
+                accepted = (
                     MIN_ACCEPTABLE_ENERGY_UJ
                     <= selected_measurement.mean_uj
                     <= MAX_ACCEPTABLE_ENERGY_UJ
-                ):
+                )
+                selection = TuningSelection(
+                    "upward_pulse",
+                    "closest_candidate",
+                    accepted,
+                    requested_current,
+                    requested_pulse,
+                    selected_measurement.mean_uj,
+                    (
+                        "Selected the valid requested pulse width closest to 350 uJ; "
+                        "lower requested setting wins a tie."
+                        if accepted
+                        else "The closest valid requested pulse width was outside the "
+                        "accepted 300 to 400 uJ range; lower requested setting wins "
+                        "a tie."
+                    ),
+                )
+                if not accepted:
                     raise _ProcedureFailure(
                         FailureKind.NCR,
                         "No upward-pulse candidate is within 300 to 400 uJ.",
                     )
-                selection = TuningSelection(
-                    "upward_pulse",
-                    requested_current,
-                    requested_pulse,
-                    selected_measurement.mean_uj,
-                    "Selected the valid requested pulse width closest to 350 uJ; lower requested setting wins a tie.",
-                )
                 if requested_pulse != pulse_setting:
                     self._checked_register_write(
                         "TA_PULSE_WIDTH", requested_pulse, adjustments
@@ -570,7 +608,7 @@ class SingleSensorLaserCalibrationWorkflow:
                 FailureKind.MEASUREMENT if measurement_started else FailureKind.SETUP,
                 trigger_cleanup_failure,
             )
-        if failure is not None and active_mutation_started:
+        if failure is not None and active_defaults_established and measurement_started:
             (
                 active_default_restore,
                 active_default_restore_failure,
