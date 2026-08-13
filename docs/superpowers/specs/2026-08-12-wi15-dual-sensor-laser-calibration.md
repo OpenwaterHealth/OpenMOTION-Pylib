@@ -53,16 +53,24 @@ The process addendum controls if the sources conflict.
 ## 4. Entry point and reusable API boundary
 
 The operator entry point is
-`scripts/wi15_dual_sensor_laser_calibration.py`. It guides every fixture swap
-but does not own the tuning calculations.
+`scripts/wi15_dual_sensor_laser_calibration.py`. It guides each required
+change from the left module to the right module or from the right module to
+the left module, but does not own the tuning calculations. Consecutive
+measurements of the same seated module do not repeat the placement prompt.
 
 Shared SDK code receives explicit declared sides, motion interface/session,
 Ophir adapter, configuration store, measurement settings, state/report sink,
-and progress/cancellation callbacks. It must not call `input()`.
+progress/cancellation callbacks, and an injected placement-change
+acknowledgement callback. It must not call `input()`.
 
 It returns a structured outcome containing the initial pair, differential,
 tuning choices, cross-checks, final settings, terminal disposition, and
 artifact references. Failure maps to a nonzero script exit code.
+
+Every operator-facing step and report event uses descriptive audit language
+that states the phase, sensor side, reason, requested action, and result when
+applicable. Internal method names and terse event codes may appear in JSON
+field names, but they are not sufficient operator or report labels.
 
 ## 5. Preconditions and fail-closed preflight
 
@@ -117,6 +125,12 @@ Record invalid observations but stop rather than using their means.
 The initial pair is a baseline, not one of the three post-adjustment
 cross-checks.
 
+The workflow tracks the side most recently acknowledged as seated. The first
+measurement requires acknowledgement of the left module. The second requires
+acknowledgement of the switch to the right module. The acknowledgement must
+identify both the side and serial number. If the operator declines or cancels,
+the run fails before the associated firing or measurement.
+
 ## 9. Approved midpoint-tuning algorithm
 
 For every tuning round, use the latest valid left/right pair.
@@ -159,6 +173,12 @@ Do not alter the setting when the midpoint is exactly 350 or when the current
 discrete setting is already the closest permitted setting. Continue to a
 complete cross-check.
 
+Before the first tuning measurement of the selected module, request a
+placement change only when that selected side differs from the side currently
+seated. Leave the selected module seated across consecutive steps of the same
+tuning sweep. Record the sensor side on every measurement even when no new
+placement acknowledgement is required.
+
 ## 10. Complete cross-check loop
 
 After every adjustment decision, including no adjustment:
@@ -178,6 +198,10 @@ is outside range after cross-check three, fail/NCR immediately.
 An invalid measurement does not consume a complete cross-check, but it fails
 the current execution rather than silently retrying or tuning from partial
 data.
+
+The placement-change rule applies to every cross-check: prompt only when the
+next required side differs from the currently seated side. A complete
+cross-check still always measures left first and right second.
 
 ## 11. Final readback and acceptance
 
@@ -217,6 +241,8 @@ In addition to common report requirements, record:
 - exact declared and actual dual topology;
 - initial left/right observations, differential, and midpoint;
 - selected tuning side and why;
+- every acknowledged physical placement change, including side, serial
+  number, procedure phase, and operator response;
 - target calculation for every round;
 - every current/pulse step and quantized readback;
 - each complete cross-check number and pair;
@@ -245,8 +271,14 @@ Unit tests cover:
 - invalid partial cross-check behavior;
 - 300/400 inclusive energy bounds and plus/minus 2 percent readback bounds;
 - tuned-configuration write failure and complete-readback mismatch;
-- proof NCR prevents final writes; and
-- required report contents.
+- proof NCR prevents final writes;
+- required report contents;
+- side-change-only prompt behavior, including no duplicate prompt during a
+  same-side tuning sweep;
+- declined/canceled placement acknowledgement preventing the associated
+  measurement; and
+- descriptive operator/report labels for initial measurements, tuning
+  rationale, adjustment steps, cross-check results, and final verification.
 
 ## 15. Future TestApp integration
 
