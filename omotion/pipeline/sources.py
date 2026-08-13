@@ -338,8 +338,26 @@ class LiveUsbSource(_BaseSource):
             # If every parser has stopped, an empty batch queue is itself a
             # safe completion condition. This is the fallback for the bounded
             # queue being full when the sentinel is offered below.
-            if all(not thread.is_alive() for thread in self._reader_threads):
+            live_readers = [
+                thread for thread in self._reader_threads if thread.is_alive()
+            ]
+            if not live_readers:
                 self._close_complete.set()
+            else:
+                # A parser can still be blocked offering its last batch while
+                # the runner is busy. Once the runner drains enough space, the
+                # parser exits. Carry that late completion back to __iter__
+                # instead of forcing it to wait for the 15-second safety hatch.
+                def _mark_late_completion() -> None:
+                    for thread in live_readers:
+                        thread.join()
+                    self._close_complete.set()
+
+                threading.Thread(
+                    target=_mark_late_completion,
+                    daemon=True,
+                    name="LiveUsbSource-close-completion",
+                ).start()
             # Prefer the sentinel so a waiting iterator wakes immediately.
             # _close_complete is the safe fallback when this bounded queue
             # has no free slot for the sentinel.

@@ -169,6 +169,55 @@ def test_live_usb_source_full_batch_queue_still_finishes_after_close():
     assert received == queued
 
 
+def test_live_usb_source_marks_complete_when_reader_finishes_after_close_returns():
+    """Late parser completion must wake a runner after a rejected sentinel."""
+
+    class _DelayedReader:
+        def __init__(self):
+            self.finished = threading.Event()
+
+        def is_alive(self):
+            return not self.finished.is_set()
+
+        def join(self, timeout=None):
+            # Keep the production close path bounded without making this
+            # regression spend its real five-second join allowance.
+            self.finished.wait(0.01 if timeout is not None else None)
+
+    src = LiveUsbSource(
+        console=None, left=None, right=None,
+        metadata=_meta(),
+    )
+    queued = [object() for _ in range(src._batch_queue.maxsize)]
+    for item in queued:
+        src._batch_queue.put_nowait(item)
+    delayed_reader = _DelayedReader()
+    src._reader_threads.append(delayed_reader)
+
+    src.close()
+    received = []
+    done = threading.Event()
+
+    def _consume():
+        received.extend(src)
+        done.set()
+
+    worker = threading.Thread(target=_consume, daemon=True)
+    worker.start()
+    delayed_reader.finished.set()
+    try:
+        assert done.wait(2.0), (
+            "iterator did not learn that the late parser finished after "
+            "close returned"
+        )
+    finally:
+        if worker.is_alive():
+            src._batch_queue.put(None, timeout=1.0)
+            worker.join(timeout=2.0)
+
+    assert received == queued
+
+
 def test_live_usb_source_reader_loop_builds_batches_from_packet_queue(monkeypatch):
     """Mock parse_histogram_stream to feed fake samples; verify _reader_loop
     accumulates them into FrameBatches and pushes to the batch queue."""
