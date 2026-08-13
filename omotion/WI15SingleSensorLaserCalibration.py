@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Mapping, Protocol
 
 from omotion.WI15LaserCalibration import (
+    DEFAULT_USER_CONFIG,
+    CriterionResult,
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
@@ -15,8 +17,10 @@ from omotion.WI15LaserCalibration import (
     SensorSide,
     SettingReadback,
     TopologySnapshot,
+    validate_energy_measurement,
     validate_exact_single_topology,
     validate_serial,
+    within_percent,
 )
 
 
@@ -83,6 +87,7 @@ class SingleSensorLaserCalibrationResult:
     default_config_readback: Mapping[str, float] | None = None
     configurations: tuple[SettingReadback, ...] = ()
     measurements: tuple[EnergyMeasurement, ...] = ()
+    measurement_criteria: tuple[tuple[CriterionResult, ...], ...] = ()
     adjustments: tuple[SettingReadback, ...] = ()
     events: tuple[ProcedureEvent, ...] = ()
     report_paths: tuple[Path | str, ...] = ()
@@ -97,9 +102,15 @@ class LaserCalibrationBench(Protocol):
         self, configuration: Mapping[str, float]
     ) -> Mapping[str, float] | None: ...
 
+    def bring_up_laser_configuration(self) -> None: ...
+
     def read_register(self, name: str) -> float: ...
 
     def write_register(self, name: str, value: float) -> SettingReadback | None: ...
+
+    def read_trigger_rate_hz(self) -> float: ...
+
+    def write_trigger_rate_hz(self, rate_hz: float) -> float | None: ...
 
     def measure_energy(self) -> EnergyMeasurement: ...
 
@@ -131,6 +142,15 @@ class SingleSensorLaserCalibrationWorkflow:
         events: list[ProcedureEvent] = []
         side: SensorSide | None = None
         preflight: PreflightSnapshot | None = None
+        pre_existing_config: Mapping[str, float] | None = None
+        requested_default_config: Mapping[str, float] | None = None
+        default_config_readback: Mapping[str, float] | None = None
+        configurations: list[SettingReadback] = []
+        measurements: list[EnergyMeasurement] = []
+        measurement_criteria: list[tuple[CriterionResult, ...]] = []
+        trigger_stopped_after_measurement = False
+        configuration_started = False
+        measurement_started = False
         try:
             side = self._confirmed_side(request)
             self._record_event(events, "confirmation", "Operator confirmations accepted.")
@@ -174,6 +194,44 @@ class SingleSensorLaserCalibrationWorkflow:
                     FailureKind.SETUP,
                     "Ophir setting evidence is incomplete or invalid.",
                 )
+            configuration_started = True
+            pre_existing_config = dict(self._bench.read_user_configuration())
+            requested_default_config = dict(DEFAULT_USER_CONFIG)
+            if self._bench.write_user_configuration(requested_default_config) is None:
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Default User Configuration write did not return a result.",
+                )
+            default_config_readback = dict(self._bench.read_user_configuration())
+            if default_config_readback != requested_default_config:
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Default User Configuration readback must exactly match the request.",
+                )
+            self._record_event(
+                events,
+                "default_configuration",
+                "Exact default User Configuration was written and read back.",
+            )
+            self._bench.bring_up_laser_configuration()
+            self._verify_active_default_configuration(configurations)
+            self._verify_trigger_rate(configurations)
+            trigger_stopped_after_measurement = True
+            measurement_started = True
+            measurement = self._measure_once()
+            criteria = validate_energy_measurement(measurement)
+            measurements.append(measurement)
+            measurement_criteria.append(criteria)
+            if not all(criterion.passed for criterion in criteria):
+                raise _ProcedureFailure(
+                    FailureKind.MEASUREMENT,
+                    "Initial energy measurement failed quality criteria.",
+                )
+            self._record_event(
+                events,
+                "tuning",
+                "Initial energy measurement passed quality criteria; tuning is next.",
+            )
             return SingleSensorLaserCalibrationResult(
                 status=ProcedureStatus.PASSED,
                 side=side,
@@ -184,19 +242,58 @@ class SingleSensorLaserCalibrationWorkflow:
                 ),
                 ophir_identity=preflight.ophir_identity,
                 ophir_setting_evidence=preflight.ophir_setting_evidence,
+                pre_existing_config=pre_existing_config,
+                requested_default_config=requested_default_config,
+                default_config_readback=default_config_readback,
+                configurations=tuple(configurations),
+                measurements=tuple(measurements),
+                measurement_criteria=tuple(measurement_criteria),
                 events=tuple(events),
             )
         except _ProcedureFailure as failure:
-            result = self._failed_result(events, side, preflight, failure)
+            result = self._failed_result(
+                events,
+                side,
+                preflight,
+                failure,
+                pre_existing_config,
+                requested_default_config,
+                default_config_readback,
+                configurations,
+                measurements,
+                measurement_criteria,
+            )
             self._recorder.checkpoint(result)
             return result
         except Exception:
-            failure = _ProcedureFailure(FailureKind.SETUP, "Bench preflight failed.")
-            result = self._failed_result(events, side, preflight, failure)
+            if measurement_started:
+                failure = _ProcedureFailure(
+                    FailureKind.MEASUREMENT, "Energy measurement failed."
+                )
+            elif configuration_started:
+                failure = _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Default configuration or active-setting check failed.",
+                )
+            else:
+                failure = _ProcedureFailure(FailureKind.SETUP, "Bench preflight failed.")
+            result = self._failed_result(
+                events,
+                side,
+                preflight,
+                failure,
+                pre_existing_config,
+                requested_default_config,
+                default_config_readback,
+                configurations,
+                measurements,
+                measurement_criteria,
+            )
             self._recorder.checkpoint(result)
             return result
         finally:
-            self._bench.stop_trigger()
+            if not trigger_stopped_after_measurement:
+                self._bench.stop_trigger()
 
     @staticmethod
     def _confirmed_side(request: SingleSensorLaserCalibrationRequest) -> SensorSide:
@@ -270,12 +367,68 @@ class SingleSensorLaserCalibrationWorkflow:
                 return False
         return True
 
+    def _verify_active_default_configuration(
+        self, configurations: list[SettingReadback]
+    ) -> None:
+        for name in (
+            "TA_CURRENT_DRV",
+            "TA_PULSE_WIDTH",
+            "SEED_CW_GAIN",
+            "EE_PULSE_WIDTH_UL",
+            "OPT_PULSE_WIDTH_UL",
+        ):
+            requested = DEFAULT_USER_CONFIG[name]
+            actual = self._bench.read_register(name)
+            readback = SettingReadback(name, requested, actual)
+            configurations.append(readback)
+            if not within_percent(requested, actual, 2.0):
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    f"Active {name} is outside the allowed 2 percent tolerance.",
+                )
+
+    def _verify_trigger_rate(self, configurations: list[SettingReadback]) -> None:
+        rate_hz = self._bench.read_trigger_rate_hz()
+        if rate_hz != 40.0:
+            if self._bench.write_trigger_rate_hz(40.0) is None:
+                raise _ProcedureFailure(
+                    FailureKind.CONFIGURATION,
+                    "Trigger-rate correction did not return a result.",
+                )
+            rate_hz = self._bench.read_trigger_rate_hz()
+        readback = SettingReadback("trigger_rate_hz", 40.0, rate_hz)
+        configurations.append(readback)
+        if not self._is_valid_trigger_rate(rate_hz):
+            raise _ProcedureFailure(
+                FailureKind.CONFIGURATION,
+                "Active trigger rate must be between 39 and 41 Hz inclusive.",
+            )
+
+    @staticmethod
+    def _is_valid_trigger_rate(rate_hz: object) -> bool:
+        try:
+            return 39.0 <= float(rate_hz) <= 41.0
+        except (TypeError, ValueError):
+            return False
+
+    def _measure_once(self) -> EnergyMeasurement:
+        try:
+            return self._bench.measure_energy()
+        finally:
+            self._bench.stop_trigger()
+
     def _failed_result(
         self,
         events: list[ProcedureEvent],
         side: SensorSide | None,
         preflight: PreflightSnapshot | None,
         failure: _ProcedureFailure,
+        pre_existing_config: Mapping[str, float] | None,
+        requested_default_config: Mapping[str, float] | None,
+        default_config_readback: Mapping[str, float] | None,
+        configurations: list[SettingReadback],
+        measurements: list[EnergyMeasurement],
+        measurement_criteria: list[tuple[CriterionResult, ...]],
     ) -> SingleSensorLaserCalibrationResult:
         self._record_event(events, "failure", failure.reason)
         return SingleSensorLaserCalibrationResult(
@@ -293,5 +446,11 @@ class SingleSensorLaserCalibrationWorkflow:
             ophir_setting_evidence=(
                 preflight.ophir_setting_evidence if preflight else ()
             ),
+            pre_existing_config=pre_existing_config,
+            requested_default_config=requested_default_config,
+            default_config_readback=default_config_readback,
+            configurations=tuple(configurations),
+            measurements=tuple(measurements),
+            measurement_criteria=tuple(measurement_criteria),
             events=tuple(events),
         )
