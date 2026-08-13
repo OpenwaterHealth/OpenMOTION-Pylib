@@ -408,4 +408,3 @@ Record modules, tests, exact totals, and that live Safety Calibration remains pe
 - [ ] **Step 5: Push and open a stacked PR**
 
 Push `feature/214-wi15-safety-calibration` and open it against `feature/214-wi15-calibration-procedures` while PR #232 is unmerged. After #232 merges, retarget/rebase onto `next` before final merge.
-
