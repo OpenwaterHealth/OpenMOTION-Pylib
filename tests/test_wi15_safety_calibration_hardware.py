@@ -92,6 +92,12 @@ class FakeConsole(FakeDevice):
             4: 550,
             5: 10,
             6: 20,
+            **{
+                address: value
+                for address, value in zip(
+                    range(101, 113), range(1, 13), strict=True
+                )
+            },
         }
 
     def echo(self, data):
@@ -210,6 +216,18 @@ class FakeMap:
         "OPT_PULSE_WIDTH_UL": (4, 1.0),
         "OPT_ADC_DATA": (5, 1.86),
         "EE_ADC_DATA": (6, 1.86),
+        "TA_MAJOR": (101, 1.0),
+        "TA_MINOR": (102, 1.0),
+        "TA_REVISION": (103, 1.0),
+        "SEED_MAJOR": (104, 1.0),
+        "SEED_MINOR": (105, 1.0),
+        "SEED_REVISION": (106, 1.0),
+        "EE_MAJOR": (107, 1.0),
+        "EE_MINOR": (108, 1.0),
+        "EE_REVISION": (109, 1.0),
+        "OPT_MAJOR": (110, 1.0),
+        "OPT_MINOR": (111, 1.0),
+        "OPT_REVISION": (112, 1.0),
     }
 
     def get_entry_by_friendly_name(self, name):
@@ -305,6 +323,15 @@ def test_console_preflight_waits_for_console_only_and_keeps_identity_fields_inde
     assert not snapshot.topology.right_connected
     assert snapshot.console_identity.serial == "C-1"
     assert snapshot.console_identity.firmware is None
+    assert [
+        (revision.controller, revision.version)
+        for revision in snapshot.console_identity.fpga_firmware_revisions
+    ] == [
+        ("TA", "1.2.3"),
+        ("SEED", "4.5.6"),
+        ("SAFETY_EE", "7.8.9"),
+        ("SAFETY_OPT", "10.11.12"),
+    ]
     assert snapshot.console_responsive
 
 

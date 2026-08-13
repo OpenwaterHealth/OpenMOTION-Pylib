@@ -11,6 +11,7 @@ from omotion.calibration.laser import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FpgaFirmwareRevision,
     MAX_ACCEPTABLE_ENERGY_UJ,
     MAX_PULSE_WIDTH_US,
     MAX_RATE_HZ,
@@ -32,11 +33,50 @@ from omotion.calibration.laser import (
     select_closest_valid_setting,
     select_closest_valid_setting_to_target,
     validate_energy_measurement,
+    validate_console_fpga_revisions,
     validate_exact_dual_topology,
     validate_exact_single_topology,
     validate_serial,
     within_percent,
 )
+
+
+def test_console_identity_requires_all_four_named_fpga_firmware_revisions():
+    complete = DeviceIdentity(
+        "console",
+        "C-1",
+        "1.2.3",
+        "HW-1",
+        fpga_firmware_revisions=tuple(
+            FpgaFirmwareRevision(controller, "1.2.3")
+            for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
+        ),
+    )
+
+    assert validate_console_fpga_revisions(complete).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=complete.fpga_firmware_revisions[:-1],
+        )
+    ).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=tuple(
+                reversed(complete.fpga_firmware_revisions)
+            ),
+        )
+    ).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=(
+                *complete.fpga_firmware_revisions[:-1],
+                FpgaFirmwareRevision("SAFETY_OPT", "  "),
+            ),
+        )
+    ).passed
 
 
 def test_wi15_fixed_thresholds_and_default_user_configuration():

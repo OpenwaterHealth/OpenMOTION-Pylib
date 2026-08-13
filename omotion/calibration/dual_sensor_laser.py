@@ -40,6 +40,7 @@ from .laser import (
     percent_difference,
     select_closest_valid_setting_to_target,
     validate_energy_measurement,
+    validate_console_fpga_revisions,
     validate_exact_dual_topology,
     validate_serial,
     within_percent,
@@ -541,6 +542,11 @@ class DualSensorLaserCalibrationWorkflow:
                 raise _ProcedureFailure(
                     FailureKind.SETUP, f"{label} serial must be nonblank text."
                 )
+        fpga_revisions = validate_console_fpga_revisions(
+            preflight.console_identity
+        )
+        if not fpga_revisions.passed:
+            raise _ProcedureFailure(FailureKind.SETUP, fpga_revisions.detail)
         if not preflight.ophir_ready:
             raise _ProcedureFailure(
                 FailureKind.SETUP,

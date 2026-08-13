@@ -43,7 +43,6 @@ class DualSensorHtmlRunReport(HtmlRunReport):
         parts.extend(
             [
                 f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
-                self._table("Request metadata", request_data.items()),
                 self._table(
                     "Calibration target",
                     (
@@ -59,9 +58,6 @@ class DualSensorHtmlRunReport(HtmlRunReport):
                     ),
                 ),
                 self._topology(result_data.get("topology")),
-                self._topology_revalidation(
-                    result_data.get("topology_revalidation")
-                ),
                 self._identities(result_data.get("identities", [])),
                 self._ophir(
                     result_data.get("ophir_identity"),
@@ -90,16 +86,6 @@ class DualSensorHtmlRunReport(HtmlRunReport):
             ]
         )
         return "\n".join(part for part in parts if part)
-
-    def _topology_revalidation(self, topology: object) -> str:
-        return (
-            self._table(
-                "Topology immediately before configuration mutation",
-                topology.items(),
-            )
-            if isinstance(topology, dict)
-            else ""
-        )
 
     def _placements(self, placements: object) -> str:
         rows = []

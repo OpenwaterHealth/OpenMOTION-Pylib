@@ -79,7 +79,10 @@ Before configuration mutation or laser action:
 1. the console, left sensor, and right sensor must be connected and
    responsive;
 2. console, left, and right serial numbers must be non-`None` and non-empty;
-3. available firmware, FPGA, hardware ID, and identity data must be recorded;
+3. console firmware and hardware ID plus complete TA, Seed, Safety EE, and
+   Safety OPT FPGA major/minor/revision values must be read; the four semantic
+   FPGA revisions are stored in the console identity, while sensor-camera FPGA
+   revision fields are omitted from the human report;
 4. Ophir COM instantiation, scan, open, energy-sensor presence, identity, and
    calibration-due reads must pass; and
 5. all Ophir settings and readbacks in the process addendum must pass.
@@ -239,6 +242,7 @@ guided runner has no continue-anyway path.
 In addition to common report requirements, record:
 
 - exact declared and actual dual topology;
+- all four console-board FPGA firmware revisions;
 - initial left/right observations, differential, and midpoint;
 - selected tuning side and why;
 - every acknowledged physical placement change, including side, serial

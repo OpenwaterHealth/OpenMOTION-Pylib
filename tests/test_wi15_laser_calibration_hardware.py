@@ -104,6 +104,14 @@ class FakeConsole(FakeDevice):
         self.trigger_set_result = {"ok": True}
         self.i2c_write_result = True
         self.i2c_read_result = (b"\x12\x7a", 2)
+        self.fpga_version_raw = {
+            address: value
+            for address, value in zip(
+                range(101, 113),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+                strict=True,
+            )
+        }
         self.start_trigger_result = True
         self.stop_trigger_result = True
 
@@ -130,6 +138,10 @@ class FakeConsole(FakeDevice):
 
     def read_i2c_packet(self, **kwargs):
         self.calls.append(("read_i2c_packet", kwargs))
+        if kwargs["reg_addr"] in self.fpga_version_raw:
+            width = kwargs["read_len"]
+            raw = self.fpga_version_raw[kwargs["reg_addr"]]
+            return raw.to_bytes(width, "little"), width
         return self.i2c_read_result
 
     def write_i2c_packet(self, **kwargs):
@@ -184,7 +196,38 @@ class FakeMeter:
 
 
 class FakeMap:
+    _VERSION_ADDRESSES = {
+        name: address
+        for address, name in zip(
+            range(101, 113),
+            (
+                "TA_MAJOR",
+                "TA_MINOR",
+                "TA_REVISION",
+                "SEED_MAJOR",
+                "SEED_MINOR",
+                "SEED_REVISION",
+                "EE_MAJOR",
+                "EE_MINOR",
+                "EE_REVISION",
+                "OPT_MAJOR",
+                "OPT_MINOR",
+                "OPT_REVISION",
+            ),
+            strict=True,
+        )
+    }
+
     def get_entry_by_friendly_name(self, name):
+        if name in self._VERSION_ADDRESSES:
+            return {
+                "mux_idx": 1,
+                "channel": 4,
+                "i2c_addr": 0x41,
+                "isMsbFirst": False,
+                "start_address": self._VERSION_ADDRESSES[name],
+                "data_size": "8B",
+            }
         if name == "TA_CURRENT_DRV":
             return {
                 "mux_idx": 1,
@@ -259,7 +302,31 @@ def test_dual_preflight_waits_for_two_sensors_and_reports_both_identities():
     assert snapshot.topology.right_connected is True
     assert snapshot.left_sensor_identity.serial == "left-serial"
     assert snapshot.right_sensor_identity.serial == "right-serial"
+    assert [
+        (revision.controller, revision.version)
+        for revision in snapshot.console_identity.fpga_firmware_revisions
+    ] == [
+        ("TA", "1.2.3"),
+        ("SEED", "4.5.6"),
+        ("SAFETY_EE", "7.8.9"),
+        ("SAFETY_OPT", "10.11.12"),
+    ]
     assert snapshot.ophir_ready is True
+
+
+def test_preflight_rejects_incomplete_console_fpga_identity_before_mutation_or_firing():
+    bench, interface, _ = _bench((True, True, True))
+    del interface.console.fpga_version_raw[112]
+
+    with pytest.raises(RuntimeError, match="OPT_REVISION"):
+        bench.preflight_dual()
+
+    assert "apply_laser_power" not in interface.calls
+    assert "start_trigger" not in interface.calls
+    assert not any(
+        isinstance(call, tuple) and call[0] in ("write_config", "write_i2c_packet")
+        for call in interface.calls
+    )
 
 
 def test_dual_topology_revalidation_returns_the_current_quiet_snapshot():
@@ -1229,18 +1296,20 @@ class SafetyMap:
         "TA_PULSE_WIDTH": 0,
         "EE_PULSE_WIDTH_UL": 4,
         "OPT_PULSE_WIDTH_UL": 8,
+        **FakeMap._VERSION_ADDRESSES,
     }
 
     def get_entry_by_friendly_name(self, name):
         if name not in self._OFFSETS:
             return None
+        is_version = name in FakeMap._VERSION_ADDRESSES
         return {
             "mux_idx": 1,
             "channel": 4,
             "i2c_addr": 0x41,
             "isMsbFirst": False,
             "start_address": self._OFFSETS[name],
-            "data_size": "16B",
+            "data_size": "8B" if is_version else "16B",
             "scale": 1.0,
         }
 
@@ -1248,7 +1317,17 @@ class SafetyMap:
 class SafetyConsole(FakeConsole):
     def __init__(self, calls):
         super().__init__(True, calls)
-        self.register_values = {0: 500, 4: 550, 8: 550}
+        self.register_values = {
+            0: 500,
+            4: 550,
+            8: 550,
+            **{
+                address: value
+                for address, value in zip(
+                    range(101, 113), range(1, 13), strict=True
+                )
+            },
+        }
         self.trigger_reads = [{"TriggerFrequencyHz": 40.0}]
 
     def read_i2c_packet(self, **kwargs):

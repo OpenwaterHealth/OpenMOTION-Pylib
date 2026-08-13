@@ -13,6 +13,7 @@ from omotion.calibration.laser import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FpgaFirmwareRevision,
     OphirIdentity,
     ProcedureStatus,
     SettingReadback,
@@ -22,6 +23,12 @@ from omotion.calibration.laser import (
 from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
+)
+
+
+FPGA_REVISIONS = tuple(
+    FpgaFirmwareRevision(controller, "1.2.3")
+    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
 )
 
 
@@ -68,6 +75,7 @@ class FakeDualBench:
         console_serial="CONSOLE-001",
         left_serial="LEFT-001",
         right_serial="RIGHT-001",
+        fpga_revisions=FPGA_REVISIONS,
         ophir_ready=True,
         config_write_results=(),
         register_read_queues=None,
@@ -94,7 +102,12 @@ class FakeDualBench:
         self.snapshot = DualPreflightSnapshot(
             topology=topology,
             console_identity=DeviceIdentity(
-                "console", console_serial, "console-fw", "console-hw", "fpga-fw"
+                "console",
+                console_serial,
+                "console-fw",
+                "console-hw",
+                "fpga-fw",
+                fpga_revisions,
             ),
             left_sensor_identity=DeviceIdentity(
                 "left sensor", left_serial, "left-fw", "left-hw"
@@ -232,6 +245,7 @@ def run_workflow(
         ({"console_serial": None}, "Console serial"),
         ({"left_serial": "  "}, "Left-sensor serial"),
         ({"right_serial": None}, "Right-sensor serial"),
+        ({"fpga_revisions": ()}, "TA, SEED, SAFETY_EE, and SAFETY_OPT"),
         ({"ophir_ready": False}, "Ophir preflight failed"),
     ],
 )

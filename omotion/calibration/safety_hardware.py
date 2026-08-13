@@ -11,7 +11,7 @@ from omotion.MotionConfig import MotionConfig
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ScanRequest
 from .laser import DeviceIdentity, SettingReadback, TopologySnapshot
-from .laser_hardware import FpgaRegisterIO
+from .laser_hardware import FpgaRegisterIO, read_console_fpga_firmware_revisions
 from .safety import (
     NormalScanEvidence,
     PowerCycleEvidence,
@@ -130,6 +130,19 @@ class MotionSafetyCalibrationBench:
             hardware_id=self._safe_call(device, "get_hardware_id"),
         )
 
+    def _console_identity(self) -> DeviceIdentity:
+        identity = self._identity("console", self._console)
+        return DeviceIdentity(
+            role=identity.role,
+            serial=identity.serial,
+            firmware=identity.firmware,
+            hardware_id=identity.hardware_id,
+            fpga_firmware=identity.fpga_firmware,
+            fpga_firmware_revisions=read_console_fpga_firmware_revisions(
+                self._registers
+            ),
+        )
+
     def _topology_snapshot(self) -> TopologySnapshot:
         return TopologySnapshot(
             console_connected=bool(self._console.is_connected()),
@@ -148,7 +161,7 @@ class MotionSafetyCalibrationBench:
         self._ensure_started(required_sensor_count=0)
         return ConsolePreflightSnapshot(
             topology=self._topology_snapshot(),
-            console_identity=self._identity("console", self._console),
+            console_identity=self._console_identity(),
             console_responsive=self._console_responsive(),
         )
 

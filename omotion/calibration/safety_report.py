@@ -102,7 +102,22 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
             sections.append(self._table("Initial console topology", topology.items()))
         identity = result.get("console_identity")
         if isinstance(identity, dict):
-            sections.append(self._table("Console identity", identity.items()))
+            rows = []
+            for key, value in identity.items():
+                if key in ("fpga_firmware", "role"):
+                    continue
+                if key == "fpga_firmware_revisions":
+                    for revision in value if isinstance(value, list) else []:
+                        if isinstance(revision, dict):
+                            rows.append(
+                                (
+                                    f"{revision.get('controller')} FPGA firmware revision",
+                                    revision.get("version"),
+                                )
+                            )
+                    continue
+                rows.append((key, value))
+            sections.append(self._table("Console identity", rows))
         return "".join(sections)
 
     def _configuration_validation(self, result: dict[str, Any]) -> str:

@@ -245,11 +245,22 @@ class HtmlRunReport:
         rows = []
         for identity in identities if isinstance(identities, list) else []:
             if isinstance(identity, dict):
-                rows.extend(
-                    (identity.get("role", "device"), key, value)
-                    for key, value in identity.items()
-                    if key != "role"
-                )
+                role = identity.get("role", "device")
+                for key, value in identity.items():
+                    if key in ("role", "fpga_firmware"):
+                        continue
+                    if key == "fpga_firmware_revisions":
+                        for revision in value if isinstance(value, list) else []:
+                            if isinstance(revision, dict):
+                                rows.append(
+                                    (
+                                        role,
+                                        f"{revision.get('controller')} FPGA firmware revision",
+                                        revision.get("version"),
+                                    )
+                                )
+                        continue
+                    rows.append((role, key, value))
         return (
             self._table("Device identities", rows, ("Role", "Field", "Value"))
             if rows

@@ -17,11 +17,18 @@ from omotion.calibration.laser import (
     DEFAULT_USER_CONFIG,
     DeviceIdentity,
     EnergyMeasurement,
+    FpgaFirmwareRevision,
     FailureKind,
     OphirIdentity,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
+)
+
+
+FPGA_REVISIONS = tuple(
+    FpgaFirmwareRevision(controller, "1.2.3")
+    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
 )
 
 
@@ -225,6 +232,7 @@ def _preflight(
     *,
     topology=TopologySnapshot(True, True, False),
     console_serial="console-1",
+    console_fpga_revisions=FPGA_REVISIONS,
     sensor_serial="sensor-1",
     console_responsive=True,
     ophir_ready=True,
@@ -236,7 +244,13 @@ def _preflight(
         ophir_setting_evidence = _valid_ophir_setting_evidence()
     return PreflightSnapshot(
         topology=topology,
-        console_identity=DeviceIdentity("console", console_serial, "1.0", "console-hw"),
+        console_identity=DeviceIdentity(
+            "console",
+            console_serial,
+            "1.0",
+            "console-hw",
+            fpga_firmware_revisions=console_fpga_revisions,
+        ),
         selected_sensor_identity=DeviceIdentity("sensor", sensor_serial, "1.0", "sensor-hw"),
         ophir_identity=ophir_identity,
         ophir_ready=ophir_ready,
@@ -362,6 +376,19 @@ def test_preflight_rejects_blank_console_or_selected_sensor_serial(
     assert result.identities == (snapshot.console_identity, snapshot.selected_sensor_identity)
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == [result]
+
+
+def test_preflight_requires_all_four_console_fpga_revisions_before_configuration():
+    snapshot = _preflight(console_fpga_revisions=())
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.SETUP
+    assert "TA, SEED, SAFETY_EE, and SAFETY_OPT" in result.failure_reason
+    assert bench.calls == ["preflight:left", "stop_trigger"]
 
 
 def test_preflight_returns_an_ophir_failure_as_a_structured_setup_result():

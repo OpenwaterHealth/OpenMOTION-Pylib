@@ -8,6 +8,7 @@ import pytest
 from omotion.calibration.laser import (
     DeviceIdentity,
     FailureKind,
+    FpgaFirmwareRevision,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
@@ -23,6 +24,12 @@ from omotion.calibration.safety_workflow import (
     ConsolePreflightSnapshot,
     SafetyCalibrationRequest,
     SafetyCalibrationWorkflow,
+)
+
+
+FPGA_REVISIONS = tuple(
+    FpgaFirmwareRevision(controller, "1.2.3")
+    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
 )
 
 
@@ -121,7 +128,9 @@ class FakeSafetyBench:
     def __init__(self, *, topology=ShippingTopology.SINGLE_LEFT):
         self.preflight = ConsolePreflightSnapshot(
             topology=TopologySnapshot(True, True, False),
-            console_identity=DeviceIdentity("console", "C-1", "1.2", "HC", "FPGA"),
+            console_identity=DeviceIdentity(
+                "console", "C-1", "1.2", "HC", "FPGA", FPGA_REVISIONS
+            ),
             console_responsive=True,
         )
         self.current_config = _valid_config()
@@ -291,6 +300,25 @@ def test_setup_failure_prevents_bringup_adc_write_and_scan(preflight):
     assert bench.mutations == []
     assert bench.trigger_starts == 0
     assert bench.scan_requests == []
+
+
+def test_missing_console_fpga_revisions_prevents_safety_calibration_mutation():
+    bench = FakeSafetyBench()
+    bench.preflight = replace(
+        bench.preflight,
+        console_identity=replace(
+            bench.preflight.console_identity,
+            fpga_firmware_revisions=(),
+        ),
+    )
+
+    result, bench, _ = _run(bench)
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.SETUP
+    assert "TA, SEED, SAFETY_EE, and SAFETY_OPT" in result.failure_reason
+    assert bench.mutations == []
+    assert bench.trigger_starts == 0
 
 
 def test_sensor_modules_are_not_a_precondition_for_console_adc_calibration():

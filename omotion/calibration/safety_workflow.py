@@ -24,6 +24,7 @@ from .laser import (
     SettingReadback,
     TopologySnapshot,
     percent_difference,
+    validate_console_fpga_revisions,
     validate_serial,
     within_percent,
 )
@@ -579,6 +580,11 @@ class SafetyCalibrationWorkflow:
             raise _ProcedureFailure(
                 FailureKind.SETUP, "Console serial number is missing or blank."
             )
+        fpga_revisions = validate_console_fpga_revisions(
+            preflight.console_identity
+        )
+        if not fpga_revisions.passed:
+            raise _ProcedureFailure(FailureKind.SETUP, fpga_revisions.detail)
 
     @staticmethod
     def _setting_check(name: str, requested: object, actual: object) -> FinalSettingCheck:

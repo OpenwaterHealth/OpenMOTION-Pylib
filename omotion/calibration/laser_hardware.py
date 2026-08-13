@@ -18,6 +18,7 @@ from omotion.MotionInterface import MotionInterface
 from .laser import (
     DeviceIdentity,
     EnergyMeasurement,
+    FpgaFirmwareRevision,
     OphirIdentity,
     SettingReadback,
     TopologySnapshot,
@@ -460,6 +461,46 @@ class FpgaRegisterIO:
         return SettingReadback(name, requested, self.read(name))
 
 
+_CONSOLE_FPGA_VERSION_PREFIXES = (
+    ("TA", "TA"),
+    ("SEED", "SEED"),
+    ("SAFETY_EE", "EE"),
+    ("SAFETY_OPT", "OPT"),
+)
+
+
+def read_console_fpga_firmware_revisions(
+    registers: FpgaRegisterIO,
+) -> tuple[FpgaFirmwareRevision, ...]:
+    """Read the four complete console-board FPGA semantic revisions."""
+    revisions = []
+    for controller, prefix in _CONSOLE_FPGA_VERSION_PREFIXES:
+        components = []
+        for component in ("MAJOR", "MINOR", "REVISION"):
+            register_name = f"{prefix}_{component}"
+            try:
+                value = registers.read(register_name)
+            except Exception as error:
+                raise RuntimeError(
+                    f"Could not read {controller} FPGA firmware revision register {register_name}."
+                ) from error
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(float(value))
+                or not float(value).is_integer()
+                or not 0 <= int(value) <= 255
+            ):
+                raise RuntimeError(
+                    f"Invalid {controller} FPGA firmware revision register {register_name}: {value!r}."
+                )
+            components.append(int(value))
+        revisions.append(
+            FpgaFirmwareRevision(controller, ".".join(map(str, components)))
+        )
+    return tuple(revisions)
+
+
 class MotionLaserCalibrationBench:
     """One long-lived MotionInterface plus an Ophir energy-meter adapter."""
 
@@ -534,6 +575,19 @@ class MotionLaserCalibrationBench:
             hardware_id=self._safe_call(device, "get_hardware_id"),
         )
 
+    def _console_identity(self) -> DeviceIdentity:
+        identity = self._identity("console", self._console)
+        return DeviceIdentity(
+            role=identity.role,
+            serial=identity.serial,
+            firmware=identity.firmware,
+            hardware_id=identity.hardware_id,
+            fpga_firmware=identity.fpga_firmware,
+            fpga_firmware_revisions=read_console_fpga_firmware_revisions(
+                self._registers
+            ),
+        )
+
     def _console_responsive(self) -> bool:
         try:
             echoed, length = self._console.echo(b"WI15")
@@ -590,7 +644,7 @@ class MotionLaserCalibrationBench:
         selected = self._interface.left if side == "left" else self._interface.right
         return PreflightSnapshot(
             topology=topology,
-            console_identity=self._identity("console", self._console),
+            console_identity=self._console_identity(),
             selected_sensor_identity=self._identity("sensor", selected),
             console_responsive=self._console_responsive(),
             ophir_identity=ophir_identity,
@@ -617,7 +671,7 @@ class MotionLaserCalibrationBench:
         self._declared_dual = True
         return DualPreflightSnapshot(
             topology=topology,
-            console_identity=self._identity("console", self._console),
+            console_identity=self._console_identity(),
             left_sensor_identity=self._identity("left sensor", self._interface.left),
             right_sensor_identity=self._identity(
                 "right sensor", self._interface.right

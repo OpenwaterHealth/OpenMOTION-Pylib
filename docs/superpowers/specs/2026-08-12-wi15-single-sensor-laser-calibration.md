@@ -83,8 +83,10 @@ Preflight runs before step-9 configuration or laser action.
 3. The opposite side must not be connected.
 4. Console and selected-sensor serial numbers must be non-`None` and
    non-empty after trimming.
-5. Available firmware, FPGA, hardware ID, and related identity fields are
-   read and recorded.
+5. Console firmware and hardware ID are read. The TA, Seed, Safety EE, and
+   Safety OPT FPGA major/minor/revision registers must all be readable and are
+   recorded as four semantic firmware revisions in the console identity.
+   Sensor-camera FPGA revision fields are not shown in the human report.
 6. The Ophir COM object must instantiate.
 7. USB scan must find a meter, the meter must open, and the configured channel
    must report an energy sensor.
@@ -252,6 +254,7 @@ addendum and, specifically:
 - declared and actual topology;
 - selected side and operator confirmation;
 - identities and serial-validation results;
+- all four console-board FPGA firmware revisions;
 - Ophir setup and readbacks;
 - pre-existing, default, and final configuration;
 - every energy observation and validity criterion;

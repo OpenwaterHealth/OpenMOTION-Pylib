@@ -4,6 +4,7 @@ from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
     FailureKind,
+    FpgaFirmwareRevision,
     FinalSettingCheck,
     ProcedureStatus,
     SettingReadback,
@@ -143,7 +144,15 @@ def _result(**changes):
         "ended_at": NOW + timedelta(minutes=2),
         "initial_topology": TopologySnapshot(True, False, False),
         "console_identity": DeviceIdentity(
-            "console", "C-1", "console-fw", "console-hw", "fpga-fw"
+            "console",
+            "C-1",
+            "console-fw",
+            "console-hw",
+            "camera-fpga-omitted",
+            tuple(
+                FpgaFirmwareRevision(controller, "1.2.3")
+                for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
+            ),
         ),
         "current_configuration": current,
         "configuration_criteria": (
@@ -209,7 +218,8 @@ def test_report_escapes_and_renders_complete_passing_audit_evidence(tmp_path):
         "Status: passed",
         "1.6.0-runtime",
         "C-1",
-        "fpga-fw",
+        "TA FPGA firmware revision",
+        "SAFETY_OPT FPGA firmware revision",
         "Current User Configuration",
         "Active TA setting checks",
         "trigger_rate_hz_initial",
@@ -231,6 +241,7 @@ def test_report_escapes_and_renders_complete_passing_audit_evidence(tmp_path):
         "Procedure event timeline",
     ):
         assert expected in text
+    assert "camera-fpga-omitted" not in text
     assert text.count('class="changed"') == 2
 
 

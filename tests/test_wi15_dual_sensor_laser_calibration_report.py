@@ -19,6 +19,7 @@ from omotion.calibration.laser import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FpgaFirmwareRevision,
     FinalSettingCheck,
     PairMetrics,
     ProcedureStatus,
@@ -148,9 +149,27 @@ def passing_result():
         topology=TopologySnapshot(True, True, True),
         topology_revalidation=TopologySnapshot(True, True, True),
         identities=(
-            DeviceIdentity("console", "CONSOLE-001", "console-fw", "console-hw", "fpga-fw"),
-            DeviceIdentity("left sensor", "LEFT-001", "left-fw", "left-hw"),
-            DeviceIdentity("right sensor", "RIGHT-001", "right-fw", "right-hw"),
+            DeviceIdentity(
+                "console",
+                "CONSOLE-001",
+                "console-fw",
+                "console-hw",
+                fpga_firmware_revisions=tuple(
+                    FpgaFirmwareRevision(controller, version)
+                    for controller, version in (
+                        ("TA", "1.2.3"),
+                        ("SEED", "4.5.6"),
+                        ("SAFETY_EE", "7.8.9"),
+                        ("SAFETY_OPT", "10.11.12"),
+                    )
+                ),
+            ),
+            DeviceIdentity(
+                "left sensor", "LEFT-001", "left-fw", "left-hw", "camera-fpga-left"
+            ),
+            DeviceIdentity(
+                "right sensor", "RIGHT-001", "right-fw", "right-hw", "camera-fpga-right"
+            ),
         ),
         pre_existing_config={"customer_key": 17},
         requested_default_config=defaults,
@@ -186,9 +205,23 @@ def test_dual_report_renders_complete_passing_evidence_with_audit_language(tmp_p
     assert "Minimum accepted energy uJ" in html
     assert "Maximum accepted energy uJ" in html
     assert "Distance from 350 uJ" in html
-    assert "Operator &lt;A&gt;" in html
+    assert "Request metadata" not in html
+    assert "Operator &lt;A&gt;" not in html
     assert "CONSOLE-001" in html and "LEFT-001" in html and "RIGHT-001" in html
-    assert "Topology immediately before configuration mutation" in html
+    for expected in (
+        "TA FPGA firmware revision",
+        "1.2.3",
+        "SEED FPGA firmware revision",
+        "4.5.6",
+        "SAFETY_EE FPGA firmware revision",
+        "7.8.9",
+        "SAFETY_OPT FPGA firmware revision",
+        "10.11.12",
+    ):
+        assert expected in html
+    assert "camera-fpga-left" not in html
+    assert "camera-fpga-right" not in html
+    assert "Topology immediately before configuration mutation" not in html
     assert "Initial paired measurement — left sensor" in html
     assert "Initial differential and midpoint" in html
     assert "selected right sensor because it had the higher energy reading" in html

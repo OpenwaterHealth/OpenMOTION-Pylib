@@ -8,6 +8,12 @@ from typing import Iterable, Literal
 
 
 SensorSide = Literal["left", "right"]
+REQUIRED_CONSOLE_FPGA_CONTROLLERS = (
+    "TA",
+    "SEED",
+    "SAFETY_EE",
+    "SAFETY_OPT",
+)
 
 
 class ProcedureStatus(str, Enum):
@@ -65,12 +71,19 @@ class FinalSettingCheck:
 
 
 @dataclass(frozen=True)
+class FpgaFirmwareRevision:
+    controller: str
+    version: str
+
+
+@dataclass(frozen=True)
 class DeviceIdentity:
     role: str
     serial: str | None
     firmware: str | None
     hardware_id: str | None
     fpga_firmware: str | None = None
+    fpga_firmware_revisions: tuple[FpgaFirmwareRevision, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -264,6 +277,39 @@ def validate_serial(serial: str | None) -> CriterionResult:
     """Require a nonblank textual serial number for reportable identity."""
     passed = isinstance(serial, str) and bool(serial.strip())
     return CriterionResult("serial", passed, "Serial must be nonblank text.")
+
+
+def validate_console_fpga_revisions(identity: DeviceIdentity) -> CriterionResult:
+    """Require one nonblank firmware revision for every console-board FPGA."""
+    revisions = identity.fpga_firmware_revisions
+    records_are_typed = isinstance(revisions, tuple) and all(
+        isinstance(revision, FpgaFirmwareRevision) for revision in revisions
+    )
+    controllers = (
+        tuple(revision.controller for revision in revisions)
+        if records_are_typed
+        else ()
+    )
+
+    def valid_version(version: object) -> bool:
+        if not isinstance(version, str):
+            return False
+        parts = version.split(".")
+        return len(parts) == 3 and all(
+            part.isascii() and part.isdigit() and 0 <= int(part) <= 255
+            for part in parts
+        )
+
+    passed = (
+        records_are_typed
+        and controllers == REQUIRED_CONSOLE_FPGA_CONTROLLERS
+        and all(valid_version(revision.version) for revision in revisions)
+    )
+    return CriterionResult(
+        "console_fpga_firmware_revisions",
+        passed,
+        "Console identity must include TA, SEED, SAFETY_EE, and SAFETY_OPT FPGA firmware revisions.",
+    )
 
 
 def percent_difference(requested: float, actual: float) -> float:
