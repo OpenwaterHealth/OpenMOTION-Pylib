@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Draft for written review
+**Status:** Implemented and software-verified; hardware execution pending
 
 **Procedure:** Single-Sensor Laser Calibration
 
@@ -248,3 +248,19 @@ This procedure maps to one future TestApp button. The UI supplies the side
 selection/confirmation and renders structured progress. It must call the same
 shared implementation and may not reimplement topology, tuning, or acceptance
 logic.
+
+## 14. Implementation mapping
+
+- Domain values and validation: `omotion/WI15LaserCalibration.py`
+- UI-neutral procedure workflow: `omotion/WI15SingleSensorLaserCalibration.py`
+- Motion and Ophir adapters: `omotion/WI15LaserCalibrationHardware.py`
+- Incremental JSON and HTML evidence: `omotion/WI15LaserCalibrationReport.py`
+- Operator entry point: `scripts/wi15_single_sensor_laser_calibration.py`
+- Software verification: `tests/test_wi15_laser_calibration.py`,
+  `tests/test_wi15_single_sensor_laser_calibration.py`,
+  `tests/test_wi15_laser_calibration_hardware.py`,
+  `tests/test_wi15_laser_calibration_report.py`, and
+  `tests/test_wi15_single_sensor_laser_script.py`
+
+Live single-sensor bench execution remains required before hardware
+verification can be claimed.
