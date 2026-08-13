@@ -219,8 +219,9 @@ class HtmlRunReport:
         return f"<h2>{self._text(title)}</h2><table><thead><tr>{heading}</tr></thead><tbody>{''.join(row_html)}</tbody></table>"
 
     def _topology(self, topology: object) -> str:
-        rows = topology.items() if isinstance(topology, dict) else ()
-        return self._table("Topology", rows)
+        if not isinstance(topology, dict):
+            return ""
+        return self._table("Topology", topology.items())
 
     def _identities(self, identities: object) -> str:
         rows = []
@@ -231,7 +232,11 @@ class HtmlRunReport:
                     for key, value in identity.items()
                     if key != "role"
                 )
-        return self._table("Device identities", rows, ("Role", "Field", "Value"))
+        return (
+            self._table("Device identities", rows, ("Role", "Field", "Value"))
+            if rows
+            else ""
+        )
 
     def _ophir(self, identity: object, settings: object) -> str:
         identity_rows = identity.items() if isinstance(identity, dict) else ()
@@ -250,11 +255,18 @@ class HtmlRunReport:
                         )
                     )
                 )
-        return self._table("Ophir identity", identity_rows) + self._table(
-            "Ophir settings",
-            settings_rows,
-            ("Setting", "Requested", "Actual", "Applicability", "Passed"),
-        )
+        sections = []
+        if isinstance(identity, dict):
+            sections.append(self._table("Ophir identity", identity_rows))
+        if settings_rows:
+            sections.append(
+                self._table(
+                    "Ophir settings",
+                    settings_rows,
+                    ("Setting", "Requested", "Actual", "Applicability", "Passed"),
+                )
+            )
+        return "".join(sections)
 
     def _configurations(self, result: dict[str, Any]) -> str:
         sections = []
@@ -268,6 +280,7 @@ class HtmlRunReport:
                 sections.append(self._table(title, configuration.items()))
         default = result.get("requested_default_config")
         tuned = result.get("requested_final_config")
+        is_passing = result.get("status") == "passed"
         if isinstance(default, dict) and isinstance(tuned, dict):
             rows = []
             for key in sorted(set(default) | set(tuned)):
@@ -278,15 +291,24 @@ class HtmlRunReport:
                 rows.append(
                     f"<tr><td>{self._text(key)}</td><td>{self._text(before)}</td><td{cell_class}>{self._text(after)}</td></tr>"
                 )
+            comparison_title = (
+                "Default versus tuned configuration"
+                if is_passing
+                else "Default versus requested tuned configuration (unconfirmed)"
+            )
             sections.append(
-                "<h2>Default versus tuned configuration</h2><table><thead><tr><th>Key</th><th>Default</th><th>Tuned</th></tr></thead><tbody>"
+                f"<h2>{comparison_title}</h2><table><thead><tr><th>Key</th><th>Default</th><th>Tuned</th></tr></thead><tbody>"
                 + "".join(rows)
                 + "</tbody></table>"
             )
         if isinstance(result.get("requested_final_config"), dict):
             sections.append(
                 self._table(
-                    "Passing tuned User Configuration",
+                    (
+                        "Passing tuned User Configuration"
+                        if is_passing
+                        else "Requested tuned User Configuration (unconfirmed)"
+                    ),
                     result["requested_final_config"].items(),
                 )
             )
@@ -305,7 +327,8 @@ class HtmlRunReport:
         criteria_list = criteria if isinstance(criteria, list) else []
         for index, measurement in enumerate(measurement_list, start=1):
             rows = measurement.items() if isinstance(measurement, dict) else ()
-            sections.append(self._table(f"Measurement {index}", rows))
+            if isinstance(measurement, dict):
+                sections.append(self._table(f"Measurement {index}", rows))
             item_criteria = (
                 criteria_list[index - 1] if index <= len(criteria_list) else []
             )
@@ -317,14 +340,15 @@ class HtmlRunReport:
                             criterion.get(key) for key in ("name", "passed", "detail")
                         )
                     )
-            sections.append(
-                self._table(
-                    f"Measurement {index} criteria",
-                    criterion_rows,
-                    ("Criterion", "Passed", "Detail"),
+            if criterion_rows:
+                sections.append(
+                    self._table(
+                        f"Measurement {index} criteria",
+                        criterion_rows,
+                        ("Criterion", "Passed", "Detail"),
+                    )
                 )
-            )
-        return "".join(sections) or self._table("Measurements", ())
+        return "".join(sections)
 
     def _readbacks(self, title: str, readbacks: object) -> str:
         rows = []
@@ -333,7 +357,9 @@ class HtmlRunReport:
                 rows.append(
                     tuple(readback.get(key) for key in ("name", "requested", "actual"))
                 )
-        return self._table(title, rows, ("Setting", "Requested", "Actual"))
+        return (
+            self._table(title, rows, ("Setting", "Requested", "Actual")) if rows else ""
+        )
 
     def _candidates(self, candidates: object, selection: object) -> str:
         rows = []
@@ -369,16 +395,22 @@ class HtmlRunReport:
         return report
 
     def _restoration(self, result: dict[str, Any]) -> str:
-        rows = [
-            ("trigger_cleanup_failure", result.get("trigger_cleanup_failure")),
-            (
-                "active_default_restore_failure",
-                result.get("active_default_restore_failure"),
-            ),
+        sections = [
+            self._readbacks(
+                "Active default restoration", result.get("active_default_restore", [])
+            )
         ]
-        return self._readbacks(
-            "Active default restoration", result.get("active_default_restore", [])
-        ) + self._table("Cleanup diagnostics", rows)
+        rows = [
+            (name, result.get(name))
+            for name in (
+                "trigger_cleanup_failure",
+                "active_default_restore_failure",
+            )
+            if result.get(name) is not None
+        ]
+        if rows:
+            sections.append(self._table("Cleanup diagnostics", rows))
+        return "".join(sections)
 
     def _events(self, events: object) -> str:
         rows = []
@@ -392,13 +424,14 @@ class HtmlRunReport:
                         event.get("data"),
                     )
                 )
-        return self._table(
-            "Procedure events", rows, ("Timestamp", "Stage", "Message", "Data")
+        return (
+            self._table(
+                "Procedure events", rows, ("Timestamp", "Stage", "Message", "Data")
+            )
+            if rows
+            else ""
         )
 
     def _artifacts(self, artifacts: object) -> str:
-        return self._table(
-            "Artifacts",
-            ((artifact,) for artifact in artifacts if isinstance(artifacts, list)),
-            ("Artifact",),
-        )
+        rows = [(artifact,) for artifact in artifacts if isinstance(artifacts, list)]
+        return self._table("Artifacts", rows, ("Artifact",)) if rows else ""

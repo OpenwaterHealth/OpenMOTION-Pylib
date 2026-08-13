@@ -258,3 +258,116 @@ def test_html_report_marks_terminal_ncr_without_claiming_unexecuted_later_stages
     assert "Passing tuned User Configuration" not in text
     assert "Final verification" not in text
     assert "Tuning candidates" not in text
+
+
+def test_html_report_omits_all_unreached_stage_headings_after_earliest_failure(
+    tmp_path,
+):
+    """Empty headings would falsely imply the procedure reached later stages."""
+    result = _result(
+        status=ProcedureStatus.FAILED,
+        failure_kind=FailureKind.SETUP,
+        failure_reason="Fixture confirmation was not supplied.",
+        topology=None,
+        identities=(),
+        ophir_identity=None,
+        ophir_setting_evidence=(),
+        pre_existing_config=None,
+        requested_default_config=None,
+        default_config_readback=None,
+        configurations=(),
+        measurements=(),
+        measurement_criteria=(),
+        adjustments=(),
+        candidates=(),
+        selection=None,
+        requested_final_config=None,
+        final_config_readback=None,
+        active_default_restore=(),
+        trigger_cleanup_failure=None,
+        active_default_restore_failure=None,
+    )
+
+    text = (
+        HtmlRunReport(tmp_path)
+        .write(_request(), result, "run.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "Status: failed" in text
+    assert "Fixture confirmation was not supplied." in text
+    assert 'href="run.json"' in text
+    for unreached in (
+        "Topology",
+        "Device identities",
+        "Ophir identity",
+        "Ophir settings",
+        "Pre-existing User Configuration",
+        "Requested default User Configuration",
+        "Default User Configuration readback",
+        "Measurements",
+        "Active configuration readbacks",
+        "Adjustments",
+        "Active default restoration",
+        "Cleanup diagnostics",
+        "Final User Configuration readback",
+    ):
+        assert unreached not in text
+
+
+def test_html_report_gates_sections_by_reached_evidence_and_keeps_cleanup_failure(
+    tmp_path,
+):
+    """Stage headings must track records, while real cleanup diagnostics remain visible."""
+    result = _result(
+        status=ProcedureStatus.FAILED,
+        failure_kind=FailureKind.MEASUREMENT,
+        failure_reason="Initial measurement was invalid.",
+        requested_final_config=None,
+        final_config_readback=None,
+        adjustments=(),
+        candidates=(),
+        selection=None,
+        active_default_restore=(),
+        trigger_cleanup_failure="Trigger stop failed.",
+        active_default_restore_failure=None,
+    )
+
+    text = (
+        HtmlRunReport(tmp_path)
+        .write(_request(), result, "run.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "Measurement 1" in text
+    assert "Active configuration readbacks" in text
+    assert "Cleanup diagnostics" in text
+    assert "Trigger stop failed." in text
+    for unreached in (
+        "Adjustments",
+        "Tuning candidates",
+        "Active default restoration",
+        "Passing tuned User Configuration",
+        "Final User Configuration readback",
+    ):
+        assert unreached not in text
+
+
+def test_html_report_labels_unsuccessful_final_config_as_unconfirmed(tmp_path):
+    """A failed persistence attempt must not be represented as passing evidence."""
+    result = _result(
+        status=ProcedureStatus.FAILED,
+        failure_kind=FailureKind.CONFIGURATION,
+        failure_reason="Passing User Configuration write did not return a result.",
+        final_config_readback=None,
+    )
+
+    text = (
+        HtmlRunReport(tmp_path)
+        .write(_request(), result, "run.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "Requested tuned User Configuration (unconfirmed)" in text
+    assert "Passing tuned User Configuration" not in text
+    assert "Final User Configuration readback" not in text
