@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 import omotion
-from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.laser import FailureKind, ProcedureStatus
+from omotion.calibration.single_sensor_laser import (
     ReportArtifactStatus,
     SingleSensorLaserCalibrationResult,
 )

@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     CURRENT_FLOOR_MA,
     CURRENT_STEP_MA,
     CriterionResult,

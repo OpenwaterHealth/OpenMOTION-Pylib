@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from omotion.WI15DualSensorLaserCalibration import (
+from omotion.calibration.dual_sensor_laser import (
     CrossCheck,
     DualSensorLaserCalibrationRequest,
     DualSensorLaserCalibrationResult,
@@ -13,8 +13,8 @@ from omotion.WI15DualSensorLaserCalibration import (
     TuningSelection,
     TuningStep,
 )
-from omotion.WI15DualSensorLaserCalibrationReport import DualSensorHtmlRunReport
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.dual_sensor_laser_report import DualSensorHtmlRunReport
+from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
     EnergyMeasurement,
@@ -26,7 +26,7 @@ from omotion.WI15LaserCalibration import (
     TopologySnapshot,
     default_user_configuration,
 )
-from omotion.WI15SingleSensorLaserCalibration import ProcedureEvent
+from omotion.calibration.single_sensor_laser import ProcedureEvent
 
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)

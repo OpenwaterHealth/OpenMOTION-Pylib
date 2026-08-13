@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from omotion.WI15DualSensorLaserCalibration import (
+from omotion.calibration.dual_sensor_laser import (
     DualPreflightSnapshot,
     DualSensorLaserCalibrationRequest,
     DualSensorLaserCalibrationWorkflow,
 )
-from omotion.WI15LaserCalibration import (
+from omotion.calibration.laser import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
@@ -19,7 +19,7 @@ from omotion.WI15LaserCalibration import (
     TopologySnapshot,
     default_user_configuration,
 )
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
 )

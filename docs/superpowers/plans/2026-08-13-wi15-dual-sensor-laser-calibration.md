@@ -57,7 +57,7 @@ the existing deferred adapter, pytest fakes/monkeypatch, Ruff, PowerShell.
 
 **Files:**
 
-- Modify: `omotion/WI15LaserCalibration.py`
+- Modify: `omotion/calibration/laser.py`
 - Modify: `tests/test_wi15_laser_calibration.py`
 
 **Interfaces:**
@@ -203,7 +203,7 @@ Expected: all domain tests pass.
 - [ ] **Step 5: Commit the domain increment**
 
 ```powershell
-git add omotion/WI15LaserCalibration.py tests/test_wi15_laser_calibration.py
+git add omotion/calibration/laser.py tests/test_wi15_laser_calibration.py
 git commit -m "feat: add WI15 dual-sensor domain rules"
 ```
 
@@ -213,7 +213,7 @@ git commit -m "feat: add WI15 dual-sensor domain rules"
 
 **Files:**
 
-- Create: `omotion/WI15DualSensorLaserCalibration.py`
+- Create: `omotion/calibration/dual_sensor_laser.py`
 - Create: `tests/test_wi15_dual_sensor_laser_calibration.py`
 
 **Interfaces:**
@@ -500,7 +500,7 @@ observation = SensorEnergyObservation(
 python -m pytest tests/test_wi15_dual_sensor_laser_calibration.py -q
 python -m pytest tests/test_wi15_single_sensor_laser_calibration.py -q
 git diff --check
-git add omotion/WI15DualSensorLaserCalibration.py tests/test_wi15_dual_sensor_laser_calibration.py
+git add omotion/calibration/dual_sensor_laser.py tests/test_wi15_dual_sensor_laser_calibration.py
 git commit -m "feat: add placement-aware WI15 dual workflow"
 ```
 
@@ -510,7 +510,7 @@ git commit -m "feat: add placement-aware WI15 dual workflow"
 
 **Files:**
 
-- Modify: `omotion/WI15DualSensorLaserCalibration.py`
+- Modify: `omotion/calibration/dual_sensor_laser.py`
 - Modify: `tests/test_wi15_dual_sensor_laser_calibration.py`
 
 **Interfaces:**
@@ -611,7 +611,7 @@ Use these normative labels:
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration.py tests/test_wi15_dual_sensor_laser_calibration.py -q
 git diff --check
-git add omotion/WI15DualSensorLaserCalibration.py tests/test_wi15_dual_sensor_laser_calibration.py
+git add omotion/calibration/dual_sensor_laser.py tests/test_wi15_dual_sensor_laser_calibration.py
 git commit -m "feat: gate WI15 dual initial sensor pair"
 ```
 
@@ -621,7 +621,7 @@ git commit -m "feat: gate WI15 dual initial sensor pair"
 
 **Files:**
 
-- Modify: `omotion/WI15DualSensorLaserCalibration.py`
+- Modify: `omotion/calibration/dual_sensor_laser.py`
 - Modify: `tests/test_wi15_dual_sensor_laser_calibration.py`
 
 **Interfaces:**
@@ -801,7 +801,7 @@ Run:
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration.py tests/test_wi15_dual_sensor_laser_calibration.py tests/test_wi15_single_sensor_laser_calibration.py -q
 git diff --check
-git add omotion/WI15DualSensorLaserCalibration.py tests/test_wi15_dual_sensor_laser_calibration.py
+git add omotion/calibration/dual_sensor_laser.py tests/test_wi15_dual_sensor_laser_calibration.py
 git commit -m "feat: tune and cross-check WI15 dual sensors"
 ```
 
@@ -811,7 +811,7 @@ git commit -m "feat: tune and cross-check WI15 dual sensors"
 
 **Files:**
 
-- Modify: `omotion/WI15LaserCalibrationHardware.py`
+- Modify: `omotion/calibration/laser_hardware.py`
 - Modify: `tests/test_wi15_laser_calibration_hardware.py`
 
 **Interfaces:**
@@ -881,14 +881,14 @@ or dual validator based on that stored declaration.
 
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration_hardware.py tests/test_wi15_single_sensor_laser_calibration.py tests/test_wi15_dual_sensor_laser_calibration.py -q
-python -m ruff check omotion/WI15LaserCalibrationHardware.py tests/test_wi15_laser_calibration_hardware.py
+python -m ruff check omotion/calibration/laser_hardware.py tests/test_wi15_laser_calibration_hardware.py
 git diff --check
 ```
 
 - [ ] **Step 5: Commit the adapter increment**
 
 ```powershell
-git add omotion/WI15LaserCalibrationHardware.py tests/test_wi15_laser_calibration_hardware.py
+git add omotion/calibration/laser_hardware.py tests/test_wi15_laser_calibration_hardware.py
 git commit -m "feat: support exact dual topology in WI15 bench"
 ```
 
@@ -898,9 +898,9 @@ git commit -m "feat: support exact dual topology in WI15 bench"
 
 **Files:**
 
-- Create: `omotion/WI15DualSensorLaserCalibrationReport.py`
+- Create: `omotion/calibration/dual_sensor_laser_report.py`
 - Create: `tests/test_wi15_dual_sensor_laser_calibration_report.py`
-- Reuse without behavior change: `omotion/WI15LaserCalibrationReport.py`
+- Reuse without behavior change: `omotion/calibration/reporting.py`
 
 **Interfaces:**
 
@@ -987,14 +987,14 @@ not calculate a differential, midpoint, or pass/fail in the renderer.
 
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration_report.py tests/test_wi15_dual_sensor_laser_calibration_report.py -q
-python -m ruff check omotion/WI15DualSensorLaserCalibrationReport.py tests/test_wi15_dual_sensor_laser_calibration_report.py
+python -m ruff check omotion/calibration/dual_sensor_laser_report.py tests/test_wi15_dual_sensor_laser_calibration_report.py
 git diff --check
 ```
 
 - [ ] **Step 5: Commit the report increment**
 
 ```powershell
-git add omotion/WI15DualSensorLaserCalibrationReport.py tests/test_wi15_dual_sensor_laser_calibration_report.py
+git add omotion/calibration/dual_sensor_laser_report.py tests/test_wi15_dual_sensor_laser_calibration_report.py
 git commit -m "feat: report WI15 dual-sensor calibration"
 ```
 
@@ -1137,19 +1137,19 @@ Expected: all pass with no hardware access, skips, or warnings.
 
 ```powershell
 python -m py_compile `
-  omotion/WI15LaserCalibration.py `
-  omotion/WI15SingleSensorLaserCalibration.py `
-  omotion/WI15DualSensorLaserCalibration.py `
-  omotion/WI15LaserCalibrationHardware.py `
-  omotion/WI15LaserCalibrationReport.py `
-  omotion/WI15DualSensorLaserCalibrationReport.py `
+  omotion/calibration/laser.py `
+  omotion/calibration/single_sensor_laser.py `
+  omotion/calibration/dual_sensor_laser.py `
+  omotion/calibration/laser_hardware.py `
+  omotion/calibration/reporting.py `
+  omotion/calibration/dual_sensor_laser_report.py `
   scripts/wi15_single_sensor_laser_calibration.py `
   scripts/wi15_dual_sensor_laser_calibration.py
 python -m ruff check `
-  omotion/WI15LaserCalibration.py `
-  omotion/WI15DualSensorLaserCalibration.py `
-  omotion/WI15LaserCalibrationHardware.py `
-  omotion/WI15DualSensorLaserCalibrationReport.py `
+  omotion/calibration/laser.py `
+  omotion/calibration/dual_sensor_laser.py `
+  omotion/calibration/laser_hardware.py `
+  omotion/calibration/dual_sensor_laser_report.py `
   scripts/wi15_dual_sensor_laser_calibration.py `
   tests/test_wi15_laser_calibration.py `
   tests/test_wi15_dual_sensor_laser_calibration.py `
@@ -1157,9 +1157,9 @@ python -m ruff check `
   tests/test_wi15_dual_sensor_laser_calibration_report.py `
   tests/test_wi15_dual_sensor_laser_script.py
 rg -n "omotion\.tuning|input\(" `
-  omotion/WI15DualSensorLaserCalibration.py `
-  omotion/WI15DualSensorLaserCalibrationReport.py `
-  omotion/WI15LaserCalibrationHardware.py
+  omotion/calibration/dual_sensor_laser.py `
+  omotion/calibration/dual_sensor_laser_report.py `
+  omotion/calibration/laser_hardware.py
 git diff --check
 ```
 

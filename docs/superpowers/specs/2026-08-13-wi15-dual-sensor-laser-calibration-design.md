@@ -56,7 +56,7 @@ testing, checkpoint recovery, and report completeness.
 
 ### 3.1 Shared domain rules
 
-`omotion/WI15LaserCalibration.py` remains the home of topology-independent,
+`omotion/calibration/laser.py` remains the home of topology-independent,
 pure rules such as energy-quality validation, exact configuration values,
 percent tolerance, typed identities, and typed register readbacks.
 
@@ -68,7 +68,7 @@ Add only pure dual rules that have no orchestration dependency, including:
 
 ### 3.2 Dual workflow
 
-Add `omotion/WI15DualSensorLaserCalibration.py` containing:
+Add `omotion/calibration/dual_sensor_laser.py` containing:
 
 - the immutable request and result models;
 - placement-change acknowledgement records;

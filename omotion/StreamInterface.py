@@ -307,15 +307,17 @@ class StreamInterface(USBInterfaceBase):
         if self.isStreaming:
             logger.warning(f"{self.desc}: drain_final called while streaming — skipping")
             return []
-        if self.ep_in is None:
+        endpoint = self.ep_in
+        if endpoint is None:
             logger.warning(f"{self.desc}: drain_final called before endpoint claimed — skipping")
             return []
+        endpoint_address = endpoint.bEndpointAddress
 
         chunks: list[bytes] = []
         while True:
             try:
                 data = self.dev.read(
-                    self.ep_in.bEndpointAddress, expected_size, timeout=timeout_ms
+                    endpoint_address, expected_size, timeout=timeout_ms
                 )
                 if data:
                     chunks.append(bytes(data))

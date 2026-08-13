@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Draft for written review
+**Status:** Implemented and software-verified; live hardware verification pending
 
 **Procedure:** Safety Calibration
 
@@ -157,10 +157,13 @@ highlighted comparison.
 ## 10. Power-cycle persistence verification
 
 1. Stop all laser/scan activity.
-2. Power the unit off using the configured power-cycle adapter or an
-   operator-confirmed manual cycle.
+2. For a manual cycle, have the operator confirm readiness while the unit is
+   still connected, begin connection-state observation, and only then instruct
+   the operator to power the unit off. Do not require the operator to complete
+   the power transition before observation begins.
 3. Keep power off for at least 15 measured seconds.
-4. Restore power and wait for the console to reconnect.
+4. After the dwell, again begin observation before instructing the operator to
+   restore power, then wait for the console to reconnect.
 5. Use firmware uptime or equivalent evidence to prove a restart occurred.
 6. Read the complete User Configuration.
 7. Require every intended key/value to be unchanged.
@@ -247,3 +250,33 @@ This procedure maps to one future TestApp button. The TestApp presents
 connection, power-cycle, and scan progress while calling the same shared SDK
 implementation. It may not recalculate limits or weaken warning/persistence
 gates in UI code.
+
+## 16. Implementation mapping and verification status
+
+- Safety rules and immutable evidence records:
+  `omotion/calibration/safety.py`.
+- UI-neutral procedure orchestration:
+  `omotion/calibration/safety_workflow.py`.
+- Motion console, FPGA, power-cycle, and normal-scan adapter:
+  `omotion/calibration/safety_hardware.py`.
+- Auditor-readable HTML evidence:
+  `omotion/calibration/safety_report.py`.
+- Current script-only operator entry point:
+  `scripts/wi15_safety_calibration.py`.
+
+The automated domain, workflow, adapter, report, and operator-script tests pass
+against simulated hardware. A live dual-sensor execution passed on 2026-08-13
+using run `WI-00015-20260813T204811Z` and commit `712199f`. Ten accepted samples
+per controller produced an OPT mean of 1991.874 mA and rounded 1.3x limit of
+2589 mA, plus an EE mean of 4163.610 mA and rounded 1.1x limit of 4580 mA. The
+complete immediate readback matched the intended configuration. The procedure
+then observed console disconnection, measured 15.000 seconds off, reconnected
+to the same `ZZZ99Z99999` console, and verified an identical complete persisted
+configuration. The ordinary dual-sensor scan requested 30 seconds with no
+overrides, completed without cancellation or error after normal pipeline
+drain, recorded 34 known-clear safety observations, and finalized both JSON and
+HTML artifacts with a passing disposition.
+
+A representative single-sensor live run remains required before production
+release for that shipping topology. It must exercise the same persistence,
+ordinary-scan, topology, and live laser-safety gates without overrides.

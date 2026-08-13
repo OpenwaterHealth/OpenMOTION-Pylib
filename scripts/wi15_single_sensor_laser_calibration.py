@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 import omotion
-from omotion.WI15LaserCalibration import FailureKind, ProcedureStatus
-from omotion.WI15LaserCalibrationHardware import (
+from omotion.calibration.laser import FailureKind, ProcedureStatus
+from omotion.calibration.laser_hardware import (
     MotionLaserCalibrationBench,
     OphirEnergyMeter,
 )
-from omotion.WI15LaserCalibrationReport import HtmlRunReport, JsonRunRecorder
-from omotion.WI15SingleSensorLaserCalibration import (
+from omotion.calibration.reporting import HtmlRunReport, JsonRunRecorder
+from omotion.calibration.single_sensor_laser import (
     SingleSensorLaserCalibrationRequest,
     ReportArtifactEvidence,
     ReportArtifactStatus,

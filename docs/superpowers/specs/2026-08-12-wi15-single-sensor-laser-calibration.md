@@ -309,10 +309,10 @@ logic.
 
 ## 14. Implementation mapping
 
-- Domain values and validation: `omotion/WI15LaserCalibration.py`
-- UI-neutral procedure workflow: `omotion/WI15SingleSensorLaserCalibration.py`
-- Motion and Ophir adapters: `omotion/WI15LaserCalibrationHardware.py`
-- Incremental JSON and HTML evidence: `omotion/WI15LaserCalibrationReport.py`
+- Domain values and validation: `omotion/calibration/laser.py`
+- UI-neutral procedure workflow: `omotion/calibration/single_sensor_laser.py`
+- Motion and Ophir adapters: `omotion/calibration/laser_hardware.py`
+- Incremental JSON and HTML evidence: `omotion/calibration/reporting.py`
 - Operator entry point: `scripts/wi15_single_sensor_laser_calibration.py`
 - Software verification: `tests/test_wi15_laser_calibration.py`,
   `tests/test_wi15_single_sensor_laser_calibration.py`,

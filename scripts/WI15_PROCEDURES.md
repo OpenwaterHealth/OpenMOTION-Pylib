@@ -6,7 +6,7 @@ The team-approved automated process defines four operator-facing procedures:
    `wi15_single_sensor_laser_calibration.py`.
 2. Dual-Sensor Laser Calibration - implemented by
    `wi15_dual_sensor_laser_calibration.py`.
-3. Safety Calibration - approved procedure, not implemented on this branch.
+3. Safety Calibration - implemented by `wi15_safety_calibration.py`.
 4. Measurement Calibration - approved procedure, not implemented on this
    branch.
 
@@ -21,6 +21,22 @@ For the dual-sensor procedure, run:
 ```powershell
 python -m scripts.wi15_dual_sensor_laser_calibration --output-dir C:\WI15_runs
 ```
+
+For Safety Calibration, run:
+
+```powershell
+python -m scripts.wi15_safety_calibration --output-dir C:\WI15_runs
+```
+
+The safety script asks for the declared shipping topology before constructing
+hardware. Connect exactly that topology for the final normal scan; the sensor
+modules may remain connected during the console-only ADC portion. The script
+does not use an external energy meter. During the persistence check it asks
+the operator to confirm readiness while the console is still connected, starts
+observing, and then instructs the operator to power the console off. It
+independently observes disconnection, measures at least 15 seconds, and uses
+the same observe-before-action sequence when asking the operator to restore
+power.
 
 Keep the console plus both left and right sensor modules connected. The dual
 script asks the operator to move the identified sensor module into the Ophir

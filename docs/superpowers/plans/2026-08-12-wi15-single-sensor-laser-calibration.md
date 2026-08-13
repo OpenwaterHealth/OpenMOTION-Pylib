@@ -40,10 +40,10 @@ safety limits and prove persistence across restart.
 
 Create:
 
-- `omotion/WI15LaserCalibration.py`
-- `omotion/WI15SingleSensorLaserCalibration.py`
-- `omotion/WI15LaserCalibrationHardware.py`
-- `omotion/WI15LaserCalibrationReport.py`
+- `omotion/calibration/laser.py`
+- `omotion/calibration/single_sensor_laser.py`
+- `omotion/calibration/laser_hardware.py`
+- `omotion/calibration/reporting.py`
 - `scripts/wi15_single_sensor_laser_calibration.py`
 - `scripts/WI15_PROCEDURES.md`
 - `tests/test_wi15_laser_calibration.py`
@@ -71,7 +71,7 @@ Historical reference branch only; do not restore into this clean branch:
 **Files:**
 
 - Create: `tests/test_wi15_laser_calibration.py`
-- Create: `omotion/WI15LaserCalibration.py`
+- Create: `omotion/calibration/laser.py`
 
 ### Step 1: Write failing tests for fixed constants and default config
 
@@ -95,7 +95,7 @@ $env:PYTHONPATH=(Get-Location).Path
 python -m pytest tests/test_wi15_laser_calibration.py -q
 ```
 
-Expected: FAIL because `omotion.WI15LaserCalibration` does not exist.
+Expected: FAIL because `omotion.calibration.laser` does not exist.
 
 ### Step 2: Add minimal constants and immutable data classes
 
@@ -156,7 +156,7 @@ ties.
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration.py -q
 git diff --check
-git add omotion/WI15LaserCalibration.py tests/test_wi15_laser_calibration.py
+git add omotion/calibration/laser.py tests/test_wi15_laser_calibration.py
 git commit -m "feat: add WI15 laser calibration domain model"
 ```
 
@@ -165,7 +165,7 @@ git commit -m "feat: add WI15 laser calibration domain model"
 **Files:**
 
 - Create: `tests/test_wi15_single_sensor_laser_calibration.py`
-- Create: `omotion/WI15SingleSensorLaserCalibration.py`
+- Create: `omotion/calibration/single_sensor_laser.py`
 
 ### Step 1: Write fake-driven preflight tests
 
@@ -216,7 +216,7 @@ result; do not expose raw exceptions as successful outcomes.
 
 ```powershell
 python -m pytest tests/test_wi15_single_sensor_laser_calibration.py -q
-git add omotion/WI15SingleSensorLaserCalibration.py tests/test_wi15_single_sensor_laser_calibration.py
+git add omotion/calibration/single_sensor_laser.py tests/test_wi15_single_sensor_laser_calibration.py
 git commit -m "feat: add single-sensor laser workflow shell"
 ```
 
@@ -225,7 +225,7 @@ git commit -m "feat: add single-sensor laser workflow shell"
 **Files:**
 
 - Modify: `tests/test_wi15_single_sensor_laser_calibration.py`
-- Modify: `omotion/WI15SingleSensorLaserCalibration.py`
+- Modify: `omotion/calibration/single_sensor_laser.py`
 
 ### Step 1: Write failing default-configuration tests
 
@@ -275,7 +275,7 @@ prompt.
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration.py tests/test_wi15_single_sensor_laser_calibration.py -q
 git diff --check
-git add omotion/WI15SingleSensorLaserCalibration.py tests/test_wi15_single_sensor_laser_calibration.py
+git add omotion/calibration/single_sensor_laser.py tests/test_wi15_single_sensor_laser_calibration.py
 git commit -m "feat: enforce WI15 single-sensor preflight gates"
 ```
 
@@ -284,7 +284,7 @@ git commit -m "feat: enforce WI15 single-sensor preflight gates"
 **Files:**
 
 - Modify: `tests/test_wi15_single_sensor_laser_calibration.py`
-- Modify: `omotion/WI15SingleSensorLaserCalibration.py`
+- Modify: `omotion/calibration/single_sensor_laser.py`
 
 ### Step 1: Write failing no-adjustment and final-verification tests
 
@@ -357,7 +357,7 @@ failures are `failed_ncr`; setup/write/measurement failures are `failed`.
 
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration.py tests/test_wi15_single_sensor_laser_calibration.py -q
-git add omotion/WI15SingleSensorLaserCalibration.py tests/test_wi15_single_sensor_laser_calibration.py
+git add omotion/calibration/single_sensor_laser.py tests/test_wi15_single_sensor_laser_calibration.py
 git commit -m "feat: tune one WI15 sensor toward 350 uJ"
 ```
 
@@ -366,7 +366,7 @@ git commit -m "feat: tune one WI15 sensor toward 350 uJ"
 **Files:**
 
 - Create: `tests/test_wi15_laser_calibration_hardware.py`
-- Create: `omotion/WI15LaserCalibrationHardware.py`
+- Create: `omotion/calibration/laser_hardware.py`
 
 ### Step 1: Write failing MotionInterface adapter tests
 
@@ -431,7 +431,7 @@ Test meter exceptions and start/stop failures.
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration_hardware.py -q
 git diff --check
-git add omotion/WI15LaserCalibrationHardware.py tests/test_wi15_laser_calibration_hardware.py
+git add omotion/calibration/laser_hardware.py tests/test_wi15_laser_calibration_hardware.py
 git commit -m "feat: add Motion and Ophir WI15 adapters"
 ```
 
@@ -440,7 +440,7 @@ git commit -m "feat: add Motion and Ophir WI15 adapters"
 **Files:**
 
 - Create: `tests/test_wi15_laser_calibration_report.py`
-- Create: `omotion/WI15LaserCalibrationReport.py`
+- Create: `omotion/calibration/reporting.py`
 
 ### Step 1: Write failing serialization/checkpoint tests
 
@@ -484,7 +484,7 @@ human-readable screenshot-equivalence evidence for this procedure.
 
 ```powershell
 python -m pytest tests/test_wi15_laser_calibration_report.py -q
-git add omotion/WI15LaserCalibrationReport.py tests/test_wi15_laser_calibration_report.py
+git add omotion/calibration/reporting.py tests/test_wi15_laser_calibration_report.py
 git commit -m "feat: report WI15 single-sensor laser calibration"
 ```
 
@@ -590,16 +590,16 @@ Expected: all pass, no hardware markers/skips.
 
 ```powershell
 python -m py_compile `
-  omotion/WI15LaserCalibration.py `
-  omotion/WI15SingleSensorLaserCalibration.py `
-  omotion/WI15LaserCalibrationHardware.py `
-  omotion/WI15LaserCalibrationReport.py `
+  omotion/calibration/laser.py `
+  omotion/calibration/single_sensor_laser.py `
+  omotion/calibration/laser_hardware.py `
+  omotion/calibration/reporting.py `
   scripts/wi15_single_sensor_laser_calibration.py
 rg -n "omotion\.tuning|input\(" `
-  omotion/WI15LaserCalibration.py `
-  omotion/WI15SingleSensorLaserCalibration.py `
-  omotion/WI15LaserCalibrationHardware.py `
-  omotion/WI15LaserCalibrationReport.py
+  omotion/calibration/laser.py `
+  omotion/calibration/single_sensor_laser.py `
+  omotion/calibration/laser_hardware.py `
+  omotion/calibration/reporting.py
 ```
 
 Expected: compile succeeds; no old-engine import or SDK-layer `input()`.
@@ -620,10 +620,10 @@ git diff --check
 git status --short
 git diff --stat origin/feature/214-wi15-tuning-runner...HEAD
 git diff origin/feature/214-wi15-tuning-runner...HEAD -- `
-  omotion/WI15LaserCalibration.py `
-  omotion/WI15SingleSensorLaserCalibration.py `
-  omotion/WI15LaserCalibrationHardware.py `
-  omotion/WI15LaserCalibrationReport.py `
+  omotion/calibration/laser.py `
+  omotion/calibration/single_sensor_laser.py `
+  omotion/calibration/laser_hardware.py `
+  omotion/calibration/reporting.py `
   scripts/wi15_single_sensor_laser_calibration.py `
   tests/test_wi15_*.py
 ```

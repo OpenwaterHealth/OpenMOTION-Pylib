@@ -292,13 +292,13 @@ failure logic.
 The software implementation is divided at the intended reusable boundaries:
 
 - shared constants, validation, topology, paired metrics, and selection rules:
-  `omotion/WI15LaserCalibration.py`;
+  `omotion/calibration/laser.py`;
 - UI-neutral dual procedure and immutable evidence model:
-  `omotion/WI15DualSensorLaserCalibration.py`;
+  `omotion/calibration/dual_sensor_laser.py`;
 - exact-dual Motion preflight, pre-fire topology guards, and shared Ophir
-  acquisition: `omotion/WI15LaserCalibrationHardware.py`;
+  acquisition: `omotion/calibration/laser_hardware.py`;
 - auditor-readable HTML evidence:
-  `omotion/WI15DualSensorLaserCalibrationReport.py`;
+  `omotion/calibration/dual_sensor_laser_report.py`;
 - operator CLI and artifact/resource finalization:
   `scripts/wi15_dual_sensor_laser_calibration.py`; and
 - invocation guidance: `scripts/WI15_PROCEDURES.md`.
