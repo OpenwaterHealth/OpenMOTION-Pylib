@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Implemented and software-verified; dual-sensor hardware execution pending
+**Status:** Implemented and verified in software and on dual-sensor hardware
 
 **Procedure:** Dual-Sensor Laser Calibration
 
@@ -317,8 +317,14 @@ hardware-marked tests deselected in the repository hardware-independent
 suite. Static compilation, Ruff, forbidden-dependency, and diff checks also
 passed.
 
-No dual-sensor live execution was performed during software verification.
-The available bench had only one sensor module, so it could not satisfy this
-procedure's exact console-plus-left-plus-right topology. A successful run with
-both shipping sensor modules and the operator-directed Ophir 0 cm placement
-sequence remains required before hardware validation can be recorded.
+A live dual-sensor execution passed on 2026-08-13 using run
+`WI-00015-20260813T190000Z` and commit `f2af676`. The exact topology contained
+console and left serial `ZZZ99Z99999` plus right serial `WWWA4Q40005`. The
+initial valid means were 316.107 uJ left and 299.867 uJ right, giving a
+16.240 uJ differential and 307.987 uJ midpoint. Approved upward tuning of the
+right sensor selected a requested 570 us pulse width, with 569.92 us active
+readback. Cross-check 1 passed at 363.962 uJ left and 345.429 uJ right, with a
+354.695 uJ midpoint and 18.533 uJ differential. The final complete User
+Configuration read back exactly, both final active-setting checks passed,
+JSON and HTML artifacts finalized, and no trigger, active-restoration, or
+resource-cleanup failure was recorded.
