@@ -361,3 +361,20 @@ the production adapter fixes. Run `WI-00015-20260813T043222Z` exposed a fixed
 `WI-00015-20260813T044254Z` exposed stale cross-session Ophir timestamps in the
 first nonempty batch. Both runs retained complete failure evidence, restored
 active defaults, stopped the trigger, and wrote no tuned configuration.
+
+Post-refactor live regression testing passed on 2026-08-13 using commit
+`bf55d72` and run `WI-00015-20260813T220514Z`. The exact single-left topology
+remained stable, seven accepted observations stayed at approximately 40 Hz,
+and the approved upward sweep selected 540 microseconds at 348.100
+microjoules. The distinct final observation was 347.630 microjoules. Both
+active-setting checks passed, the complete final configuration read back, the
+JSON and HTML artifacts finalized, and no trigger or active-restoration
+cleanup failure was recorded.
+
+The same build also exercised the terminal upward-bound NCR on a second
+console in run `WI-00015-20260813T220752Z`. Energy rose monotonically from
+154.667 microjoules at the 500-microsecond default to only 183.767
+microjoules at the 600-microsecond ceiling. Every acquisition-quality check
+passed. The procedure returned `failed_ncr`, restored the active defaults,
+finalized both evidence artifacts, and did not perform the passing tuned-
+configuration handoff.

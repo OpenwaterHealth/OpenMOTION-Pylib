@@ -328,3 +328,21 @@ readback. Cross-check 1 passed at 363.962 uJ left and 345.429 uJ right, with a
 Configuration read back exactly, both final active-setting checks passed,
 JSON and HTML artifacts finalized, and no trigger, active-restoration, or
 resource-cleanup failure was recorded.
+
+Post-refactor live regression testing passed on 2026-08-13 using commit
+`bf55d72` and run `WI-00015-20260813T221750Z`. The exact dual topology and all
+three required non-null identities remained stable. The initial accepted
+means were 321.333 microjoules left and 306.333 microjoules right, giving a
+15.000-microjoule differential. The approved right-side upward sweep selected
+a requested 560-microsecond pulse width. Cross-check 1 passed at 362.321
+microjoules left and 338.519 microjoules right. All ten observations met the
+acquisition-quality criteria, both final active-setting checks passed, the
+complete final configuration read back, and finalized JSON and HTML artifacts
+recorded no trigger, restoration, or resource-cleanup failure.
+
+The same build exercised two fail-closed paths before that pass. Run
+`WI-00015-20260813T221643Z` rejected a missing right sensor before measurement.
+Run `WI-00015-20260813T221251Z` used an exact dual topology but returned
+`failed_ncr` when the selected sensor remained below 300 microjoules at the
+600-microsecond ceiling. Both runs finalized their evidence; the bound NCR
+restored active defaults and did not write the passing tuned configuration.
