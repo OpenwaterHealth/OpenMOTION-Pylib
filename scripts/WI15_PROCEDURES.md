@@ -10,6 +10,16 @@ The team-approved automated process defines four operator-facing procedures:
 4. Measurement Calibration - approved procedure, not implemented on this
    branch.
 
+From the repository root, run the implemented procedure with:
+
+```powershell
+python -m scripts.wi15_single_sensor_laser_calibration
+```
+
+The module form ensures the checkout's `omotion` package is used. The script
+collects required report metadata and side/placement confirmations before it
+constructs either hardware adapter.
+
 The authority for execution is the WI-00015 automated process addendum and its
 linked procedure specifications. The historical combined runner is prototype
 and reference code retained only on `feature/214-wi15-tuning-runner`; it is

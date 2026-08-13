@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-12
 
-**Status:** Two live executions exposed bounded-acquisition and stale-session
-buffer issues; software verification complete, successful hardware rerun pending
+**Status:** Implemented, software-verified, and successfully executed on the
+left-only Motion/Ophir bench
 
 **Procedure:** Single-Sensor Laser Calibration
 
@@ -284,6 +284,8 @@ Unit tests cover:
   handoff readback mismatches that cannot be erased by later matching reads;
 - pre-run public-default mutation and post-run nested mapping mutation;
 - exactly 25 versus 26 valid pulses;
+- bounded acquisition to 26 valid pulses, stale-session priming-batch
+  isolation, and idempotent stream cleanup;
 - standard-deviation, rate, and non-finite boundaries;
 - initial 350 no-adjustment;
 - downward steps, crossing selection, and current-floor NCR;
@@ -318,5 +320,36 @@ logic.
   `tests/test_wi15_laser_calibration_report.py`, and
   `tests/test_wi15_single_sensor_laser_script.py`
 
-Live single-sensor bench execution remains required before hardware
-verification can be claimed.
+## 15. Hardware verification
+
+The production entry point passed on 2026-08-12 Pacific time using commit
+`f42294aaf3b4628f4f4be6c746e0b1ad56cb2f74` and run identifier
+`WI-00015-20260813T045443Z`:
+
+- topology: console connected, left sensor connected, right sensor absent;
+- Motion firmware: console and left sensor `1.8.0`;
+- Ophir: Centauri `3199176`, PE10BF-C `3200878`, with meter calibration due
+  2027-10-16 and sensor calibration due 2027-08-22;
+- initial observation: 29 valid samples, 345.414 microjoules mean, 2.472
+  microjoules standard deviation, and 40.105 Hz;
+- one approved upward step: requested `TA_PULSE_WIDTH` 510 microseconds,
+  active readback 510.08 microseconds, and 354.207 microjoules mean;
+- distinct final observation: 29 valid samples, 353.759 microjoules mean,
+  2.474 microjoules standard deviation, and 40.105 Hz;
+- final readback checks: `TA_CURRENT_DRV` 5000 mA exactly and
+  `TA_PULSE_WIDTH` within 0.016 percent of the 510-microsecond request;
+- persisted passing configuration read back exactly, including provisional
+  660-microsecond EE/OPT upper limits for standalone Safety Calibration; and
+- terminal trigger status `1` (laser off), with no trigger, stream, or general
+  cleanup failure.
+
+The finalized evidence is stored outside the repository under
+`C:\Users\ethan\WI15_runs\WI-00015-20260813T045443Z` as `run.json` and
+`report.html`.
+
+Two earlier live executions failed closed before tuning/handoff and informed
+the production adapter fixes. Run `WI-00015-20260813T043222Z` exposed a fixed
+0.65-second window returning only 23 valid pulses. Run
+`WI-00015-20260813T044254Z` exposed stale cross-session Ophir timestamps in the
+first nonempty batch. Both runs retained complete failure evidence, restored
+active defaults, stopped the trigger, and wrote no tuned configuration.
