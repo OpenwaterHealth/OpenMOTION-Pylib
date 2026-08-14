@@ -7,8 +7,11 @@ The team-approved automated process defines four operator-facing procedures:
 2. Dual-Sensor Laser Calibration - implemented by
    `wi15_dual_sensor_laser_calibration.py`.
 3. Safety Calibration - implemented by `wi15_safety_calibration.py`.
-4. Measurement Calibration - approved procedure, not implemented on this
-   branch.
+4. Measurement Calibration - implemented by
+   `wi15_measurement_calibration.py` as a thin runner around the SDK
+   calibration engine (one sensor per run; phantom attestation required).
+   The auditable evidence workflow in the Measurement Calibration
+   specification remains future work.
 
 From the repository root, run the implemented procedure with:
 
