@@ -60,6 +60,11 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         # drain safety hatch. This allowance waits for that ordinary cleanup;
         # it does not extend the requested laser-acquisition duration.
         scan_timeout_pad_s: float = 20.0,
+        # The console power cycle also cold-boots the sensor modules, and
+        # their USB re-enumeration can take well over the ordinary ready
+        # window (live NCR: run WI-00015-20260814T172200Z timed out at 10 s).
+        # The final scan therefore waits on its own, longer budget.
+        scan_ready_timeout_s: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -69,6 +74,7 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
             safety_wait_timeout,
             safety_poll_interval_s,
             scan_timeout_pad_s,
+            scan_ready_timeout_s,
         )
         if any(
             isinstance(value, bool)
@@ -77,7 +83,12 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
             for value in timing
         ):
             raise ValueError("hardware timing values must be finite numbers")
-        if wait_timeout <= 0 or safety_wait_timeout <= 0 or safety_poll_interval_s <= 0:
+        if (
+            wait_timeout <= 0
+            or safety_wait_timeout <= 0
+            or safety_poll_interval_s <= 0
+            or scan_ready_timeout_s <= 0
+        ):
             raise ValueError("wait and safety timing values must be positive")
         if scan_timeout_pad_s < 0:
             raise ValueError("scan timeout pad must be nonnegative")
@@ -90,6 +101,7 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         self._safety_wait_timeout = float(safety_wait_timeout)
         self._safety_poll_interval_s = float(safety_poll_interval_s)
         self._scan_timeout_pad_s = float(scan_timeout_pad_s)
+        self._scan_ready_timeout_s = float(scan_ready_timeout_s)
         self._clock = clock
         self._wall_clock = wall_clock
         self._sleep = sleep
@@ -98,7 +110,9 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         self._ready_sensor_count = 0
         self._trigger_started_wall: float | None = None
 
-    def _ensure_started(self, required_sensor_count: int = 0) -> None:
+    def _ensure_started(
+        self, required_sensor_count: int = 0, timeout: float | None = None
+    ) -> None:
         if not self._started:
             self._interface.start(wait=False)
             self._started = True
@@ -107,7 +121,7 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         ready = self._interface.wait_for_ready(
             console=True,
             sensors=required_sensor_count,
-            timeout=self._wait_timeout,
+            timeout=self._wait_timeout if timeout is None else timeout,
         )
         if ready is False:
             raise RuntimeError("Motion devices did not become ready before timeout")
@@ -267,7 +281,10 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         self, declared_topology: ShippingTopology, *, duration_s: float
     ) -> NormalScanEvidence:
         left_mask, right_mask, sensor_count = self._topology_masks(declared_topology)
-        self._ensure_started(required_sensor_count=sensor_count)
+        self._ensure_started(
+            required_sensor_count=sensor_count,
+            timeout=self._scan_ready_timeout_s,
+        )
         topology = self._topology_snapshot()
         identities = self._scan_identities()
         topology_check = validate_shipping_topology(
