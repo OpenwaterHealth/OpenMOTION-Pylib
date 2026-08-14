@@ -19,18 +19,35 @@ class FakeConsole:
         )
 
 
+class FakeSensor:
+    def __init__(self):
+        self.powered_masks = []
+
+    def enable_camera_power(self, mask):
+        self.powered_masks.append(mask)
+        return True
+
+
 class FakeInterface:
     def __init__(self, *, outcome="passed", refuse_start=False, **_kwargs):
         self.console = FakeConsole()
+        self.left = FakeSensor()
+        self.right = FakeSensor()
         self.outcome = outcome
         self.refuse_start = refuse_start
         self.requests = []
+        self.configure_requests = []
         self.started = 0
         self.stopped = 0
         self.laser_applied = 0
 
     def start(self):
         self.started += 1
+
+    def start_configure_camera_sensors(self, request, *, on_complete_fn):
+        self.configure_requests.append(request)
+        on_complete_fn(SimpleNamespace(ok=True, error=""))
+        return True
 
     def stop(self):
         self.stopped += 1
@@ -117,6 +134,14 @@ def test_only_the_selected_side_is_calibrated(
     request = fake.requests[0]
     assert request.left_camera_mask == left_mask
     assert request.right_camera_mask == right_mask
+    assert request.trigger_config["TriggerFrequencyHz"] == 40
+    configure = fake.configure_requests[0]
+    assert configure.left_camera_mask == left_mask
+    assert configure.right_camera_mask == right_mask
+    powered = fake.left if side == "left" else fake.right
+    unpowered = fake.right if side == "left" else fake.left
+    assert powered.powered_masks == [0xFF]
+    assert unpowered.powered_masks == []
     assert fake.laser_applied == 1
     assert fake.stopped == 1
 

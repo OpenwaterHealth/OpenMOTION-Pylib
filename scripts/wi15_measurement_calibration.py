@@ -29,6 +29,7 @@ from typing import Callable, Sequence
 
 from omotion import CalibrationRequest, CalibrationThresholds
 from omotion.MotionInterface import MotionInterface
+from omotion.ScanWorkflow import ConfigureRequest
 from omotion.calibration.script_support import (
     OperatorCanceled as _OperatorCanceled,
     confirmed as _confirmed,
@@ -47,6 +48,24 @@ CAL_SCAN_DURATION_SEC = 5
 CAL_SCAN_DELAY_SEC = 1
 CAL_MAX_DURATION_SEC = 600
 READY_TIMEOUT_S = 20.0
+CONFIGURE_TIMEOUT_S = 90.0
+
+# Re-sent to the console before each sub-scan so the firmware-side
+# fsync_counter resets and the dark schedule starts aligned (the app's flows
+# do the same; see the trigger_config note on CalibrationRequest). This is
+# the camera/FSIN trigger payload - the laser drive point itself comes from
+# the tuned EPROM values via apply_laser_power.
+STANDARD_TRIGGER_CONFIG = {
+    "TriggerStatus": 2,
+    "TriggerFrequencyHz": 40,
+    "TriggerPulseWidthUsec": 500,
+    "LaserPulseDelayUsec": 100,
+    "LaserPulseWidthUsec": 500,
+    "LaserPulseSkipInterval": 600,
+    "LaserPulseSkipDelayUsec": 1800,
+    "EnableSyncOut": True,
+    "EnableTaTrigger": True,
+}
 
 # Per-camera acceptance thresholds: the FACTORY values, mirroring the
 # bloodflow-app's live config (config/app_config.json ft_* keys):
@@ -192,6 +211,41 @@ def main(
                         f"(left={l_ok}, right={r_ok})")
             return 1
 
+        # Cold-camera bring-up: scans only stream from powered AND configured
+        # cameras, and a bare script must do that itself - the clinical app
+        # does it on connect, the engineering app does not. Power the chosen
+        # side, then configure exactly the cameras this run uses.
+        sensor = iface.left if side == "left" else iface.right
+        if not sensor.enable_camera_power(0xFF):
+            output_func("FAIL: camera power enable failed")
+            return 1
+        configured = threading.Event()
+        configure_holder: dict = {}
+
+        def on_configured(result) -> None:
+            configure_holder["result"] = result
+            configured.set()
+
+        output_func("configuring cameras (this can take a minute) ...")
+        if not iface.start_configure_camera_sensors(
+            ConfigureRequest(
+                left_camera_mask=0xFF if side == "left" else 0x00,
+                right_camera_mask=0xFF if side == "right" else 0x00,
+                power_off_unused_cameras=False,
+            ),
+            on_complete_fn=on_configured,
+        ):
+            output_func("FAIL: camera configuration refused to start")
+            return 1
+        if not configured.wait(CONFIGURE_TIMEOUT_S):
+            output_func("FAIL: camera configuration did not complete")
+            return 1
+        configure_result = configure_holder["result"]
+        if not getattr(configure_result, "ok", False):
+            output_func("FAIL: camera configuration failed: "
+                        f"{getattr(configure_result, 'error', '')}")
+            return 1
+
         # Cold-start prerequisite: after any power cycle the laser-driver
         # registers are cleared. This also applies the tuned EPROM overrides
         # (TA_CURRENT_DRV etc.) written by the laser-calibration flow.
@@ -214,6 +268,7 @@ def main(
             duration_sec=CAL_SCAN_DURATION_SEC,
             scan_delay_sec=CAL_SCAN_DELAY_SEC,
             max_duration_sec=CAL_MAX_DURATION_SEC,
+            trigger_config=dict(STANDARD_TRIGGER_CONFIG),
             notes=f"WI-00015 Measurement Calibration, side={side}, "
                   f"run {run_id}, thresholds: {thresholds_label}",
         )
