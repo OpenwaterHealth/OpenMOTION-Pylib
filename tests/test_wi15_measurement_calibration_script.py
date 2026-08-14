@@ -227,5 +227,7 @@ def test_below_threshold_gate_shows_rows_and_never_writes(monkeypatch, tmp_path)
     )
     assert code == 1
     assert any("Below-threshold gate fired" in line for line in lines)
-    assert any("right" in line and "62.100" in line for line in lines)
+    # cam_id 5 displays as camera 6 - 1-based, matching the engine's labels
+    assert any("right" in line and "  6 " in line and "62.100" in line
+               for line in lines)
     assert any("never written" in line for line in lines)

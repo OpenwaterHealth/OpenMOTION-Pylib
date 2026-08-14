@@ -289,7 +289,8 @@ def main(
             output_func("Below-threshold gate fired. Measured rows:")
             output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} {'avg_contrast':>13}")
             for row in rows:
-                output_func(f"  {row.side:<6} {row.cam_id:>3} "
+                # Cameras display 1-8, matching the engine's L#/R# labels.
+                output_func(f"  {row.side:<6} {row.cam_id + 1:>3} "
                             f"{row.mean:>10.3f} {row.avg_contrast:>13.4f}")
             output_func("A below-threshold calibration is never written to "
                         "the console.")
@@ -316,8 +317,9 @@ def main(
             output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} "
                         f"{'avg_contrast':>13} {'bfi':>8} {'bvi':>8}")
             for row in result.rows:
+                # Cameras display 1-8, matching the engine's L#/R# labels.
                 output_func(
-                    f"  {row.side:<6} {row.cam_id:>3} {row.mean:>10.3f} "
+                    f"  {row.side:<6} {row.cam_id + 1:>3} {row.mean:>10.3f} "
                     f"{row.avg_contrast:>13.4f} {row.bfi:>8.3f} "
                     f"{row.bvi:>8.3f}")
         if result.csv_path:
