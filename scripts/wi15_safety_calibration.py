@@ -22,12 +22,10 @@ from omotion.calibration.safety_workflow import (
 from omotion.calibration.script_support import (
     APPROVED_PROCEDURE_REVISION,
     PROCEDURE_ID,
-    OperatorCanceled as _OperatorCanceled,
     OperatorRunReportRequest,
     apply_cleanup_failure,
     close_bench_capturing,
     close_best_effort as _close_best_effort,
-    confirmed as _confirmed,
     finalize_run_artifacts,
     make_parser,
     required_value as _required_value,
@@ -195,47 +193,7 @@ class ManualPowerCycleCoordinator:
 
 
 def _parser() -> argparse.ArgumentParser:
-    return make_parser(
-        __doc__,
-        lambda parser: parser.add_argument(
-            "--shipping-topology",
-            choices=tuple(item.value for item in ShippingTopology),
-        ),
-    )
-
-
-def _shipping_topology(
-    value: str | None,
-    input_func: Callable[[str], str],
-    output_func: Callable[[str], None],
-) -> ShippingTopology:
-    candidate = value
-    while True:
-        if candidate is None:
-            candidate = input_func(
-                "Declared shipping topology "
-                "(single-left/single-right/dual/console-only): "
-            )
-        try:
-            topology = ShippingTopology(candidate.strip().lower())
-        except (AttributeError, ValueError):
-            output_func(
-                "Enter exactly single-left, single-right, dual, or console-only."
-            )
-            candidate = None
-            continue
-        output_func(f"Declared shipping topology: {topology.value}.")
-        return topology
-
-
-def _topology_instruction(topology: ShippingTopology) -> str:
-    descriptions = {
-        ShippingTopology.SINGLE_LEFT: "the left sensor module only",
-        ShippingTopology.SINGLE_RIGHT: "the right sensor module only",
-        ShippingTopology.DUAL: "both the left and right sensor modules",
-        ShippingTopology.CONSOLE_ONLY: "no sensor modules (console only)",
-    }
-    return descriptions[topology]
+    return make_parser(__doc__)
 
 
 def main(
@@ -253,23 +211,17 @@ def main(
         operator = _required_value(args.operator, "Operator: ", input_func)
         build_revision = args.build_revision or "unspecified"
         fixture_id = _required_value(args.fixture_id, "Bench or fixture ID: ", input_func)
-        topology = _shipping_topology(
-            args.shipping_topology, input_func, output_func
-        )
         procedure_revision = _required_value(
             args.procedure_revision, "Procedure revision: ", input_func
         )
-        instruction = _topology_instruction(topology)
-        if not _confirmed(
-            f"Please connect the {topology.value} topology: {instruction}. "
-            "Extra modules may remain connected during the console-only ADC "
-            "portion. Confirm when ready [y/N]: ",
-            input_func,
-        ):
-            raise _OperatorCanceled
-    except (EOFError, KeyboardInterrupt, _OperatorCanceled):
+    except (EOFError, KeyboardInterrupt):
         output_func("Safety Calibration canceled before hardware construction.")
         return 1
+
+    # The laser safety test is console-side only: it requires a connected,
+    # responsive console and nothing else. Sensor modules may be attached or
+    # absent; they are not used.
+    topology = ShippingTopology.CONSOLE_ONLY
 
     recorder = None
     bench = None

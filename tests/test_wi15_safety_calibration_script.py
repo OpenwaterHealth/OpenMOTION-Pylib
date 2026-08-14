@@ -47,7 +47,7 @@ def _result(status=ProcedureStatus.PASSED, **changes):
     return SafetyCalibrationResult(**values)
 
 
-def _complete_args(tmp_path, topology="single-left"):
+def _complete_args(tmp_path):
     return [
         "--output-dir",
         str(tmp_path),
@@ -57,8 +57,6 @@ def _complete_args(tmp_path, topology="single-left"):
         "build-7",
         "--fixture-id",
         "bench-2",
-        "--shipping-topology",
-        topology,
     ]
 
 
@@ -118,7 +116,7 @@ def test_metadata_topology_and_connection_confirmation_finish_before_hardware_co
 
     monkeypatch.setattr(script, "workflow_factory", FakeWorkflow)
     monkeypatch.setattr(script, "report_factory", FakeReport)
-    replies = iter(("operator", "bench", "dual", "yes"))
+    replies = iter(("operator", "bench"))
 
     exit_code = script.main(
         ["--output-dir", str(tmp_path)],
@@ -128,33 +126,8 @@ def test_metadata_topology_and_connection_confirmation_finish_before_hardware_co
     assert exit_code == 0
     bench_index = calls.index("bench")
     prompts = [item for item in calls[:bench_index] if isinstance(item, tuple)]
-    assert any("shipping topology" in prompt.lower() for _, prompt in prompts)
-    assert any("the dual topology" in prompt.lower() for _, prompt in prompts)
-    assert calls[-1] == ("workflow", ShippingTopology.DUAL)
-
-
-def test_declined_shipping_topology_confirmation_cancels_before_hardware(monkeypatch, tmp_path):
-    script = load_script()
-    constructed = []
-    monkeypatch.setattr(
-        script,
-        "bench_factory",
-        lambda **kwargs: constructed.append(kwargs) or FakeBench(None),
-    )
-
-    messages = []
-    exit_code = script.main(
-        _complete_args(tmp_path),
-        input_func=lambda _prompt: "no",
-        output_func=messages.append,
-    )
-
-    assert exit_code == 1
-    assert constructed == []
-    assert messages == [
-        "Declared shipping topology: single-left.",
-        "Safety Calibration canceled before hardware construction.",
-    ]
+    assert all("topology" not in prompt.lower() for _, prompt in prompts)
+    assert calls[-1] == ("workflow", ShippingTopology.CONSOLE_ONLY)
 
 
 def test_power_cycle_is_observed_without_confirmation_prompts():
@@ -269,29 +242,20 @@ def test_unobserved_disconnect_returns_failed_evidence_without_prompts():
     )
 
 
-@pytest.mark.parametrize(
-    ("topology", "expected"),
-    [
-        ("single-left", ShippingTopology.SINGLE_LEFT),
-        ("single-right", ShippingTopology.SINGLE_RIGHT),
-        ("dual", ShippingTopology.DUAL),
-        ("console-only", ShippingTopology.CONSOLE_ONLY),
-    ],
-)
-def test_runner_passes_declared_topology_to_shared_workflow_and_finalizes_artifacts(
-    monkeypatch, tmp_path, topology, expected
+def test_runner_declares_console_only_topology_and_finalizes_artifacts(
+    monkeypatch, tmp_path
 ):
     script, recorder, captured = _configured_script(monkeypatch, tmp_path)
     messages = []
 
     exit_code = script.main(
-        _complete_args(tmp_path, topology),
-        input_func=lambda _prompt: "yes",
+        _complete_args(tmp_path),
+        input_func=lambda _prompt: "unused",
         output_func=messages.append,
     )
 
     assert exit_code == 0
-    assert captured["request"].shipping_topology is expected
+    assert captured["request"].shipping_topology is ShippingTopology.CONSOLE_ONLY
     assert captured["bench"].coordinator is not None
     assert captured["bench"].closed == 1
     assert recorder.checkpoints[-1].report_artifact.status is ReportArtifactStatus.FINALIZED
