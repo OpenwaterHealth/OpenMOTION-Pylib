@@ -79,6 +79,12 @@ class CalibrationRequest:
     duration_sec: int  # required; caller supplies from config
     scan_delay_sec: int = CALIBRATION_DEFAULT_SCAN_DELAY_SEC
     max_duration_sec: int = CALIBRATION_DEFAULT_MAX_DURATION_SEC
+    # Averaging window of the validation scan (phase 4), in seconds. The
+    # approved WI-00015 process runs a 15-second calibration scan and a
+    # 2-second validation scan: validation only reads back the just-written
+    # calibration, so a stable BFI/BVI average (80 frames at 40 Hz) is
+    # enough. The leading scan_delay_sec skip applies to both sub-scans.
+    validation_duration_sec: int = 2
     # Trigger config dict (matches the JSON payload expected by
     # console.set_trigger_json). When non-None the workflow re-sends
     # this to the console firmware before each sub-scan, which resets
@@ -723,6 +729,7 @@ def write_result_json(
         "request": {
             "duration_sec": request.duration_sec,
             "scan_delay_sec": request.scan_delay_sec,
+            "validation_duration_sec": request.validation_duration_sec,
             "max_duration_sec": request.max_duration_sec,
             "left_camera_mask": request.left_camera_mask,
             "right_camera_mask": request.right_camera_mask,
@@ -1116,8 +1123,8 @@ class CalibrationWorkflow:
             # (#132 — "all of the corrected data ... averaged, not just
             # the rolling average numbers"). Dark frames flow through
             # on_dark_frame_fn, not on_corrected_batch, so they're not
-            # affected by this widening. Phase 4 (validation scan)
-            # keeps the original window.
+            # affected by this widening. Phase 4 (validation scan) uses
+            # its own validation_duration_sec window.
             phase1_window_frames = (
                 10 ** 9 if request.average_full_scan else window_frames
             )
@@ -1406,19 +1413,22 @@ class CalibrationWorkflow:
 
                 _emit_progress("validation_scan")
                 _emit_log("Calibration: starting validation scan…")
+                validation_window_frames = int(
+                    round(request.validation_duration_sec * CAPTURE_HZ))
                 logger.info(
                     "Calibration phase 4: validation scan, "
-                    "duration=%d sec (= %d duration + %d delay)",
-                    request.duration_sec + request.scan_delay_sec,
-                    request.duration_sec, request.scan_delay_sec,
+                    "duration=%d sec (= %d validation + %d delay)",
+                    request.validation_duration_sec + request.scan_delay_sec,
+                    request.validation_duration_sec, request.scan_delay_sec,
                 )
                 _reset_firmware_trigger("phase 4 (pre-scan)")
                 val_left, val_right, val_samples, val_dark_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib2_{request.operator_id}",
-                    duration_sec=request.duration_sec + request.scan_delay_sec,
+                    duration_sec=request.validation_duration_sec
+                    + request.scan_delay_sec,
                     skip_leading_frames=skip_frames,
-                    frame_window_count=window_frames,
+                    frame_window_count=validation_window_frames,
                     stop_evt=self._stop_evt,
                 )
                 logger.info(

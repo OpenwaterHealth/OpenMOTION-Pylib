@@ -48,6 +48,7 @@ interface_factory = MotionInterface
 # addendum's 15-second calibration scan. The engine's validation scan
 # reuses duration_sec + scan_delay_sec; there is no separate knob.
 CAL_SCAN_DURATION_SEC = 15
+VAL_SCAN_DURATION_SEC = 2
 CAL_SCAN_DELAY_SEC = 1
 CAL_MAX_DURATION_SEC = 600
 READY_TIMEOUT_S = 20.0
@@ -265,6 +266,7 @@ def main(
             right_camera_mask=0xFF if side == "right" else 0x00,
             thresholds=thresholds,
             duration_sec=CAL_SCAN_DURATION_SEC,
+            validation_duration_sec=VAL_SCAN_DURATION_SEC,
             scan_delay_sec=CAL_SCAN_DELAY_SEC,
             max_duration_sec=CAL_MAX_DURATION_SEC,
             trigger_config=dict(STANDARD_TRIGGER_CONFIG),

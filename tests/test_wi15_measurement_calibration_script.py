@@ -164,6 +164,19 @@ def test_only_the_selected_side_is_calibrated(
     assert fake.stopped == 1
 
 
+def test_scan_durations_match_the_approved_process(monkeypatch, tmp_path):
+    """Process addendum: 15-second calibration scan, 2-second validation."""
+    code, fake, _ = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "left", "--phantom-confirmed"],
+    )
+    assert code == 0
+    request = fake.requests[0]
+    assert request.duration_sec == 15
+    assert request.validation_duration_sec == 2
+    assert request.scan_delay_sec == 1
+
+
 def test_factory_thresholds_encode_spec_69_and_straddle_zero_bfi(monkeypatch, tmp_path):
     code, fake, lines = run_main(
         tmp_path, monkeypatch,
