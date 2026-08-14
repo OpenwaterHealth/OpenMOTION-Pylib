@@ -25,6 +25,8 @@ library used by the bloodflow app and other tools.
   scan persistence outputs.
 - `omotion/CalibrationWorkflow.py`, `omotion/Calibration.py`: calibration flow
   and calibration math.
+- `omotion/calibration/`: auditable WI-00015 procedure rules, workflows,
+  hardware adapters, and reports used by operator scripts and future app UI.
 - `omotion/config.py`: protocol constants and USB identifiers.
 
 The SDK is the right place for protocol behavior, hardware sequencing, stream

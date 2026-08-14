@@ -48,7 +48,7 @@ Issues     = "https://github.com/OpenwaterHealth/openmotion-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["omotion"]
+include = ["omotion", "omotion.*"]
 namespaces = false
 
 [tool.setuptools]
