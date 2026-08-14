@@ -118,7 +118,7 @@ class DarkIntegrityGuard:
 class HybridRealtimePredictor:
     """Realtime dark-baseline predictor.
 
-    Algorithm (see docs/SciencePipeline.md §7.4.1):
+    Algorithm (see docs/SciencePipeline.md §5.7.2):
         u1   ← average of last 3 dark observations (truncated; ZOH with 1)
         std  ← linear extrapolation through last 2 darks; ZOH with 1 or
                 when both darks share a timestamp
@@ -196,7 +196,7 @@ class CorrectedFrame:
     cam_id:        int       # 0..7
     mean:          float     # dark-subtracted u1 (no shot-noise yet)
     std:           float     # dark-subtracted std (no shot-noise yet)
-    raw_u1:        float     # original raw mean (for shot-noise use by downstream)
+    raw_u1:        float     # original raw mean; downstream stages do not read it
     raw_var:       float     # u2 - u1^2 (raw variance before dark sub)
     dark_var:      float     # interpolated dark baseline variance
     contrast:      Optional[float] = None  # set by ShotNoiseCorrectionStage
@@ -284,7 +284,7 @@ class PendingInterval:
 class LinearInterpolation:
     """Compute corrected values for a closed dark-bounded interval.
 
-    See docs/SciencePipeline.md §8.1–§8.3.
+    See docs/SciencePipeline.md §5.7.4.
     """
 
     def correct_interval(self, interval: Interval, *,
@@ -341,7 +341,7 @@ class DarkFrameQuadraticStencil:
     Stencil:
         v(D) = (-1/6) v(D-2) + (2/3) v(D-1) + (2/3) v(D+1) + (-1/6) v(D+2)
 
-    Fallback chain (see SciencePipeline.md §8.4):
+    Fallback chain (see SciencePipeline.md §5.7.6):
         full        — all four neighbours present
         right_only  — left missing, right ≥2 → (v(+1) + v(+2)) / 2
         simple_avg  — only v(-1) and v(+1) → (v(-1) + v(+1)) / 2
@@ -386,12 +386,13 @@ class DarkCorrectionStage:
     stages (ShotNoiseCorrectionStage, BfiBviStage, DarkFrameHoldStage)
     handle enrichment and the dark-frame quadratic stencil.
 
-    on_scan_stop(batch) performs the terminal-dark flush — per §8.6, the
+    on_scan_stop(batch) performs the terminal-dark flush — per §5.7.8, the
     last buffered light frame is the firmware-guaranteed terminal dark frame;
     it is promoted to a dark boundary, removed from the light list, and the
     remaining lights (if any) are emitted.
 
-    See docs/SciencePipeline.md §7.4 (realtime) and §8 (batched).
+    See docs/SciencePipeline.md §5.7.2 (realtime) and §5.7.3–§5.7.8
+    (batched).
     """
     name = "dark_correction"
 
@@ -492,9 +493,10 @@ class DarkCorrectionStage:
                                       abs_frame_id=abs_id)
                     if pi.is_closed():
                         interval = pi.flush()
-                        # After flush, pi's left has rolled to the just-flushed right.
-                        # _emit_interval applies the stencil for D_prev and appends
-                        # the IntervalClosed event (§8.4).
+                        # After flush, pi's left has rolled to the just-flushed
+                        # right. _emit_interval appends the raw IntervalClosed
+                        # event; DarkFrameHoldStage applies the stencil later
+                        # (§5.7.6).
                         self._emit_interval((side, cam_id), interval, batch.events)
 
             else:  # light
@@ -571,7 +573,7 @@ class DarkCorrectionStage:
         self._terminal_fsync_count = None
 
     def on_scan_stop(self, batch: FrameBatch) -> None:
-        """Terminal dark flush — see SciencePipeline.md §8.6.
+        """Terminal dark flush — see SciencePipeline.md §5.7.8.
 
         The firmware guarantees the end of every scan contains a dark (laser-
         off) frame.  That frame may not fall on a scheduled dark position, so
