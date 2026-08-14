@@ -22,9 +22,7 @@ unit may not be processed by running this procedure twice.
 
 This specification implements the Laser Calibration requirements in:
 
-- `docs/WI-00015-automated-process-addendum.md`;
-- `docs/superpowers/specs/2026-08-12-wi15-single-and-dual-runner-design.md`;
-  and
+- `docs/WI-00015-automated-process-addendum.md`; and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if this file is inadvertently interpreted in a
@@ -54,7 +52,7 @@ way that conflicts with the approved process.
 ## 4. Entry points and reusable API boundary
 
 The operator entry point is
-`scripts/wi15_single_sensor_laser_calibration.py`. Before any mutation it asks
+`omotion/scripts/wi15_single_sensor_laser_calibration.py`. Before any mutation it asks
 the operator to select `left` or `right`, displays the selection, and requires
 confirmation.
 
@@ -324,7 +322,7 @@ logic.
 - UI-neutral procedure workflow: `omotion/calibration/single_sensor_laser.py`
 - Motion and Ophir adapters: `omotion/calibration/laser_hardware.py`
 - Incremental JSON and HTML evidence: `omotion/calibration/reporting.py`
-- Operator entry point: `scripts/wi15_single_sensor_laser_calibration.py`
+- Operator entry point: `omotion/scripts/wi15_single_sensor_laser_calibration.py`
 - Software verification: `tests/test_wi15_laser_calibration.py`,
   `tests/test_wi15_single_sensor_laser_calibration.py`,
   `tests/test_wi15_laser_calibration_hardware.py`,

@@ -21,9 +21,7 @@ It permits at most three complete post-adjustment cross-checks.
 This specification implements the Dual-Sensor Laser Calibration requirements
 in:
 
-- `docs/WI-00015-automated-process-addendum.md`;
-- `docs/superpowers/specs/2026-08-12-wi15-single-and-dual-runner-design.md`;
-  and
+- `docs/WI-00015-automated-process-addendum.md`; and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if the sources conflict.
@@ -53,7 +51,7 @@ The process addendum controls if the sources conflict.
 ## 4. Entry point and reusable API boundary
 
 The operator entry point is
-`scripts/wi15_dual_sensor_laser_calibration.py`. It guides each required
+`omotion/scripts/wi15_dual_sensor_laser_calibration.py`. It guides each required
 change from the left module to the right module or from the right module to
 the left module, but does not own the tuning calculations. Consecutive
 measurements of the same seated module do not repeat the placement prompt.
@@ -304,8 +302,8 @@ The software implementation is divided at the intended reusable boundaries:
 - auditor-readable HTML evidence:
   `omotion/calibration/dual_sensor_laser_report.py`;
 - operator CLI and artifact/resource finalization:
-  `scripts/wi15_dual_sensor_laser_calibration.py`; and
-- invocation guidance: `scripts/WI15_PROCEDURES.md`.
+  `omotion/scripts/wi15_dual_sensor_laser_calibration.py`; and
+- invocation guidance: `docs/WI15Procedures.md`.
 
 Focused automated coverage is provided by:
 

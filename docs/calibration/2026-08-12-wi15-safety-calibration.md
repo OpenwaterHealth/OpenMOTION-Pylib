@@ -21,9 +21,7 @@ topology.
 
 This specification implements Safety Calibration in:
 
-- `docs/WI-00015-automated-process-addendum.md`;
-- `docs/superpowers/specs/2026-08-12-wi15-single-and-dual-runner-design.md`;
-  and
+- `docs/WI-00015-automated-process-addendum.md`; and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if the sources conflict.
@@ -266,7 +264,7 @@ gates in UI code.
 - Auditor-readable HTML evidence:
   `omotion/calibration/safety_report.py`.
 - Current script-only operator entry point:
-  `scripts/wi15_safety_calibration.py`.
+  `omotion/scripts/wi15_safety_calibration.py`.
 
 The automated domain, workflow, adapter, report, and operator-script tests pass
 against simulated hardware. A live dual-sensor execution passed on 2026-08-13

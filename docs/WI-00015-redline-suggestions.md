@@ -1,11 +1,12 @@
 # WI-00015 rev 2 — redline suggestions from automation
 
 > Historical record: this review describes the prototype retained on
-> `feature/214-wi15-tuning-runner`. Prototype script and README references are
-> intentionally not present on the clean implementation branch and are not
-> execution authority. The approved process addendum and its linked procedure
-> specifications control current execution:
-> `docs/WI-00015-automated-process-addendum.md`.
+> `feature/214-wi15-tuning-runner` (PR #215, closed unmerged 2026-08-14).
+> Prototype script and README references are intentionally not present on the
+> clean implementation branch and are not execution authority. The approved
+> process addendum and its linked procedure specifications control current
+> execution: `docs/WI-00015-automated-process-addendum.md` and
+> `docs/calibration/`.
 
 Proposed edits to **WI-00015 Open-Motion Device Specific Parameter Tuning
 rev 2 (ECO-000270)**, collected while building and hardware-validating the

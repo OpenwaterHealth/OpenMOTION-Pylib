@@ -18,7 +18,9 @@ stop frame — the laser-off frame fired ~150 ms off the 25 ms grid at
 every scan stop — is recognised at on_scan_stop and reclassified as an
 expected artifact (INFO, excluded from the misalignment record).
 
-See docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
+Design history: the EFT timestamp-repair design doc (removed from docs/)
+is retrievable from git history at
+docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
 """
 
 from __future__ import annotations

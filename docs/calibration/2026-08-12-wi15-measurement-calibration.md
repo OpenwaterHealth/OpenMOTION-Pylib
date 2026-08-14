@@ -20,9 +20,7 @@ parallelized across sides.
 
 This specification implements Measurement Calibration in:
 
-- `docs/WI-00015-automated-process-addendum.md`;
-- `docs/superpowers/specs/2026-08-12-wi15-single-and-dual-runner-design.md`;
-  and
+- `docs/WI-00015-automated-process-addendum.md`; and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if the sources conflict.

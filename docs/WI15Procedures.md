@@ -56,7 +56,8 @@ the side, serial number, and procedure phase for auditability.
 All scripts collect required report metadata before hardware construction.
 Placement confirmation occurs immediately before the associated measurement.
 
-The authority for execution is the WI-00015 automated process addendum and its
-linked procedure specifications. The historical combined runner is prototype
-and reference code retained only on `feature/214-wi15-tuning-runner`; it is
-not a supported procedure on this branch.
+The authority for execution is the WI-00015 automated process addendum
+(`docs/WI-00015-automated-process-addendum.md`) and the per-procedure
+specifications in `docs/calibration/`. The historical combined runner is
+prototype and reference code retained only on `feature/214-wi15-tuning-runner`
+(PR #215, closed unmerged); it is not a supported procedure on this branch.
