@@ -292,9 +292,7 @@ def main(
 
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
-        build_revision = _required_value(
-            args.build_revision, "Build revision: ", input_func
-        )
+        build_revision = args.build_revision or "unspecified"
         fixture_id = _required_value(args.fixture_id, "Bench or fixture ID: ", input_func)
         topology = _shipping_topology(
             args.shipping_topology, input_func, output_func

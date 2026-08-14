@@ -60,15 +60,9 @@ def main(
     args = _parser().parse_args(argv)
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
-        build_revision = _required_value(
-            args.build_revision, "Build revision: ", input_func
-        )
+        build_revision = args.build_revision or "unspecified"
         fixture_id = _required_value(args.fixture_id, "Fixture ID: ", input_func)
-        fixture_calibration_status = _required_value(
-            args.fixture_calibration_status,
-            "Fixture calibration status: ",
-            input_func,
-        )
+        fixture_calibration_status = args.fixture_calibration_status
         procedure_revision = _required_value(
             args.procedure_revision, "Procedure revision: ", input_func
         )
