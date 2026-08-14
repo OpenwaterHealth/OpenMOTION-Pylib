@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-12
 
-**Status:** Implemented and verified in software and on dual-sensor hardware
+**Status:** Implemented and verified in software and on dual-sensor hardware.
+Amended 2026-08-14 to restate the WI-00015 Ophir meter setup values and 0 cm
+fixture orientation requirements.
 
 **Procedure:** Dual-Sensor Laser Calibration
 
@@ -97,6 +99,12 @@ terminal text throughout the procedures uses short plain sentences (ruling
 2026-08-14: factory operators may have limited English); the descriptive
 audit labels above remain the evidence-record style.
 
+Every placement acknowledgement attests to the WI-00015 Figure F seating
+requirements: the module's strap covers and straps are removed before
+insertion, the module sits in the 0 cm fixture with its optics facing up,
+and the sensor cable exits as perpendicular to the module as possible with
+minimal bending within 40 cm of the module.
+
 ## 5. Preconditions and fail-closed preflight
 
 Before configuration mutation or laser action:
@@ -112,6 +120,23 @@ Before configuration mutation or laser action:
 4. Ophir COM instantiation, scan, open, energy-sensor presence, identity, and
    calibration-due reads must pass; and
 5. all Ophir settings and readbacks in the process addendum must pass.
+
+The required meter configuration restates the WI-00015 step-4 setup values
+(the process addendum controls):
+
+| Setting | Required value |
+|---|---:|
+| Measurement mode | Energy |
+| Range | 2.0 mJ |
+| Wavelength | 795 nm |
+| Pulse length | 1.0 ms |
+| Threshold | Minimum available |
+| Display/statistics averaging | 3 seconds, when applicable |
+| Graph/display mode | Statistics, when applicable |
+
+Each applicable value is written and read back over the meter's COM
+interface. The two display rows describe an attended StarLab-style display;
+they do not alter the direct-stream acquisition defined in section 7.
 
 Any failure stops before default configuration or firing. A missing side is
 not reinterpreted as a one-sensor unit.

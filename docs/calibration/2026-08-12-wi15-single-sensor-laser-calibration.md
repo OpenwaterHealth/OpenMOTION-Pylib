@@ -3,7 +3,8 @@
 **Date:** 2026-08-12
 
 **Status:** Implemented, software-verified, and successfully executed on the
-left-only Motion/Ophir bench
+left-only Motion/Ophir bench. Amended 2026-08-14 to restate the WI-00015
+Ophir meter setup values and 0 cm fixture orientation requirements.
 
 **Procedure:** Single-Sensor Laser Calibration
 
@@ -93,6 +94,23 @@ Preflight runs before step-9 configuration or laser action.
 8. Meter/sensor identity and calibration-due fields must be readable.
 9. Every Ophir setting and readback in the process addendum must pass.
 
+The required meter configuration restates the WI-00015 step-4 setup values
+(the process addendum controls):
+
+| Setting | Required value |
+|---|---:|
+| Measurement mode | Energy |
+| Range | 2.0 mJ |
+| Wavelength | 795 nm |
+| Pulse length | 1.0 ms |
+| Threshold | Minimum available |
+| Display/statistics averaging | 3 seconds, when applicable |
+| Graph/display mode | Statistics, when applicable |
+
+Each applicable value is written and read back over the meter's COM
+interface. The two display rows describe an attended StarLab-style display;
+they do not alter the direct-stream acquisition defined in section 7.
+
 After Ophir setup, the Motion discovery topology must remain unchanged for an
 injectable quiet period before the preflight snapshot is accepted. The same
 stable exact topology is revalidated immediately before the first User
@@ -172,6 +190,12 @@ up front, before any hardware object is constructed, and passed into the
 workflow, which validates it during preflight - an unconfirmed fixture fails
 before mutation or firing. The initial step then acquires a valid measurement
 at the default operating point.
+
+The confirmation attests to the WI-00015 Figure F seating requirements: the
+module's strap covers and straps are removed before insertion, the module
+sits in the 0 cm fixture with its optics facing up, and the sensor cable
+exits as perpendicular to the module as possible with minimal bending within
+40 cm of the module.
 
 ### 8.2 Downward adjustment
 
