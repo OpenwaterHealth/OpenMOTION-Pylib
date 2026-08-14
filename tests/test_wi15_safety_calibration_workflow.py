@@ -8,14 +8,12 @@ import pytest
 from omotion.calibration.laser import (
     DeviceIdentity,
     FailureKind,
-    FpgaFirmwareRevision,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
 )
 from omotion.calibration.safety import (
     NormalScanEvidence,
-    PowerCycleEvidence,
     SafetyWarningEvidence,
     ShippingTopology,
 )
@@ -25,31 +23,15 @@ from omotion.calibration.safety_workflow import (
     SafetyCalibrationRequest,
     SafetyCalibrationWorkflow,
 )
-
-
-FPGA_REVISIONS = tuple(
-    FpgaFirmwareRevision(controller, "1.2.3")
-    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
-)
+from wi15_builders import FPGA_REVISIONS, valid_power_cycle, valid_safety_config
+from wi15_fakes import FakeRecorder
 
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
 
 
 def _valid_config(**changes):
-    config = {
-        "TA_PULSE_WIDTH": 500,
-        "TA_CURRENT_DRV": 5000,
-        "SEED_CW_GAIN": 140,
-        "EE_PULSE_WIDTH_UL": 550,
-        "EE_RATE_LL": 23125,
-        "EE_DRIVE_CL": 9999,
-        "OPT_PULSE_WIDTH_UL": 550,
-        "OPT_RATE_LL": 23125,
-        "OPT_DRIVE_CL": 9999,
-        "TEC_TRIP": 40,
-        "FACTORY_NOTE": 7,
-    }
+    config = valid_safety_config(FACTORY_NOTE=7)
     config.update(changes)
     return config
 
@@ -96,32 +78,9 @@ def _valid_scan(topology=ShippingTopology.SINGLE_LEFT):
 
 
 def _valid_power_cycle():
-    return PowerCycleEvidence(
-        off_requested_at=NOW,
-        disconnect_observed_at=NOW + timedelta(seconds=1),
-        on_allowed_at=NOW + timedelta(seconds=16),
-        on_requested_at=NOW + timedelta(seconds=16),
-        reconnect_observed_at=NOW + timedelta(seconds=20),
-        off_duration_s=15.0,
-        disconnect_observed=True,
-        reconnect_observed=True,
-        restart_proven=True,
-        restart_proof="firmware uptime reset from 734 s to 2 s",
-        console_serial_before="C-1",
-        console_serial_after="C-1",
+    return valid_power_cycle(
+        NOW, restart_proof="firmware uptime reset from 734 s to 2 s"
     )
-
-
-class FakeRecorder:
-    def __init__(self):
-        self.events = []
-        self.checkpoints = []
-
-    def record(self, event):
-        self.events.append(event)
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
 
 
 class FakeSafetyBench:

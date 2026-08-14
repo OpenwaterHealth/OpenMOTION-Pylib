@@ -19,6 +19,8 @@ from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
 )
+from wi15_builders import valid_ophir_setting_evidence
+from wi15_fakes import FakeClock, FakeDevice
 
 
 def _ophir_preflight():
@@ -29,69 +31,7 @@ def _ophir_preflight():
         "sensor-1",
         "meter: 2027-10-16; sensor: 2027-08-22",
     )
-    evidence = (
-        OphirSettingEvidence(
-            "measurement_mode",
-            "Energy",
-            "Energy",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "range_mj", 2.0, 2.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "wavelength_nm", 795, 795, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "pulse_length_ms", 1.0, 1.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "threshold",
-            "minimum_available",
-            "minimum_available",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "display_averaging_s",
-            3,
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "graph_mode",
-            "Statistics",
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
-    )
-    return identity, evidence
-
-
-class FakeDevice:
-    def __init__(self, connected, serial, firmware, hardware_id):
-        self.connected = connected
-        self.serial = serial
-        self.firmware = firmware
-        self.hardware_id = hardware_id
-        self.firmware_error = None
-
-    def is_connected(self):
-        return self.connected
-
-    def read_serial_number(self):
-        return self.serial
-
-    def get_version(self):
-        if self.firmware_error:
-            raise self.firmware_error
-        return self.firmware
-
-    def get_hardware_id(self):
-        return self.hardware_id
+    return identity, valid_ophir_setting_evidence()
 
 
 class FakeConsole(FakeDevice):
@@ -530,17 +470,6 @@ def test_fpga_write_does_not_read_or_return_evidence_after_failed_i2c_write():
 
     assert register_io.write("TA_CURRENT_DRV", 5000.0) is None
     assert [call[0] for call in console.calls] == ["write_i2c_packet"]
-
-
-class FakeClock:
-    def __init__(self):
-        self.now = 0.0
-
-    def __call__(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
 
 
 class FakeOphirCOM:

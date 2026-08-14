@@ -9,7 +9,6 @@ from omotion.calibration.laser import (
     CriterionResult,
     DEFAULT_USER_CONFIG,
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
     FpgaFirmwareRevision,
     MAX_ACCEPTABLE_ENERGY_UJ,
@@ -38,6 +37,7 @@ from omotion.calibration.laser import (
     validate_serial,
     within_percent,
 )
+from wi15_builders import valid_measurement as _valid_measurement
 
 
 def test_console_identity_requires_all_four_named_fpga_firmware_revisions():
@@ -101,13 +101,6 @@ def test_wi15_fixed_thresholds_and_default_user_configuration():
         "TEC_TRIP": 40,
     }
     assert isinstance(DEFAULT_USER_CONFIG["TEC_TRIP"], int)
-
-
-def _valid_measurement(**changes):
-    return replace(
-        EnergyMeasurement(26, 0, 350.0, 10.0, 40.0, 330.0, 370.0, 0.65),
-        **changes,
-    )
 
 
 def _criteria(measurement):

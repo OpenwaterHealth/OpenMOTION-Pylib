@@ -24,23 +24,7 @@ from omotion.calibration.safety import (
     validate_current_configuration,
     validate_shipping_topology,
 )
-
-
-def _valid_config(**changes):
-    config = {
-        "TA_PULSE_WIDTH": 500,
-        "TA_CURRENT_DRV": 5000,
-        "SEED_CW_GAIN": 140,
-        "EE_PULSE_WIDTH_UL": 550,
-        "EE_RATE_LL": 23125,
-        "EE_DRIVE_CL": 9999,
-        "OPT_PULSE_WIDTH_UL": 550,
-        "OPT_RATE_LL": 23125,
-        "OPT_DRIVE_CL": 9999,
-        "TEC_TRIP": 40,
-    }
-    config.update(changes)
-    return config
+from wi15_builders import valid_safety_config as _valid_config
 
 
 def _criteria(config):

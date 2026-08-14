@@ -7,7 +7,6 @@ from pathlib import Path
 from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
     FinalSettingCheck,
     OphirIdentity,
@@ -26,6 +25,7 @@ from omotion.calibration.single_sensor_laser import (
     TuningCandidate,
     TuningSelection,
 )
+from wi15_builders import valid_measurement as _measurement
 
 
 class _Mode(str, Enum):
@@ -58,21 +58,6 @@ def _request(**changes):
     }
     values.update(changes)
     return SingleSensorLaserCalibrationRequest(**values)
-
-
-def _measurement(**changes):
-    values = {
-        "n": 26,
-        "discarded": 0,
-        "mean_uj": 350.0,
-        "stdev_uj": 10.0,
-        "rate_hz": 40.0,
-        "min_uj": 330.0,
-        "max_uj": 370.0,
-        "duration_s": 0.65,
-    }
-    values.update(changes)
-    return EnergyMeasurement(**values)
 
 
 def _result(**changes):

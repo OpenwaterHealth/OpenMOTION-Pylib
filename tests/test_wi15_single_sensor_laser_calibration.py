@@ -16,19 +16,16 @@ from omotion.calibration.single_sensor_laser import (
 from omotion.calibration.laser import (
     DEFAULT_USER_CONFIG,
     DeviceIdentity,
-    EnergyMeasurement,
-    FpgaFirmwareRevision,
     FailureKind,
     OphirIdentity,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
 )
-
-
-FPGA_REVISIONS = tuple(
-    FpgaFirmwareRevision(controller, "1.2.3")
-    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
+from wi15_builders import (
+    FPGA_REVISIONS,
+    valid_measurement as _valid_measurement,
+    valid_ophir_setting_evidence as _valid_ophir_setting_evidence,
 )
 
 
@@ -182,21 +179,6 @@ class FakeLaserBench:
                 raise outcome
 
 
-def _valid_measurement(**changes):
-    values = {
-        "n": 26,
-        "discarded": 0,
-        "mean_uj": 350.0,
-        "stdev_uj": 10.0,
-        "rate_hz": 40.0,
-        "min_uj": 330.0,
-        "max_uj": 370.0,
-        "duration_s": 0.65,
-    }
-    values.update(changes)
-    return EnergyMeasurement(**values)
-
-
 class FakeRecorder:
     def __init__(self):
         self.events = []
@@ -257,48 +239,6 @@ def _preflight(
         console_responsive=console_responsive,
         ophir_setting_evidence=ophir_setting_evidence,
         ophir_failure_reason=ophir_failure_reason,
-    )
-
-
-def _valid_ophir_setting_evidence():
-    return (
-        OphirSettingEvidence(
-            "measurement_mode",
-            "Energy",
-            "Energy",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "range_mj", 2.0, 2.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "wavelength_nm", 795, 795, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "pulse_length_ms", 1.0, 1.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "threshold",
-            "minimum_available",
-            "minimum_available",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "display_averaging_s",
-            3,
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "graph_mode",
-            "Statistics",
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
     )
 
 

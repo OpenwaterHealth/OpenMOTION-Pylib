@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import inspect
 
 import pytest
@@ -6,51 +6,13 @@ import pytest
 from omotion.ConsoleTelemetry import ConsoleTelemetry
 from omotion.MotionConfig import MotionConfig
 from omotion.calibration.laser import SettingReadback
-from omotion.calibration.safety import (
-    PowerCycleEvidence,
-    ShippingTopology,
-)
+from omotion.calibration.safety import ShippingTopology
 from omotion.calibration.safety_hardware import MotionSafetyCalibrationBench
+from wi15_builders import valid_power_cycle
+from wi15_fakes import FakeClock, FakeDevice
 
 
 NOW = datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)
-
-
-class FakeClock:
-    def __init__(self, now=0.0):
-        self.now = float(now)
-
-    def __call__(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
-
-
-class FakeDevice:
-    def __init__(self, connected, serial, firmware, hardware_id):
-        self.connected = connected
-        self.serial = serial
-        self.firmware = firmware
-        self.hardware_id = hardware_id
-        self.serial_error = None
-        self.firmware_error = None
-
-    def is_connected(self):
-        return self.connected
-
-    def read_serial_number(self):
-        if self.serial_error:
-            raise self.serial_error
-        return self.serial
-
-    def get_version(self):
-        if self.firmware_error:
-            raise self.firmware_error
-        return self.firmware
-
-    def get_hardware_id(self):
-        return self.hardware_id
 
 
 class FakeTelemetry:
@@ -247,20 +209,7 @@ class FakeMap:
 
 
 def _valid_cycle(serial="C-1"):
-    return PowerCycleEvidence(
-        off_requested_at=NOW,
-        disconnect_observed_at=NOW + timedelta(seconds=1),
-        on_allowed_at=NOW + timedelta(seconds=16),
-        on_requested_at=NOW + timedelta(seconds=16),
-        reconnect_observed_at=NOW + timedelta(seconds=20),
-        off_duration_s=15.0,
-        disconnect_observed=True,
-        reconnect_observed=True,
-        restart_proven=True,
-        restart_proof="same Motion handle disconnected and reconnected",
-        console_serial_before=serial,
-        console_serial_after=serial,
-    )
+    return valid_power_cycle(NOW, serial=serial)
 
 
 class FakePowerCoordinator:

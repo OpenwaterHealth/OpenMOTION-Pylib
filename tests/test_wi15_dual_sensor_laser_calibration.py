@@ -11,59 +11,19 @@ from omotion.calibration.dual_sensor_laser import (
 )
 from omotion.calibration.laser import (
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
-    FpgaFirmwareRevision,
     OphirIdentity,
     ProcedureStatus,
     SettingReadback,
     TopologySnapshot,
     default_user_configuration,
 )
-from omotion.calibration.single_sensor_laser import (
-    OphirEvidenceApplicability,
-    OphirSettingEvidence,
+from wi15_builders import (
+    FPGA_REVISIONS,
+    valid_measurement_for_mean as valid_measurement,
+    valid_ophir_setting_evidence as valid_ophir_evidence,
 )
-
-
-FPGA_REVISIONS = tuple(
-    FpgaFirmwareRevision(controller, "1.2.3")
-    for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
-)
-
-
-def valid_measurement(mean_uj: float, **changes) -> EnergyMeasurement:
-    return replace(
-        EnergyMeasurement(
-            n=26,
-            discarded=0,
-            mean_uj=mean_uj,
-            stdev_uj=10.0,
-            rate_hz=40.0,
-            min_uj=mean_uj - 10.0,
-            max_uj=mean_uj + 10.0,
-            duration_s=0.65,
-        ),
-        **changes,
-    )
-
-
-def valid_ophir_evidence() -> tuple[OphirSettingEvidence, ...]:
-    applicable = OphirEvidenceApplicability.APPLICABLE
-    not_applicable = OphirEvidenceApplicability.NOT_APPLICABLE
-    return (
-        OphirSettingEvidence("measurement_mode", "Energy", "Energy", applicable, True),
-        OphirSettingEvidence("range_mj", 2.0, 2.0, applicable, True),
-        OphirSettingEvidence("wavelength_nm", 795, 795, applicable, True),
-        OphirSettingEvidence("pulse_length_ms", 1.0, 1.0, applicable, True),
-        OphirSettingEvidence(
-            "threshold", "minimum_available", "minimum_available", applicable, True
-        ),
-        OphirSettingEvidence(
-            "display_averaging_s", 3, None, not_applicable, True
-        ),
-        OphirSettingEvidence("graph_mode", "Statistics", None, not_applicable, True),
-    )
+from wi15_fakes import FakeRecorder
 
 
 class FakeDualBench:
@@ -180,18 +140,6 @@ class FakeDualBench:
     def stop_trigger(self):
         self.calls.append("stop_trigger")
         self.stop_count += 1
-
-
-class FakeRecorder:
-    def __init__(self):
-        self.events = []
-        self.checkpoints = []
-
-    def record(self, event):
-        self.events.append(event)
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
 
 
 class PlacementResponses:

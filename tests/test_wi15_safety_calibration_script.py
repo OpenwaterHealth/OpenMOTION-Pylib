@@ -1,8 +1,5 @@
-import importlib.util
 import json
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -10,49 +7,20 @@ from omotion.calibration.laser import FailureKind, ProcedureStatus
 from omotion.calibration.safety import ShippingTopology
 from omotion.calibration.safety_workflow import SafetyCalibrationResult
 from omotion.calibration.single_sensor_laser import ReportArtifactStatus
-
-
-SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "scripts"
-    / "wi15_safety_calibration.py"
+from wi15_fakes import FakeClock
+from wi15_script_harness import (
+    FakeRecorder,
+    FakeReport,
+    load_wi15_script,
+    wi15_script_path,
 )
 
 
+SCRIPT_PATH = wi15_script_path("wi15_safety_calibration.py")
+
+
 def load_script():
-    spec = importlib.util.spec_from_file_location(
-        "wi15_safety_script_under_test", SCRIPT_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module
-
-
-class FakeClock:
-    def __init__(self):
-        self.now = 0.0
-
-    def __call__(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
-
-
-class FakeRecorder:
-    def __init__(self, root):
-        self.run_directory = Path(root) / "run"
-        self.run_directory.mkdir(parents=True)
-        self.json_path = self.run_directory / "run.json"
-        self.checkpoints = []
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
+    return load_wi15_script(SCRIPT_PATH, "wi15_safety_script_under_test")
 
 
 class FakeBench:
@@ -65,15 +33,6 @@ class FakeBench:
         self.closed += 1
         if self.close_error:
             raise self.close_error
-
-
-class FakeReport:
-    def __init__(self, directory):
-        self.report_path = Path(directory) / "report.html"
-
-    def write(self, request, result, json_path):
-        self.report_path.write_text("safety report", encoding="ascii")
-        return self.report_path
 
 
 def _result(status=ProcedureStatus.PASSED, **changes):

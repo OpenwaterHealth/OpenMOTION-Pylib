@@ -1,9 +1,6 @@
-import importlib.util
 import json
-import sys
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -13,62 +10,22 @@ from omotion.calibration.dual_sensor_laser import (
 )
 from omotion.calibration.laser import FailureKind, ProcedureStatus
 from omotion.calibration.single_sensor_laser import ReportArtifactStatus
-
-
-SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "scripts"
-    / "wi15_dual_sensor_laser_calibration.py"
+from wi15_script_harness import (
+    FakeBench,
+    FakeMeter,
+    FakeRecorder,
+    FakeReport,
+    complete_args,
+    load_wi15_script,
+    wi15_script_path,
 )
 
 
+SCRIPT_PATH = wi15_script_path("wi15_dual_sensor_laser_calibration.py")
+
+
 def load_script():
-    spec = importlib.util.spec_from_file_location("wi15_dual_script_under_test", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module
-
-
-class FakeRecorder:
-    def __init__(self, root):
-        self.run_directory = Path(root) / "run"
-        self.run_directory.mkdir(parents=True)
-        self.json_path = self.run_directory / "run.json"
-        self.checkpoints = []
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
-
-
-class FakeMeter:
-    def __init__(self):
-        self.closed = 0
-
-    def close(self):
-        self.closed += 1
-
-
-class FakeBench:
-    def __init__(self, meter):
-        self.meter = meter
-        self.closed = 0
-
-    def close(self):
-        self.closed += 1
-
-
-class FakeReport:
-    def __init__(self, directory):
-        self.report_path = Path(directory) / "report.html"
-
-    def write(self, request, result, json_path):
-        self.report_path.write_text("dual report", encoding="ascii")
-        return self.report_path
+    return load_wi15_script(SCRIPT_PATH, "wi15_dual_script_under_test")
 
 
 def result(status=ProcedureStatus.PASSED):
@@ -78,21 +35,6 @@ def result(status=ProcedureStatus.PASSED):
         started_at=datetime.now(timezone.utc),
         ended_at=datetime.now(timezone.utc),
     )
-
-
-def complete_args(tmp_path):
-    return [
-        "--output-dir",
-        str(tmp_path),
-        "--operator",
-        "operator",
-        "--build-revision",
-        "build-7",
-        "--fixture-id",
-        "fixture-2",
-        "--fixture-calibration-status",
-        "current",
-    ]
 
 
 def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_placements=False):
