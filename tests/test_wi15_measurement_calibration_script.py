@@ -218,29 +218,14 @@ def test_refused_engine_start_fails_and_stops_interface(monkeypatch, tmp_path):
     assert fake.stopped == 1
 
 
-@pytest.mark.parametrize(
-    ("answer", "expected_code"), [("yes", 0), ("no", 1)]
-)
-def test_below_threshold_gate_shows_rows_and_asks_the_operator(
-    monkeypatch, tmp_path, answer, expected_code
-):
+def test_below_threshold_gate_shows_rows_and_never_writes(monkeypatch, tmp_path):
     code, fake, lines = run_main(
         tmp_path, monkeypatch,
         argv_extra=["--side", "right", "--phantom-confirmed"],
-        answers=(answer,),
-        fire_confirm=True,
-    )
-    assert code == expected_code
-    assert any("Below-threshold gate fired" in line for line in lines)
-    assert any("right" in line and "62.100" in line for line in lines)
-
-
-def test_allow_dim_consents_without_prompting(monkeypatch, tmp_path):
-    code, fake, lines = run_main(
-        tmp_path, monkeypatch,
-        argv_extra=["--side", "right", "--phantom-confirmed", "--allow-dim"],
         answers=(),  # any prompt would exhaust the empty iterator and raise
         fire_confirm=True,
     )
-    assert code == 0
-    assert any("--allow-dim consents" in line for line in lines)
+    assert code == 1
+    assert any("Below-threshold gate fired" in line for line in lines)
+    assert any("right" in line and "62.100" in line for line in lines)
+    assert any("never written" in line for line in lines)

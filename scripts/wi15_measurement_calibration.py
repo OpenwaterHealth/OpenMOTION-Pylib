@@ -105,10 +105,6 @@ def _parser() -> argparse.ArgumentParser:
             help="attest the module is on the static phantom with weight "
                  "(WI Figure H) and will not be touched")
         parser.add_argument(
-            "--allow-dim", action="store_true",
-            help="consent to write a below-threshold calibration (dim laser) "
-                 "if the pre-write gate fires")
-        parser.add_argument(
             "--bench-thresholds", action="store_true",
             help="disable the absolute mean/contrast gates (dim dev bench). "
                  "PASSED then does NOT certify signal level.")
@@ -284,27 +280,20 @@ def main(
             output_func(f"  [{dt.datetime.now():%H:%M:%S}] {stage}")
 
         def confirm_fn(rows) -> bool:
-            """Pre-write gate: show what measured low, then ask the operator.
+            """Pre-write gate: show what measured low, then always refuse.
 
-            The engine pauses its watchdog across this call, so operator
-            think-time is safe. Returning False aborts without writing.
+            A below-threshold calibration is never written - there is no
+            consent path. The rows are printed so the operator can see
+            exactly which cameras failed the spec.
             """
             output_func("Below-threshold gate fired. Measured rows:")
             output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} {'avg_contrast':>13}")
             for row in rows:
                 output_func(f"  {row.side:<6} {row.cam_id:>3} "
                             f"{row.mean:>10.3f} {row.avg_contrast:>13.4f}")
-            if args.allow_dim:
-                output_func("--allow-dim consents to writing this calibration.")
-                return True
-            try:
-                return _confirmed(
-                    "Write this below-threshold calibration to the console "
-                    "anyway? (yes/no): ",
-                    input_func,
-                )
-            except (EOFError, KeyboardInterrupt):
-                return False
+            output_func("A below-threshold calibration is never written to "
+                        "the console.")
+            return False
 
         output_func(f"*** CALIBRATION STARTING (side={side}, laser will "
                     "fire; do not touch the setup) ***")
