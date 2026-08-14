@@ -821,20 +821,6 @@ def test_mutating_bench_write_cannot_change_the_approved_default_readback_contra
     assert recorder.checkpoints == [result]
 
 
-def test_mutating_public_default_before_run_cannot_redefine_canonical_configuration(
-    monkeypatch,
-):
-    """Public compatibility data must not be the workflow's source of truth."""
-    bench = FakeLaserBench([_preflight()])
-    monkeypatch.setitem(DEFAULT_USER_CONFIG, "TA_CURRENT_DRV", 123)
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-
-    assert result.status is ProcedureStatus.PASSED
-    assert result.requested_default_config["TA_CURRENT_DRV"] == 5000
-    assert bench.written_user_configurations[0]["TA_CURRENT_DRV"] == 5000
-
-
 def test_result_mapping_evidence_is_deeply_immutable_and_detached_from_bench_data():
     """Later bench or result mutation must not rewrite durable run evidence."""
     prior = {"site": {"fixture_slot": 7}}

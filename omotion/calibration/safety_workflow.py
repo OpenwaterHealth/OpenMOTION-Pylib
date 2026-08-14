@@ -273,8 +273,8 @@ class SafetyCalibrationWorkflow:
         def checkpoint() -> None:
             self._recorder.checkpoint(snapshot())
 
-        def stage(label: str, message: str, **data: object) -> None:
-            event = ProcedureEvent(self._now(), label, message, data)
+        def stage(label: str, message: str) -> None:
+            event = ProcedureEvent(self._now(), label, message)
             events.append(event)
             self._recorder.record(event)
             checkpoint()

@@ -125,7 +125,7 @@ PULSE_WIDTH_STEP_US = 10
 MAX_PULSE_WIDTH_US = 600
 TEMPORARY_PULSE_WIDTH_LIMIT_US = 660
 
-_CANONICAL_DEFAULT_USER_CONFIG = MappingProxyType({
+DEFAULT_USER_CONFIG = MappingProxyType({
     "TA_PULSE_WIDTH": 500,
     "TA_CURRENT_DRV": 5000,
     "SEED_CW_GAIN": 140,
@@ -138,14 +138,10 @@ _CANONICAL_DEFAULT_USER_CONFIG = MappingProxyType({
     "TEC_TRIP": 40,
 })
 
-# Compatibility export: callers may compare, copy, or even mutate this dict,
-# but workflow runs always obtain a fresh copy of the private canonical data.
-DEFAULT_USER_CONFIG = dict(_CANONICAL_DEFAULT_USER_CONFIG)
-
 
 def default_user_configuration() -> dict[str, int]:
     """Return a fresh copy of the approved ten-key WI-00015 defaults."""
-    return dict(_CANONICAL_DEFAULT_USER_CONFIG)
+    return dict(DEFAULT_USER_CONFIG)
 
 
 def _is_finite(value: object) -> bool:
@@ -327,30 +323,6 @@ def within_percent(requested: float, actual: float, tolerance_percent: float) ->
         _is_finite(tolerance_percent)
         and tolerance_percent >= 0
         and percent_difference(requested, actual) <= tolerance_percent
-    )
-
-
-def select_closest_valid_setting(
-    candidates: Iterable[tuple[float, EnergyMeasurement]],
-) -> tuple[float, EnergyMeasurement] | None:
-    """Select the valid observed setting nearest the 350 uJ target.
-
-    A lower requested setting deterministically wins equal-distance ties for
-    both current and pulse-width tuning directions.
-    """
-    valid_candidates = [
-        candidate
-        for candidate in candidates
-        if all(result.passed for result in validate_energy_measurement(candidate[1]))
-    ]
-    if not valid_candidates:
-        return None
-    return min(
-        valid_candidates,
-        key=lambda candidate: (
-            abs(candidate[1].mean_uj - TARGET_ENERGY_UJ),
-            candidate[0],
-        ),
     )
 
 

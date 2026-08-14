@@ -30,7 +30,6 @@ from omotion.calibration.laser import (
     both_energies_accepted,
     calculate_pair_metrics,
     percent_difference,
-    select_closest_valid_setting,
     select_closest_valid_setting_to_target,
     validate_energy_measurement,
     validate_console_fpga_revisions,
@@ -267,46 +266,6 @@ def test_percent_difference_handles_a_zero_requested_setting_without_raising():
 def test_within_percent_includes_exact_plus_or_minus_two_percent(actual, passed):
     """Changing the tolerance boundary would reject valid readbacks or admit bad ones."""
     assert within_percent(100.0, actual, 2.0) is passed
-
-
-def test_closest_valid_setting_returns_none_without_a_valid_candidate():
-    """Using an invalid measurement for tuning would bypass the quality gates."""
-    assert select_closest_valid_setting([]) is None
-    assert select_closest_valid_setting([(5000, _valid_measurement(n=25))]) is None
-
-
-def test_closest_valid_setting_minimizes_distance_from_350_uj():
-    """Choosing the first or last candidate would miss the closest measured setting."""
-    candidates = [
-        (5000, _valid_measurement(mean_uj=365.0)),
-        (4950, _valid_measurement(mean_uj=347.0)),
-        (4900, _valid_measurement(mean_uj=330.0)),
-    ]
-    assert select_closest_valid_setting(candidates) == candidates[1]
-
-
-@pytest.mark.parametrize(
-    "candidates, expected_index",
-    [
-        (
-            [
-                (5000, _valid_measurement(mean_uj=360.0)),
-                (4950, _valid_measurement(mean_uj=340.0)),
-            ],
-            1,
-        ),
-        (
-            [
-                (500, _valid_measurement(mean_uj=340.0)),
-                (510, _valid_measurement(mean_uj=360.0)),
-            ],
-            0,
-        ),
-    ],
-)
-def test_closest_valid_setting_breaks_distance_ties_with_lower_setting(candidates, expected_index):
-    """Unstable ties could reapply a higher current or wider pulse than necessary."""
-    assert select_closest_valid_setting(candidates) == candidates[expected_index]
 
 
 def test_closest_setting_uses_supplied_dual_target_and_rejects_nonfinite_target():

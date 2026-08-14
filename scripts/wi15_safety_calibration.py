@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import math
 from pathlib import Path
@@ -11,7 +10,6 @@ import time
 from typing import Callable, Sequence
 
 import omotion
-from omotion.calibration.laser import FailureKind, ProcedureStatus
 from omotion.calibration.reporting import JsonRunRecorder
 from omotion.calibration.safety import PowerCycleEvidence, ShippingTopology
 from omotion.calibration.safety_hardware import MotionSafetyCalibrationBench
@@ -20,33 +18,26 @@ from omotion.calibration.safety_workflow import (
     SafetyCalibrationRequest,
     SafetyCalibrationWorkflow,
 )
-from omotion.calibration.single_sensor_laser import (
-    ReportArtifactEvidence,
-    ReportArtifactStatus,
+from omotion.calibration.script_support import (
+    APPROVED_PROCEDURE_REVISION,
+    PROCEDURE_ID,
+    OperatorCanceled as _OperatorCanceled,
+    OperatorRunReportRequest,
+    apply_cleanup_failure,
+    close_bench_capturing,
+    close_best_effort as _close_best_effort,
+    confirmed as _confirmed,
+    finalize_run_artifacts,
+    make_parser,
+    required_value as _required_value,
+    utc_run_id as _run_id,
 )
 
-
-PROCEDURE_ID = "WI-00015"
-APPROVED_PROCEDURE_REVISION = (
-    "WI-00015 automated process addendum approved 2026-08-12"
-)
 
 recorder_factory = JsonRunRecorder
 bench_factory = MotionSafetyCalibrationBench
 workflow_factory = SafetyCalibrationWorkflow
 report_factory = SafetyCalibrationHtmlRunReport
-
-
-@dataclass(frozen=True)
-class OperatorRunReportRequest:
-    """Report metadata, including the approved procedure revision."""
-
-    request: SafetyCalibrationRequest
-    procedure_revision: str
-
-
-class _OperatorCanceled(Exception):
-    pass
 
 
 class ManualPowerCycleCoordinator:
@@ -249,34 +240,13 @@ class ManualPowerCycleCoordinator:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="./wi15_out")
-    parser.add_argument("--operator")
-    parser.add_argument("--build-revision")
-    parser.add_argument("--fixture-id")
-    parser.add_argument(
-        "--shipping-topology",
-        choices=tuple(item.value for item in ShippingTopology),
+    return make_parser(
+        __doc__,
+        lambda parser: parser.add_argument(
+            "--shipping-topology",
+            choices=tuple(item.value for item in ShippingTopology),
+        ),
     )
-    parser.add_argument(
-        "--procedure-revision", default=APPROVED_PROCEDURE_REVISION
-    )
-    return parser
-
-
-def _required_value(
-    value: str | None, prompt: str, input_func: Callable[[str], str]
-) -> str:
-    while True:
-        candidate = value if value is not None else input_func(prompt)
-        value = None
-        candidate = candidate.strip()
-        if candidate:
-            return candidate
-
-
-def _confirmed(prompt: str, input_func: Callable[[str], str]) -> bool:
-    return input_func(prompt).strip().lower() in ("yes", "y")
 
 
 def _shipping_topology(
@@ -307,19 +277,6 @@ def _topology_instruction(topology: ShippingTopology) -> str:
         ShippingTopology.DUAL: "both the left and right sensor modules",
     }
     return descriptions[topology]
-
-
-def _run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _close_best_effort(resource) -> None:
-    if resource is None:
-        return
-    try:
-        resource.close()
-    except Exception:
-        pass
 
 
 def main(
@@ -380,97 +337,17 @@ def main(
             started_at=datetime.now(timezone.utc),
         )
         result = workflow.run(request)
-
-        try:
-            bench.close()
-        except Exception as exc:
-            cleanup_failure = str(exc) or exc.__class__.__name__
-        else:
-            cleanup_failure = None
-        finally:
-            bench = None
-        if cleanup_failure is not None:
-            was_passing = result.status is ProcedureStatus.PASSED
-            result = replace(
-                result,
-                status=ProcedureStatus.FAILED if was_passing else result.status,
-                failure_kind=(
-                    FailureKind.MEASUREMENT if was_passing else result.failure_kind
-                ),
-                failure_reason=(
-                    "Hardware resource cleanup failed."
-                    if was_passing
-                    else result.failure_reason
-                ),
-                resource_cleanup_failure=cleanup_failure,
-            )
-            recorder.checkpoint(result)
-
-        report_path = Path(recorder.run_directory) / "report.html"
-        incomplete_result = replace(
-            result,
-            report_paths=(Path(recorder.json_path),),
-            report_artifact=ReportArtifactEvidence(
-                report_path, ReportArtifactStatus.INCOMPLETE
-            ),
+        cleanup_failure = close_bench_capturing(bench)
+        bench = None
+        result = apply_cleanup_failure(result, cleanup_failure, recorder)
+        return finalize_run_artifacts(
+            request=request,
+            result=result,
+            recorder=recorder,
+            report_factory=report_factory,
+            procedure_revision=procedure_revision,
+            output_func=output_func,
         )
-        recorder.checkpoint(incomplete_result)
-        try:
-            report = report_factory(recorder.run_directory)
-            report_path = Path(report.report_path)
-            finalized_result = replace(
-                incomplete_result,
-                report_paths=(Path(recorder.json_path), report_path),
-                report_artifact=ReportArtifactEvidence(
-                    report_path, ReportArtifactStatus.FINALIZED
-                ),
-            )
-            written_report = report.write(
-                OperatorRunReportRequest(request, procedure_revision),
-                finalized_result,
-                recorder.json_path,
-            )
-            if (
-                Path(written_report).resolve() != report_path.resolve()
-                or not report_path.is_file()
-            ):
-                raise RuntimeError(
-                    "HTML report writer did not create the expected file"
-                )
-        except Exception as exc:
-            report_failure = str(exc) or exc.__class__.__name__
-            was_passing = result.status is ProcedureStatus.PASSED
-            failed_result = replace(
-                incomplete_result,
-                status=ProcedureStatus.FAILED if was_passing else result.status,
-                failure_kind=(
-                    FailureKind.REPORT if was_passing else result.failure_kind
-                ),
-                failure_reason=(
-                    "HTML report generation failed."
-                    if was_passing
-                    else result.failure_reason
-                ),
-                report_paths=(Path(recorder.json_path),),
-                report_artifact=ReportArtifactEvidence(
-                    report_path,
-                    ReportArtifactStatus.FAILED,
-                    report_failure,
-                ),
-            )
-            recorder.checkpoint(failed_result)
-            output_func(f"HTML report generation failed: {report_failure}")
-            return 1
-
-        recorder.checkpoint(finalized_result)
-        output_func(f"Terminal status: {finalized_result.status.value}")
-        if finalized_result.failure_kind is not None:
-            output_func(f"Failure category: {finalized_result.failure_kind.value}")
-        if finalized_result.failure_reason is not None:
-            output_func(f"Failure reason: {finalized_result.failure_reason}")
-        output_func(f"JSON evidence: {Path(recorder.json_path).resolve()}")
-        output_func(f"HTML report: {Path(report_path).resolve()}")
-        return 0 if finalized_result.status is ProcedureStatus.PASSED else 1
     except Exception as exc:
         output_func(f"Safety Calibration failed before a terminal report: {exc}")
         return 1
