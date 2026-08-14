@@ -231,7 +231,7 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         evidence = self._power_cycle_coordinator.perform(
             minimum_off_s=minimum_off_s,
             expected_console_serial=expected_console_serial,
-            is_console_connected=lambda: bool(self._console.is_connected()),
+            is_console_connected=self._console_alive,
             read_console_serial=lambda: self._safe_call(
                 self._console, "read_serial_number"
             ),
@@ -239,6 +239,23 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
         if evidence.reconnect_observed:
             self._ensure_started(required_sensor_count=0)
         return evidence
+
+    def _console_alive(self) -> bool:
+        """Is the console really powered and talking, right now?
+
+        The connection-monitor state alone is not sufficient during an
+        observed power cycle: on Windows a surprise-removed COM port can
+        linger in enumeration while a handle stays open (live NCR: runs
+        WI-00015-20260814T175646Z / T180030Z never observed a real
+        power-off). A powered-off console cannot answer an echo, so the
+        round-trip is required in addition to the monitor state.
+        """
+        try:
+            if not self._console.is_connected():
+                return False
+            return self._console_responsive()
+        except Exception:
+            return False
 
     @staticmethod
     def _topology_masks(topology: ShippingTopology) -> tuple[int, int, int]:
