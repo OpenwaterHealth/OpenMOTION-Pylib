@@ -6,7 +6,7 @@ Calibrate button: laser-on collection scan, per-camera mean/contrast
 computation, console EEPROM write, validation scan. One sensor module is
 calibrated per run; run it once per shipping side. The full auditable
 Measurement Calibration workflow (evidence contracts, HTML report) is
-specified in docs/superpowers/specs/2026-08-12-wi15-measurement-calibration.md
+specified in docs/calibration/2026-08-12-wi15-measurement-calibration.md
 and remains future work.
 
 LASER SAFETY: the calibration scan fires the laser. The module must be on the
@@ -41,10 +41,13 @@ from omotion.calibration.script_support import (
 
 interface_factory = MotionInterface
 
-# Scan parameters mirror the bloodflow-app's defaults (motion_connector cfg
-# keys calibration_scan_duration_sec / calibration_scan_delay_sec /
-# max_calibration_time_sec).
-CAL_SCAN_DURATION_SEC = 5
+# Scan parameters mirror the bloodflow-app's SHIPPED config values
+# (config/app_config.json calibration_scan_duration_sec: 15 /
+# calibration_scan_delay_sec: 1 / max_calibration_time_sec: 600 — not
+# motion_connector's code fallback of 5), matching the approved process
+# addendum's 15-second calibration scan. The engine's validation scan
+# reuses duration_sec + scan_delay_sec; there is no separate knob.
+CAL_SCAN_DURATION_SEC = 15
 CAL_SCAN_DELAY_SEC = 1
 CAL_MAX_DURATION_SEC = 600
 READY_TIMEOUT_S = 20.0
