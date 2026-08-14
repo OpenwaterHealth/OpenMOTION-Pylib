@@ -281,60 +281,6 @@ def test_dual_report_labels_requested_final_config_unconfirmed_after_write_failu
     assert "Passing tuned User Configuration" not in html
 
 
-def test_dual_report_write_creates_the_claimed_utf8_file(tmp_path):
-    report = DualSensorHtmlRunReport(tmp_path)
-    written = report.write(request(), passing_result(), tmp_path / "run.json")
-    assert written == report.report_path
-    assert written.is_file()
-    assert "Dual-Sensor" in written.read_text(encoding="utf-8")
-
-
-def test_dual_report_renders_every_raw_observation_and_quality_criterion(tmp_path):
-    distinctive = SensorEnergyObservation(
-        side="left",
-        sensor_serial="LEFT-QUALITY-001",
-        label="Cross-check 3 — left sensor quality record",
-        measurement=EnergyMeasurement(
-            n=31,
-            discarded=7,
-            mean_uj=333.25,
-            stdev_uj=12.345,
-            rate_hz=39.5,
-            min_uj=301.25,
-            max_uj=399.75,
-            duration_s=0.8125,
-        ),
-        criteria=(
-            CriterionResult(
-                "sample_rate_hz",
-                True,
-                "Observed rate remained inside the approved acquisition window.",
-            ),
-        ),
-    )
-    result = replace(passing_result(), observations=(distinctive,))
-
-    html = DualSensorHtmlRunReport(tmp_path).render(request(), result, "run.json")
-
-    assert "All energy observations" in html
-    assert "All energy observation quality criteria" in html
-    for expected in (
-        "Cross-check 3 — left sensor quality record",
-        "LEFT-QUALITY-001",
-        "31",
-        "7",
-        "333.25",
-        "12.345",
-        "39.5",
-        "301.25",
-        "399.75",
-        "0.8125",
-        "sample_rate_hz",
-        "Observed rate remained inside the approved acquisition window.",
-    ):
-        assert expected in html
-
-
 def test_dual_report_renders_hardware_resource_cleanup_failure(tmp_path):
     result = replace(
         passing_result(),

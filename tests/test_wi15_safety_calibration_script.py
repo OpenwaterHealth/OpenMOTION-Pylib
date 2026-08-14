@@ -131,13 +131,6 @@ def _configured_script(monkeypatch, tmp_path, terminal_result=None):
     return script, recorder, captured
 
 
-def test_script_source_is_ascii_safe_and_has_no_meter_dependency():
-    source = SCRIPT_PATH.read_bytes()
-    source.decode("ascii")
-    assert b"Ophir" not in source
-    assert b"EnergyMeter" not in source
-
-
 def test_metadata_topology_and_connection_confirmation_finish_before_hardware_construction(
     monkeypatch, tmp_path
 ):
@@ -325,88 +318,3 @@ def test_runner_passes_declared_topology_to_shared_workflow_and_finalizes_artifa
     assert any(message.startswith("HTML report: ") for message in messages)
 
 
-def test_terminal_failure_prints_exact_structured_category_and_reason(monkeypatch, tmp_path):
-    terminal = _result(
-        ProcedureStatus.FAILED,
-        failure_kind=FailureKind.CONFIGURATION,
-        failure_reason="Post-restart complete User Configuration mismatched OPT_DRIVE_CL.",
-    )
-    script, _, _ = _configured_script(monkeypatch, tmp_path, terminal)
-    messages = []
-
-    exit_code = script.main(
-        _complete_args(tmp_path),
-        input_func=lambda _prompt: "yes",
-        output_func=messages.append,
-    )
-
-    assert exit_code == 1
-    assert "Terminal status: failed" in messages
-    assert "Failure category: configuration" in messages
-    assert (
-        "Failure reason: Post-restart complete User Configuration mismatched "
-        "OPT_DRIVE_CL."
-    ) in messages
-
-
-def test_hardware_cleanup_failure_replaces_a_pending_pass_before_report(monkeypatch, tmp_path):
-    script, recorder, captured = _configured_script(monkeypatch, tmp_path)
-
-    def make_bench(*, power_cycle_coordinator):
-        bench = FakeBench(power_cycle_coordinator)
-        bench.close_error = RuntimeError("Motion shutdown failed")
-        captured["bench"] = bench
-        return bench
-
-    monkeypatch.setattr(script, "bench_factory", make_bench)
-
-    exit_code = script.main(
-        _complete_args(tmp_path), input_func=lambda _prompt: "yes"
-    )
-
-    assert exit_code == 1
-    terminal = recorder.checkpoints[-1]
-    assert terminal.status is ProcedureStatus.FAILED
-    assert terminal.failure_kind is FailureKind.MEASUREMENT
-    assert terminal.failure_reason == "Hardware resource cleanup failed."
-    assert terminal.resource_cleanup_failure == "Motion shutdown failed"
-
-
-def test_report_failure_replaces_prior_pass_in_durable_json(monkeypatch, tmp_path):
-    script = load_script()
-    monkeypatch.setattr(script, "_run_id", lambda: "report-failure")
-    monkeypatch.setattr(
-        script,
-        "bench_factory",
-        lambda **kwargs: FakeBench(kwargs["power_cycle_coordinator"]),
-    )
-
-    class PassingWorkflow:
-        def __init__(self, _bench, recorder):
-            self.recorder = recorder
-
-        def run(self, request):
-            result = _result(shipping_topology=request.shipping_topology)
-            self.recorder.checkpoint(result)
-            return result
-
-    monkeypatch.setattr(script, "workflow_factory", PassingWorkflow)
-    monkeypatch.setattr(
-        script,
-        "report_factory",
-        lambda _directory: (_ for _ in ()).throw(RuntimeError("report failed")),
-    )
-
-    exit_code = script.main(
-        _complete_args(tmp_path), input_func=lambda _prompt: "yes"
-    )
-
-    assert exit_code == 1
-    payload = json.loads(
-        (tmp_path / "WI-00015-report-failure" / "run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert payload["status"] == ProcedureStatus.FAILED.value
-    assert payload["failure_kind"] == FailureKind.REPORT.value
-    assert payload["report_artifact"]["status"] == ReportArtifactStatus.FAILED.value

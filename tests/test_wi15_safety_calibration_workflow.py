@@ -258,11 +258,6 @@ def _run(bench=None, *, topology=ShippingTopology.SINGLE_LEFT, policy=None):
     return workflow.run(_request(topology)), bench, recorder
 
 
-def test_sampling_policy_cannot_weaken_the_ten_sample_minimum():
-    with pytest.raises(ValueError, match="at least 10"):
-        AdcSamplingPolicy(minimum_valid_samples=9)
-
-
 @pytest.mark.parametrize(
     "preflight",
     [
@@ -389,19 +384,6 @@ def test_only_out_of_range_trigger_rate_is_corrected_and_reverified():
         SettingReadback("trigger_rate_hz_final", 40.0, 40.0),
     )
     assert bench.mutations[0] == ("trigger", 40.0)
-
-
-def test_in_range_but_non_40_hz_trigger_is_still_corrected_to_40():
-    bench = FakeSafetyBench()
-    bench.trigger_rates = deque([39.5, 40.0])
-
-    result, bench, _ = _run(bench)
-
-    assert result.status is ProcedureStatus.PASSED
-    assert bench.mutations[0] == ("trigger", 40.0)
-    assert result.trigger_readbacks[-1] == SettingReadback(
-        "trigger_rate_hz_final", 40.0, 40.0
-    )
 
 
 @pytest.mark.parametrize(

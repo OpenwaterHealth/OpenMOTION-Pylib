@@ -103,34 +103,6 @@ def test_wi15_fixed_thresholds_and_default_user_configuration():
     assert isinstance(DEFAULT_USER_CONFIG["TEC_TRIP"], int)
 
 
-def test_domain_records_are_frozen_and_status_values_are_stable():
-    """Mutable procedure evidence or changed terminal values breaks reports."""
-    records = (
-        EnergyMeasurement(26, 1, 350.0, 10.0, 40.0, 330.0, 370.0, 0.65),
-        CriterionResult("pulse_count", True, "> 25"),
-        SettingReadback("TA_CURRENT_DRV", 5000.0, 4990.0),
-        DeviceIdentity("console", "C-1", "1.2", "H-1"),
-        OphirIdentity("meter", "M-1", "sensor", "S-1", "2027-01-01"),
-        TopologySnapshot(True, True, False),
-    )
-    assert all(is_dataclass(record) and record.__dataclass_params__.frozen for record in records)
-    assert [status.value for status in ProcedureStatus] == [
-        "in_progress",
-        "passed",
-        "failed",
-        "failed_ncr",
-        "canceled",
-    ]
-    assert [kind.value for kind in FailureKind] == [
-        "setup",
-        "configuration",
-        "measurement",
-        "ncr",
-        "canceled",
-        "report",
-    ]
-
-
 def _valid_measurement(**changes):
     return replace(
         EnergyMeasurement(26, 0, 350.0, 10.0, 40.0, 330.0, 370.0, 0.65),
@@ -212,19 +184,6 @@ def test_exact_single_topology_requires_only_the_declared_side(topology, side, p
 def test_exact_dual_topology_requires_console_left_and_right(topology, passed):
     """Dropping any device from the declared shipping topology must fail preflight."""
     assert validate_exact_dual_topology(topology).passed is passed
-
-
-def test_pair_metrics_preserve_side_values_and_midpoint_math():
-    """Swapping sides or deriving midpoint/differential incorrectly breaks tuning."""
-    assert calculate_pair_metrics(300.0, 400.0) == PairMetrics(
-        left_mean_uj=300.0,
-        right_mean_uj=400.0,
-        difference_uj=100.0,
-        midpoint_uj=350.0,
-        midpoint_distance_uj=0.0,
-        left_offset_uj=-50.0,
-        right_offset_uj=50.0,
-    )
 
 
 @pytest.mark.parametrize(

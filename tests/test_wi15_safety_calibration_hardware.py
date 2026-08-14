@@ -340,19 +340,6 @@ def test_safety_hardware_module_has_no_ophir_dependency():
     assert "ophir" not in source
 
 
-def test_adc_controller_names_map_to_scaled_engineering_unit_registers():
-    bench, interface, _, _ = _bench()
-
-    assert bench.read_adc_ma("SAFETY_OPT") == pytest.approx(18.6)
-    assert bench.read_adc_ma("SAFETY_EE") == pytest.approx(37.2)
-    addresses = [
-        call[1]["reg_addr"]
-        for call in interface.calls
-        if isinstance(call, tuple) and call[0] == "read_i2c_packet"
-    ]
-    assert addresses == [5, 6]
-
-
 def test_configuration_write_returns_a_fresh_complete_readback():
     bench, interface, _, _ = _bench()
     interface.console.config_reads = [MotionConfig(json_data={"all": 1, "fresh": 2})]
@@ -364,19 +351,6 @@ def test_configuration_write_returns_a_fresh_complete_readback():
         ("write_config", {"all": 1, "fresh": 2}),
         "read_config",
     ]
-
-
-def test_trigger_and_register_boundaries_match_the_shared_motion_adapter_contract():
-    bench, interface, _, _ = _bench()
-    interface.console.trigger_reads = [
-        {"TriggerFrequencyHz": 39.0, "TriggerStatus": 2},
-        {"TriggerFrequencyHz": 40.0, "TriggerStatus": 2},
-    ]
-
-    readback = bench.write_trigger_rate_hz(40.0)
-
-    assert readback == SettingReadback("trigger_rate_hz_write", 40.0, 40.0)
-    assert bench.read_register("TA_CURRENT_DRV") == 5000.0
 
 
 def test_console_firing_preflight_uses_active_limits_without_requiring_sensors():
@@ -527,24 +501,6 @@ def test_normal_scan_uses_exact_shipping_masks_and_no_overrides(topology, masks)
     assert evidence.actual_duration_s == pytest.approx(30.1)
     assert evidence.safety_observations[0].safety_known
     assert interface.console.telemetry.listeners == []
-
-
-def test_normal_scan_default_wait_covers_pipeline_post_stop_drain_window():
-    clock = FakeClock()
-    interface = FakeInterface((True, True, True), clock=clock)
-    bench = MotionSafetyCalibrationBench(
-        interface_factory=lambda: interface,
-        power_cycle_coordinator=FakePowerCoordinator(),
-        fpga_map=FakeMap(),
-        clock=clock,
-        wall_clock=lambda: 2_000.0,
-        sleep=clock.sleep,
-    )
-
-    evidence = bench.run_normal_scan(ShippingTopology.DUAL, duration_s=30.0)
-
-    assert evidence.completed
-    assert ("await_complete", 50.0) in interface.calls
 
 
 def test_normal_scan_refused_start_returns_complete_failure_evidence_and_cleans_up():

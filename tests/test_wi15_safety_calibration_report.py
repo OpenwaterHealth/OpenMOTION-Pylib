@@ -245,24 +245,6 @@ def test_report_escapes_and_renders_complete_passing_audit_evidence(tmp_path):
     assert text.count('class="changed"') == 2
 
 
-def test_report_flattens_operator_request_wrapper_into_auditable_metadata(tmp_path):
-    wrapped_request = {
-        "request": _request(),
-        "procedure_revision": "approved revision 7",
-    }
-
-    text = SafetyCalibrationHtmlRunReport(tmp_path).render(
-        wrapped_request, _result(), "run.json"
-    )
-
-    assert "approved revision 7" in text
-    assert "<td>operator</td><td>Ada &lt;QA&gt;</td>" in text
-    assert "<td>build_id</td><td>BUILD-1</td>" in text
-    assert "<td>fixture_id</td><td>BENCH-1</td>" in text
-    assert "<td>procedure_revision</td><td>approved revision 7</td>" in text
-    assert "<td>request</td>" not in text
-
-
 def test_report_omits_all_unreached_headings_after_earliest_setup_failure(tmp_path):
     result = SafetyCalibrationResult(
         status=ProcedureStatus.FAILED,

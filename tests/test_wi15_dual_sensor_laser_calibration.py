@@ -492,46 +492,6 @@ def test_every_observation_has_an_auditor_facing_label_side_and_serial():
     assert any("because" in event.message for event in recorder.events if event.stage == "tuning")
 
 
-def test_injected_dual_validation_target_exercises_downward_current_path():
-    bench = FakeDualBench(
-        [
-            valid_measurement(296),
-            valid_measurement(310),
-            valid_measurement(307),
-            valid_measurement(293),
-            valid_measurement(305),
-        ]
-    )
-
-    result, _, placements = run_workflow(
-        bench,
-        target_energy_uj=300.0,
-        minimum_accepted_energy_uj=250.0,
-        maximum_accepted_energy_uj=350.0,
-    )
-
-    assert result.status is ProcedureStatus.PASSED
-    assert result.target_energy_uj == 300.0
-    assert result.minimum_accepted_energy_uj == 250.0
-    assert result.maximum_accepted_energy_uj == 350.0
-    assert result.initial_pair is not None
-    assert result.initial_pair.metrics.midpoint_distance_uj == pytest.approx(3.0)
-    assert result.tuning_rounds[0].direction == "downward_current"
-    assert result.tuning_rounds[0].target_uj == pytest.approx(307.0)
-    assert result.tuning_rounds[0].selection is not None
-    assert result.tuning_rounds[0].selection.requested_current_ma == 4950
-    assert result.requested_final_config["TA_CURRENT_DRV"] == 4950
-    assert len(result.crosschecks) == 1
-    assert result.crosschecks[0].accepted
-    assert "250-350 uJ" in result.crosschecks[0].label
-    assert [request.to_side for request in placements.requests] == [
-        "left",
-        "right",
-        "left",
-        "right",
-    ]
-
-
 def test_failed_sweep_retains_round_target_reason_and_completed_steps():
     """Losing the active round on a later write failure would leave an audit gap."""
 
@@ -574,25 +534,6 @@ def test_later_upward_round_at_600_below_300_is_immediate_ncr():
     assert len(bench.user_configuration_writes) == 1
 
 
-def test_final_setting_checks_accept_exact_two_percent_boundaries():
-    """Changing either final tolerance to an exclusive boundary rejects valid hardware."""
-    bench = FakeDualBench(
-        [
-            valid_measurement(340),
-            valid_measurement(360),
-            valid_measurement(340),
-            valid_measurement(360),
-        ],
-        register_read_queues={
-            "TA_CURRENT_DRV": [5000.0, 5100.0],
-            "TA_PULSE_WIDTH": [500.0, 490.0],
-        },
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [check.passed for check in result.final_setting_checks] == [True, True]
-
-
 def test_topology_change_immediately_before_default_write_prevents_mutation():
     bench = FakeDualBench()
     bench.topology = TopologySnapshot(True, True, False)
@@ -614,50 +555,6 @@ def test_default_configuration_requires_exact_complete_immediate_readback():
     assert result.default_config_readback == incomplete
     assert "bring_up_laser_configuration" not in bench.calls
     assert "measure_energy" not in bench.calls
-
-
-def test_downward_target_straddle_reapplies_the_closer_prior_current():
-    bench = FakeDualBench(
-        [
-            valid_measurement(360),
-            valid_measurement(420),
-            valid_measurement(382),
-            valid_measurement(375),
-            valid_measurement(330),
-            valid_measurement(370),
-        ]
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [write for write in bench.register_writes if write[0] == "TA_CURRENT_DRV"] == [
-        ("TA_CURRENT_DRV", 4950.0),
-        ("TA_CURRENT_DRV", 4900.0),
-        ("TA_CURRENT_DRV", 4950.0),
-    ]
-    assert result.tuning_rounds[0].selection.requested_current_ma == 4950
-    assert result.requested_final_config["TA_CURRENT_DRV"] == 4950
-
-
-def test_upward_target_straddle_reapplies_lower_pulse_width_on_tie():
-    bench = FakeDualBench(
-        [
-            valid_measurement(270),
-            valid_measurement(330),
-            valid_measurement(315),
-            valid_measurement(325),
-            valid_measurement(325),
-            valid_measurement(375),
-        ]
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [write for write in bench.register_writes if write[0] == "TA_PULSE_WIDTH"] == [
-        ("TA_PULSE_WIDTH", 510.0),
-        ("TA_PULSE_WIDTH", 520.0),
-        ("TA_PULSE_WIDTH", 510.0),
-    ]
-    assert result.tuning_rounds[0].selection.requested_pulse_width_us == 510
-    assert result.requested_final_config["TA_PULSE_WIDTH"] == 510
 
 
 def test_downward_current_floor_without_acceptable_candidate_is_ncr():

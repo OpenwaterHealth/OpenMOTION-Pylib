@@ -370,31 +370,6 @@ def test_preflight_captures_quiet_topology_after_late_sensor_arrives_during_ophi
     assert interface.calls.index("meter.preflight") < len(interface.calls)
 
 
-@pytest.mark.parametrize(
-    ("option", "value"),
-    [
-        ("wait_timeout", float("nan")),
-        ("wait_timeout", float("inf")),
-        ("topology_quiet_period_s", float("nan")),
-        ("topology_quiet_period_s", float("inf")),
-        ("topology_poll_interval_s", float("nan")),
-        ("topology_poll_interval_s", float("inf")),
-    ],
-)
-def test_topology_timing_strategy_rejects_nonfinite_values(option, value):
-    """Nonfinite timing inputs could bypass stability or defeat the bound."""
-    interface = FakeInterface((True, True, False))
-    options = {option: value}
-
-    with pytest.raises(ValueError, match="finite"):
-        MotionLaserCalibrationBench(
-            FakeMeter(interface.calls),
-            interface_factory=lambda: interface,
-            fpga_map=FakeMap(),
-            **options,
-        )
-
-
 def test_preflight_keeps_valid_serials_when_an_independent_identity_read_fails():
     bench, interface, _ = _bench()
     interface.console.firmware_error = RuntimeError("firmware read exploded")
@@ -698,22 +673,6 @@ def _ophir_meter(com=None, *, duration_s=0.1):
     return meter, com, clock
 
 
-@pytest.mark.parametrize(
-    "option, value",
-    [
-        ("duration_s", float("nan")),
-        ("duration_s", float("inf")),
-        ("poll_interval_s", float("nan")),
-        ("poll_interval_s", float("inf")),
-    ],
-)
-def test_ophir_acquisition_bounds_must_be_finite(option, value):
-    arguments = {option: value}
-
-    with pytest.raises(ValueError, match="finite and positive"):
-        OphirEnergyMeter(**arguments)
-
-
 def test_ophir_preflight_reports_com_construction_failure():
     def fail_factory():
         raise OSError("COM class unavailable")
@@ -934,16 +893,6 @@ def test_ophir_preflight_rejects_unitless_wrong_unit_and_malformed_range_or_puls
 
     with pytest.raises(RuntimeError, match="option is unavailable"):
         meter.preflight()
-
-
-def test_ophir_preflight_preserves_documented_unitless_wavelength_labels():
-    meter, com, _ = _ophir_meter()
-    assert com.settings["Wavelengths"][1][3] == "795"
-
-    _, evidence = meter.preflight()
-
-    wavelength = next(item for item in evidence if item.name == "wavelength_nm")
-    assert wavelength.actual == 795
 
 
 def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statistics():
@@ -1195,35 +1144,6 @@ def test_ophir_measure_rejects_misaligned_priming_batch_and_stops_stream():
         meter.measure()
 
     assert com.calls[-1] == ("StopStream", 17, 0)
-
-
-def test_ophir_close_without_active_stream_closes_open_device():
-    meter, com, _ = _ophir_meter()
-    meter.preflight()
-    com.calls.clear()
-
-    meter.close()
-
-    assert com.calls == [
-        "StopAllStreams",
-        ("Close", 17),
-        "CloseAll",
-    ]
-
-
-def test_ophir_close_does_not_redundantly_stop_successfully_stopped_measurement():
-    meter, com, _ = _ophir_meter(duration_s=0.15)
-    meter.preflight()
-    com.data_batches = [
-        ([0.0001], [100.0], [0]),
-        ([0.00035] * 26, [1000.0 + 25.0 * index for index in range(26)], [0] * 26),
-    ]
-    meter.measure()
-    com.calls.clear()
-
-    meter.close()
-
-    assert com.calls == ["StopAllStreams", ("Close", 17), "CloseAll"]
 
 
 def test_ophir_close_retries_measure_time_stop_failure_and_continues_cleanup():

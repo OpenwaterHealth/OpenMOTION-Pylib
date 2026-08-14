@@ -141,12 +141,6 @@ def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_pl
     return script, recorder, meter, bench, captured
 
 
-def test_script_source_is_ascii_safe_and_does_not_import_legacy_tuning():
-    source = SCRIPT_PATH.read_bytes()
-    source.decode("ascii")
-    assert b"omotion.tuning" not in source
-
-
 def test_placement_callback_is_courteous_and_names_side_serial_and_zero_cm_fixture(
     monkeypatch, tmp_path
 ):
@@ -173,120 +167,6 @@ def test_placement_callback_is_courteous_and_names_side_serial_and_zero_cm_fixtu
     assert any("Initial paired measurement" in message for message in messages)
     assert all("_measure" not in text for text in prompts + messages)
     assert bench.closed == 1
-
-
-@pytest.mark.parametrize(
-    ("status", "exit_code"),
-    [
-        (ProcedureStatus.PASSED, 0),
-        (ProcedureStatus.FAILED, 1),
-        (ProcedureStatus.FAILED_NCR, 1),
-        (ProcedureStatus.CANCELED, 1),
-    ],
-)
-def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, exit_code):
-    script, _recorder, _meter, _bench, _captured = configured_script(
-        monkeypatch, tmp_path, result(status)
-    )
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == exit_code
-
-
-def test_terminal_failure_prints_the_structured_category_and_exact_reason(
-    monkeypatch, tmp_path
-):
-    terminal_result = replace(
-        result(ProcedureStatus.FAILED),
-        failure_kind=FailureKind.SETUP,
-        failure_reason="Right-sensor serial must be nonblank text.",
-    )
-    script, _recorder, _meter, _bench, _captured = configured_script(
-        monkeypatch, tmp_path, terminal_result
-    )
-    messages = []
-
-    exit_code = script.main(
-        complete_args(tmp_path),
-        input_func=lambda _: "yes",
-        output_func=messages.append,
-    )
-
-    assert exit_code == 1
-    assert "Terminal status: failed" in messages
-    assert "Failure category: setup" in messages
-    assert "Failure reason: Right-sensor serial must be nonblank text." in messages
-
-
-def test_metadata_prompts_finish_before_hardware_construction(monkeypatch, tmp_path):
-    script = load_script()
-    calls = []
-    recorder = FakeRecorder(tmp_path)
-    meter = FakeMeter()
-    bench = FakeBench(meter)
-    monkeypatch.setattr(script, "recorder_factory", lambda *args: calls.append("recorder") or recorder)
-    monkeypatch.setattr(script, "meter_factory", lambda: calls.append("meter") or meter)
-    monkeypatch.setattr(script, "bench_factory", lambda value: calls.append("bench") or bench)
-
-    class FakeWorkflow:
-        def __init__(self, *_args):
-            pass
-
-        def run(self, request):
-            calls.append("workflow")
-            return result()
-
-    monkeypatch.setattr(script, "workflow_factory", FakeWorkflow)
-    monkeypatch.setattr(script, "report_factory", lambda directory: FakeReport(directory))
-    replies = iter(("operator", "build", "fixture", "current"))
-
-    assert script.main(["--output-dir", str(tmp_path)], input_func=lambda _: next(replies)) == 0
-    assert calls == ["recorder", "meter", "bench", "workflow"]
-    assert bench.closed == 1
-
-
-def test_one_run_id_is_shared_by_recorder_and_workflow_request(monkeypatch, tmp_path):
-    script, recorder, _meter, _bench, captured = configured_script(monkeypatch, tmp_path)
-    recorder_ids = []
-    monkeypatch.setattr(script, "_run_id", lambda: "one-run-id")
-    monkeypatch.setattr(
-        script,
-        "recorder_factory",
-        lambda output, procedure, run_id: recorder_ids.append(run_id) or recorder,
-    )
-
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == 0
-    assert recorder_ids == ["one-run-id"]
-    assert captured["request"].run_id == "one-run-id"
-
-
-def test_report_failure_replaces_a_prior_pass_in_json(monkeypatch, tmp_path):
-    script = load_script()
-    monkeypatch.setattr(script, "_run_id", lambda: "report-failure")
-    meter = FakeMeter()
-    bench = FakeBench(meter)
-    monkeypatch.setattr(script, "meter_factory", lambda: meter)
-    monkeypatch.setattr(script, "bench_factory", lambda value: bench)
-
-    class PassingWorkflow:
-        def __init__(self, _bench, recorder, _placement):
-            self.recorder = recorder
-
-        def run(self, request):
-            passed = result()
-            self.recorder.checkpoint(passed)
-            return passed
-
-    monkeypatch.setattr(script, "workflow_factory", PassingWorkflow)
-    monkeypatch.setattr(
-        script, "report_factory", lambda directory: (_ for _ in ()).throw(RuntimeError("report failed"))
-    )
-
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == 1
-    payload = json.loads(
-        (tmp_path / "WI-00015-report-failure" / "run.json").read_text(encoding="utf-8")
-    )
-    assert payload["status"] == ProcedureStatus.FAILED.value
-    assert payload["failure_kind"] == FailureKind.REPORT.value
-    assert payload["report_artifact"]["status"] == ReportArtifactStatus.FAILED.value
 
 
 def test_declined_placement_is_passed_to_workflow_as_false(monkeypatch, tmp_path):

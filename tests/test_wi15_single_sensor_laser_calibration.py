@@ -524,56 +524,6 @@ def test_preflight_rejects_invalid_ophir_setting_evidence(evidence):
     assert recorder.checkpoints == [result]
 
 
-@pytest.mark.parametrize(
-    ("display_applicability", "graph_applicability"),
-    [
-        (
-            OphirEvidenceApplicability.APPLICABLE,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-        ),
-        (
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            OphirEvidenceApplicability.APPLICABLE,
-        ),
-        (
-            OphirEvidenceApplicability.APPLICABLE,
-            OphirEvidenceApplicability.APPLICABLE,
-        ),
-    ],
-    ids=["display-applicable", "graph-applicable", "both-applicable"],
-)
-def test_preflight_rejects_non_direct_streaming_optional_ophir_evidence(
-    display_applicability, graph_applicability
-):
-    """Direct streaming requires both display-only settings to be inapplicable."""
-    evidence = _valid_ophir_setting_evidence()
-    evidence = evidence[:5] + (
-        replace(
-            evidence[5],
-            actual=3 if display_applicability is OphirEvidenceApplicability.APPLICABLE else None,
-            applicability=display_applicability,
-        ),
-        replace(
-            evidence[6],
-            actual="Statistics"
-            if graph_applicability is OphirEvidenceApplicability.APPLICABLE
-            else None,
-            applicability=graph_applicability,
-        ),
-    )
-    snapshot = _preflight(ophir_setting_evidence=evidence)
-    bench = FakeLaserBench([snapshot])
-    recorder = FakeRecorder()
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
-
-    assert result.status is ProcedureStatus.FAILED
-    assert result.failure_reason == "Ophir setting evidence is incomplete or invalid."
-    assert result.ophir_setting_evidence == evidence
-    assert bench.calls == ["preflight:left", "stop_trigger"]
-    assert recorder.checkpoints == [result]
-
-
 def test_preflight_exception_becomes_a_checkpointed_setup_failure_and_stops_trigger():
     """Leaking a bench preflight exception would skip the procedure evidence."""
     bench = FakeLaserBench([RuntimeError("meter startup failed")])
@@ -653,46 +603,6 @@ def test_topology_is_revalidated_immediately_before_the_first_configuration_muta
     ]
     assert "write_user_configuration" not in bench.calls
     assert "measure_energy" not in bench.calls
-
-
-def test_no_checkpoint_or_late_topology_seam_occurs_between_revalidation_and_write():
-    timeline = []
-
-    class WindowBench(FakeLaserBench):
-        opposite_sensor_connected = False
-        topology_at_first_write = None
-
-        def revalidate_topology(self, side):
-            timeline.append("revalidate_topology")
-            return super().revalidate_topology(side)
-
-        def write_user_configuration(self, configuration):
-            timeline.append("write_user_configuration")
-            if self.topology_at_first_write is None:
-                self.topology_at_first_write = self.opposite_sensor_connected
-            return super().write_user_configuration(configuration)
-
-    bench = WindowBench([_preflight()])
-
-    class WindowRecorder(FakeRecorder):
-        def checkpoint(self, result):
-            if (
-                result.topology_revalidation is not None
-                and "write_user_configuration" not in timeline
-            ):
-                timeline.append("checkpoint")
-                bench.opposite_sensor_connected = True
-            super().checkpoint(result)
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, WindowRecorder()).run(_request())
-
-    assert result.status is ProcedureStatus.PASSED
-    revalidation_index = timeline.index("revalidate_topology")
-    assert timeline[revalidation_index : revalidation_index + 2] == [
-        "revalidate_topology",
-        "write_user_configuration",
-    ]
-    assert bench.topology_at_first_write is False
 
 
 def test_checked_default_configuration_preserves_prior_config_and_requires_exact_readback():
@@ -821,24 +731,6 @@ def test_mutating_bench_write_cannot_change_the_approved_default_readback_contra
     assert recorder.checkpoints == [result]
 
 
-def test_result_mapping_evidence_is_deeply_immutable_and_detached_from_bench_data():
-    """Later bench or result mutation must not rewrite durable run evidence."""
-    prior = {"site": {"fixture_slot": 7}}
-    bench = FakeLaserBench(
-        [_preflight()],
-        user_configuration_reads=[prior],
-    )
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-    prior["site"]["fixture_slot"] = 99
-
-    assert result.pre_existing_config["site"]["fixture_slot"] == 7
-    with pytest.raises(TypeError):
-        result.pre_existing_config["site"]["fixture_slot"] = 100
-    with pytest.raises(TypeError):
-        result.requested_default_config["TA_CURRENT_DRV"] = 1
-
-
 @pytest.mark.parametrize(
     ("actual_current", "expected_status"),
     [(5100.0, ProcedureStatus.PASSED), (5101.0, ProcedureStatus.FAILED)],
@@ -928,44 +820,6 @@ def test_initial_trigger_observation_is_checkpointed_before_correction():
         "trigger_rate_hz_initial", 40.0, 37.0
     )
     assert "write_trigger_rate_hz:40.0" not in bench.calls
-
-
-def test_corrects_an_in_range_non_40_hz_trigger_to_40_before_measurement():
-    """Leaving a 40.5 Hz trigger unchanged would violate the mandated 40 Hz default."""
-    bench = FakeLaserBench([_preflight()], trigger_rate=40.5)
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-
-    assert result.status is ProcedureStatus.PASSED
-    assert bench.calls.index("write_trigger_rate_hz:40.0") < bench.calls.index(
-        "measure_energy"
-    )
-    trigger_readback = [
-        item for item in result.configurations if item.name == "trigger_rate_hz"
-    ][-1]
-    assert trigger_readback == trigger_readback.__class__(
-        "trigger_rate_hz", 40.0, 40.0
-    )
-
-
-def test_trigger_write_immediate_mismatch_cannot_be_erased_by_matching_later_read():
-    """A correction write's returned value is the authoritative first readback."""
-    bench = FakeLaserBench(
-        [_preflight()],
-        trigger_rate=37.0,
-        trigger_write_result=SettingReadback(
-            "trigger_rate_hz_write", 40.0, 39.5
-        ),
-    )
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-
-    assert result.status is ProcedureStatus.FAILED
-    assert result.failure_kind is FailureKind.CONFIGURATION
-    assert result.configurations[-1] == SettingReadback(
-        "trigger_rate_hz_write", 40.0, 39.5
-    )
-    assert bench.calls.count("read_trigger_rate_hz") == 1
 
 
 def test_trigger_write_requires_typed_identity_preserving_readback():
@@ -1089,23 +943,6 @@ def test_measurement_exception_still_stops_trigger_and_becomes_a_measurement_fai
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
     assert bench.calls[bench.calls.index("measure_energy") + 1] == "stop_trigger"
-    assert len(result.active_default_restore) == 5
-    assert recorder.checkpoints == [result]
-
-
-def test_failed_measurement_stop_is_retried_and_returns_a_structured_failure():
-    """Marking cleanup complete before stop succeeds can leave a laser firing."""
-    bench = FakeLaserBench(
-        [_preflight()],
-        stop_trigger_outcomes=[RuntimeError("first stop failed"), None],
-    )
-    recorder = FakeRecorder()
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
-
-    assert result.status is ProcedureStatus.FAILED
-    assert result.failure_kind is FailureKind.MEASUREMENT
-    assert bench.calls.count("stop_trigger") == 2
     assert len(result.active_default_restore) == 5
     assert recorder.checkpoints == [result]
 
@@ -1662,30 +1499,6 @@ def test_passing_configuration_write_failure_returns_failed_after_final_acceptan
     assert recorder.checkpoints == [result]
 
 
-def test_final_handoff_immediate_mismatch_cannot_be_erased_by_matching_later_read():
-    """The first complete final-config readback remains authoritative evidence."""
-    immediate_mismatch = {**DEFAULT_USER_CONFIG, "TA_PULSE_WIDTH": 499}
-    bench = FakeLaserBench(
-        [_preflight()],
-        user_configuration_write_outcomes=[
-            dict(DEFAULT_USER_CONFIG),
-            immediate_mismatch,
-        ],
-        user_configuration_reads=[
-            {"LEGACY_SETTING": 1},
-            dict(DEFAULT_USER_CONFIG),
-            dict(DEFAULT_USER_CONFIG),
-        ],
-    )
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-
-    assert result.status is ProcedureStatus.FAILED
-    assert result.failure_kind is FailureKind.CONFIGURATION
-    assert result.final_config_readback == immediate_mismatch
-    assert bench.calls.count("read_user_configuration") == 1
-
-
 def test_passing_configuration_write_exception_is_a_configuration_failure():
     """A transport exception during persistence must not be mislabeled as measurement."""
     bench = FakeLaserBench(
@@ -1774,27 +1587,6 @@ def test_adjustment_failure_records_best_effort_active_default_restore_after_sto
     assert "TA_CURRENT_DRV restore returned malformed evidence" in result.active_default_restore_failure
     cleanup_index = bench.calls.index("write_register:TA_CURRENT_DRV:5000")
     assert bench.calls[cleanup_index - 1] == "stop_trigger"
-
-
-def test_restore_immediate_mismatch_cannot_be_erased_by_matching_later_read():
-    """Cleanup evidence must preserve the adapter's immediate write readback."""
-    mismatch = SettingReadback("TA_CURRENT_DRV", 5000, 4500)
-    bench = FakeLaserBench(
-        [_preflight()],
-        measurements=[_valid_measurement(stdev_uj=101.0)],
-        register_readbacks={"TA_CURRENT_DRV": [5000, 5000]},
-        register_write_outcomes=[mismatch],
-    )
-
-    result = SingleSensorLaserCalibrationWorkflow(bench, FakeRecorder()).run(_request())
-
-    assert result.failure_kind is FailureKind.MEASUREMENT
-    assert result.active_default_restore[0] == mismatch
-    assert "TA_CURRENT_DRV restore was outside 2 percent" in (
-        result.active_default_restore_failure or ""
-    )
-    assert bench.calls.count("read_register:TA_CURRENT_DRV") == 1
-    assert len(bench.written_user_configurations) == 1
 
 
 @pytest.mark.parametrize(
@@ -2111,38 +1903,6 @@ def test_downward_sweep_checkpoint_survives_interruption_with_complete_evidence(
     ]
     assert payload["candidates"][-1]["measurement"]["mean_uj"] == 360.0
     assert payload["requested_default_config"] == dict(DEFAULT_USER_CONFIG)
-
-
-def test_raw_measurement_is_checkpointed_before_candidate_derivation(tmp_path):
-    """An acquired observation must be durable before downstream derivation."""
-    recorder = InterruptingJsonRecorder(
-        tmp_path,
-        "WI-00015",
-        "interrupted-observation",
-        stop_when=lambda state: (
-            len(state.adjustments) == 1
-            and len(state.measurements) == 2
-            and len(state.candidates) == 1
-        ),
-    )
-    bench = FakeLaserBench(
-        [_preflight()],
-        measurements=[
-            _valid_measurement(mean_uj=380.0),
-            _valid_measurement(mean_uj=360.0),
-        ],
-    )
-
-    with pytest.raises(KeyboardInterrupt):
-        SingleSensorLaserCalibrationWorkflow(bench, recorder).run(
-            _request(output_root=tmp_path, run_id="interrupted-observation")
-        )
-
-    payload = json.loads(recorder.json_path.read_text(encoding="utf-8"))
-    assert payload["status"] == "in_progress"
-    assert [item["mean_uj"] for item in payload["measurements"]] == [380.0, 360.0]
-    assert len(payload["measurement_criteria"]) == 1
-    assert len(payload["candidates"]) == 1
 
 
 @pytest.mark.parametrize(

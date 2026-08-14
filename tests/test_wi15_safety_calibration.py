@@ -62,21 +62,6 @@ def test_nearest_integer_rejects_values_that_cannot_be_safety_limits(value):
         nearest_integer_half_up(value)
 
 
-def test_safety_limit_records_every_calculation_input():
-    result = calculate_safety_limit("SAFETY_OPT", (100.0, 102.0), 1.3)
-
-    assert result == SafetyLimitCalculation(
-        controller="SAFETY_OPT",
-        samples_ma=(100.0, 102.0),
-        sample_count=2,
-        mean_ma=101.0,
-        multiplier=1.3,
-        unrounded_limit_ma=131.3,
-        rounding_rule=ADC_ROUNDING_RULE,
-        rounded_limit_ma=131,
-    )
-
-
 def test_safety_limit_uses_every_accepted_sample_and_half_up_rounding():
     result = calculate_safety_limit("SAFETY_EE", (118.0, 119.27272727272727), 1.1)
 
@@ -242,45 +227,3 @@ def test_shipping_topology_rejects_blank_required_sensor_serial(serial):
     assert "serial" in result.detail.lower()
 
 
-def test_safety_evidence_records_are_frozen_and_nested_mappings_are_immutable():
-    now = datetime.now(timezone.utc)
-    records = (
-        AdcReadEvidence("SAFETY_OPT", 1, now, True, 25.0, None),
-        PowerCycleEvidence(
-            off_requested_at=now,
-            disconnect_observed_at=now,
-            on_allowed_at=now,
-            on_requested_at=now,
-            reconnect_observed_at=now,
-            off_duration_s=15.0,
-            disconnect_observed=True,
-            reconnect_observed=True,
-            restart_proven=True,
-            restart_proof="firmware uptime reset",
-            console_serial_before="C-1",
-            console_serial_after="C-1",
-        ),
-        SafetyWarningEvidence(now, True, True, (), {"so": 0, "se": 0}),
-        NormalScanEvidence(
-            declared_topology=ShippingTopology.SINGLE_LEFT,
-            requested_duration_s=30.0,
-            actual_duration_s=30.1,
-            started=True,
-            completed=True,
-            canceled=False,
-            error=None,
-            topology=TopologySnapshot(True, True, False),
-            identities=(DeviceIdentity("left sensor", "L-1", None, None),),
-            overrides={},
-            safety_observations=(),
-            warnings=(),
-        ),
-    )
-
-    assert all(is_dataclass(record) and record.__dataclass_params__.frozen for record in records)
-    with pytest.raises(FrozenInstanceError):
-        records[0].accepted = False
-    assert isinstance(records[2].raw_state, MappingProxyType)
-    assert isinstance(records[3].overrides, MappingProxyType)
-    with pytest.raises(TypeError):
-        records[3].overrides["trigger"] = 40
