@@ -38,6 +38,19 @@ Evidence lands under `--output-dir` (default: `wi15_out` in the current
 directory). The test-app's Procedures pane runs these same modules as
 subprocesses and passes `--output-dir` explicitly.
 
+## Required equipment and connections per procedure
+
+| Procedure | Console | Sensor modules | Ophir meter | Static phantom |
+|---|---|---|---|---|
+| Single-Sensor Laser | required | exactly the selected side | required, in the 0 cm fixture | no |
+| Dual-Sensor Laser | required | both left and right | required, in the 0 cm fixture | no |
+| Safety | required | not used (may be attached or absent) | no | no |
+| Measurement (one sensor) | required | the selected side | **never** - module on the phantom | required, with weight |
+
+No beam-containment fixture is required by the process. For the laser
+procedures, StarLab must be installed (Ophir drivers/COM) but closed while
+the procedure runs.
+
 The safety script is console-side only: it requires a connected, responsive
 console and nothing else. It asks no topology question - sensor modules may
 be attached or absent, they are not used, and the production-scan stage is

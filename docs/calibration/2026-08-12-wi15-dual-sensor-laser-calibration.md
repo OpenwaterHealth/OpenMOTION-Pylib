@@ -56,10 +56,14 @@ change from the left module to the right module or from the right module to
 the left module, but does not own the tuning calculations. Consecutive
 measurements of the same seated module do not repeat the placement prompt.
 
-Shared SDK code receives explicit declared sides, motion interface/session,
-Ophir adapter, configuration store, measurement settings, state/report sink,
-progress/cancellation callbacks, and an injected placement-change
-acknowledgement callback. It must not call `input()`.
+Shared SDK code receives one bench adapter (owning the Motion session,
+Ophir meter, and configuration I/O - the dual topology is implicit in the
+dual bench protocol), a run recorder, an injected placement-change
+acknowledgement callback, and the target/acceptance energies. It must not
+call `input()`. There are no progress or cancellation callbacks: a decline,
+non-boolean answer, or interrupt raised from the placement callback cancels
+the run, and interactive callers (the test-app Procedures pane) run the
+operator script as a subprocess.
 
 It returns a structured outcome containing the initial pair, differential,
 tuning choices, cross-checks, final settings, terminal disposition, and
@@ -70,17 +74,38 @@ that states the phase, sensor side, reason, requested action, and result when
 applicable. Internal method names and terse event codes may appear in JSON
 field names, but they are not sufficient operator or report labels.
 
+The following label style is normative (recovered from the 2026-08-13
+implementation design):
+
+- `Initial paired measurement - left sensor`
+- `Initial differential gate - accepted at 100 uJ or below`
+- `Midpoint adjustment round 1 - selected right sensor because it had the
+  lower energy reading`
+- `Adjustment step 2 - increased pulse width from 410 us to 420 us`
+- `Cross-check 1 - paired result: both sensors within the approved
+  300-400 uJ range`
+- `Final configuration verification - active current within +/-2% of the
+  requested value`
+
+Labels must not rely on method names such as `_measure_once`, terse codes
+such as `adj_2`, or unexplained register names; register names remain present
+as technical evidence alongside a plain-language explanation. Placement
+acknowledgements are courteous and precise, naming the side and serial, for
+example: "Please place the left sensor module (serial 12345) in the Ophir
+0 cm fixture. Confirm when it is securely seated."
+
 ## 5. Preconditions and fail-closed preflight
 
 Before configuration mutation or laser action:
 
-1. the console, left sensor, and right sensor must be connected and
-   responsive;
+1. the console must be connected and responsive (command echo round-trip);
+   the left and right sensors must be connected with readable serials;
 2. console, left, and right serial numbers must be non-`None` and non-empty;
-3. console firmware and hardware ID plus complete TA, Seed, Safety EE, and
-   Safety OPT FPGA major/minor/revision values must be read; the four semantic
-   FPGA revisions are stored in the console identity, while sensor-camera FPGA
-   revision fields are omitted from the human report;
+3. the TA, Seed, Safety EE, and Safety OPT FPGA major/minor/revision values
+   must all be read (fail-closed) and are stored in the console identity;
+   console firmware and hardware ID are read best-effort and may record as
+   unavailable; sensor-camera FPGA revision fields are omitted from the
+   human report;
 4. Ophir COM instantiation, scan, open, energy-sensor presence, identity, and
    calibration-due reads must pass; and
 5. all Ophir settings and readbacks in the process addendum must pass.
@@ -93,7 +118,9 @@ not reinterpreted as a one-sensor unit.
 1. Read and preserve the complete existing User Configuration.
 2. Write exactly the ten-key default object in the process addendum.
 3. Require successful SDK write and exact complete readback.
-4. Bring up and verify active TA pulse width, TA current, seed value, and 40
+4. Bring up the laser configuration and verify five active registers within
+   the 2 percent tolerance - `TA_CURRENT_DRV`, `TA_PULSE_WIDTH`,
+   `SEED_CW_GAIN`, `EE_PULSE_WIDTH_UL`, and `OPT_PULSE_WIDTH_UL` - plus 40
    Hz trigger frequency.
 5. Correct only trigger frequency if needed; fail on another required
    operating mismatch.
@@ -146,8 +173,9 @@ For every tuning round, use the latest valid left/right pair.
    selected module.
 6. Continue until the selected measurement reaches/crosses its expected
    target or the conservative current floor is reached.
-7. If adjacent permitted settings straddle the target, select the one whose
-   measurement is closest, then reapply/read back it if necessary.
+7. Select the recorded setting (including the starting one) whose valid
+   measured mean is closest to the target - ties break toward the lower
+   setting - then reapply/read back it if necessary.
 8. Reaching the current floor without an acceptable reachable setting is a
    terminal NCR.
 
@@ -163,16 +191,20 @@ For every tuning round, use the latest valid left/right pair.
    selected module.
 7. Continue until the selected measurement reaches/crosses its expected
    target or TA pulse width reaches 600 microseconds.
-8. If adjacent permitted settings straddle the target, select the closer one
-   and reapply/read back it if necessary.
-9. At 600 microseconds, a selected measurement below 300 is an immediate
-   terminal NCR.
+8. Select the recorded setting (including the starting one) whose valid
+   measured mean is closest to the target - ties break toward the lower
+   setting - and reapply/read back it if necessary.
+9. At 600 microseconds, a selected measurement below the acceptance
+   minimum (300 in production; the comparison follows an injected window)
+   is an immediate terminal NCR.
 
-### 9.3 Midpoint at 350 or no improving discrete step
+### 9.3 Midpoint at 350
 
-Do not alter the setting when the midpoint is exactly 350 or when the current
-discrete setting is already the closest permitted setting. Continue to a
-complete cross-check.
+Do not alter the setting when the midpoint is exactly 350; continue directly
+to a complete cross-check. In every other case the sweep takes at least one
+approved step; if the sweep then shows the starting setting was closest to
+the target, the closest-setting selection re-applies it, and the recorded
+evidence shows both the step and the re-selection.
 
 Before the first tuning measurement of the selected module, request a
 placement change only when that selected side differs from the side currently
@@ -218,7 +250,8 @@ After a passing cross-check:
    pulse-width limits of 660 when upward pulse tuning was used (otherwise
    550);
 5. require successful write and exact immediate complete readback; and
-6. mark that readback as the authoritative input to Safety Calibration.
+6. that recorded readback (`final_config_readback`) is the authoritative
+   input to Safety Calibration; no separate flag marks it.
 
 Both energy bounds and the readback-tolerance bounds are inclusive.
 Dual-Sensor Laser Calibration does not power-cycle; Safety Calibration owns
@@ -228,8 +261,10 @@ final safety-limit calculation and persistence verification.
 
 Topology, identity, Ophir, default configuration, measurement-quality,
 initial differential, adjustment bound, third cross-check, or readback
-failure returns nonzero with an exact reason. Energy, differential,
-adjustment-bound, and third-cross-check failures are NCR dispositions.
+failure returns nonzero with an exact reason. The initial differential,
+adjustment-bound, and third-cross-check failures are NCR dispositions;
+measurement-quality failures are procedural failures (an out-of-range final
+energy is only reachable through the third-cross-check NCR).
 
 After terminal NCR, no final tuned/safety configuration write or later guided
 phase may execute. The required earlier default write remains recorded. The
@@ -237,7 +272,10 @@ guided runner has no continue-anyway path.
 
 ## 13. Report evidence
 
-In addition to common report requirements, record:
+Record (the request-metadata table carries the common operator, build
+revision, fixture, and procedure-revision evidence; build revision and
+fixture calibration status are CLI-only per the 2026-08-13 ruling and may
+record as `unspecified`/unset):
 
 - exact declared and actual dual topology;
 - all four console-board FPGA firmware revisions;
@@ -251,7 +289,8 @@ In addition to common report requirements, record:
 - each pair's differential, midpoint, distance from 350, and asymmetry;
 - final 300/400 and 2 percent results;
 - passing tuned configuration and exact immediate readback;
-- highlighted default-versus-final changes; and
+- highlighted default-versus-final changes;
+- resource-cleanup and report-artifact finalization evidence; and
 - terminal outcome and NCR reason.
 
 ## 14. Automated tests
@@ -267,7 +306,8 @@ Unit tests cover:
 - above-midpoint higher-side selection and current stepping;
 - below-midpoint lower-side selection and pulse stepping;
 - target-straddling closest-setting selection;
-- no-improvement/no-adjustment behavior;
+- exact-350 midpoint proceeding straight to cross-check (pinned by the
+  four-measurement pass-shape tests);
 - first-, second-, and third-cross-check pass;
 - failure immediately after cross-check three;
 - invalid partial cross-check behavior;
@@ -282,27 +322,44 @@ Unit tests cover:
 - descriptive operator/report labels for initial measurements, tuning
   rationale, adjustment steps, cross-check results, and final verification.
 
-## 15. Future TestApp integration
+## 15. TestApp integration
 
-This procedure maps to one future TestApp button. The TestApp provides swap
-prompts and progress presentation but calls the same shared implementation.
-It may not duplicate or relax topology, differential, tuning, cross-check, or
-failure logic.
+The test-app Procedures pane runs this procedure today by executing the
+operator script as a subprocess (uniform terminal/stdin contract; the swap
+prompts render as answer buttons). The pane supplies no calibration logic of
+its own and may not duplicate or relax topology, differential, tuning,
+cross-check, or failure logic.
 
 ## 16. Implementation mapping and verification
+
+Design rationale (recovered from the 2026-08-13 implementation design): the
+dual procedure is a separate typed workflow rather than a generalization of
+the single-sensor workflow. Generalizing would have rewritten the
+live-verified single-sensor path and forced paired state into a
+single-observation design; keeping the procedures separate preserves that
+verified path, makes dual-only rules visible in types and tests, and limits
+shared code to hardware behavior that is genuinely common (the Motion,
+Ophir, configuration, recording, and cleanup seams).
 
 The software implementation is divided at the intended reusable boundaries:
 
 - shared constants, validation, topology, paired metrics, and selection rules:
   `omotion/calibration/laser.py`;
-- UI-neutral dual procedure and immutable evidence model:
+- shared laser-workflow primitives (preflight validation, default
+  establishment, checked register writes, active-default restoration,
+  passing-configuration write, immutable evidence records):
+  `omotion/calibration/_procedure.py`;
+- UI-neutral dual procedure and dual-specific evidence model:
   `omotion/calibration/dual_sensor_laser.py`;
+- Motion console bench base and FPGA revision readback:
+  `omotion/calibration/motion_bench.py`;
 - exact-dual Motion preflight, pre-fire topology guards, and shared Ophir
   acquisition: `omotion/calibration/laser_hardware.py`;
 - auditor-readable HTML evidence:
   `omotion/calibration/dual_sensor_laser_report.py`;
-- operator CLI and artifact/resource finalization:
-  `omotion/scripts/wi15_dual_sensor_laser_calibration.py`; and
+- shared script scaffolding (argument parsing, operator prompts,
+  artifact/resource finalization): `omotion/calibration/script_support.py`;
+- operator CLI: `omotion/scripts/wi15_dual_sensor_laser_calibration.py`; and
 - invocation guidance: `docs/WI15Procedures.md`.
 
 Focused automated coverage is provided by:
@@ -316,8 +373,9 @@ Focused automated coverage is provided by:
 Software verification on 2026-08-13 completed with 322 passing tests in the
 exact single/dual WI-00015 matrix and 1,125 passing tests with 207
 hardware-marked tests deselected in the repository hardware-independent
-suite. Static compilation, Ruff, forbidden-dependency, and diff checks also
-passed.
+suite (counts at commit `bf55d72`; the suite has since been consolidated
+and extended). Static compilation, Ruff, forbidden-dependency, and diff
+checks also passed.
 
 A live dual-sensor execution passed on 2026-08-13 using run
 `WI-00015-20260813T190000Z` and commit `f2af676`. The exact topology contained
@@ -364,7 +422,10 @@ persisted and read back the artificial 4950-mA configuration, passed both
 final active-setting checks, finalized both artifacts, and recorded no
 trigger, restoration, or resource-cleanup failure. This validation
 configuration is not an approved production calibration and requires a normal
-350-microjoule execution before unit release.
+350-microjoule execution before unit release. At that date the
+600-microsecond ceiling NCR compared against a hardcoded 300; since
+2026-08-14 the ceiling comparison uses the injected acceptance minimum, so
+an injected window governs every energy bound.
 
 The normal production rerun after the artificial validation passed on
 2026-08-13 using run `WI-00015-20260813T225916Z` and commit `fc20627`. Its

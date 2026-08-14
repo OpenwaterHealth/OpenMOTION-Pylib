@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-12
 
-**Status:** Draft for written review
+**Status:** Approved requirements. Currently implemented as a thin
+runner over the SDK calibration engine - section 18 records the
+section-by-section implementation status (2026-08-14).
 
 **Procedure:** Measurement Calibration
 
@@ -273,3 +275,55 @@ This procedure maps to one future TestApp button. The UI guides side-by-side
 phantom placement and renders per-camera outcomes while calling the same
 shared SDK implementation. It may not use `both`, parallelize sides, alter
 thresholds, or reproduce calibration math in UI code.
+
+## 18. Implementation status (2026-08-14)
+
+The supported operator flow today is `omotion/scripts/wi15_measurement_calibration.py`,
+a thin runner over the SDK calibration engine (`omotion/CalibrationWorkflow.py`
+via `MotionInterface.start_calibration`) - the same engine behind the
+bloodflow-app's Calibrate button. Against the sections above:
+
+**Implemented:**
+
+- One side per run on the static phantom with a mandatory placement
+  attestation (section 6's placement/no-touch confirmation).
+- 15-second calibration scan and 2-second validation scan (sections 7
+  and 11; the engine gained a first-class `validation_duration_sec`
+  on 2026-08-14 - previously the validation scan reused the calibration
+  duration).
+- Average-of-ratios contrast, per-camera statistics, and the
+  `I_min = 0 / I_max = 2 x mean / C_min = 0 / C_max = contrast` arrays
+  (sections 7 and 9; `CALIBRATION_I_MAX_MULTIPLIER = 2.0`).
+- The versioned factory mean/contrast thresholds and SPEC-69 BFI/BVI
+  validation bounds (sections 8 and 11), with cameras displayed 1-8.
+- The absolute below-threshold gate: a below-threshold calibration is
+  never written - the gate prints the failing rows and always refuses;
+  there is no consent path (section 8).
+- Target-side-only update preserving the other side: the engine copies
+  the non-targeted side from the live console calibration baseline
+  (section 9; bloodflow-app #117 semantics).
+- Engine CSV/JSON evidence artifacts (part of section 15).
+
+**Divergences and future work:**
+
+- **One side per invocation** (per Ethan's 2026-08-13 direction): a
+  dual unit runs the script once per side. The single-procedure
+  sequential dual flow of sections 5 and 12 - including the rule that a
+  two-sensor unit may not be calibrated as two one-sensor executions -
+  applies to the future full workflow, not the current thin runner. The
+  runner reminds the operator on every pass that a shipping dual unit
+  needs the other side calibrated in its own run.
+- **Dark-mean gate placement** (section 8): the engine evaluates the
+  3.0 dark maximum against the validation scan's dark frames, after the
+  write - a dark failure fails the procedure but does not prevent the
+  write the way the mean/contrast gates do.
+- **Final power-cycle persistence** (section 13) is not performed by the
+  thin runner.
+- **Dedicated evidence workflow** - durable run recorder, HTML report,
+  and the full section 15/16 evidence and test matrix - remains future
+  work; current evidence is the engine's CSV/JSON plus the terminal
+  transcript.
+- The CLI keeps a loud `--bench-thresholds` development flag (disables
+  the absolute brightness gates for dim dev benches and prints that a
+  pass does not certify signal level). The supported operator flow (the
+  test-app Procedures pane) never passes it.

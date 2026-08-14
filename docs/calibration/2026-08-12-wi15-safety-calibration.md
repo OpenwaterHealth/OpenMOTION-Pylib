@@ -2,20 +2,26 @@
 
 **Date:** 2026-08-12
 
-**Status:** Implemented and software-verified; live hardware verification pending
+**Status:** Implemented and live-verified (console-only operator flow,
+2026-08-14; run IDs on openmotion-sdk#214). Amended 2026-08-14 per Ethan's
+rulings: console-only operator flow, 1-second minimum dwell, observed
+(confirmation-free) power cycle.
 
 **Procedure:** Safety Calibration
 
 ## 1. Objective
 
 Derive and persist laser safety current and pulse-width limits from the
-console's internal safety ADC measurements, prove those values survive a
-power cycle, and run a normal 30-second scan with the persisted values active
-and no overrides.
+console's internal safety ADC measurements and prove those values survive a
+power cycle.
 
-The ADC calculation is independent of sensor modules and does not require an
-Ophir meter. The final normal scan uses the unit's declared shipping sensor
-topology.
+The procedure is console-side only: the ADC calculation is independent of
+sensor modules and does not require an Ophir meter. The supported operator
+flow always runs with the console-only topology - sensor modules may be
+attached or absent, they are not used, and the normal-scan stage is recorded
+as not applicable. The workflow API still accepts a declared one- or
+two-sensor topology, in which case a normal 30-second scan runs with the
+persisted values active and no overrides.
 
 ## 2. Authority and related specifications
 
@@ -39,8 +45,10 @@ The process addendum controls if the sources conflict.
 - Mean, multiplier, and nearest-integer current-limit calculations.
 - Pulse-width-limit calculation.
 - Complete configuration write and immediate readback.
-- Minimum 15-second power-off dwell and persistence verification.
-- Normal 30-second sensor-data scan with no configuration overrides.
+- Minimum 1-second measured power-off dwell and persistence verification.
+- Normal 30-second sensor-data scan with no configuration overrides
+  (declared-topology API runs only; recorded not applicable for the
+  console-only operator flow).
 - Laser-safety-warning failure detection and report evidence.
 
 ### Excluded
@@ -57,10 +65,11 @@ The operator entry point is a dedicated Safety Calibration script. Existing
 low-level runner commands may remain available, but the dedicated procedure
 is the supported operator flow.
 
-Shared SDK code receives the motion interface/session, declared shipping
-topology for the final scan, ADC sampling policy, configuration store,
-power-cycle adapter, normal-scan adapter, warning source, and state/report
-sink. It does not call `input()`.
+Shared SDK code receives one bench adapter (owning the Motion session,
+configuration I/O, ADC reads, power-cycle coordination, normal-scan
+execution, and warning capture), plus the run recorder, ADC sampling
+policy, and clock; the declared topology arrives on the request. It does
+not call `input()`.
 
 It returns a structured outcome containing input configuration, raw ADC
 samples, calculations, requested and readback configurations, restart proof,
@@ -80,7 +89,8 @@ It independently validates the state it consumes:
    overrides.
 5. Compare requested TA current and pulse width with active hardware/UI
    readbacks and require each to be within plus or minus 2 percent.
-6. Verify 40 Hz triggering, correcting trigger frequency if necessary.
+6. Verify the trigger rate reads 39-41 Hz inclusive, first correcting it
+   to 40 Hz when the initial reading is not exactly 40.
 
 Failure stops before ADC-derived configuration is written.
 
@@ -90,12 +100,17 @@ No sensor module or containment fixture is required for the ADC acquisition.
 
 ### 6.1 Firing lifecycle
 
-1. Perform normal console laser preflight.
+1. Guard firing in the bench adapter: the trigger rate must read 39-41 Hz
+   and `TA_PULSE_WIDTH` must be strictly below both active pulse-width
+   upper limits.
 2. Start the laser once.
 3. Collect OPT and EE ADC samples while the laser is actively firing.
 4. Stop the laser in a guaranteed cleanup path on success, cancellation, or
    exception.
 5. Capture laser safety warnings throughout the firing window.
+6. Require at least one known (non-unknown) safety-telemetry observation
+   during the firing window; zero known observations fail the run even when
+   every ADC read succeeded.
 
 ### 6.2 Sample validity
 
@@ -104,9 +119,13 @@ For each of `SAFETY_OPT ADC_DATA` and `SAFETY_EE ADC_DATA`:
 - collect at least ten successful values;
 - use scaled engineering-unit mA returned/displayed by the SDK/TestApp
   conversion, never raw ADC counts;
-- reject exceptions, missing values, booleans, NaN, and infinity;
+- reject exceptions, missing values, booleans, NaN, infinity, and
+  negative values;
 - record rejected reads and their reasons; and
 - fail rather than calculating from fewer than ten valid readings.
+
+Sampling stops for a controller once ten values are accepted (each mean is
+over exactly ten), and at most 30 read attempts are made per controller.
 
 Sampling may be sequential or interleaved, provided every accepted value was
 read during the same active firing period and both controllers meet the
@@ -114,7 +133,8 @@ minimum count.
 
 ## 7. Safety calculations
 
-Use the arithmetic mean of every accepted sample for each controller.
+Use the arithmetic mean of the accepted samples (exactly ten per
+controller) for each controller.
 
 1. `opt_mean_mA = sum(opt_samples) / len(opt_samples)`
 2. `ee_mean_mA = sum(ee_samples) / len(ee_samples)`
@@ -157,14 +177,17 @@ highlighted comparison.
 ## 10. Power-cycle persistence verification
 
 1. Stop all laser/scan activity.
-2. For a manual cycle, have the operator confirm readiness while the unit is
-   still connected, begin connection-state observation, and only then instruct
-   the operator to power the unit off. Do not require the operator to complete
-   the power transition before observation begins.
-3. Keep power off for at least 15 measured seconds.
-4. After the dwell, again begin observation before instructing the operator to
-   restore power, then wait for the console to reconnect.
-5. Use firmware uptime or equivalent evidence to prove a restart occurred.
+2. Instruct the operator once to power the console off and back on. There
+   are no confirmation gates: the coordinator observes the disconnect and the
+   reconnect itself and never prompts for input during the cycle.
+3. Console liveness is judged by monitor state AND a command echo round-trip,
+   because Windows can keep a surprise-removed COM port "present" under an
+   open handle - a state check alone can miss the power-off.
+4. The measured off dwell must be at least 1 second. A faster flip is
+   measured, recorded, and fails the run (the dwell cannot be proven).
+5. Restart proof for the observed manual cycle is the observed disconnect
+   and reconnect of the same long-lived console handle, recorded as the
+   `restart_proof` text; firmware uptime is not read.
 6. Read the complete User Configuration.
 7. Require every intended key/value to be unchanged.
 
@@ -173,8 +196,10 @@ mismatch fails the procedure.
 
 ## 11. Normal 30-second scan verification
 
-The ADC calculation itself is sensor-independent. For this final end-to-end
-check, connect the unit's declared shipping topology:
+The console-only operator flow records this stage as not applicable
+("Normal 30-second scan not applicable") and passes without it. When the
+workflow API is invoked with a declared one- or two-sensor topology, this
+final end-to-end check requires that topology connected:
 
 - one-sensor: exactly the declared left or right module;
 - two-sensor: both left and right modules.
@@ -198,17 +223,24 @@ Any failure returns nonzero. Always stop scan/trigger activity in cleanup.
 
 Safety Calibration passes only when local preflight, readback tolerance, both
 ADC sample sets, all calculations, immediate configuration verification,
-power-cycle persistence, and the normal scan pass.
+power-cycle persistence, and the normal-scan stage pass (for the console-only
+operator flow the scan stage passes by being recorded not applicable).
 
 The procedure records the exact failed gate. It does not require Ophir or
 stored proof of a prior procedure, and it does not offer a continue-anyway
 path after a failed write, persistence check, or safety scan.
 
+Two further terminal gates run in the operator script: HTML-report
+generation failure and bench-close/resource-cleanup failure each downgrade
+a workflow pass to a failed terminal result, so a stale passing artifact
+cannot survive either.
+
 ## 13. Report evidence
 
 Record:
 
-- console and final-scan sensor identities/topology;
+- console identity and topology (final-scan sensor identities for
+  declared-topology runs only);
 - all four console-board FPGA firmware revisions, without sensor-camera FPGA
   revision fields in the human report;
 - complete input configuration;
@@ -219,9 +251,14 @@ Record:
 - pulse-width-limit calculation;
 - complete intended and immediate-readback configurations;
 - power-off timestamps/dwell and restart proof;
-- post-restart complete comparison;
-- scan configuration showing no overrides;
-- scan start/end/duration/outcome and every safety warning; and
+- post-restart complete configuration and its equality criterion (the
+  highlighted diff is rendered for the pre-cycle handoff);
+- for declared-topology runs, the scan configuration showing no overrides
+  and scan start/end/duration/outcome with every safety warning (the
+  console-only report has no scan section - the stage appears as not
+  applicable in the event timeline);
+- resource-cleanup diagnostics and report-artifact finalization evidence;
+  and
 - terminal disposition and reason.
 
 ## 14. Automated tests
@@ -239,8 +276,9 @@ Unit tests cover:
 - both multipliers and nearest-integer tie behavior;
 - pulse widths below 600, exactly 600, and above 600;
 - write failure and complete-readback mismatch;
-- measured 15-second dwell and restart-proof failures;
-- one- and two-sensor normal-scan topology;
+- measured minimum-dwell and restart-proof failures (including a
+  too-fast cycle);
+- console-only, one-, and two-sensor normal-scan topology handling;
 - proof that no scan overrides were supplied;
 - early scan failure, disconnect, warning, and successful 30-second scan;
 - guaranteed laser/scan cleanup; and
@@ -257,6 +295,12 @@ gates in UI code.
 
 - Safety rules and immutable evidence records:
   `omotion/calibration/safety.py`.
+- Shared evidence primitives and report-artifact states:
+  `omotion/calibration/_procedure.py`.
+- Console bench base, scaled-mA register I/O, echo liveness probe, and FPGA
+  revision readback: `omotion/calibration/motion_bench.py`.
+- Shared script scaffolding (report/cleanup terminal gates, artifact
+  finalization): `omotion/calibration/script_support.py`.
 - UI-neutral procedure orchestration:
   `omotion/calibration/safety_workflow.py`.
 - Motion console, FPGA, power-cycle, and normal-scan adapter:
@@ -279,6 +323,11 @@ overrides, completed without cancellation or error after normal pipeline
 drain, recorded 34 known-clear safety observations, and finalized both JSON and
 HTML artifacts with a passing disposition.
 
-A representative single-sensor live run remains required before production
-release for that shipping topology. It must exercise the same persistence,
-ordinary-scan, topology, and live laser-safety gates without overrides.
+The console-only operator flow was live-verified end-to-end on 2026-08-14
+(observed power cycle 7.6 seconds, persistence proven, scan stage recorded
+not applicable; run IDs on openmotion-sdk#214). The declared-topology
+normal-scan variants remain reachable only through the workflow API; any
+future use of them requires re-verification against the current code - the
+2026-08-13 dual live run predates both the console-only amendment and the
+2026-08-14 fix that re-applies the persisted laser drive point after the
+power cycle, before the scan.

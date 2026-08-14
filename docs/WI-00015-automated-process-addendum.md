@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-12
 
-**Status:** Team-approved automation requirements; implementation pending
+**Status:** Team-approved automation requirements (2026-08-12); all four
+procedures implemented - per-procedure specifications and implementation
+status live in `docs/calibration/`. Amended 2026-08-14 (section 8).
 
 **Applies to:** WI-00015 scripted execution on one- and two-sensor
 Open-Motion units
@@ -278,8 +280,10 @@ Read `TA_PULSE_WIDTH` from the User Configuration.
 ### 4.3 Write, restart, and normal-scan verification
 
 Write the complete updated User Configuration and check the operation and
-immediate readback. Power the unit off for at least 15 seconds, restart it,
-and verify every intended key is unchanged.
+immediate readback. Power the unit off for at least 15 seconds (amended
+2026-08-14 to 1 measured second for the Safety Calibration persistence
+cycle - see section 8), restart it, and verify every intended key is
+unchanged.
 
 Then run a normal 30-second sensor-data scan using the unit's declared
 shipping topology and the persisted calibrated configuration. Do not supply
@@ -385,3 +389,32 @@ stored-state prerequisite requiring evidence that an earlier stage passed
 when an operator invokes a later stage independently. Each stage still
 enforces its own connection, configuration, measurement, write, and
 acceptance gates.
+
+## 8. Amendments - 2026-08-14 operator rulings
+
+The following rulings (Ethan, 2026-08-14, recorded on openmotion-sdk#214)
+supersede the corresponding 2026-08-12 text for the supported operator
+procedures:
+
+1. **Safety Calibration is console-only.** The supported operator flow asks
+   no topology question and requires only a connected, responsive console.
+   Sensor modules may be attached or absent; they are not used. The
+   section 4.3 normal 30-second scan is recorded as not applicable for this
+   flow. Declared-topology executions (with the scan stage) remain reachable
+   only through the workflow API and are not the supported operator
+   procedure.
+2. **Safety power-cycle dwell and observation.** The section 4.3 minimum
+   power-off dwell for the Safety Calibration persistence check is 1 measured
+   second, not 15. The cycle has no operator confirmation gates: the
+   procedure instructs the operator once, observes the disconnect and
+   reconnect itself (console liveness = monitor state plus a command echo
+   round-trip), measures the off dwell, and fails a cycle too fast to prove.
+3. **Measurement Calibration interim implementation.** The 15-second
+   calibration scan and 2-second validation scan are implemented in the SDK
+   engine (`CalibrationRequest.validation_duration_sec`, 2026-08-14). The
+   supported operator flow is a thin runner over that engine, one side per
+   invocation - a dual unit runs it once per side. The full section 5
+   evidence workflow (single-procedure sequential dual flow, pre-write dark
+   gate, final power-cycle persistence, dedicated report) remains future
+   work; the measurement specification's section 18 records the exact
+   implemented/deferred split.

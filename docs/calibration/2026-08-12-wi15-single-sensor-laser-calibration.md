@@ -57,20 +57,20 @@ the operator to select `left` or `right`, displays the selection, and requires
 confirmation.
 
 The shared implementation resides outside the script and receives explicit
-inputs. It must not call `input()` or format terminal prompts. Conceptually it
-accepts:
+inputs. It must not call `input()` or format terminal prompts. It accepts:
 
-- declared side;
-- motion interface/session;
-- Ophir meter adapter;
-- energy-measurement duration/configuration;
-- configuration store;
-- run-state/report sink; and
-- cancellation/progress callbacks suitable for a future TestApp caller.
+- the request (declared side, operator metadata, fixture confirmation);
+- a bench adapter owning the Motion session, Ophir meter, and configuration
+  I/O (acquisition duration/policy lives on the meter adapter);
+- a run recorder / report sink; and
+- the target energy.
 
-It returns a structured outcome containing `passed`, terminal disposition,
+It returns a structured outcome whose single `status` field
+(`ProcedureStatus`) carries the terminal disposition, together with the
 reason, selected side, measurements, settings, and artifact references. A
-failed outcome maps to a nonzero script exit code.
+non-passing status maps to a nonzero script exit code. There are no
+cancellation or progress callbacks; callers that need interactivity (the
+test-app Procedures pane) run the operator script as a subprocess.
 
 ## 5. Preconditions and fail-closed preflight
 
@@ -86,8 +86,10 @@ Preflight runs before step-9 configuration or laser action.
    recorded as four semantic firmware revisions in the console identity.
    Sensor-camera FPGA revision fields are not shown in the human report.
 6. The Ophir COM object must instantiate.
-7. USB scan must find a meter, the meter must open, and the configured channel
-   must report an energy sensor.
+7. USB scan must find a meter, the meter must open, and a sensor head must
+   be present on the configured channel. Energy capability is enforced by the
+   subsequent `Energy` measurement-mode set and readback rather than by a
+   separate head-type query.
 8. Meter/sensor identity and calibration-due fields must be readable.
 9. Every Ophir setting and readback in the process addendum must pass.
 
@@ -103,21 +105,24 @@ Any failure stops the procedure before configuration mutation or firing.
 ## 6. Default configuration setup
 
 1. Read and preserve the complete existing User Configuration.
-2. Obtain a fresh run-local copy of the private immutable canonical ten-key
-   defaults, then write exactly that object from the process addendum.
+2. Obtain a fresh run-local copy of the canonical ten-key defaults (the
+   public immutable mapping `DEFAULT_USER_CONFIG`), then write exactly that
+   object from the process addendum.
 3. Require a successful SDK write result.
 4. Treat the adapter-returned complete write readback as authoritative and
    require exact keys and values. A later corroborating read may not erase an
    immediate mismatch.
-5. Bring up the laser configuration and verify active TA pulse width, TA
-   current, seed value, and 40 Hz trigger frequency.
+5. Bring up the laser configuration and verify five active registers within
+   the 2 percent tolerance - `TA_CURRENT_DRV`, `TA_PULSE_WIDTH`,
+   `SEED_CW_GAIN`, `EE_PULSE_WIDTH_UL`, and `OPT_PULSE_WIDTH_UL` - plus 40 Hz
+   trigger frequency.
 6. Correct only trigger frequency when necessary. A mismatch in another
    required operating value fails the procedure.
 
 The pre-existing, requested-default, and actual-default objects are retained
-as deeply immutable, run-local report evidence. Mutation of a public
-compatibility export or a caller/adapter-owned mapping cannot redefine a run
-or change its recorded result.
+as deeply immutable, run-local report evidence. Later mutation of a
+caller/adapter-owned mapping cannot redefine a run or change its recorded
+result.
 
 ## 7. Valid measurement definition
 
@@ -126,7 +131,8 @@ Every energy observation used for adjustment or acceptance must contain:
 - more than 25 valid Ophir samples;
 - standard deviation below 40 microjoules;
 - repetition rate from 39 through 41 Hz inclusive; and
-- finite mean, standard deviation, rate, minimum, and maximum.
+- finite mean, standard deviation, rate, minimum, maximum, valid count,
+  discarded count, and acquisition duration (each a recorded criterion).
 
 Samples with nonzero Ophir status are discarded and counted. If an
 observation fails, record it and stop the procedure; do not tune from its
@@ -161,9 +167,11 @@ still fails the 39-41 Hz criterion.
 
 ### 8.1 Initial measurement
 
-Prompt the operator to place the declared module in the 0 cm fixture, record
-the physical confirmation, and acquire a valid measurement at the default
-operating point.
+The 0 cm fixture placement confirmation is collected by the operator script
+up front, before any hardware object is constructed, and passed into the
+workflow, which validates it during preflight - an unconfirmed fixture fails
+before mutation or firing. The initial step then acquires a valid measurement
+at the default operating point.
 
 ### 8.2 Downward adjustment
 
@@ -240,9 +248,14 @@ terminal reason. Energy/bound failure is identified as NCR.
 
 After terminal NCR, the procedure must not invoke Safety Calibration or write
 the passing tuned-configuration handoff or final safety configuration. The
-earlier required default
-configuration write remains part of the record. There is no continue-anyway
-prompt.
+earlier required default configuration write remains part of the record.
+There is no continue-anyway prompt.
+
+After any failure once defaults were established and measurement began, the
+workflow best-effort restores the five active default registers and records
+the restoration (`active_default_restore`) or its failure
+(`active_default_restore_failure`) as evidence; a trigger-stop failure during
+cleanup is folded into the terminal result rather than hidden.
 
 ## 11. Report evidence
 
@@ -251,7 +264,8 @@ addendum and, specifically:
 
 - declared and actual topology;
 - selected side and operator confirmation;
-- identities and serial-validation results;
+- identities (serial validation is a preflight gate; a failure records
+  its reason, a pass is implied by the recorded identities);
 - all four console-board FPGA firmware revisions;
 - Ophir setup and readbacks;
 - pre-existing, default, and final configuration;
@@ -264,8 +278,11 @@ addendum and, specifically:
 - terminal outcome/NCR reason.
 
 Structured evidence also records the runtime `omotion.__version__` (using the
-explicit value `unavailable` only when no runtime version is available),
-separate operator build revision, and run start/end timestamps. The workflow
+explicit value `unavailable` only when no runtime version is available), the
+build revision (CLI `--build-revision` only, recorded as `unspecified` when
+not supplied - the operator is not prompted, per the 2026-08-13 ruling; the
+same ruling makes fixture calibration status CLI-only and unset by default),
+and run start/end timestamps. The workflow
 atomically checkpoints a current `in_progress` structured result after every
 acquired observation and checked mutation, including immediate adapter write
 readbacks, measurement criteria, candidates, selections, and cleanup
@@ -291,7 +308,7 @@ Unit tests cover:
 - default write failure, extra/missing key, and value mismatch;
 - immediate default, adjustment, trigger-correction, cleanup, and final
   handoff readback mismatches that cannot be erased by later matching reads;
-- pre-run public-default mutation and post-run nested mapping mutation;
+- adapter-side mutation isolation of retained evidence;
 - exactly 25 versus 26 valid pulses;
 - bounded acquisition to 26 valid pulses, stale-session priming-batch
   isolation, and idempotent stream cleanup;
@@ -309,19 +326,26 @@ Unit tests cover:
   metadata; and
 - required report fields and change highlighting.
 
-## 13. Future TestApp integration
+## 13. TestApp integration
 
-This procedure maps to one future TestApp button. The UI supplies the side
-selection/confirmation and renders structured progress. It must call the same
-shared implementation and may not reimplement topology, tuning, or acceptance
-logic.
+The test-app Procedures pane runs this procedure today by executing the
+operator script as a subprocess (uniform terminal/stdin contract; choice
+prompts render as answer buttons). The pane supplies no calibration logic of
+its own and may not reimplement topology, tuning, or acceptance rules.
 
 ## 14. Implementation mapping
 
 - Domain values and validation: `omotion/calibration/laser.py`
+- Shared laser-workflow primitives (preflight validation, default
+  establishment, checked register writes, active-default restoration,
+  passing-configuration write): `omotion/calibration/_procedure.py`
 - UI-neutral procedure workflow: `omotion/calibration/single_sensor_laser.py`
+- Motion console bench base and FPGA revision readback:
+  `omotion/calibration/motion_bench.py`
 - Motion and Ophir adapters: `omotion/calibration/laser_hardware.py`
 - Incremental JSON and HTML evidence: `omotion/calibration/reporting.py`
+- Shared script scaffolding (argument parsing, operator prompts, artifact
+  finalization): `omotion/calibration/script_support.py`
 - Operator entry point: `omotion/scripts/wi15_single_sensor_laser_calibration.py`
 - Software verification: `tests/test_wi15_laser_calibration.py`,
   `tests/test_wi15_single_sensor_laser_calibration.py`,
@@ -349,8 +373,10 @@ The production entry point passed on 2026-08-12 Pacific time using commit
   `TA_PULSE_WIDTH` within 0.016 percent of the 510-microsecond request;
 - persisted passing configuration read back exactly, including provisional
   660-microsecond EE/OPT upper limits for standalone Safety Calibration; and
-- terminal trigger status `1` (laser off), with no trigger, stream, or general
-  cleanup failure.
+- terminal trigger status `1` (laser off), with no trigger, stream, or
+  cleanup failure (since 2026-08-14 a bench-close failure is captured as
+  `resource_cleanup_failure` evidence and downgrades a pass, matching the
+  dual and safety procedures).
 
 The finalized evidence is stored outside the repository under
 `C:\Users\ethan\WI15_runs\WI-00015-20260813T045443Z` as `run.json` and
@@ -379,3 +405,10 @@ microjoules at the 600-microsecond ceiling. Every acquisition-quality check
 passed. The procedure returned `failed_ncr`, restored the active defaults,
 finalized both evidence artifacts, and did not perform the passing tuned-
 configuration handoff.
+
+Post-restructure re-validation completed on 2026-08-14 through the test-app
+Procedures pane: passing runs on both sides (left at 570 microseconds, right
+at 590 microseconds) and 600-microsecond ceiling NCRs on the dim unit (run
+identifiers recorded on openmotion-sdk#214). Run
+`WI-00015-20260814T165720Z` additionally motivated carrying the underlying
+exception identity into energy-measurement failure reasons.
