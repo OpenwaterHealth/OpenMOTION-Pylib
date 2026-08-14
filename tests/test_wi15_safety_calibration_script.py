@@ -118,7 +118,7 @@ def test_metadata_topology_and_connection_confirmation_finish_before_hardware_co
 
     monkeypatch.setattr(script, "workflow_factory", FakeWorkflow)
     monkeypatch.setattr(script, "report_factory", FakeReport)
-    replies = iter(("operator", "build", "bench", "dual", "yes"))
+    replies = iter(("operator", "bench", "dual", "yes"))
 
     exit_code = script.main(
         ["--output-dir", str(tmp_path)],
@@ -129,7 +129,7 @@ def test_metadata_topology_and_connection_confirmation_finish_before_hardware_co
     bench_index = calls.index("bench")
     prompts = [item for item in calls[:bench_index] if isinstance(item, tuple)]
     assert any("shipping topology" in prompt.lower() for _, prompt in prompts)
-    assert any("exact dual" in prompt.lower() for _, prompt in prompts)
+    assert any("the dual topology" in prompt.lower() for _, prompt in prompts)
     assert calls[-1] == ("workflow", ShippingTopology.DUAL)
 
 
@@ -157,23 +157,66 @@ def test_declined_shipping_topology_confirmation_cancels_before_hardware(monkeyp
     ]
 
 
-def test_manual_power_cycle_observes_disconnect_before_measured_dwell_and_power_on_prompt():
+def test_power_cycle_is_observed_without_confirmation_prompts():
+    """The operator just flips power; the coordinator only observes."""
     script = load_script()
     clock = FakeClock()
-    prompts = []
     outputs = []
-    replies = iter(("yes", "yes"))
 
     def connected():
-        return clock.now < 1.0 or clock.now >= 17.0
+        return clock.now < 1.0 or clock.now >= 3.0
+
+    def forbidden_input(_prompt):
+        raise AssertionError("the power-cycle flow must not prompt for input")
 
     coordinator = script.ManualPowerCycleCoordinator(
-        input_func=lambda prompt: prompts.append((prompt, clock.now)) or next(replies),
+        input_func=forbidden_input,
         output_func=outputs.append,
         clock=clock,
         wall_clock=lambda: 2_000.0 + clock.now,
         sleep=clock.sleep,
         poll_interval_s=0.5,
+        disconnect_timeout_s=5.0,
+        reconnect_timeout_s=5.0,
+    )
+
+    evidence = coordinator.perform(
+        minimum_off_s=1.0,
+        expected_console_serial="C-1",
+        is_console_connected=connected,
+        read_console_serial=lambda: "C-1",
+    )
+
+    assert evidence.disconnect_observed
+    assert evidence.reconnect_observed
+    assert evidence.restart_proven
+    assert evidence.off_duration_s == pytest.approx(2.0)
+    assert evidence.on_allowed_at <= evidence.reconnect_observed_at
+    assert evidence.console_serial_before == "C-1"
+    assert evidence.console_serial_after == "C-1"
+    assert "without operator confirmation gates" in evidence.restart_proof
+    assert any(
+        "power the console off and back on now" in message.lower()
+        for message in outputs
+    )
+
+
+def test_too_fast_power_cycle_measures_the_short_dwell_for_rejection():
+    """A cycle quicker than the minimum dwell must be measurable as such."""
+    script = load_script()
+    clock = FakeClock()
+    outputs = []
+
+    def connected():
+        return clock.now < 1.0 or clock.now >= 1.5
+
+    coordinator = script.ManualPowerCycleCoordinator(
+        input_func=lambda _prompt: "unused",
+        output_func=outputs.append,
+        clock=clock,
+        wall_clock=lambda: 2_000.0 + clock.now,
+        sleep=clock.sleep,
+        poll_interval_s=0.25,
         disconnect_timeout_s=5.0,
         reconnect_timeout_s=5.0,
     )
@@ -185,40 +228,21 @@ def test_manual_power_cycle_observes_disconnect_before_measured_dwell_and_power_
         read_console_serial=lambda: "C-1",
     )
 
-    assert evidence.disconnect_observed
-    assert evidence.reconnect_observed
-    assert evidence.restart_proven
-    assert evidence.off_duration_s == pytest.approx(15.0)
-    assert prompts[0][1] == 0.0
-    assert "power off" in prompts[0][0].lower()
-    assert "after confirming" in prompts[0][0].lower()
-    assert prompts[1][1] == pytest.approx(16.0)
-    assert "power on" in prompts[1][0].lower()
-    assert "after confirming" in prompts[1][0].lower()
-    assert evidence.console_serial_before == "C-1"
-    assert evidence.console_serial_after == "C-1"
-    assert any("15-second" in message for message in outputs)
-    assert any(
-        "now switch console main power off" in message.lower()
-        and "waiting up to 5 seconds" in message.lower()
-        and "console disconnection" in message.lower()
-        for message in outputs
-    )
-    assert any(
-        "now switch console main power on" in message.lower()
-        and "waiting up to 5 seconds" in message.lower()
-        and "console reconnection" in message.lower()
-        for message in outputs
-    )
+    assert evidence.disconnect_observed and evidence.reconnect_observed
+    assert evidence.off_duration_s < 15.0
+    assert evidence.on_allowed_at > evidence.reconnect_observed_at
 
 
-def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect():
+def test_unobserved_disconnect_returns_failed_evidence_without_prompts():
     script = load_script()
     clock = FakeClock()
-    prompts = []
     outputs = []
+
+    def forbidden_input(_prompt):
+        raise AssertionError("the power-cycle flow must not prompt for input")
+
     coordinator = script.ManualPowerCycleCoordinator(
-        input_func=lambda prompt: prompts.append(prompt) or "yes",
+        input_func=forbidden_input,
         output_func=outputs.append,
         clock=clock,
         wall_clock=lambda: 2_000.0 + clock.now,
@@ -229,7 +253,7 @@ def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect()
     )
 
     evidence = coordinator.perform(
-        minimum_off_s=15.0,
+        minimum_off_s=1.0,
         expected_console_serial="C-1",
         is_console_connected=lambda: True,
         read_console_serial=lambda: "C-1",
@@ -237,12 +261,10 @@ def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect()
 
     assert not evidence.disconnect_observed
     assert not evidence.reconnect_observed
+    assert not evidence.restart_proven
     assert evidence.off_duration_s is None
-    assert len(prompts) == 1
-    assert all("power on" not in prompt.lower() for prompt in prompts)
     assert any(
-        "console remained connected" in message.lower()
-        and "1-second timeout" in message.lower()
+        "disconnection was not observed" in message.lower()
         for message in outputs
     )
 
@@ -253,6 +275,7 @@ def test_manual_power_cycle_never_invites_power_on_without_observed_disconnect()
         ("single-left", ShippingTopology.SINGLE_LEFT),
         ("single-right", ShippingTopology.SINGLE_RIGHT),
         ("dual", ShippingTopology.DUAL),
+        ("console-only", ShippingTopology.CONSOLE_ONLY),
     ],
 )
 def test_runner_passes_declared_topology_to_shared_workflow_and_finalizes_artifacts(

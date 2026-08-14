@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import logging
 import math
 from pathlib import Path
 import time
@@ -33,6 +34,11 @@ from omotion.calibration.script_support import (
     utc_run_id as _run_id,
 )
 
+
+# The pane terminal is the operator surface: the SDK's connection-retry
+# warnings during the observed power cycle are expected churn, not operator
+# information, so keep the child's SDK logging to errors only.
+logging.getLogger("openmotion").setLevel(logging.ERROR)
 
 recorder_factory = JsonRunRecorder
 bench_factory = MotionSafetyCalibrationBench
@@ -105,45 +111,21 @@ class ManualPowerCycleCoordinator:
         read_console_serial: Callable[[], str | None],
     ) -> PowerCycleEvidence:
         minimum_off_s = float(minimum_off_s)
-        if not math.isfinite(minimum_off_s) or minimum_off_s < 15.0:
-            raise ValueError("Safety Calibration requires at least 15 seconds off")
+        if not math.isfinite(minimum_off_s) or minimum_off_s <= 0:
+            raise ValueError("minimum_off_s must be finite and positive")
 
         off_requested_at = self._utc_now()
         self._output(
-            "6A. Console power-off: laser and scan activity are stopped."
-        )
-        if not _confirmed(
-            "Ready for the observed power-off step? After confirming, immediately "
-            "switch console main power OFF [y/N]: ",
-            self._input,
-        ):
-            return PowerCycleEvidence(
-                off_requested_at,
-                None,
-                None,
-                None,
-                None,
-                None,
-                False,
-                False,
-                False,
-                None,
-                expected_console_serial,
-                None,
-            )
-
-        self._output(
-            f"Now switch console main power OFF. Waiting up to "
-            f"{self._disconnect_timeout_s:g} seconds for Motion to observe console "
-            "disconnection."
+            "6A. Power the console OFF and back ON now. The procedure observes "
+            f"the cycle itself; keep power off at least {minimum_off_s:g} "
+            "second(s) or the run fails."
         )
         if not self._wait_for_state(
             is_console_connected, False, self._disconnect_timeout_s
         ):
             self._output(
-                f"Console remained connected through the "
-                f"{self._disconnect_timeout_s:g}-second timeout; power restoration "
-                "was not requested."
+                f"Console disconnection was not observed within "
+                f"{self._disconnect_timeout_s:g} seconds."
             )
             return PowerCycleEvidence(
                 off_requested_at,
@@ -163,40 +145,7 @@ class ManualPowerCycleCoordinator:
         disconnected_at_clock = self._clock()
         disconnect_observed_at = self._utc_now()
         self._output(
-            "6B. Console disconnection observed. Measuring the required 15-second "
-            "minimum power-off interval."
-        )
-        while self._clock() - disconnected_at_clock < minimum_off_s:
-            remaining = minimum_off_s - (self._clock() - disconnected_at_clock)
-            self._sleep(min(self._poll_interval_s, remaining))
-
-        on_allowed_at = self._utc_now()
-        on_requested_at = self._utc_now()
-        off_duration_s = self._clock() - disconnected_at_clock
-        if not _confirmed(
-            "The measured off interval is complete. Ready to restore power? After "
-            "confirming, immediately switch console main power ON [y/N]: ",
-            self._input,
-        ):
-            return PowerCycleEvidence(
-                off_requested_at,
-                disconnect_observed_at,
-                on_allowed_at,
-                on_requested_at,
-                None,
-                off_duration_s,
-                True,
-                False,
-                False,
-                None,
-                expected_console_serial,
-                None,
-            )
-
-        self._output(
-            f"Now switch console main power ON. Waiting up to "
-            f"{self._reconnect_timeout_s:g} seconds for Motion to observe console "
-            "reconnection."
+            "6B. Console disconnection observed; waiting for reconnection."
         )
         if not self._wait_for_state(
             is_console_connected, True, self._reconnect_timeout_s
@@ -205,10 +154,10 @@ class ManualPowerCycleCoordinator:
             return PowerCycleEvidence(
                 off_requested_at,
                 disconnect_observed_at,
-                on_allowed_at,
-                on_requested_at,
+                disconnect_observed_at + timedelta(seconds=minimum_off_s),
                 None,
-                off_duration_s,
+                None,
+                self._clock() - disconnected_at_clock,
                 True,
                 False,
                 False,
@@ -218,6 +167,11 @@ class ManualPowerCycleCoordinator:
             )
 
         reconnect_observed_at = self._utc_now()
+        off_duration_s = self._clock() - disconnected_at_clock
+        # The earliest instant power-on was permitted; a reconnect before it
+        # means the operator cycled too quickly, and the workflow's dwell
+        # validation fails the run on this evidence.
+        on_allowed_at = disconnect_observed_at + timedelta(seconds=minimum_off_s)
         try:
             console_serial_after = read_console_serial()
         except Exception:
@@ -227,13 +181,14 @@ class ManualPowerCycleCoordinator:
             off_requested_at,
             disconnect_observed_at,
             on_allowed_at,
-            on_requested_at,
+            reconnect_observed_at,
             reconnect_observed_at,
             off_duration_s,
             True,
             True,
             True,
-            "Observed disconnect and reconnect on the same long-lived Motion console handle.",
+            "Observed disconnect and reconnect on the same long-lived Motion "
+            "console handle without operator confirmation gates.",
             expected_console_serial,
             console_serial_after,
         )
@@ -258,12 +213,15 @@ def _shipping_topology(
     while True:
         if candidate is None:
             candidate = input_func(
-                "Declared shipping topology (single-left/single-right/dual): "
+                "Declared shipping topology "
+                "(single-left/single-right/dual/console-only): "
             )
         try:
             topology = ShippingTopology(candidate.strip().lower())
         except (AttributeError, ValueError):
-            output_func("Enter exactly single-left, single-right, or dual.")
+            output_func(
+                "Enter exactly single-left, single-right, dual, or console-only."
+            )
             candidate = None
             continue
         output_func(f"Declared shipping topology: {topology.value}.")
@@ -275,6 +233,7 @@ def _topology_instruction(topology: ShippingTopology) -> str:
         ShippingTopology.SINGLE_LEFT: "the left sensor module only",
         ShippingTopology.SINGLE_RIGHT: "the right sensor module only",
         ShippingTopology.DUAL: "both the left and right sensor modules",
+        ShippingTopology.CONSOLE_ONLY: "no sensor modules (console only)",
     }
     return descriptions[topology]
 
@@ -302,9 +261,9 @@ def main(
         )
         instruction = _topology_instruction(topology)
         if not _confirmed(
-            f"Please connect exact {topology.value} shipping topology: "
-            f"{instruction}. The modules may remain connected during the "
-            "console-only ADC portion. Confirm when ready [y/N]: ",
+            f"Please connect the {topology.value} topology: {instruction}. "
+            "Extra modules may remain connected during the console-only ADC "
+            "portion. Confirm when ready [y/N]: ",
             input_func,
         ):
             raise _OperatorCanceled

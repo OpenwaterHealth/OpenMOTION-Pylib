@@ -24,14 +24,24 @@ SafetyController = Literal["SAFETY_OPT", "SAFETY_EE"]
 
 
 class ShippingTopology(str, Enum):
-    """The sensor configuration in which the console will ship."""
+    """The sensor configuration in which the console will ship.
+
+    CONSOLE_ONLY is a bench declaration: the console-side safety
+    calibration runs without any sensor modules attached, and the final
+    production scan is not applicable.
+    """
 
     SINGLE_LEFT = "single-left"
     SINGLE_RIGHT = "single-right"
     DUAL = "dual"
+    CONSOLE_ONLY = "console-only"
 
 
 ADC_ROUNDING_RULE = "nearest integer; exact halves round upward"
+# Minimum measured console power-off dwell. Reduced from 15 s to 1 s on
+# Ethan's bench ruling (2026-08-14): the persistence property being proven
+# does not depend on dwell length, only on an observed real power cycle.
+MINIMUM_POWER_OFF_S = 1.0
 SAFETY_OPT_MULTIPLIER = 1.3
 SAFETY_EE_MULTIPLIER = 1.1
 PULSE_LIMIT_MULTIPLIER = 1.1
@@ -308,6 +318,7 @@ def validate_shipping_topology(
         ShippingTopology.SINGLE_LEFT: (True, False),
         ShippingTopology.SINGLE_RIGHT: (False, True),
         ShippingTopology.DUAL: (True, True),
+        ShippingTopology.CONSOLE_ONLY: (False, False),
     }[declared_topology]
     topology_matches = (
         topology.console_connected

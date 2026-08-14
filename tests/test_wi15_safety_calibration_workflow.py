@@ -527,7 +527,7 @@ def test_write_failure_or_complete_readback_mismatch_prevents_power_cycle(write_
     ("changes", "reason_fragment"),
     [
         ({"disconnect_observed": False}, "disconnect"),
-        ({"off_duration_s": 14.999}, "15"),
+        ({"off_duration_s": 0.999}, "too quickly"),
         ({"reconnect_observed": False}, "reconnect"),
         ({"restart_proven": False, "restart_proof": None}, "restart"),
         ({"console_serial_after": "C-2"}, "serial"),
@@ -550,7 +550,7 @@ def test_power_cycle_requires_observed_disconnect_dwell_reconnect_and_restart(
     "changes",
     [
         {"disconnect_observed_at": None},
-        {"on_allowed_at": NOW + timedelta(seconds=15.999)},
+        {"on_allowed_at": NOW + timedelta(seconds=1.5)},
         {"on_requested_at": NOW + timedelta(seconds=15)},
         {"reconnect_observed_at": NOW + timedelta(seconds=15)},
     ],
@@ -672,3 +672,17 @@ def test_passing_workflow_records_auditor_readable_stage_labels_and_terminal_rea
         "8. Procedure completion",
     ]
     assert recorder.checkpoints[-1] == result
+
+
+def test_console_only_declaration_skips_the_normal_scan_and_passes():
+    """A console-only bench run has no modules, so stage 7 must not demand one."""
+    bench = FakeSafetyBench()
+
+    result, bench, recorder = _run(bench, topology=ShippingTopology.CONSOLE_ONLY)
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.normal_scan is None
+    assert bench.scan_requests == []
+    assert any(
+        "not applicable" in event.stage.lower() for event in result.events
+    )

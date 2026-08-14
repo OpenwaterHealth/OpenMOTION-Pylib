@@ -29,6 +29,7 @@ from .laser import (
 )
 from .safety import (
     MINIMUM_ADC_SAMPLES,
+    MINIMUM_POWER_OFF_S,
     SAFETY_EE_MULTIPLIER,
     SAFETY_OPT_MULTIPLIER,
     AdcReadEvidence,
@@ -460,12 +461,13 @@ class SafetyCalibrationWorkflow:
 
             stage(
                 "6. Measured power-cycle persistence verification",
-                "Observe console disconnection, keep power off for at least 15 measured "
-                "seconds, prove restart, and verify the complete persisted configuration.",
+                "Observe console disconnection, keep power off for at least "
+                f"{MINIMUM_POWER_OFF_S:g} measured second(s), prove restart, and "
+                "verify the complete persisted configuration.",
             )
             try:
                 power_cycle = self._bench.power_cycle(
-                    minimum_off_s=15.0,
+                    minimum_off_s=MINIMUM_POWER_OFF_S,
                     expected_console_serial=preflight.console_identity.serial.strip(),
                 )
             except Exception as exc:
@@ -503,22 +505,30 @@ class SafetyCalibrationWorkflow:
                     "the intended configuration.",
                 )
 
-            stage(
-                "7. Normal 30-second scan with persisted values",
-                "Run the ordinary production sensor-data path in the declared shipping "
-                "topology, with persisted values active and no overrides.",
-            )
-            try:
-                normal_scan = self._bench.run_normal_scan(
-                    request.shipping_topology, duration_s=30.0
+            if request.shipping_topology is ShippingTopology.CONSOLE_ONLY:
+                stage(
+                    "7. Normal 30-second scan not applicable",
+                    "The console-only declaration has no sensor modules, so the "
+                    "production sensor-data path cannot and need not run.",
                 )
-            except Exception as exc:
-                raise _ProcedureFailure(
-                    FailureKind.MEASUREMENT,
-                    f"Normal 30-second scan failed: {exc}",
-                ) from exc
-            checkpoint()
-            self._validate_normal_scan(normal_scan, request.shipping_topology)
+                checkpoint()
+            else:
+                stage(
+                    "7. Normal 30-second scan with persisted values",
+                    "Run the ordinary production sensor-data path in the declared "
+                    "shipping topology, with persisted values active and no overrides.",
+                )
+                try:
+                    normal_scan = self._bench.run_normal_scan(
+                        request.shipping_topology, duration_s=30.0
+                    )
+                except Exception as exc:
+                    raise _ProcedureFailure(
+                        FailureKind.MEASUREMENT,
+                        f"Normal 30-second scan failed: {exc}",
+                    ) from exc
+                checkpoint()
+                self._validate_normal_scan(normal_scan, request.shipping_topology)
 
             stage(
                 "8. Procedure completion",
@@ -766,11 +776,13 @@ class SafetyCalibrationWorkflow:
             )
         if (
             not _finite_number(evidence.off_duration_s)
-            or float(evidence.off_duration_s) < 15.0
+            or float(evidence.off_duration_s) < MINIMUM_POWER_OFF_S
         ):
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
-                "Power-off dwell was not at least 15 measured seconds.",
+                "Power-off dwell was not at least "
+                f"{MINIMUM_POWER_OFF_S:g} measured second(s) - the console was "
+                "cycled too quickly for the dwell to be provable.",
             )
         if not evidence.reconnect_observed:
             raise _ProcedureFailure(
@@ -800,15 +812,15 @@ class SafetyCalibrationWorkflow:
                 timestamps_valid
                 and (evidence.on_allowed_at - evidence.disconnect_observed_at)
                 .total_seconds()
-                >= 15.0
+                >= MINIMUM_POWER_OFF_S
             )
         except (TypeError, ValueError):
             dwell_timestamps_valid = False
         if not dwell_timestamps_valid:
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
-                "Power-cycle timestamp evidence is missing, out of order, or does not "
-                "show the complete 15-second off dwell.",
+                "Power-cycle timestamp evidence is missing, out of order, or does "
+                f"not show the complete {MINIMUM_POWER_OFF_S:g}-second off dwell.",
             )
         expected = expected_serial.strip() if isinstance(expected_serial, str) else None
         if (

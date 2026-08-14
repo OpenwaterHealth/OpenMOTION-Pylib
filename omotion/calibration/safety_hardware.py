@@ -248,6 +248,8 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
             return 0, 0xFF, 1
         if topology is ShippingTopology.DUAL:
             return 0xFF, 0xFF, 2
+        if topology is ShippingTopology.CONSOLE_ONLY:
+            return 0x00, 0x00, 0
         raise ValueError("Unsupported shipping topology")
 
     def _scan_identities(self) -> tuple[DeviceIdentity, DeviceIdentity]:

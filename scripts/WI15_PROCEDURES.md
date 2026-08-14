@@ -32,14 +32,15 @@ python -m scripts.wi15_safety_calibration --output-dir C:\WI15_runs
 ```
 
 The safety script asks for the declared shipping topology before constructing
-hardware. Connect exactly that topology for the final normal scan; the sensor
+hardware; declare `console-only` to run without any sensor modules, in which
+case the final normal scan is recorded as not applicable. For the other
+declarations, connect exactly that topology for the final normal scan; extra
 modules may remain connected during the console-only ADC portion. The script
-does not use an external energy meter. During the persistence check it asks
-the operator to confirm readiness while the console is still connected, starts
-observing, and then instructs the operator to power the console off. It
-independently observes disconnection, measures at least 15 seconds, and uses
-the same observe-before-action sequence when asking the operator to restore
-power.
+does not use an external energy meter. The persistence check has no
+confirmation gates: the script instructs the operator to power the console
+off and back on, observes the disconnect and reconnect itself, and fails the
+run if the measured off dwell is under 1 second (the console was cycled too
+quickly for the dwell to be provable).
 
 Keep the console plus both left and right sensor modules connected. The dual
 script asks the operator to move the identified sensor module into the Ophir
