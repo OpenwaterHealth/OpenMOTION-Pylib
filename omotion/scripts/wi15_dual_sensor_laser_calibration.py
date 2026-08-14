@@ -67,7 +67,7 @@ def main(
             args.procedure_revision, "Procedure revision: ", input_func
         )
     except (EOFError, KeyboardInterrupt):
-        output_func("Calibration canceled before hardware construction.")
+        output_func("Calibration canceled. Nothing was changed.")
         return 1
 
     recorder = None
@@ -82,9 +82,9 @@ def main(
         def acknowledge_placement(change: PlacementChangeRequest) -> bool:
             output_func(change.label)
             prompt = (
-                f"Please place the {change.to_side} sensor module "
-                f"(serial {change.sensor_serial}) in the Ophir 0 cm fixture. "
-                "Confirm when it is securely seated [y/N]: "
+                f"Put the {change.to_side} sensor "
+                f"(serial {change.sensor_serial}) into the 0 cm fixture. "
+                "Is it in place? (yes/no): "
             )
             return _confirmed(prompt, input_func)
 
@@ -114,7 +114,7 @@ def main(
             output_func=output_func,
         )
     except Exception as exc:
-        output_func(f"Calibration failed before a terminal report: {exc}")
+        output_func(f"Calibration stopped with an error: {exc}")
         return 1
     finally:
         if bench is not None:

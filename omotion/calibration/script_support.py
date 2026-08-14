@@ -176,14 +176,14 @@ def finalize_run_artifacts(
             ),
         )
         recorder.checkpoint(failed_result)
-        output_func(f"HTML report generation failed: {report_failure}")
+        output_func(f"Could not create the report: {report_failure}")
         return 1
     recorder.checkpoint(finalized_result)
-    output_func(f"Terminal status: {finalized_result.status.value}")
+    output_func(f"Final result: {finalized_result.status.value}")
     if finalized_result.failure_kind is not None:
-        output_func(f"Failure category: {finalized_result.failure_kind.value}")
+        output_func(f"Problem type: {finalized_result.failure_kind.value}")
     if finalized_result.failure_reason is not None:
-        output_func(f"Failure reason: {finalized_result.failure_reason}")
-    output_func(f"JSON evidence: {Path(recorder.json_path).resolve()}")
-    output_func(f"HTML report: {Path(report_path).resolve()}")
+        output_func(f"Problem: {finalized_result.failure_reason}")
+    output_func(f"Saved data (JSON): {Path(recorder.json_path).resolve()}")
+    output_func(f"Saved report (HTML): {Path(report_path).resolve()}")
     return 0 if finalized_result.status is ProcedureStatus.PASSED else 1

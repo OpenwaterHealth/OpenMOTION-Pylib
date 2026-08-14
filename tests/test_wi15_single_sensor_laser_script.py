@@ -144,7 +144,7 @@ def test_fixture_confirmation_requires_only_ophir_zero_cm_placement(monkeypatch,
 
     assert exit_code == 0
     assert prompts[-1] == (
-        "Confirm the sensor is placed in the Ophir 0 cm fixture (yes/no): "
+        "Is the sensor in the 0 cm fixture? (yes/no): "
     )
     assert all("containment" not in prompt.lower() for prompt in prompts)
     assert workflow.requests[0].fixture_confirmed is True
@@ -235,10 +235,10 @@ def test_terminal_failure_prints_the_structured_category_and_exact_reason(
     )
 
     assert exit_code == 1
-    assert "Terminal status: failed" in messages
-    assert "Failure category: measurement" in messages
+    assert "Final result: failed" in messages
+    assert "Problem type: measurement" in messages
     assert (
-        "Failure reason: Adjustment energy measurement failed quality criteria."
+        "Problem: Adjustment energy measurement failed quality criteria."
         in messages
     )
 

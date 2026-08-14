@@ -41,12 +41,11 @@ from omotion.calibration.script_support import (
 
 interface_factory = MotionInterface
 
-# Scan parameters mirror the bloodflow-app's SHIPPED config values
-# (config/app_config.json calibration_scan_duration_sec: 15 /
-# calibration_scan_delay_sec: 1 / max_calibration_time_sec: 600 — not
-# motion_connector's code fallback of 5), matching the approved process
-# addendum's 15-second calibration scan. The engine's validation scan
-# reuses duration_sec + scan_delay_sec; there is no separate knob.
+# Scan parameters follow the approved process addendum: 15-second
+# calibration scan (also the bloodflow-app's shipped
+# calibration_scan_duration_sec, not motion_connector's code fallback of 5)
+# and 2-second validation scan (CalibrationRequest.validation_duration_sec).
+# The scan_delay_sec leading skip applies to both sub-scans.
 CAL_SCAN_DURATION_SEC = 15
 VAL_SCAN_DURATION_SEC = 2
 CAL_SCAN_DELAY_SEC = 1
@@ -128,12 +127,12 @@ def _selected_side(
     candidate = value
     while True:
         if candidate is None:
-            candidate = input_func("Sensor side to calibrate (left/right): ")
+            candidate = input_func("Which sensor do you want to calibrate? (left/right): ")
         side = candidate.strip().lower()
         if side in ("left", "right"):
-            output_func(f"Calibrating sensor side: {side}")
+            output_func(f"Calibrating the {side} sensor.")
             return side
-        output_func("Enter exactly left or right.")
+        output_func("Please answer left or right.")
         candidate = None
 
 
@@ -168,23 +167,23 @@ def main(
         operator = _required_value(args.operator, "Operator: ", input_func)
         side = _selected_side(args.side, input_func, output_func)
         if not args.phantom_confirmed and not _confirmed(
-            f"Confirm the {side} module is on the static phantom with the "
-            "included weight (WI Figure H), covers removed, and the setup "
-            "will not be touched while calibration runs. NEVER calibrate a "
-            "module seated in the 0 cm energy-meter fixture. (yes/no): ",
+            f"Put the {side} sensor on the phantom with the weight "
+            "(WI Figure H). Remove the covers. Do not touch the setup "
+            "during the test. NEVER use the 0 cm energy-meter fixture "
+            "for this. Ready? (yes/no): ",
             input_func,
         ):
             raise _OperatorCanceled
     except (EOFError, KeyboardInterrupt, _OperatorCanceled):
-        output_func("Measurement Calibration canceled before hardware construction.")
+        output_func("Measurement Calibration canceled. Nothing was changed.")
         return 1
 
     thresholds, thresholds_label = _build_thresholds(
         args.thresholds_json, args.bench_thresholds)
-    output_func(f"thresholds: {thresholds_label}")
+    output_func(f"Limits: {thresholds_label}")
     if args.bench_thresholds:
-        output_func("*** WARNING: bench mode - a PASSED result does NOT "
-                    "certify image brightness ***")
+        output_func("*** WARNING: bench mode - a PASS here does NOT "
+                    "prove image brightness ***")
 
     run_id = _run_id()
     output_root = Path(args.output_dir) / f"measurement-calibration-{run_id}"
@@ -196,7 +195,7 @@ def main(
     try:
         if not iface.wait_for_ready(console=True, sensors=0,
                                     timeout=READY_TIMEOUT_S):
-            output_func("FAIL: console not ready")
+            output_func("FAIL: console is not connected.")
             return 1
         # Give the sensor side a moment, then require the chosen module.
         deadline = time.time() + READY_TIMEOUT_S
@@ -207,7 +206,7 @@ def main(
             time.sleep(1.0)
         _, l_ok, r_ok = iface.is_device_connected()
         if not (l_ok if side == "left" else r_ok):
-            output_func(f"FAIL: {side} sensor module not connected "
+            output_func(f"FAIL: the {side} sensor is not connected "
                         f"(left={l_ok}, right={r_ok})")
             return 1
 
@@ -217,7 +216,7 @@ def main(
         # side, then configure exactly the cameras this run uses.
         sensor = iface.left if side == "left" else iface.right
         if not sensor.enable_camera_power(0xFF):
-            output_func("FAIL: camera power enable failed")
+            output_func("FAIL: could not turn on the cameras.")
             return 1
         configured = threading.Event()
         configure_holder: dict = {}
@@ -226,7 +225,7 @@ def main(
             configure_holder["result"] = result
             configured.set()
 
-        output_func("configuring cameras (this can take a minute) ...")
+        output_func("Preparing the cameras. This can take one minute ...")
         if not iface.start_configure_camera_sensors(
             ConfigureRequest(
                 left_camera_mask=0xFF if side == "left" else 0x00,
@@ -235,14 +234,14 @@ def main(
             ),
             on_complete_fn=on_configured,
         ):
-            output_func("FAIL: camera configuration refused to start")
+            output_func("FAIL: camera setup could not start.")
             return 1
         if not configured.wait(CONFIGURE_TIMEOUT_S):
-            output_func("FAIL: camera configuration did not complete")
+            output_func("FAIL: camera setup did not finish.")
             return 1
         configure_result = configure_holder["result"]
         if not getattr(configure_result, "ok", False):
-            output_func("FAIL: camera configuration failed: "
+            output_func("FAIL: camera setup failed: "
                         f"{getattr(configure_result, 'error', '')}")
             return 1
 
@@ -250,14 +249,14 @@ def main(
         # registers are cleared. This also applies the tuned EPROM overrides
         # (TA_CURRENT_DRV etc.) written by the laser-calibration flow.
         if not iface.apply_laser_power():
-            output_func("FAIL: apply_laser_power failed")
+            output_func("FAIL: could not set the laser power.")
             return 1
 
         cfg = iface.console.read_config()
         cfg_data = (cfg.json_data or {}) if cfg else {}
         laser_point = {key: cfg_data.get(key)
                        for key in ("TA_PULSE_WIDTH", "TA_CURRENT_DRV")}
-        output_func(f"tuned laser point from EPROM: {laser_point}")
+        output_func(f"Laser settings from the console: {laser_point}")
 
         request = CalibrationRequest(
             operator_id=operator,
@@ -291,26 +290,26 @@ def main(
             consent path. The rows are printed so the operator can see
             exactly which cameras failed the spec.
             """
-            output_func("Below-threshold gate fired. Measured rows:")
+            output_func("Camera values are below the limit. Measured values:")
             output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} {'avg_contrast':>13}")
             for row in rows:
                 # Cameras display 1-8, matching the engine's L#/R# labels.
                 output_func(f"  {row.side:<6} {row.cam_id + 1:>3} "
                             f"{row.mean:>10.3f} {row.avg_contrast:>13.4f}")
-            output_func("A below-threshold calibration is never written to "
+            output_func("A result below the limit is never saved to "
                         "the console.")
             return False
 
-        output_func(f"*** CALIBRATION STARTING (side={side}, laser will "
-                    "fire; do not touch the setup) ***")
+        output_func(f"*** STARTING (side={side}). The laser will turn "
+                    "on. Do not touch the setup. ***")
         if not iface.start_calibration(request, on_complete_fn=on_complete,
                                        on_progress_fn=on_progress,
                                        on_confirm_fn=confirm_fn):
-            output_func("FAIL: start_calibration refused (already running?)")
+            output_func("FAIL: could not start (is another calibration running?)")
             return 1
         if not done.wait(CAL_MAX_DURATION_SEC + 60):
-            output_func("FAIL: calibration did not complete within the "
-                        "watchdog window")
+            output_func("FAIL: calibration took too long and was "
+                        "stopped.")
             iface.cancel_calibration()
             return 1
 
@@ -328,18 +327,18 @@ def main(
                     f"{row.avg_contrast:>13.4f} {row.bfi:>8.3f} "
                     f"{row.bvi:>8.3f}")
         if result.csv_path:
-            output_func(f"csv evidence: {result.csv_path}")
+            output_func(f"Saved data (CSV): {result.csv_path}")
         if result.json_path:
-            output_func(f"json evidence: {result.json_path}")
+            output_func(f"Saved data (JSON): {result.json_path}")
 
         passed = outcome == "passed"
-        output_func(f"Terminal status: {'passed' if passed else outcome}")
+        output_func(f"Final result: {'passed' if passed else outcome}")
         if passed:
-            output_func("Reminder: a shipping dual unit needs the other side "
-                        "calibrated in its own run.")
+            output_func("Note: for a two-sensor unit, also run this for "
+                        "the other side.")
         return 0 if passed else 1
     except Exception as exc:
-        output_func(f"Measurement Calibration failed: {exc}")
+        output_func(f"Measurement Calibration stopped with an error: {exc}")
         return 1
     finally:
         try:

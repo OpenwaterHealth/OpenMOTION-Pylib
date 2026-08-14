@@ -51,11 +51,11 @@ def _selected_side(
     input_func: Callable[[str], str], output_func: Callable[[str], None]
 ) -> str:
     while True:
-        side = input_func("Installed sensor side (left/right): ").strip().lower()
+        side = input_func("Which sensor is installed? (left/right): ").strip().lower()
         if side in ("left", "right"):
             output_func(f"Selected sensor side: {side}")
             return side
-        output_func("Enter exactly left or right.")
+        output_func("Please answer left or right.")
 
 
 def main(
@@ -78,16 +78,16 @@ def main(
         )
         side = _selected_side(input_func, output_func)
         if not _confirmed(
-            f"Confirm selected sensor side is {side} (yes/no): ", input_func
+            f"Is {side} correct? (yes/no): ", input_func
         ):
             raise _OperatorCanceled
         if not _confirmed(
-            "Confirm the sensor is placed in the Ophir 0 cm fixture (yes/no): ",
+            "Is the sensor in the 0 cm fixture? (yes/no): ",
             input_func,
         ):
             raise _OperatorCanceled
     except (EOFError, KeyboardInterrupt, _OperatorCanceled):
-        output_func("Calibration canceled before hardware construction.")
+        output_func("Calibration canceled. Nothing was changed.")
         return 1
 
     recorder = None
@@ -127,7 +127,7 @@ def main(
             output_func=output_func,
         )
     except Exception as exc:
-        output_func(f"Calibration failed before a terminal report: {exc}")
+        output_func(f"Calibration stopped with an error: {exc}")
         return 1
     finally:
         if bench is not None:

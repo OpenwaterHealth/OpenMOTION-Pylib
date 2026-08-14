@@ -114,15 +114,15 @@ class ManualPowerCycleCoordinator:
 
         off_requested_at = self._utc_now()
         self._output(
-            "6A. Power the console OFF and back ON now. The procedure observes "
-            f"the cycle itself; keep power off at least {minimum_off_s:g} "
-            "second(s) or the run fails."
+            "6A. Turn the console power OFF, then back ON. Keep it OFF for "
+            f"at least {minimum_off_s:g} second(s). Do not press anything - "
+            "the program watches for the power cycle."
         )
         if not self._wait_for_state(
             is_console_connected, False, self._disconnect_timeout_s
         ):
             self._output(
-                f"Console disconnection was not observed within "
+                f"The console did not turn OFF within "
                 f"{self._disconnect_timeout_s:g} seconds."
             )
             return PowerCycleEvidence(
@@ -143,12 +143,12 @@ class ManualPowerCycleCoordinator:
         disconnected_at_clock = self._clock()
         disconnect_observed_at = self._utc_now()
         self._output(
-            "6B. Console disconnection observed; waiting for reconnection."
+            "6B. Console is OFF. Waiting for it to come back ON."
         )
         if not self._wait_for_state(
             is_console_connected, True, self._reconnect_timeout_s
         ):
-            self._output("Console reconnection was not observed before timeout.")
+            self._output("The console did not come back ON in time.")
             return PowerCycleEvidence(
                 off_requested_at,
                 disconnect_observed_at,
@@ -174,7 +174,7 @@ class ManualPowerCycleCoordinator:
             console_serial_after = read_console_serial()
         except Exception:
             console_serial_after = None
-        self._output("6C. Console reconnection observed; verifying persisted settings.")
+        self._output("6C. Console is ON again. Checking the saved settings.")
         return PowerCycleEvidence(
             off_requested_at,
             disconnect_observed_at,
@@ -215,7 +215,7 @@ def main(
             args.procedure_revision, "Procedure revision: ", input_func
         )
     except (EOFError, KeyboardInterrupt):
-        output_func("Safety Calibration canceled before hardware construction.")
+        output_func("Safety Calibration canceled. Nothing was changed.")
         return 1
 
     # The laser safety test is console-side only: it requires a connected,
@@ -258,7 +258,7 @@ def main(
             output_func=output_func,
         )
     except Exception as exc:
-        output_func(f"Safety Calibration failed before a terminal report: {exc}")
+        output_func(f"Safety Calibration stopped with an error: {exc}")
         return 1
     finally:
         if bench is not None:

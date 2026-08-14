@@ -90,9 +90,12 @@ implementation design):
 Labels must not rely on method names such as `_measure_once`, terse codes
 such as `adj_2`, or unexplained register names; register names remain present
 as technical evidence alongside a plain-language explanation. Placement
-acknowledgements are courteous and precise, naming the side and serial, for
-example: "Please place the left sensor module (serial 12345) in the Ophir
-0 cm fixture. Confirm when it is securely seated."
+acknowledgements use simple language for factory operators while still
+naming the side and serial, for example: "Put the left sensor (serial
+12345) into the 0 cm fixture. Is it in place? (yes/no)". Operator-facing
+terminal text throughout the procedures uses short plain sentences (ruling
+2026-08-14: factory operators may have limited English); the descriptive
+audit labels above remain the evidence-record style.
 
 ## 5. Preconditions and fail-closed preflight
 

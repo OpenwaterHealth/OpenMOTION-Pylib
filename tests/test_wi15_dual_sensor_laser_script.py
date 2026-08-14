@@ -103,9 +103,9 @@ def test_placement_callback_is_courteous_and_names_side_serial_and_zero_cm_fixtu
 
     assert exit_code == 0
     assert captured["placement_results"] == [True, True]
-    assert "left sensor module (serial LEFT-001)" in prompts[0]
-    assert "right sensor module (serial RIGHT-001)" in prompts[1]
-    assert all("Ophir 0 cm fixture" in prompt for prompt in prompts)
+    assert "left sensor (serial LEFT-001)" in prompts[0]
+    assert "right sensor (serial RIGHT-001)" in prompts[1]
+    assert all("0 cm fixture" in prompt for prompt in prompts)
     assert any("Initial paired measurement" in message for message in messages)
     assert all("_measure" not in text for text in prompts + messages)
     assert bench.closed == 1

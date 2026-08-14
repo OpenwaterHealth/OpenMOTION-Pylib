@@ -123,7 +123,7 @@ def test_declined_phantom_attestation_cancels_before_hardware(
     )
     assert code == 1
     assert fake.started == 0
-    assert any("canceled before hardware construction" in line for line in lines)
+    assert any("canceled. Nothing was changed" in line for line in lines)
 
 
 def test_side_prompt_reprompts_until_left_or_right(monkeypatch, tmp_path):
@@ -202,7 +202,7 @@ def test_bench_thresholds_disable_brightness_gates_loudly(monkeypatch, tmp_path)
     thresholds = fake.requests[0].thresholds
     assert thresholds.min_mean_per_camera == [0.0] * 8
     assert thresholds.min_contrast_per_camera == [0.0] * 8
-    assert any("does NOT certify" in line for line in lines)
+    assert any("does NOT prove" in line for line in lines)
 
 
 @pytest.mark.parametrize(
@@ -218,7 +218,7 @@ def test_exit_code_follows_engine_outcome(
     )
     assert code == expected_code
     assert fake.stopped == 1
-    assert any(line.startswith("Terminal status:") for line in lines)
+    assert any(line.startswith("Final result:") for line in lines)
 
 
 def test_refused_engine_start_fails_and_stops_interface(monkeypatch, tmp_path):
@@ -239,8 +239,8 @@ def test_below_threshold_gate_shows_rows_and_never_writes(monkeypatch, tmp_path)
         fire_confirm=True,
     )
     assert code == 1
-    assert any("Below-threshold gate fired" in line for line in lines)
+    assert any("below the limit" in line for line in lines)
     # cam_id 5 displays as camera 6 - 1-based, matching the engine's labels
     assert any("right" in line and "  6 " in line and "62.100" in line
                for line in lines)
-    assert any("never written" in line for line in lines)
+    assert any("never saved" in line for line in lines)

@@ -169,7 +169,7 @@ def test_power_cycle_is_observed_without_confirmation_prompts():
     assert evidence.console_serial_after == "C-1"
     assert "without operator confirmation gates" in evidence.restart_proof
     assert any(
-        "power the console off and back on now" in message.lower()
+        "turn the console power off, then back on" in message.lower()
         for message in outputs
     )
 
@@ -237,7 +237,7 @@ def test_unobserved_disconnect_returns_failed_evidence_without_prompts():
     assert not evidence.restart_proven
     assert evidence.off_duration_s is None
     assert any(
-        "disconnection was not observed" in message.lower()
+        "did not turn off" in message.lower()
         for message in outputs
     )
 
@@ -259,8 +259,8 @@ def test_runner_declares_console_only_topology_and_finalizes_artifacts(
     assert captured["bench"].coordinator is not None
     assert captured["bench"].closed == 1
     assert recorder.checkpoints[-1].report_artifact.status is ReportArtifactStatus.FINALIZED
-    assert "Terminal status: passed" in messages
-    assert any(message.startswith("JSON evidence: ") for message in messages)
-    assert any(message.startswith("HTML report: ") for message in messages)
+    assert "Final result: passed" in messages
+    assert any(message.startswith("Saved data (JSON): ") for message in messages)
+    assert any(message.startswith("Saved report (HTML): ") for message in messages)
 
 
