@@ -122,6 +122,13 @@ class JsonRunRecorder:
 class HtmlRunReport:
     """Render structured workflow evidence without deriving any acceptance decision."""
 
+    _DOCUMENT_TITLE = "WI-00015 single-sensor laser calibration report"
+    _DOCUMENT_HEADING = "WI-00015 Single-Sensor Laser Calibration"
+    _HEADING_SELECTOR = "h1,h2"
+    _EVENTS_TITLE = "Procedure events"
+    _EVENTS_HEADERS = ("Timestamp", "Stage", "Message", "Data")
+    _REPORT_ARTIFACT_TITLE = "HTML report artifact state"
+
     def __init__(self, output_directory: str | Path, filename: str = "report.html"):
         self.output_directory = Path(output_directory)
         self.report_path = self.output_directory / filename
@@ -133,6 +140,34 @@ class HtmlRunReport:
         _atomic_write(self.report_path, self.render(request, result, json_path))
         return self.report_path
 
+    def _preamble(
+        self, status: object, failure_reason: object, raw_json_name: str
+    ) -> list[str]:
+        """The shared document head, status banner, and raw-evidence link."""
+        parts = [
+            "<!doctype html>",
+            '<html lang="en"><head><meta charset="utf-8">',
+            f"<title>{self._DOCUMENT_TITLE}</title>",
+            "<style>body{font-family:Arial,sans-serif;margin:2rem;color:#18212b;}"
+            + self._HEADING_SELECTOR
+            + "{color:#102a43;}table{border-collapse:collapse;width:100%;margin:0.5rem 0 1.5rem;}"
+            "th,td{border:1px solid #9fb3c8;padding:0.45rem;text-align:left;vertical-align:top;}"
+            "th{background:#eaf2f8;}.status{font-size:1.4rem;font-weight:bold;padding:0.7rem;}"
+            ".status-passed{background:#d9f7e5;color:#075c35;}.status-failed,.status-failed_ncr{background:#ffe0e0;color:#8b0000;}"
+            ".status-canceled{background:#fff2cc;color:#6f5300;}.reason{font-size:1.15rem;font-weight:bold;color:#8b0000;}"
+            ".changed{background:#fff3bf;font-weight:bold;}.muted{color:#52616b;}</style></head><body>",
+            f"<h1>{self._DOCUMENT_HEADING}</h1>",
+            f'<p class="status status-{escape(str(status), quote=True)}">Status: {self._text(status)}</p>',
+        ]
+        if failure_reason is not None:
+            parts.append(
+                f'<p class="reason">Terminal reason: {self._text(failure_reason)}</p>'
+            )
+        parts.append(
+            f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>'
+        )
+        return parts
+
     def render(
         self, request: object, result: object, json_path: str | Path | None = None
     ) -> str:
@@ -140,31 +175,14 @@ class HtmlRunReport:
         result_data = json_safe_value(result)
         if not isinstance(request_data, dict) or not isinstance(result_data, dict):
             raise TypeError("WI15 report inputs must be dataclass-like records.")
-        raw_json_name = self._relative_json_name(json_path)
         status = result_data.get("status", "unknown")
-        failure_reason = result_data.get("failure_reason")
-
-        parts = [
-            "<!doctype html>",
-            '<html lang="en"><head><meta charset="utf-8">',
-            "<title>WI-00015 single-sensor laser calibration report</title>",
-            "<style>body{font-family:Arial,sans-serif;margin:2rem;color:#18212b;}"
-            "h1,h2{color:#102a43;}table{border-collapse:collapse;width:100%;margin:0.5rem 0 1.5rem;}"
-            "th,td{border:1px solid #9fb3c8;padding:0.45rem;text-align:left;vertical-align:top;}"
-            "th{background:#eaf2f8;}.status{font-size:1.4rem;font-weight:bold;padding:0.7rem;}"
-            ".status-passed{background:#d9f7e5;color:#075c35;}.status-failed,.status-failed_ncr{background:#ffe0e0;color:#8b0000;}"
-            ".status-canceled{background:#fff2cc;color:#6f5300;}.reason{font-size:1.15rem;font-weight:bold;color:#8b0000;}"
-            ".changed{background:#fff3bf;font-weight:bold;}.muted{color:#52616b;}</style></head><body>",
-            "<h1>WI-00015 Single-Sensor Laser Calibration</h1>",
-            f'<p class="status status-{escape(str(status), quote=True)}">Status: {self._text(status)}</p>',
-        ]
-        if failure_reason is not None:
-            parts.append(
-                f'<p class="reason">Terminal reason: {self._text(failure_reason)}</p>'
-            )
+        parts = self._preamble(
+            status,
+            result_data.get("failure_reason"),
+            self._relative_json_name(json_path),
+        )
         parts.extend(
             [
-                f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
                 self._table("Request metadata", request_data.items()),
                 self._table(
                     "Calibration target",
@@ -241,6 +259,17 @@ class HtmlRunReport:
             return ""
         return self._table("Topology", topology.items())
 
+    @staticmethod
+    def _fpga_revision_rows(value: object) -> list[tuple[str, object]]:
+        return [
+            (
+                f"{revision.get('controller')} FPGA firmware revision",
+                revision.get("version"),
+            )
+            for revision in (value if isinstance(value, list) else [])
+            if isinstance(revision, dict)
+        ]
+
     def _identities(self, identities: object) -> str:
         rows = []
         for identity in identities if isinstance(identities, list) else []:
@@ -250,15 +279,8 @@ class HtmlRunReport:
                     if key in ("role", "fpga_firmware"):
                         continue
                     if key == "fpga_firmware_revisions":
-                        for revision in value if isinstance(value, list) else []:
-                            if isinstance(revision, dict):
-                                rows.append(
-                                    (
-                                        role,
-                                        f"{revision.get('controller')} FPGA firmware revision",
-                                        revision.get("version"),
-                                    )
-                                )
+                        for label, version in self._fpga_revision_rows(value):
+                            rows.append((role, label, version))
                         continue
                     rows.append((role, key, value))
         return (
@@ -311,24 +333,13 @@ class HtmlRunReport:
         tuned = result.get("requested_final_config")
         is_passing = result.get("status") == "passed"
         if isinstance(default, dict) and isinstance(tuned, dict):
-            rows = []
-            for key in sorted(set(default) | set(tuned)):
-                before = default.get(key)
-                after = tuned.get(key)
-                changed = before != after
-                cell_class = ' class="changed"' if changed else ""
-                rows.append(
-                    f"<tr><td>{self._text(key)}</td><td>{self._text(before)}</td><td{cell_class}>{self._text(after)}</td></tr>"
-                )
             comparison_title = (
                 "Default versus tuned configuration"
                 if is_passing
                 else "Default versus requested tuned configuration (unconfirmed)"
             )
             sections.append(
-                f"<h2>{comparison_title}</h2><table><thead><tr><th>Key</th><th>Default</th><th>Tuned</th></tr></thead><tbody>"
-                + "".join(rows)
-                + "</tbody></table>"
+                self._diff_table(comparison_title, "Default", "Tuned", default, tuned)
             )
         if isinstance(result.get("requested_final_config"), dict):
             sections.append(
@@ -390,7 +401,31 @@ class HtmlRunReport:
             self._table(title, rows, ("Setting", "Requested", "Actual")) if rows else ""
         )
 
-    def _final_setting_checks(self, checks: object) -> str:
+    def _diff_table(
+        self,
+        title: str,
+        left_header: str,
+        right_header: str,
+        left: dict,
+        right: dict,
+    ) -> str:
+        rows = []
+        for key in sorted(set(left) | set(right)):
+            before = left.get(key)
+            after = right.get(key)
+            cell_class = ' class="changed"' if before != after else ""
+            rows.append(
+                f"<tr><td>{self._text(key)}</td><td>{self._text(before)}</td><td{cell_class}>{self._text(after)}</td></tr>"
+            )
+        return (
+            f"<h2>{title}</h2><table><thead><tr><th>Key</th><th>{left_header}</th><th>{right_header}</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+    def _final_setting_checks(
+        self, checks: object, title: str = "Final 2 percent setting checks"
+    ) -> str:
         rows = []
         for check in checks if isinstance(checks, list) else []:
             if isinstance(check, dict):
@@ -410,7 +445,7 @@ class HtmlRunReport:
                 )
         return (
             self._table(
-                "Final 2 percent setting checks",
+                title,
                 rows,
                 (
                     "Setting",
@@ -491,20 +526,42 @@ class HtmlRunReport:
                     )
                 )
         return (
-            self._table(
-                "Procedure events", rows, ("Timestamp", "Stage", "Message", "Data")
-            )
+            self._table(self._EVENTS_TITLE, rows, self._EVENTS_HEADERS)
             if rows
             else ""
         )
 
     def _artifacts(self, artifacts: object) -> str:
-        rows = [(artifact,) for artifact in artifacts if isinstance(artifacts, list)]
+        rows = (
+            [(artifact,) for artifact in artifacts]
+            if isinstance(artifacts, list)
+            else []
+        )
         return self._table("Artifacts", rows, ("Artifact",)) if rows else ""
 
     def _report_artifact(self, artifact: object) -> str:
         return (
-            self._table("HTML report artifact state", artifact.items())
+            self._table(self._REPORT_ARTIFACT_TITLE, artifact.items())
             if isinstance(artifact, dict)
             else ""
         )
+
+    @staticmethod
+    def _criterion_rows(criteria: object) -> list[tuple[object, object, object]]:
+        if not isinstance(criteria, list):
+            return []
+        return [
+            (item.get("name"), item.get("passed"), item.get("detail"))
+            for item in criteria
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _readback_rows(readbacks: object) -> list[tuple[object, object, object]]:
+        if not isinstance(readbacks, list):
+            return []
+        return [
+            (item.get("name"), item.get("requested"), item.get("actual"))
+            for item in readbacks
+            if isinstance(item, dict)
+        ]

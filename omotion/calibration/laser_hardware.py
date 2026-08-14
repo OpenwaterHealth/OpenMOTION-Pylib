@@ -15,6 +15,7 @@ from typing import Callable
 
 from omotion.MotionInterface import MotionInterface
 from .laser import (
+    MIN_PULSE_COUNT_EXCLUSIVE,
     EnergyMeasurement,
     OphirIdentity,
     SettingReadback,
@@ -55,7 +56,7 @@ class OphirEnergyMeter:
     """Channel-0 Ophir COM adapter with exact WI setting evidence."""
 
     _CHANNEL = 0
-    _MINIMUM_VALID_SAMPLES = 26
+    _MINIMUM_VALID_SAMPLES = MIN_PULSE_COUNT_EXCLUSIVE + 1
     _TIMESTAMP_HOST_TOLERANCE_MS = 50.0
 
     def __init__(

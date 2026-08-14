@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +11,10 @@ from .reporting import HtmlRunReport, json_safe_value
 class DualSensorHtmlRunReport(HtmlRunReport):
     """Render workflow-owned paired evidence without deriving acceptance."""
 
+    _DOCUMENT_TITLE = "WI-00015 dual-sensor laser calibration report"
+    _DOCUMENT_HEADING = "WI-00015 Dual-Sensor Laser Calibration"
+    _HEADING_SELECTOR = "h1,h2,h3"
+
     def render(
         self, request: object, result: object, json_path: str | Path | None = None
     ) -> str:
@@ -19,30 +22,13 @@ class DualSensorHtmlRunReport(HtmlRunReport):
         result_data = json_safe_value(result)
         if not isinstance(request_data, dict) or not isinstance(result_data, dict):
             raise TypeError("WI15 dual report inputs must be dataclass-like records.")
-        raw_json_name = self._relative_json_name(json_path)
-        status = result_data.get("status", "unknown")
-        failure_reason = result_data.get("failure_reason")
-        parts = [
-            "<!doctype html>",
-            '<html lang="en"><head><meta charset="utf-8">',
-            "<title>WI-00015 dual-sensor laser calibration report</title>",
-            "<style>body{font-family:Arial,sans-serif;margin:2rem;color:#18212b;}"
-            "h1,h2,h3{color:#102a43;}table{border-collapse:collapse;width:100%;margin:0.5rem 0 1.5rem;}"
-            "th,td{border:1px solid #9fb3c8;padding:0.45rem;text-align:left;vertical-align:top;}"
-            "th{background:#eaf2f8;}.status{font-size:1.4rem;font-weight:bold;padding:0.7rem;}"
-            ".status-passed{background:#d9f7e5;color:#075c35;}.status-failed,.status-failed_ncr{background:#ffe0e0;color:#8b0000;}"
-            ".status-canceled{background:#fff2cc;color:#6f5300;}.reason{font-size:1.15rem;font-weight:bold;color:#8b0000;}"
-            ".changed{background:#fff3bf;font-weight:bold;}.muted{color:#52616b;}</style></head><body>",
-            "<h1>WI-00015 Dual-Sensor Laser Calibration</h1>",
-            f'<p class="status status-{escape(str(status), quote=True)}">Status: {self._text(status)}</p>',
-        ]
-        if failure_reason is not None:
-            parts.append(
-                f'<p class="reason">Terminal reason: {self._text(failure_reason)}</p>'
-            )
+        parts = self._preamble(
+            result_data.get("status", "unknown"),
+            result_data.get("failure_reason"),
+            self._relative_json_name(json_path),
+        )
         parts.extend(
             [
-                f'<p>Raw structured evidence: <a href="{escape(raw_json_name, quote=True)}">{self._text(raw_json_name)}</a></p>',
                 self._table(
                     "Calibration target",
                     (
