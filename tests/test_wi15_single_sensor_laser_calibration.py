@@ -408,6 +408,23 @@ def test_preflight_accepts_exact_complete_ophir_setting_evidence():
     assert recorder.checkpoints == [result]
 
 
+def test_right_side_success_mirrors_left_at_the_workflow_level():
+    """The declared side is data, not logic: a right-only unit passes end to end."""
+    snapshot = _preflight(topology=TopologySnapshot(True, False, True))
+    bench = FakeLaserBench([snapshot])
+    recorder = FakeRecorder()
+
+    result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(
+        _request(side="right")
+    )
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.side == "right"
+    assert bench.calls[0] == "preflight:right"
+    assert "write_user_configuration" in bench.calls
+    assert recorder.checkpoints == [result]
+
+
 @pytest.mark.parametrize(
     "evidence",
     [

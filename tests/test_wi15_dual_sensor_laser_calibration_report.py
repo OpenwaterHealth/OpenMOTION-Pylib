@@ -205,8 +205,10 @@ def test_dual_report_renders_complete_passing_evidence_with_audit_language(tmp_p
     assert "Minimum accepted energy uJ" in html
     assert "Maximum accepted energy uJ" in html
     assert "Distance from 350 uJ" in html
-    assert "Request metadata" not in html
-    assert "Operator &lt;A&gt;" not in html
+    # Common audit metadata (addendum section 6): the operator identity must
+    # reach the human report, HTML-escaped.
+    assert "Request metadata" in html
+    assert "Operator &lt;A&gt;" in html
     assert "CONSOLE-001" in html and "LEFT-001" in html and "RIGHT-001" in html
     for expected in (
         "TA FPGA firmware revision",

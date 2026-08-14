@@ -168,6 +168,10 @@ class SingleSensorLaserCalibrationResult:
     target_energy_uj: float = TARGET_ENERGY_UJ
     report_paths: tuple[Path | str, ...] = ()
     report_artifact: ReportArtifactEvidence | None = None
+    # Bench-close failure captured by the operator script (parity with the
+    # dual and safety procedures): cleanup problems must be visible evidence,
+    # never silently swallowed after a pass.
+    resource_cleanup_failure: str | None = None
 
     def __post_init__(self) -> None:
         for name in (

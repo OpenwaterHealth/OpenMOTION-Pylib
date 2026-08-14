@@ -103,6 +103,8 @@ class FakeDualBench:
         self.user_configuration_writes.append(written)
         if self.config_write_results:
             result = self.config_write_results.popleft()
+            if isinstance(result, Exception):
+                raise result
             return dict(result) if isinstance(result, dict) else result
         return written
 
@@ -149,7 +151,10 @@ class PlacementResponses:
 
     def __call__(self, request):
         self.requests.append(request)
-        return self.responses.popleft() if self.responses else True
+        response = self.responses.popleft() if self.responses else True
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def valid_request(tmp_path=Path("run-output")):
@@ -190,6 +195,7 @@ def run_workflow(
     ("changes", "reason_fragment"),
     [
         ({"topology": TopologySnapshot(True, True, False)}, "both left and right"),
+        ({"topology": TopologySnapshot(True, False, True)}, "both left and right"),
         ({"console_serial": None}, "Console serial"),
         ({"left_serial": "  "}, "Left-sensor serial"),
         ({"right_serial": None}, "Right-sensor serial"),
@@ -256,6 +262,40 @@ def test_declined_sensor_switch_cancels_before_the_associated_measurement():
     assert [item.to_side for item in placements.requests] == ["left", "right"]
     assert bench.calls.count("measure_energy") == 1
     assert len(bench.user_configuration_writes) == 1
+
+
+def test_canceled_sensor_switch_acknowledgement_cancels_the_run():
+    """Ctrl-C / EOF at the placement prompt is a cancel, not a crash."""
+    bench = FakeDualBench([valid_measurement(350)])
+    result, _, placements = run_workflow(
+        bench, responses=[True, KeyboardInterrupt()]
+    )
+    assert result.status is ProcedureStatus.CANCELED
+    assert result.failure_kind is FailureKind.CANCELED
+    assert "canceled the requested switch to the right sensor" in result.failure_reason
+    assert bench.calls.count("measure_energy") == 1
+    assert len(bench.user_configuration_writes) == 1
+
+
+def test_final_configuration_write_failure_fails_without_pass_claim():
+    default_config = default_user_configuration()
+    bench = FakeDualBench(
+        [
+            valid_measurement(340),
+            valid_measurement(360),
+            valid_measurement(340),
+            valid_measurement(360),
+        ],
+        config_write_results=[
+            default_config,
+            RuntimeError("EEPROM write refused"),
+        ],
+    )
+    result, _, _ = run_workflow(bench)
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.CONFIGURATION
+    assert "write or readback failed" in result.failure_reason
+    assert result.final_config_readback is None
 
 
 def test_downward_tuning_targets_higher_side_without_reprompting_during_sweep():

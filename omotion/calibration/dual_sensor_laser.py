@@ -788,11 +788,12 @@ class DualSensorLaserCalibrationWorkflow(LaserWorkflowBase):
         self._checkpoint(state)
         if (
             state.pulse_requested_us >= MAX_PULSE_WIDTH_US
-            and source.measurement.mean_uj < 300.0
+            and source.measurement.mean_uj < self._minimum_accepted_energy_uj
         ):
             raise ProcedureFailure(
                 FailureKind.NCR,
-                "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
+                f"Energy remained below {self._minimum_accepted_energy_uj:g} uJ "
+                "at the 600 us pulse-width ceiling.",
             )
         if not state.used_upward_tuning:
             self._checked_register_write(
@@ -837,11 +838,13 @@ class DualSensorLaserCalibrationWorkflow(LaserWorkflowBase):
             active_setting = requested
             if (
                 active_setting == MAX_PULSE_WIDTH_US
-                and observation.measurement.mean_uj < 300.0
+                and observation.measurement.mean_uj
+                < self._minimum_accepted_energy_uj
             ):
                 raise ProcedureFailure(
                     FailureKind.NCR,
-                    "Energy remained below 300 uJ at the 600 us pulse-width ceiling.",
+                    f"Energy remained below {self._minimum_accepted_energy_uj:g} uJ "
+                    "at the 600 us pulse-width ceiling.",
                 )
             if observation.measurement.mean_uj >= target:
                 break

@@ -183,6 +183,11 @@ def test_600_us_configuration_requires_both_660_us_limits(
         ("dual", TopologySnapshot(True, True, True), "L-1", "R-1", True),
         ("dual", TopologySnapshot(True, True, False), "L-1", None, False),
         ("dual", TopologySnapshot(False, True, True), "L-1", "R-1", False),
+        # validate_shipping_topology is exact-match; the console-only operator
+        # flow tolerates attached sensors only because the workflow never
+        # invokes this check for console-only (the scan stage is skipped).
+        ("console-only", TopologySnapshot(True, True, True), "L-1", "R-1", False),
+        ("console-only", TopologySnapshot(True, False, False), None, None, True),
     ],
 )
 def test_shipping_topology_requires_exact_declared_sides_and_serials(

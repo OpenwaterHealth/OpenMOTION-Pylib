@@ -18,6 +18,8 @@ from omotion.calibration.script_support import (
     PROCEDURE_ID,
     OperatorCanceled as _OperatorCanceled,
     OperatorRunReportRequest,
+    apply_cleanup_failure,
+    close_bench_capturing,
     close_best_effort as _close_best_effort,
     confirmed as _confirmed,
     finalize_run_artifacts,
@@ -112,6 +114,10 @@ def main(
             started_at=datetime.now(timezone.utc),
         )
         result = workflow.run(request)
+        cleanup_failure = close_bench_capturing(bench)
+        bench = None
+        meter = None
+        result = apply_cleanup_failure(result, cleanup_failure, recorder)
         return finalize_run_artifacts(
             request=request,
             result=result,

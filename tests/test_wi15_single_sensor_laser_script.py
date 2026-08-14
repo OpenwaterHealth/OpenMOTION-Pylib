@@ -36,6 +36,7 @@ class FakeResult:
     failure_reason: str | None = None
     report_paths: tuple[Path, ...] = ()
     report_artifact: object | None = None
+    resource_cleanup_failure: str | None = None
 
 
 class FakeWorkflow:
@@ -99,6 +100,33 @@ def test_main_reprompts_side_echoes_it_and_requires_both_confirmations(monkeypat
     assert meter.closed == 0
     assert report.writes[0][1].report_paths == (recorder.json_path, report.report_path)
     assert recorder.checkpoints[-1].report_paths == (recorder.json_path, report.report_path)
+
+
+def test_bench_close_failure_downgrades_a_pass_and_is_recorded(monkeypatch, tmp_path):
+    """Cleanup problems are evidence (parity with the dual and safety runs)."""
+    script, recorder, _meter, bench, _workflow, report = configured_script(
+        monkeypatch, tmp_path
+    )
+
+    def fail_close():
+        bench.closed += 1
+        raise RuntimeError("Motion shutdown transport failed")
+
+    bench.close = fail_close
+
+    exit_code = script.main(
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+    )
+
+    assert exit_code == 1
+    assert bench.closed == 1
+    terminal = recorder.checkpoints[-1]
+    assert terminal.status is ProcedureStatus.FAILED
+    assert terminal.failure_reason == "Hardware resource cleanup failed."
+    assert terminal.resource_cleanup_failure == "Motion shutdown transport failed"
+    assert report.writes[-1][1].resource_cleanup_failure == (
+        "Motion shutdown transport failed"
+    )
 
 
 def test_fixture_confirmation_requires_only_ophir_zero_cm_placement(monkeypatch, tmp_path):

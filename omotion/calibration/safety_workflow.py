@@ -284,7 +284,8 @@ class SafetyCalibrationWorkflow:
             if not isinstance(request.shipping_topology, ShippingTopology):
                 raise _ProcedureFailure(
                     FailureKind.SETUP,
-                    "Declared shipping topology must be single-left, single-right, or dual.",
+                    "Declared shipping topology must be console-only, "
+                    "single-left, single-right, or dual.",
                 )
             stage(
                 "1. Console-only safety calibration preflight",

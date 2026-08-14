@@ -29,6 +29,9 @@ class DualSensorHtmlRunReport(HtmlRunReport):
         )
         parts.extend(
             [
+                # Operator, build revision, fixture, and procedure revision are
+                # audit-required common evidence (process addendum section 6).
+                self._table("Request metadata", request_data.items()),
                 self._table(
                     "Calibration target",
                     (

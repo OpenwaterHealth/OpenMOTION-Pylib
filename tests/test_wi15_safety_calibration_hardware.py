@@ -428,6 +428,7 @@ def test_power_cycle_stops_activity_then_delegates_observed_state_callables():
         (ShippingTopology.SINGLE_LEFT, (0xFF, 0)),
         (ShippingTopology.SINGLE_RIGHT, (0, 0xFF)),
         (ShippingTopology.DUAL, (0xFF, 0xFF)),
+        (ShippingTopology.CONSOLE_ONLY, (0, 0)),
     ],
 )
 def test_normal_scan_uses_exact_shipping_masks_and_no_overrides(topology, masks):
@@ -435,6 +436,7 @@ def test_normal_scan_uses_exact_shipping_masks_and_no_overrides(topology, masks)
         ShippingTopology.SINGLE_LEFT: (True, True, False),
         ShippingTopology.SINGLE_RIGHT: (True, False, True),
         ShippingTopology.DUAL: (True, True, True),
+        ShippingTopology.CONSOLE_ONLY: (True, False, False),
     }[topology]
     bench, interface, _, _ = _bench(raw_topology)
 
@@ -501,3 +503,17 @@ def test_close_attempts_scan_trigger_and_interface_cleanup_after_first_error():
         for call in interface.calls
     )
     assert interface.calls[-1] == "interface.stop"
+
+
+def test_read_adc_ma_returns_scaled_engineering_units_not_raw_counts():
+    """WI steps 30-31 operate on scaled mA (raw x 1.86), never raw counts."""
+    bench, _, _, _ = _bench()
+    assert bench.read_adc_ma("SAFETY_OPT") == pytest.approx(10 * 1.86)
+    assert bench.read_adc_ma("SAFETY_EE") == pytest.approx(20 * 1.86)
+
+
+def test_normal_scan_reapplies_the_laser_drive_point_before_scanning():
+    """The preceding mains cycle cleared the laser-driver registers."""
+    bench, interface, _, _ = _bench((True, True, False))
+    bench.run_normal_scan(ShippingTopology.SINGLE_LEFT, duration_s=1.0)
+    assert "apply_laser_power" in interface.calls

@@ -317,6 +317,12 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
                 declared_topology, duration_s, topology_check.detail
             )
 
+        # The mains cycle that precedes this stage clears the laser-driver
+        # registers (see MotionInterface.apply_laser_power); without re-applying
+        # the persisted drive point the "normal scan" would not fire the laser
+        # at the calibrated settings.
+        self.bring_up_laser_configuration()
+
         request = ScanRequest(
             subject_id="WI15-SAFETY-CALIBRATION",
             duration_sec=int(duration_s),
