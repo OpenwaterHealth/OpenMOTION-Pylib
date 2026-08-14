@@ -403,18 +403,26 @@ class SingleSensorLaserCalibrationWorkflow(LaserWorkflowBase):
             self._checkpoint(state)
         except ProcedureFailure as caught_failure:
             failure = caught_failure
-        except Exception:
+        except Exception as error:
+            # The category stays coarse, but the exception identity must
+            # survive into the evidence - an opaque reason made a live
+            # failure undiagnosable (run WI-00015-20260814T165720Z).
+            detail = f"{type(error).__name__}: {error}".rstrip(": ")
             if state.measurement_started:
                 failure = ProcedureFailure(
-                    FailureKind.MEASUREMENT, "Energy measurement failed."
+                    FailureKind.MEASUREMENT,
+                    f"Energy measurement failed ({detail}).",
                 )
             elif configuration_started:
                 failure = ProcedureFailure(
                     FailureKind.CONFIGURATION,
-                    "Default configuration or active-setting check failed.",
+                    "Default configuration or active-setting check failed "
+                    f"({detail}).",
                 )
             else:
-                failure = ProcedureFailure(FailureKind.SETUP, "Bench preflight failed.")
+                failure = ProcedureFailure(
+                    FailureKind.SETUP, f"Bench preflight failed ({detail})."
+                )
         finally:
             if not state.trigger_stopped:
                 try:

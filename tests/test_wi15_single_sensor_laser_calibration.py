@@ -472,7 +472,9 @@ def test_preflight_exception_becomes_a_checkpointed_setup_failure_and_stops_trig
     result = SingleSensorLaserCalibrationWorkflow(bench, recorder).run(_request())
 
     assert result.status is ProcedureStatus.FAILED
-    assert result.failure_reason == "Bench preflight failed."
+    assert result.failure_reason == (
+        "Bench preflight failed (RuntimeError: meter startup failed)."
+    )
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == [result]
 
@@ -902,7 +904,9 @@ def test_persistent_measurement_stop_failure_is_reported_without_losing_failure_
 
     assert result.status is ProcedureStatus.FAILED
     assert result.failure_kind is FailureKind.MEASUREMENT
-    assert result.failure_reason == "Energy measurement failed."
+    assert result.failure_reason == (
+        "Energy measurement failed (RuntimeError: first stop failed)."
+    )
     assert result.trigger_cleanup_failure == "Trigger stop failed."
     assert result.events[-2].stage == "trigger_cleanup"
     assert bench.calls.count("stop_trigger") == 2
