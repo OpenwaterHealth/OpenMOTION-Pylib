@@ -29,12 +29,14 @@ class FakeSensor:
 
 
 class FakeInterface:
-    def __init__(self, *, outcome="passed", refuse_start=False, **_kwargs):
+    def __init__(self, *, outcome="passed", refuse_start=False,
+                 fire_confirm=False, **_kwargs):
         self.console = FakeConsole()
         self.left = FakeSensor()
         self.right = FakeSensor()
         self.outcome = outcome
         self.refuse_start = refuse_start
+        self.fire_confirm = fire_confirm
         self.requests = []
         self.configure_requests = []
         self.started = 0
@@ -67,6 +69,21 @@ class FakeInterface:
         self.requests.append(request)
         if self.refuse_start:
             return False
+        if self.fire_confirm:
+            row = SimpleNamespace(side="right", cam_id=5, mean=62.1,
+                                  avg_contrast=0.31)
+            consented = bool(on_confirm_fn and on_confirm_fn([row]))
+            if not consented:
+                on_complete_fn(
+                    SimpleNamespace(
+                        outcome=SimpleNamespace(value="canceled"),
+                        error="calibration scan below threshold on R5; not written",
+                        rows=[],
+                        csv_path="",
+                        json_path="",
+                    )
+                )
+                return True
         on_complete_fn(
             SimpleNamespace(
                 outcome=SimpleNamespace(value=self.outcome),
@@ -83,9 +100,10 @@ class FakeInterface:
 
 
 def run_main(tmp_path, monkeypatch, *, argv_extra=(), answers=(),
-             outcome="passed", refuse_start=False):
+             outcome="passed", refuse_start=False, fire_confirm=False):
     script = load_script()
-    fake = FakeInterface(outcome=outcome, refuse_start=refuse_start)
+    fake = FakeInterface(outcome=outcome, refuse_start=refuse_start,
+                         fire_confirm=fire_confirm)
     monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
     replies = iter(answers)
     lines = []
@@ -198,3 +216,31 @@ def test_refused_engine_start_fails_and_stops_interface(monkeypatch, tmp_path):
     )
     assert code == 1
     assert fake.stopped == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_code"), [("yes", 0), ("no", 1)]
+)
+def test_below_threshold_gate_shows_rows_and_asks_the_operator(
+    monkeypatch, tmp_path, answer, expected_code
+):
+    code, fake, lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "right", "--phantom-confirmed"],
+        answers=(answer,),
+        fire_confirm=True,
+    )
+    assert code == expected_code
+    assert any("Below-threshold gate fired" in line for line in lines)
+    assert any("right" in line and "62.100" in line for line in lines)
+
+
+def test_allow_dim_consents_without_prompting(monkeypatch, tmp_path):
+    code, fake, lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "right", "--phantom-confirmed", "--allow-dim"],
+        answers=(),  # any prompt would exhaust the empty iterator and raise
+        fire_confirm=True,
+    )
+    assert code == 0
+    assert any("--allow-dim consents" in line for line in lines)

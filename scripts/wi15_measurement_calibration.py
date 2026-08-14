@@ -283,12 +283,28 @@ def main(
         def on_progress(stage: str) -> None:
             output_func(f"  [{dt.datetime.now():%H:%M:%S}] {stage}")
 
-        confirm_fn = None
-        if args.allow_dim:
-            def confirm_fn(rows) -> bool:
-                output_func("  below-threshold gate fired; --allow-dim "
-                            "consents to write")
+        def confirm_fn(rows) -> bool:
+            """Pre-write gate: show what measured low, then ask the operator.
+
+            The engine pauses its watchdog across this call, so operator
+            think-time is safe. Returning False aborts without writing.
+            """
+            output_func("Below-threshold gate fired. Measured rows:")
+            output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} {'avg_contrast':>13}")
+            for row in rows:
+                output_func(f"  {row.side:<6} {row.cam_id:>3} "
+                            f"{row.mean:>10.3f} {row.avg_contrast:>13.4f}")
+            if args.allow_dim:
+                output_func("--allow-dim consents to writing this calibration.")
                 return True
+            try:
+                return _confirmed(
+                    "Write this below-threshold calibration to the console "
+                    "anyway? (yes/no): ",
+                    input_func,
+                )
+            except (EOFError, KeyboardInterrupt):
+                return False
 
         output_func(f"*** CALIBRATION STARTING (side={side}, laser will "
                     "fire; do not touch the setup) ***")
