@@ -8,6 +8,12 @@ from typing import Iterable, Literal
 
 
 SensorSide = Literal["left", "right"]
+REQUIRED_CONSOLE_FPGA_CONTROLLERS = (
+    "TA",
+    "SEED",
+    "SAFETY_EE",
+    "SAFETY_OPT",
+)
 
 
 class ProcedureStatus(str, Enum):
@@ -65,12 +71,19 @@ class FinalSettingCheck:
 
 
 @dataclass(frozen=True)
+class FpgaFirmwareRevision:
+    controller: str
+    version: str
+
+
+@dataclass(frozen=True)
 class DeviceIdentity:
     role: str
     serial: str | None
     firmware: str | None
     hardware_id: str | None
     fpga_firmware: str | None = None
+    fpga_firmware_revisions: tuple[FpgaFirmwareRevision, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,7 +125,7 @@ PULSE_WIDTH_STEP_US = 10
 MAX_PULSE_WIDTH_US = 600
 TEMPORARY_PULSE_WIDTH_LIMIT_US = 660
 
-_CANONICAL_DEFAULT_USER_CONFIG = MappingProxyType({
+DEFAULT_USER_CONFIG = MappingProxyType({
     "TA_PULSE_WIDTH": 500,
     "TA_CURRENT_DRV": 5000,
     "SEED_CW_GAIN": 140,
@@ -125,14 +138,10 @@ _CANONICAL_DEFAULT_USER_CONFIG = MappingProxyType({
     "TEC_TRIP": 40,
 })
 
-# Compatibility export: callers may compare, copy, or even mutate this dict,
-# but workflow runs always obtain a fresh copy of the private canonical data.
-DEFAULT_USER_CONFIG = dict(_CANONICAL_DEFAULT_USER_CONFIG)
-
 
 def default_user_configuration() -> dict[str, int]:
     """Return a fresh copy of the approved ten-key WI-00015 defaults."""
-    return dict(_CANONICAL_DEFAULT_USER_CONFIG)
+    return dict(DEFAULT_USER_CONFIG)
 
 
 def _is_finite(value: object) -> bool:
@@ -228,7 +237,9 @@ def validate_exact_dual_topology(topology: TopologySnapshot) -> CriterionResult:
 
 
 def calculate_pair_metrics(
-    left_mean_uj: float, right_mean_uj: float
+    left_mean_uj: float,
+    right_mean_uj: float,
+    target_energy_uj: float = TARGET_ENERGY_UJ,
 ) -> PairMetrics:
     """Calculate immutable, side-preserving evidence for one complete pair."""
     difference = abs(left_mean_uj - right_mean_uj)
@@ -238,17 +249,22 @@ def calculate_pair_metrics(
         right_mean_uj=right_mean_uj,
         difference_uj=difference,
         midpoint_uj=midpoint,
-        midpoint_distance_uj=abs(midpoint - TARGET_ENERGY_UJ),
-        left_offset_uj=left_mean_uj - TARGET_ENERGY_UJ,
-        right_offset_uj=right_mean_uj - TARGET_ENERGY_UJ,
+        midpoint_distance_uj=abs(midpoint - target_energy_uj),
+        left_offset_uj=left_mean_uj - target_energy_uj,
+        right_offset_uj=right_mean_uj - target_energy_uj,
     )
 
 
-def both_energies_accepted(left_mean_uj: float, right_mean_uj: float) -> bool:
+def both_energies_accepted(
+    left_mean_uj: float,
+    right_mean_uj: float,
+    minimum_energy_uj: float = MIN_ACCEPTABLE_ENERGY_UJ,
+    maximum_energy_uj: float = MAX_ACCEPTABLE_ENERGY_UJ,
+) -> bool:
     """Return whether both finite side means satisfy the inclusive WI window."""
     return all(
         _is_finite(value)
-        and MIN_ACCEPTABLE_ENERGY_UJ <= value <= MAX_ACCEPTABLE_ENERGY_UJ
+        and minimum_energy_uj <= value <= maximum_energy_uj
         for value in (left_mean_uj, right_mean_uj)
     )
 
@@ -257,6 +273,39 @@ def validate_serial(serial: str | None) -> CriterionResult:
     """Require a nonblank textual serial number for reportable identity."""
     passed = isinstance(serial, str) and bool(serial.strip())
     return CriterionResult("serial", passed, "Serial must be nonblank text.")
+
+
+def validate_console_fpga_revisions(identity: DeviceIdentity) -> CriterionResult:
+    """Require one nonblank firmware revision for every console-board FPGA."""
+    revisions = identity.fpga_firmware_revisions
+    records_are_typed = isinstance(revisions, tuple) and all(
+        isinstance(revision, FpgaFirmwareRevision) for revision in revisions
+    )
+    controllers = (
+        tuple(revision.controller for revision in revisions)
+        if records_are_typed
+        else ()
+    )
+
+    def valid_version(version: object) -> bool:
+        if not isinstance(version, str):
+            return False
+        parts = version.split(".")
+        return len(parts) == 3 and all(
+            part.isascii() and part.isdigit() and 0 <= int(part) <= 255
+            for part in parts
+        )
+
+    passed = (
+        records_are_typed
+        and controllers == REQUIRED_CONSOLE_FPGA_CONTROLLERS
+        and all(valid_version(revision.version) for revision in revisions)
+    )
+    return CriterionResult(
+        "console_fpga_firmware_revisions",
+        passed,
+        "Console identity must include TA, SEED, SAFETY_EE, and SAFETY_OPT FPGA firmware revisions.",
+    )
 
 
 def percent_difference(requested: float, actual: float) -> float:
@@ -274,30 +323,6 @@ def within_percent(requested: float, actual: float, tolerance_percent: float) ->
         _is_finite(tolerance_percent)
         and tolerance_percent >= 0
         and percent_difference(requested, actual) <= tolerance_percent
-    )
-
-
-def select_closest_valid_setting(
-    candidates: Iterable[tuple[float, EnergyMeasurement]],
-) -> tuple[float, EnergyMeasurement] | None:
-    """Select the valid observed setting nearest the 350 uJ target.
-
-    A lower requested setting deterministically wins equal-distance ties for
-    both current and pulse-width tuning directions.
-    """
-    valid_candidates = [
-        candidate
-        for candidate in candidates
-        if all(result.passed for result in validate_energy_measurement(candidate[1]))
-    ]
-    if not valid_candidates:
-        return None
-    return min(
-        valid_candidates,
-        key=lambda candidate: (
-            abs(candidate[1].mean_uj - TARGET_ENERGY_UJ),
-            candidate[0],
-        ),
     )
 
 

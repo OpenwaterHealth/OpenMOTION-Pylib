@@ -150,6 +150,14 @@ observation reaches 26 valid samples, the result fails the unchanged criteria.
 Misaligned arrays still fail immediately, and every successfully started
 stream is stopped or its stop failure is propagated for cleanup retry.
 
+A status-zero timestamp can also arrive from an older buffered epoch after the
+priming drain. A non-increasing timestamp is excluded and counted as discarded.
+If a positive timestamp jump is longer than the current stream has existed,
+plus a 50-millisecond transport tolerance, the preceding status-zero prefix is
+also excluded and counted as discarded before fresh collection continues. A
+smaller positive gap remains in the rate calculation and can fail the 39-41 Hz
+criterion; this recovery therefore does not hide a genuine firing interruption.
+
 The energy acceptance interval is 300 through 400 microjoules, inclusive.
 
 ### 3.4 Approved laser adjustment algorithm

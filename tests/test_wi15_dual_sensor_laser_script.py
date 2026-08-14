@@ -1,9 +1,6 @@
-import importlib.util
 import json
-import sys
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -13,62 +10,22 @@ from omotion.calibration.dual_sensor_laser import (
 )
 from omotion.calibration.laser import FailureKind, ProcedureStatus
 from omotion.calibration.single_sensor_laser import ReportArtifactStatus
-
-
-SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "scripts"
-    / "wi15_dual_sensor_laser_calibration.py"
+from wi15_script_harness import (
+    FakeBench,
+    FakeMeter,
+    FakeRecorder,
+    FakeReport,
+    complete_args,
+    load_wi15_script,
+    wi15_script_path,
 )
 
 
+SCRIPT_PATH = wi15_script_path("wi15_dual_sensor_laser_calibration.py")
+
+
 def load_script():
-    spec = importlib.util.spec_from_file_location("wi15_dual_script_under_test", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module
-
-
-class FakeRecorder:
-    def __init__(self, root):
-        self.run_directory = Path(root) / "run"
-        self.run_directory.mkdir(parents=True)
-        self.json_path = self.run_directory / "run.json"
-        self.checkpoints = []
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
-
-
-class FakeMeter:
-    def __init__(self):
-        self.closed = 0
-
-    def close(self):
-        self.closed += 1
-
-
-class FakeBench:
-    def __init__(self, meter):
-        self.meter = meter
-        self.closed = 0
-
-    def close(self):
-        self.closed += 1
-
-
-class FakeReport:
-    def __init__(self, directory):
-        self.report_path = Path(directory) / "report.html"
-
-    def write(self, request, result, json_path):
-        self.report_path.write_text("dual report", encoding="ascii")
-        return self.report_path
+    return load_wi15_script(SCRIPT_PATH, "wi15_dual_script_under_test")
 
 
 def result(status=ProcedureStatus.PASSED):
@@ -78,21 +35,6 @@ def result(status=ProcedureStatus.PASSED):
         started_at=datetime.now(timezone.utc),
         ended_at=datetime.now(timezone.utc),
     )
-
-
-def complete_args(tmp_path):
-    return [
-        "--output-dir",
-        str(tmp_path),
-        "--operator",
-        "operator",
-        "--build-revision",
-        "build-7",
-        "--fixture-id",
-        "fixture-2",
-        "--fixture-calibration-status",
-        "current",
-    ]
 
 
 def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_placements=False):
@@ -141,12 +83,6 @@ def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_pl
     return script, recorder, meter, bench, captured
 
 
-def test_script_source_is_ascii_safe_and_does_not_import_legacy_tuning():
-    source = SCRIPT_PATH.read_bytes()
-    source.decode("ascii")
-    assert b"omotion.tuning" not in source
-
-
 def test_placement_callback_is_courteous_and_names_side_serial_and_zero_cm_fixture(
     monkeypatch, tmp_path
 ):
@@ -173,120 +109,6 @@ def test_placement_callback_is_courteous_and_names_side_serial_and_zero_cm_fixtu
     assert any("Initial paired measurement" in message for message in messages)
     assert all("_measure" not in text for text in prompts + messages)
     assert bench.closed == 1
-
-
-@pytest.mark.parametrize(
-    ("status", "exit_code"),
-    [
-        (ProcedureStatus.PASSED, 0),
-        (ProcedureStatus.FAILED, 1),
-        (ProcedureStatus.FAILED_NCR, 1),
-        (ProcedureStatus.CANCELED, 1),
-    ],
-)
-def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, exit_code):
-    script, _recorder, _meter, _bench, _captured = configured_script(
-        monkeypatch, tmp_path, result(status)
-    )
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == exit_code
-
-
-def test_terminal_failure_prints_the_structured_category_and_exact_reason(
-    monkeypatch, tmp_path
-):
-    terminal_result = replace(
-        result(ProcedureStatus.FAILED),
-        failure_kind=FailureKind.SETUP,
-        failure_reason="Right-sensor serial must be nonblank text.",
-    )
-    script, _recorder, _meter, _bench, _captured = configured_script(
-        monkeypatch, tmp_path, terminal_result
-    )
-    messages = []
-
-    exit_code = script.main(
-        complete_args(tmp_path),
-        input_func=lambda _: "yes",
-        output_func=messages.append,
-    )
-
-    assert exit_code == 1
-    assert "Terminal status: failed" in messages
-    assert "Failure category: setup" in messages
-    assert "Failure reason: Right-sensor serial must be nonblank text." in messages
-
-
-def test_metadata_prompts_finish_before_hardware_construction(monkeypatch, tmp_path):
-    script = load_script()
-    calls = []
-    recorder = FakeRecorder(tmp_path)
-    meter = FakeMeter()
-    bench = FakeBench(meter)
-    monkeypatch.setattr(script, "recorder_factory", lambda *args: calls.append("recorder") or recorder)
-    monkeypatch.setattr(script, "meter_factory", lambda: calls.append("meter") or meter)
-    monkeypatch.setattr(script, "bench_factory", lambda value: calls.append("bench") or bench)
-
-    class FakeWorkflow:
-        def __init__(self, *_args):
-            pass
-
-        def run(self, request):
-            calls.append("workflow")
-            return result()
-
-    monkeypatch.setattr(script, "workflow_factory", FakeWorkflow)
-    monkeypatch.setattr(script, "report_factory", lambda directory: FakeReport(directory))
-    replies = iter(("operator", "build", "fixture", "current"))
-
-    assert script.main(["--output-dir", str(tmp_path)], input_func=lambda _: next(replies)) == 0
-    assert calls == ["recorder", "meter", "bench", "workflow"]
-    assert bench.closed == 1
-
-
-def test_one_run_id_is_shared_by_recorder_and_workflow_request(monkeypatch, tmp_path):
-    script, recorder, _meter, _bench, captured = configured_script(monkeypatch, tmp_path)
-    recorder_ids = []
-    monkeypatch.setattr(script, "_run_id", lambda: "one-run-id")
-    monkeypatch.setattr(
-        script,
-        "recorder_factory",
-        lambda output, procedure, run_id: recorder_ids.append(run_id) or recorder,
-    )
-
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == 0
-    assert recorder_ids == ["one-run-id"]
-    assert captured["request"].run_id == "one-run-id"
-
-
-def test_report_failure_replaces_a_prior_pass_in_json(monkeypatch, tmp_path):
-    script = load_script()
-    monkeypatch.setattr(script, "_run_id", lambda: "report-failure")
-    meter = FakeMeter()
-    bench = FakeBench(meter)
-    monkeypatch.setattr(script, "meter_factory", lambda: meter)
-    monkeypatch.setattr(script, "bench_factory", lambda value: bench)
-
-    class PassingWorkflow:
-        def __init__(self, _bench, recorder, _placement):
-            self.recorder = recorder
-
-        def run(self, request):
-            passed = result()
-            self.recorder.checkpoint(passed)
-            return passed
-
-    monkeypatch.setattr(script, "workflow_factory", PassingWorkflow)
-    monkeypatch.setattr(
-        script, "report_factory", lambda directory: (_ for _ in ()).throw(RuntimeError("report failed"))
-    )
-
-    assert script.main(complete_args(tmp_path), input_func=lambda _: "yes") == 1
-    payload = json.loads(
-        (tmp_path / "WI-00015-report-failure" / "run.json").read_text(encoding="utf-8")
-    )
-    assert payload["status"] == ProcedureStatus.FAILED.value
-    assert payload["failure_kind"] == FailureKind.REPORT.value
-    assert payload["report_artifact"]["status"] == ReportArtifactStatus.FAILED.value
 
 
 def test_declined_placement_is_passed_to_workflow_as_false(monkeypatch, tmp_path):

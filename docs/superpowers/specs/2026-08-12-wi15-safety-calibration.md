@@ -33,6 +33,8 @@ The process addendum controls if the sources conflict.
 ### Included
 
 - Console connection and identity validation.
+- Mandatory TA, Seed, Safety EE, and Safety OPT console-board FPGA firmware
+  revision readback before configuration mutation or firing.
 - Current tuned configuration capture.
 - TA current and pulse-width plus/minus 2 percent readback check.
 - At least ten scaled-mA ADC samples per safety controller while firing.
@@ -209,6 +211,8 @@ path after a failed write, persistence check, or safety scan.
 Record:
 
 - console and final-scan sensor identities/topology;
+- all four console-board FPGA firmware revisions, without sensor-camera FPGA
+  revision fields in the human report;
 - complete input configuration;
 - TA requested/readback values and 2 percent calculations;
 - trigger frequency result;

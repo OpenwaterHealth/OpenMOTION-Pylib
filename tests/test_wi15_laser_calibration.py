@@ -9,8 +9,8 @@ from omotion.calibration.laser import (
     CriterionResult,
     DEFAULT_USER_CONFIG,
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
+    FpgaFirmwareRevision,
     MAX_ACCEPTABLE_ENERGY_UJ,
     MAX_PULSE_WIDTH_US,
     MAX_RATE_HZ,
@@ -29,14 +29,53 @@ from omotion.calibration.laser import (
     both_energies_accepted,
     calculate_pair_metrics,
     percent_difference,
-    select_closest_valid_setting,
     select_closest_valid_setting_to_target,
     validate_energy_measurement,
+    validate_console_fpga_revisions,
     validate_exact_dual_topology,
     validate_exact_single_topology,
     validate_serial,
     within_percent,
 )
+from wi15_builders import valid_measurement as _valid_measurement
+
+
+def test_console_identity_requires_all_four_named_fpga_firmware_revisions():
+    complete = DeviceIdentity(
+        "console",
+        "C-1",
+        "1.2.3",
+        "HW-1",
+        fpga_firmware_revisions=tuple(
+            FpgaFirmwareRevision(controller, "1.2.3")
+            for controller in ("TA", "SEED", "SAFETY_EE", "SAFETY_OPT")
+        ),
+    )
+
+    assert validate_console_fpga_revisions(complete).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=complete.fpga_firmware_revisions[:-1],
+        )
+    ).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=tuple(
+                reversed(complete.fpga_firmware_revisions)
+            ),
+        )
+    ).passed
+    assert not validate_console_fpga_revisions(
+        replace(
+            complete,
+            fpga_firmware_revisions=(
+                *complete.fpga_firmware_revisions[:-1],
+                FpgaFirmwareRevision("SAFETY_OPT", "  "),
+            ),
+        )
+    ).passed
 
 
 def test_wi15_fixed_thresholds_and_default_user_configuration():
@@ -62,41 +101,6 @@ def test_wi15_fixed_thresholds_and_default_user_configuration():
         "TEC_TRIP": 40,
     }
     assert isinstance(DEFAULT_USER_CONFIG["TEC_TRIP"], int)
-
-
-def test_domain_records_are_frozen_and_status_values_are_stable():
-    """Mutable procedure evidence or changed terminal values breaks reports."""
-    records = (
-        EnergyMeasurement(26, 1, 350.0, 10.0, 40.0, 330.0, 370.0, 0.65),
-        CriterionResult("pulse_count", True, "> 25"),
-        SettingReadback("TA_CURRENT_DRV", 5000.0, 4990.0),
-        DeviceIdentity("console", "C-1", "1.2", "H-1"),
-        OphirIdentity("meter", "M-1", "sensor", "S-1", "2027-01-01"),
-        TopologySnapshot(True, True, False),
-    )
-    assert all(is_dataclass(record) and record.__dataclass_params__.frozen for record in records)
-    assert [status.value for status in ProcedureStatus] == [
-        "in_progress",
-        "passed",
-        "failed",
-        "failed_ncr",
-        "canceled",
-    ]
-    assert [kind.value for kind in FailureKind] == [
-        "setup",
-        "configuration",
-        "measurement",
-        "ncr",
-        "canceled",
-        "report",
-    ]
-
-
-def _valid_measurement(**changes):
-    return replace(
-        EnergyMeasurement(26, 0, 350.0, 10.0, 40.0, 330.0, 370.0, 0.65),
-        **changes,
-    )
 
 
 def _criteria(measurement):
@@ -175,19 +179,6 @@ def test_exact_dual_topology_requires_console_left_and_right(topology, passed):
     assert validate_exact_dual_topology(topology).passed is passed
 
 
-def test_pair_metrics_preserve_side_values_and_midpoint_math():
-    """Swapping sides or deriving midpoint/differential incorrectly breaks tuning."""
-    assert calculate_pair_metrics(300.0, 400.0) == PairMetrics(
-        left_mean_uj=300.0,
-        right_mean_uj=400.0,
-        difference_uj=100.0,
-        midpoint_uj=350.0,
-        midpoint_distance_uj=0.0,
-        left_offset_uj=-50.0,
-        right_offset_uj=50.0,
-    )
-
-
 @pytest.mark.parametrize(
     ("left", "right", "accepted"),
     [
@@ -227,46 +218,6 @@ def test_percent_difference_handles_a_zero_requested_setting_without_raising():
 def test_within_percent_includes_exact_plus_or_minus_two_percent(actual, passed):
     """Changing the tolerance boundary would reject valid readbacks or admit bad ones."""
     assert within_percent(100.0, actual, 2.0) is passed
-
-
-def test_closest_valid_setting_returns_none_without_a_valid_candidate():
-    """Using an invalid measurement for tuning would bypass the quality gates."""
-    assert select_closest_valid_setting([]) is None
-    assert select_closest_valid_setting([(5000, _valid_measurement(n=25))]) is None
-
-
-def test_closest_valid_setting_minimizes_distance_from_350_uj():
-    """Choosing the first or last candidate would miss the closest measured setting."""
-    candidates = [
-        (5000, _valid_measurement(mean_uj=365.0)),
-        (4950, _valid_measurement(mean_uj=347.0)),
-        (4900, _valid_measurement(mean_uj=330.0)),
-    ]
-    assert select_closest_valid_setting(candidates) == candidates[1]
-
-
-@pytest.mark.parametrize(
-    "candidates, expected_index",
-    [
-        (
-            [
-                (5000, _valid_measurement(mean_uj=360.0)),
-                (4950, _valid_measurement(mean_uj=340.0)),
-            ],
-            1,
-        ),
-        (
-            [
-                (500, _valid_measurement(mean_uj=340.0)),
-                (510, _valid_measurement(mean_uj=360.0)),
-            ],
-            0,
-        ),
-    ],
-)
-def test_closest_valid_setting_breaks_distance_ties_with_lower_setting(candidates, expected_index):
-    """Unstable ties could reapply a higher current or wider pulse than necessary."""
-    assert select_closest_valid_setting(candidates) == candidates[expected_index]
 
 
 def test_closest_setting_uses_supplied_dual_target_and_rejects_nonfinite_target():

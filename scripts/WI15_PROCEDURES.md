@@ -7,8 +7,11 @@ The team-approved automated process defines four operator-facing procedures:
 2. Dual-Sensor Laser Calibration - implemented by
    `wi15_dual_sensor_laser_calibration.py`.
 3. Safety Calibration - implemented by `wi15_safety_calibration.py`.
-4. Measurement Calibration - approved procedure, not implemented on this
-   branch.
+4. Measurement Calibration - implemented by
+   `wi15_measurement_calibration.py` as a thin runner around the SDK
+   calibration engine (one sensor per run; phantom attestation required).
+   The auditable evidence workflow in the Measurement Calibration
+   specification remains future work.
 
 From the repository root, run the implemented procedure with:
 
@@ -28,15 +31,14 @@ For Safety Calibration, run:
 python -m scripts.wi15_safety_calibration --output-dir C:\WI15_runs
 ```
 
-The safety script asks for the declared shipping topology before constructing
-hardware. Connect exactly that topology for the final normal scan; the sensor
-modules may remain connected during the console-only ADC portion. The script
-does not use an external energy meter. During the persistence check it asks
-the operator to confirm readiness while the console is still connected, starts
-observing, and then instructs the operator to power the console off. It
-independently observes disconnection, measures at least 15 seconds, and uses
-the same observe-before-action sequence when asking the operator to restore
-power.
+The safety script is console-side only: it requires a connected, responsive
+console and nothing else. It asks no topology question - sensor modules may
+be attached or absent, they are not used, and the production-scan stage is
+recorded as not applicable. The script does not use an external energy
+meter. The persistence check has no confirmation gates: the script instructs
+the operator to power the console off and back on, observes the disconnect
+and reconnect itself, and fails the run if the measured off dwell is under
+1 second (the console was cycled too quickly for the dwell to be provable).
 
 Keep the console plus both left and right sensor modules connected. The dual
 script asks the operator to move the identified sensor module into the Ophir

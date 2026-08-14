@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import math
-from types import MappingProxyType
 from typing import Literal, Mapping
 
 from .laser import (
@@ -15,20 +14,34 @@ from .laser import (
     TopologySnapshot,
     validate_serial,
 )
+from ._procedure import (
+    deeply_immutable as _deeply_immutable,
+    finite_number as _finite_number,
+)
 
 
 SafetyController = Literal["SAFETY_OPT", "SAFETY_EE"]
 
 
 class ShippingTopology(str, Enum):
-    """The sensor configuration in which the console will ship."""
+    """The sensor configuration in which the console will ship.
+
+    CONSOLE_ONLY is a bench declaration: the console-side safety
+    calibration runs without any sensor modules attached, and the final
+    production scan is not applicable.
+    """
 
     SINGLE_LEFT = "single-left"
     SINGLE_RIGHT = "single-right"
     DUAL = "dual"
+    CONSOLE_ONLY = "console-only"
 
 
 ADC_ROUNDING_RULE = "nearest integer; exact halves round upward"
+# Minimum measured console power-off dwell. Reduced from 15 s to 1 s on
+# Ethan's bench ruling (2026-08-14): the persistence property being proven
+# does not depend on dwell length, only on an observed real power cycle.
+MINIMUM_POWER_OFF_S = 1.0
 SAFETY_OPT_MULTIPLIER = 1.3
 SAFETY_EE_MULTIPLIER = 1.1
 PULSE_LIMIT_MULTIPLIER = 1.1
@@ -48,26 +61,6 @@ REQUIRED_USER_CONFIGURATION_KEYS = (
     "OPT_DRIVE_CL",
     "TEC_TRIP",
 )
-
-
-def _deeply_immutable(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _deeply_immutable(item) for key, item in value.items()}
-        )
-    if isinstance(value, tuple | list):
-        return tuple(_deeply_immutable(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_deeply_immutable(item) for item in value)
-    return value
-
-
-def _finite_number(value: object) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int | float)
-        and math.isfinite(float(value))
-    )
 
 
 def _positive_integer(value: object) -> bool:
@@ -325,6 +318,7 @@ def validate_shipping_topology(
         ShippingTopology.SINGLE_LEFT: (True, False),
         ShippingTopology.SINGLE_RIGHT: (False, True),
         ShippingTopology.DUAL: (True, True),
+        ShippingTopology.CONSOLE_ONLY: (False, False),
     }[declared_topology]
     topology_matches = (
         topology.console_connected

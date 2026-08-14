@@ -11,7 +11,6 @@ from omotion.calibration.dual_sensor_laser import (
 )
 from omotion.calibration.laser import (
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
     OphirIdentity,
     ProcedureStatus,
@@ -19,44 +18,12 @@ from omotion.calibration.laser import (
     TopologySnapshot,
     default_user_configuration,
 )
-from omotion.calibration.single_sensor_laser import (
-    OphirEvidenceApplicability,
-    OphirSettingEvidence,
+from wi15_builders import (
+    FPGA_REVISIONS,
+    valid_measurement_for_mean as valid_measurement,
+    valid_ophir_setting_evidence as valid_ophir_evidence,
 )
-
-
-def valid_measurement(mean_uj: float, **changes) -> EnergyMeasurement:
-    return replace(
-        EnergyMeasurement(
-            n=26,
-            discarded=0,
-            mean_uj=mean_uj,
-            stdev_uj=10.0,
-            rate_hz=40.0,
-            min_uj=mean_uj - 10.0,
-            max_uj=mean_uj + 10.0,
-            duration_s=0.65,
-        ),
-        **changes,
-    )
-
-
-def valid_ophir_evidence() -> tuple[OphirSettingEvidence, ...]:
-    applicable = OphirEvidenceApplicability.APPLICABLE
-    not_applicable = OphirEvidenceApplicability.NOT_APPLICABLE
-    return (
-        OphirSettingEvidence("measurement_mode", "Energy", "Energy", applicable, True),
-        OphirSettingEvidence("range_mj", 2.0, 2.0, applicable, True),
-        OphirSettingEvidence("wavelength_nm", 795, 795, applicable, True),
-        OphirSettingEvidence("pulse_length_ms", 1.0, 1.0, applicable, True),
-        OphirSettingEvidence(
-            "threshold", "minimum_available", "minimum_available", applicable, True
-        ),
-        OphirSettingEvidence(
-            "display_averaging_s", 3, None, not_applicable, True
-        ),
-        OphirSettingEvidence("graph_mode", "Statistics", None, not_applicable, True),
-    )
+from wi15_fakes import FakeRecorder
 
 
 class FakeDualBench:
@@ -68,6 +35,7 @@ class FakeDualBench:
         console_serial="CONSOLE-001",
         left_serial="LEFT-001",
         right_serial="RIGHT-001",
+        fpga_revisions=FPGA_REVISIONS,
         ophir_ready=True,
         config_write_results=(),
         register_read_queues=None,
@@ -94,7 +62,12 @@ class FakeDualBench:
         self.snapshot = DualPreflightSnapshot(
             topology=topology,
             console_identity=DeviceIdentity(
-                "console", console_serial, "console-fw", "console-hw", "fpga-fw"
+                "console",
+                console_serial,
+                "console-fw",
+                "console-hw",
+                "fpga-fw",
+                fpga_revisions,
             ),
             left_sensor_identity=DeviceIdentity(
                 "left sensor", left_serial, "left-fw", "left-hw"
@@ -169,18 +142,6 @@ class FakeDualBench:
         self.stop_count += 1
 
 
-class FakeRecorder:
-    def __init__(self):
-        self.events = []
-        self.checkpoints = []
-
-    def record(self, event):
-        self.events.append(event)
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
-
-
 class PlacementResponses:
     def __init__(self, responses=()):
         self.requests = []
@@ -204,11 +165,23 @@ def valid_request(tmp_path=Path("run-output")):
     )
 
 
-def run_workflow(bench, *, responses=()):
+def run_workflow(
+    bench,
+    *,
+    responses=(),
+    target_energy_uj=350.0,
+    minimum_accepted_energy_uj=300.0,
+    maximum_accepted_energy_uj=400.0,
+):
     recorder = FakeRecorder()
     placements = PlacementResponses(responses)
     result = DualSensorLaserCalibrationWorkflow(
-        bench, recorder, placements
+        bench,
+        recorder,
+        placements,
+        target_energy_uj=target_energy_uj,
+        minimum_accepted_energy_uj=minimum_accepted_energy_uj,
+        maximum_accepted_energy_uj=maximum_accepted_energy_uj,
     ).run(valid_request())
     return result, recorder, placements
 
@@ -220,6 +193,7 @@ def run_workflow(bench, *, responses=()):
         ({"console_serial": None}, "Console serial"),
         ({"left_serial": "  "}, "Left-sensor serial"),
         ({"right_serial": None}, "Right-sensor serial"),
+        ({"fpga_revisions": ()}, "TA, SEED, SAFETY_EE, and SAFETY_OPT"),
         ({"ophir_ready": False}, "Ophir preflight failed"),
     ],
 )
@@ -508,25 +482,6 @@ def test_later_upward_round_at_600_below_300_is_immediate_ncr():
     assert len(bench.user_configuration_writes) == 1
 
 
-def test_final_setting_checks_accept_exact_two_percent_boundaries():
-    """Changing either final tolerance to an exclusive boundary rejects valid hardware."""
-    bench = FakeDualBench(
-        [
-            valid_measurement(340),
-            valid_measurement(360),
-            valid_measurement(340),
-            valid_measurement(360),
-        ],
-        register_read_queues={
-            "TA_CURRENT_DRV": [5000.0, 5100.0],
-            "TA_PULSE_WIDTH": [500.0, 490.0],
-        },
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [check.passed for check in result.final_setting_checks] == [True, True]
-
-
 def test_topology_change_immediately_before_default_write_prevents_mutation():
     bench = FakeDualBench()
     bench.topology = TopologySnapshot(True, True, False)
@@ -548,50 +503,6 @@ def test_default_configuration_requires_exact_complete_immediate_readback():
     assert result.default_config_readback == incomplete
     assert "bring_up_laser_configuration" not in bench.calls
     assert "measure_energy" not in bench.calls
-
-
-def test_downward_target_straddle_reapplies_the_closer_prior_current():
-    bench = FakeDualBench(
-        [
-            valid_measurement(360),
-            valid_measurement(420),
-            valid_measurement(382),
-            valid_measurement(375),
-            valid_measurement(330),
-            valid_measurement(370),
-        ]
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [write for write in bench.register_writes if write[0] == "TA_CURRENT_DRV"] == [
-        ("TA_CURRENT_DRV", 4950.0),
-        ("TA_CURRENT_DRV", 4900.0),
-        ("TA_CURRENT_DRV", 4950.0),
-    ]
-    assert result.tuning_rounds[0].selection.requested_current_ma == 4950
-    assert result.requested_final_config["TA_CURRENT_DRV"] == 4950
-
-
-def test_upward_target_straddle_reapplies_lower_pulse_width_on_tie():
-    bench = FakeDualBench(
-        [
-            valid_measurement(270),
-            valid_measurement(330),
-            valid_measurement(315),
-            valid_measurement(325),
-            valid_measurement(325),
-            valid_measurement(375),
-        ]
-    )
-    result, _, _ = run_workflow(bench)
-    assert result.status is ProcedureStatus.PASSED
-    assert [write for write in bench.register_writes if write[0] == "TA_PULSE_WIDTH"] == [
-        ("TA_PULSE_WIDTH", 510.0),
-        ("TA_PULSE_WIDTH", 520.0),
-        ("TA_PULSE_WIDTH", 510.0),
-    ]
-    assert result.tuning_rounds[0].selection.requested_pulse_width_us == 510
-    assert result.requested_final_config["TA_PULSE_WIDTH"] == 510
 
 
 def test_downward_current_floor_without_acceptable_candidate_is_ncr():

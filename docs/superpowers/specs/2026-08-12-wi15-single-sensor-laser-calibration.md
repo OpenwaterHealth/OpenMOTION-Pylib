@@ -83,8 +83,10 @@ Preflight runs before step-9 configuration or laser action.
 3. The opposite side must not be connected.
 4. Console and selected-sensor serial numbers must be non-`None` and
    non-empty after trimming.
-5. Available firmware, FPGA, hardware ID, and related identity fields are
-   read and recorded.
+5. Console firmware and hardware ID are read. The TA, Seed, Safety EE, and
+   Safety OPT FPGA major/minor/revision registers must all be readable and are
+   recorded as four semantic firmware revisions in the console identity.
+   Sensor-camera FPGA revision fields are not shown in the human report.
 6. The Ophir COM object must instantiate.
 7. USB scan must find a meter, the meter must open, and the configured channel
    must report an energy sensor.
@@ -148,6 +150,14 @@ after that drain, within the same 2.0-second overall bound. A missing fresh
 batch or a fresh below-target observation at timeout fails closed. Misaligned
 priming or fresh arrays fail immediately, and `StopStream` is always attempted
 for a stream that this adapter successfully started.
+
+Within fresh collection, exclude and count a non-increasing status-zero
+timestamp as discarded. If a positive timestamp jump is longer than the
+current stream's host-observed lifetime plus 50 milliseconds, exclude and
+count the preceding status-zero prefix as buffered data from an older epoch,
+then continue fresh collection inside the unchanged 2.0-second bound. Retain
+smaller positive gaps in the rate calculation so a genuine firing interruption
+still fails the 39-41 Hz criterion.
 
 ## 8. Tuning algorithm
 
@@ -244,6 +254,7 @@ addendum and, specifically:
 - declared and actual topology;
 - selected side and operator confirmation;
 - identities and serial-validation results;
+- all four console-board FPGA firmware revisions;
 - Ophir setup and readbacks;
 - pre-existing, default, and final configuration;
 - every energy observation and validity criterion;
@@ -353,3 +364,20 @@ the production adapter fixes. Run `WI-00015-20260813T043222Z` exposed a fixed
 `WI-00015-20260813T044254Z` exposed stale cross-session Ophir timestamps in the
 first nonempty batch. Both runs retained complete failure evidence, restored
 active defaults, stopped the trigger, and wrote no tuned configuration.
+
+Post-refactor live regression testing passed on 2026-08-13 using commit
+`bf55d72` and run `WI-00015-20260813T220514Z`. The exact single-left topology
+remained stable, seven accepted observations stayed at approximately 40 Hz,
+and the approved upward sweep selected 540 microseconds at 348.100
+microjoules. The distinct final observation was 347.630 microjoules. Both
+active-setting checks passed, the complete final configuration read back, the
+JSON and HTML artifacts finalized, and no trigger or active-restoration
+cleanup failure was recorded.
+
+The same build also exercised the terminal upward-bound NCR on a second
+console in run `WI-00015-20260813T220752Z`. Energy rose monotonically from
+154.667 microjoules at the 500-microsecond default to only 183.767
+microjoules at the 600-microsecond ceiling. Every acquisition-quality check
+passed. The procedure returned `failed_ncr`, restored the active defaults,
+finalized both evidence artifacts, and did not perform the passing tuned-
+configuration handoff.

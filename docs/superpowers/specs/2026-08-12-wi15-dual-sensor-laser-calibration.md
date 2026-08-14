@@ -79,7 +79,10 @@ Before configuration mutation or laser action:
 1. the console, left sensor, and right sensor must be connected and
    responsive;
 2. console, left, and right serial numbers must be non-`None` and non-empty;
-3. available firmware, FPGA, hardware ID, and identity data must be recorded;
+3. console firmware and hardware ID plus complete TA, Seed, Safety EE, and
+   Safety OPT FPGA major/minor/revision values must be read; the four semantic
+   FPGA revisions are stored in the console identity, while sensor-camera FPGA
+   revision fields are omitted from the human report;
 4. Ophir COM instantiation, scan, open, energy-sensor presence, identity, and
    calibration-due reads must pass; and
 5. all Ophir settings and readbacks in the process addendum must pass.
@@ -239,6 +242,7 @@ guided runner has no continue-anyway path.
 In addition to common report requirements, record:
 
 - exact declared and actual dual topology;
+- all four console-board FPGA firmware revisions;
 - initial left/right observations, differential, and midpoint;
 - selected tuning side and why;
 - every acknowledged physical placement change, including side, serial
@@ -328,3 +332,52 @@ readback. Cross-check 1 passed at 363.962 uJ left and 345.429 uJ right, with a
 Configuration read back exactly, both final active-setting checks passed,
 JSON and HTML artifacts finalized, and no trigger, active-restoration, or
 resource-cleanup failure was recorded.
+
+Post-refactor live regression testing passed on 2026-08-13 using commit
+`bf55d72` and run `WI-00015-20260813T221750Z`. The exact dual topology and all
+three required non-null identities remained stable. The initial accepted
+means were 321.333 microjoules left and 306.333 microjoules right, giving a
+15.000-microjoule differential. The approved right-side upward sweep selected
+a requested 560-microsecond pulse width. Cross-check 1 passed at 362.321
+microjoules left and 338.519 microjoules right. All ten observations met the
+acquisition-quality criteria, both final active-setting checks passed, the
+complete final configuration read back, and finalized JSON and HTML artifacts
+recorded no trigger, restoration, or resource-cleanup failure.
+
+The same build exercised two fail-closed paths before that pass. Run
+`WI-00015-20260813T221643Z` rejected a missing right sensor before measurement.
+Run `WI-00015-20260813T221251Z` used an exact dual topology but returned
+`failed_ncr` when the selected sensor remained below 300 microjoules at the
+600-microsecond ceiling. Both runs finalized their evidence; the bound NCR
+restored active defaults and did not write the passing tuned configuration.
+
+A deliberately non-production bench validation exercised the downward-current
+path on 2026-08-13 in run `WI-00015-20260813T223817Z`. The injected midpoint
+target was 300 microjoules and the injected final acceptance window was
+250-350 microjoules; both values were recorded explicitly in JSON and HTML.
+The production defaults remained 350 and 300-400 microjoules. Initial means
+were 312.346 microjoules left and 295.815 microjoules right. One approved
+50-mA downward step on the higher left side produced a selected 306.077-
+microjoule observation at requested current 4950 mA. Cross-check 1 then passed
+at 305.423 microjoules left and 295.429 microjoules right, a 300.426-
+microjoule midpoint and 9.995-microjoule differential. The procedure stopped
+after that first cross-check with exactly four placement acknowledgements,
+persisted and read back the artificial 4950-mA configuration, passed both
+final active-setting checks, finalized both artifacts, and recorded no
+trigger, restoration, or resource-cleanup failure. This validation
+configuration is not an approved production calibration and requires a normal
+350-microjoule execution before unit release.
+
+The normal production rerun after the artificial validation passed on
+2026-08-13 using run `WI-00015-20260813T225916Z` and commit `fc20627`. Its
+console identity recorded TA `1.1.0`, Seed `0.1.1`, Safety EE `0.1.4`, and
+Safety OPT `0.1.4` FPGA firmware revisions before configuration mutation or
+firing. Initial means were 302.241 microjoules left and 293.630 microjoules
+right. Approved upward tuning selected 590 microseconds on the lower right
+side. Cross-check 1 passed at 362.074 microjoules left and 351.963
+microjoules right, with a 357.019-microjoule midpoint and 10.111-microjoule
+differential. The production 350-microjoule configuration read back exactly,
+both active-setting checks passed, and no trigger, restoration, resource,
+or report-artifact failure was recorded. The human report included all four
+console-board FPGA revisions while omitting sensor-camera FPGA revision
+fields, request metadata, and the redundant pre-mutation topology table.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,12 @@ from .reporting import HtmlRunReport, json_safe_value
 
 class SafetyCalibrationHtmlRunReport(HtmlRunReport):
     """Render supplied Safety Calibration evidence without recomputing it."""
+
+    _DOCUMENT_TITLE = "WI-00015 Safety Calibration report"
+    _DOCUMENT_HEADING = "WI-00015 Safety Calibration"
+    _EVENTS_TITLE = "Procedure event timeline"
+    _EVENTS_HEADERS = ("Timestamp", "Auditor-facing stage", "Message", "Data")
+    _REPORT_ARTIFACT_TITLE = "Report artifact finalization"
 
     def render(
         self, request: object, result: object, json_path: str | Path | None = None
@@ -30,38 +35,13 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
                 },
             }
 
-        status = result_data.get("status", "unknown")
-        failure_reason = result_data.get("failure_reason")
-        raw_json_name = self._relative_json_name(json_path)
-        parts = [
-            "<!doctype html>",
-            '<html lang="en"><head><meta charset="utf-8">',
-            "<title>WI-00015 Safety Calibration report</title>",
-            "<style>body{font-family:Arial,sans-serif;margin:2rem;color:#18212b;}"
-            "h1,h2{color:#102a43;}table{border-collapse:collapse;width:100%;"
-            "margin:0.5rem 0 1.5rem;}th,td{border:1px solid #9fb3c8;"
-            "padding:0.45rem;text-align:left;vertical-align:top;}"
-            "th{background:#eaf2f8;}.status{font-size:1.4rem;font-weight:bold;"
-            "padding:0.7rem;}.status-passed{background:#d9f7e5;color:#075c35;}"
-            ".status-failed{background:#ffe0e0;color:#8b0000;}"
-            ".status-canceled{background:#fff2cc;color:#6f5300;}"
-            ".reason{font-size:1.15rem;font-weight:bold;color:#8b0000;}"
-            ".changed{background:#fff3bf;font-weight:bold;}"
-            ".muted{color:#52616b;}</style></head><body>",
-            "<h1>WI-00015 Safety Calibration</h1>",
-            f'<p class="status status-{escape(str(status), quote=True)}">'
-            f"Status: {self._text(status)}</p>",
-        ]
-        if failure_reason is not None:
-            parts.append(
-                f'<p class="reason">Terminal reason: '
-                f"{self._text(failure_reason)}</p>"
-            )
+        parts = self._preamble(
+            result_data.get("status", "unknown"),
+            result_data.get("failure_reason"),
+            self._relative_json_name(json_path),
+        )
         parts.extend(
             [
-                f'<p>Raw structured evidence: <a href="'
-                f'{escape(raw_json_name, quote=True)}">'
-                f"{self._text(raw_json_name)}</a></p>",
                 self._table("Procedure request metadata", request_data.items()),
                 self._runtime_metadata(result_data),
                 self._preflight(result_data),
@@ -102,7 +82,15 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
             sections.append(self._table("Initial console topology", topology.items()))
         identity = result.get("console_identity")
         if isinstance(identity, dict):
-            sections.append(self._table("Console identity", identity.items()))
+            rows = []
+            for key, value in identity.items():
+                if key in ("fpga_firmware", "role"):
+                    continue
+                if key == "fpga_firmware_revisions":
+                    rows.extend(self._fpga_revision_rows(value))
+                    continue
+                rows.append((key, value))
+            sections.append(self._table("Console identity", rows))
         return "".join(sections)
 
     def _configuration_validation(self, result: dict[str, Any]) -> str:
@@ -125,39 +113,12 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
 
     def _active_settings(self, result: dict[str, Any]) -> str:
         sections = []
-        checks = []
-        for check in result.get("active_setting_checks", []):
-            if isinstance(check, dict):
-                checks.append(
-                    tuple(
-                        check.get(key)
-                        for key in (
-                            "name",
-                            "requested",
-                            "actual",
-                            "absolute_difference",
-                            "percent_difference",
-                            "tolerance_percent",
-                            "passed",
-                        )
-                    )
-                )
-        if checks:
-            sections.append(
-                self._table(
-                    "Active TA setting checks",
-                    checks,
-                    (
-                        "Setting",
-                        "Requested",
-                        "Actual",
-                        "Absolute difference",
-                        "Percent difference",
-                        "Tolerance percent",
-                        "Passed",
-                    ),
-                )
-            )
+        checks_table = self._final_setting_checks(
+            result.get("active_setting_checks", []),
+            title="Active TA setting checks",
+        )
+        if checks_table:
+            sections.append(checks_table)
         trigger = self._readback_rows(result.get("trigger_readbacks"))
         if trigger:
             sections.append(
@@ -255,22 +216,14 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
         immediate = result.get("immediate_configuration_readback")
         sections = []
         if isinstance(current, dict) and isinstance(intended, dict):
-            rows = []
-            for key in sorted(set(current) | set(intended)):
-                before = current.get(key)
-                after = intended.get(key)
-                cell_class = ' class="changed"' if before != after else ""
-                rows.append(
-                    f"<tr><td>{self._text(key)}</td>"
-                    f"<td>{self._text(before)}</td>"
-                    f"<td{cell_class}>{self._text(after)}</td></tr>"
-                )
             sections.append(
-                "<h2>Current versus intended complete configuration</h2>"
-                "<table><thead><tr><th>Key</th><th>Current</th>"
-                "<th>Intended</th></tr></thead><tbody>"
-                + "".join(rows)
-                + "</tbody></table>"
+                self._diff_table(
+                    "Current versus intended complete configuration",
+                    "Current",
+                    "Intended",
+                    current,
+                    intended,
+                )
             )
         if isinstance(intended, dict):
             title = (
@@ -406,45 +359,3 @@ class SafetyCalibrationHtmlRunReport(HtmlRunReport):
         rows = [row for row in rows if row[1] is not None]
         return self._table("Cleanup diagnostics", rows) if rows else ""
 
-    def _events(self, events: object) -> str:
-        rows = []
-        for event in events if isinstance(events, list) else []:
-            if isinstance(event, dict):
-                rows.append(
-                    tuple(
-                        event.get(key)
-                        for key in ("timestamp", "stage", "message", "data")
-                    )
-                )
-        return (
-            self._table(
-                "Procedure event timeline",
-                rows,
-                ("Timestamp", "Auditor-facing stage", "Message", "Data"),
-            )
-            if rows
-            else ""
-        )
-
-    def _report_artifact(self, artifact: object) -> str:
-        return (
-            self._table("Report artifact finalization", artifact.items())
-            if isinstance(artifact, dict)
-            else ""
-        )
-
-    @staticmethod
-    def _criterion_rows(criteria: object) -> list[tuple[object, object, object]]:
-        return [
-            (item.get("name"), item.get("passed"), item.get("detail"))
-            for item in criteria if isinstance(criteria, list)
-            if isinstance(item, dict)
-        ]
-
-    @staticmethod
-    def _readback_rows(readbacks: object) -> list[tuple[object, object, object]]:
-        return [
-            (item.get("name"), item.get("requested"), item.get("actual"))
-            for item in readbacks if isinstance(readbacks, list)
-            if isinstance(item, dict)
-        ]

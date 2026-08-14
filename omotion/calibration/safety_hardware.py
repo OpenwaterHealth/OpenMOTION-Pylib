@@ -7,11 +7,14 @@ import math
 import time
 from typing import Callable, Mapping, Protocol
 
-from omotion.MotionConfig import MotionConfig
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ScanRequest
-from .laser import DeviceIdentity, SettingReadback, TopologySnapshot
-from .laser_hardware import FpgaRegisterIO
+from .laser import DeviceIdentity
+from .motion_bench import (
+    FpgaRegisterIO,
+    MotionConsoleBenchBase,
+    default_interface_factory as _default_interface_factory,
+)
 from .safety import (
     NormalScanEvidence,
     PowerCycleEvidence,
@@ -21,10 +24,6 @@ from .safety import (
     validate_shipping_topology,
 )
 from .safety_workflow import ConsolePreflightSnapshot
-
-
-def _default_interface_factory() -> MotionInterface:
-    return MotionInterface()
 
 
 class PowerCycleCoordinator(Protocol):
@@ -40,7 +39,7 @@ class PowerCycleCoordinator(Protocol):
     ) -> PowerCycleEvidence: ...
 
 
-class MotionSafetyCalibrationBench:
+class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
     """One long-lived Motion session for console calibration and final scan."""
 
     _ADC_REGISTER_NAMES: Mapping[SafetyController, str] = {
@@ -61,6 +60,11 @@ class MotionSafetyCalibrationBench:
         # drain safety hatch. This allowance waits for that ordinary cleanup;
         # it does not extend the requested laser-acquisition duration.
         scan_timeout_pad_s: float = 20.0,
+        # The console power cycle also cold-boots the sensor modules, and
+        # their USB re-enumeration can take well over the ordinary ready
+        # window (live NCR: run WI-00015-20260814T172200Z timed out at 10 s).
+        # The final scan therefore waits on its own, longer budget.
+        scan_ready_timeout_s: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -70,6 +74,7 @@ class MotionSafetyCalibrationBench:
             safety_wait_timeout,
             safety_poll_interval_s,
             scan_timeout_pad_s,
+            scan_ready_timeout_s,
         )
         if any(
             isinstance(value, bool)
@@ -78,7 +83,12 @@ class MotionSafetyCalibrationBench:
             for value in timing
         ):
             raise ValueError("hardware timing values must be finite numbers")
-        if wait_timeout <= 0 or safety_wait_timeout <= 0 or safety_poll_interval_s <= 0:
+        if (
+            wait_timeout <= 0
+            or safety_wait_timeout <= 0
+            or safety_poll_interval_s <= 0
+            or scan_ready_timeout_s <= 0
+        ):
             raise ValueError("wait and safety timing values must be positive")
         if scan_timeout_pad_s < 0:
             raise ValueError("scan timeout pad must be nonnegative")
@@ -91,6 +101,7 @@ class MotionSafetyCalibrationBench:
         self._safety_wait_timeout = float(safety_wait_timeout)
         self._safety_poll_interval_s = float(safety_poll_interval_s)
         self._scan_timeout_pad_s = float(scan_timeout_pad_s)
+        self._scan_ready_timeout_s = float(scan_ready_timeout_s)
         self._clock = clock
         self._wall_clock = wall_clock
         self._sleep = sleep
@@ -99,7 +110,9 @@ class MotionSafetyCalibrationBench:
         self._ready_sensor_count = 0
         self._trigger_started_wall: float | None = None
 
-    def _ensure_started(self, required_sensor_count: int = 0) -> None:
+    def _ensure_started(
+        self, required_sensor_count: int = 0, timeout: float | None = None
+    ) -> None:
         if not self._started:
             self._interface.start(wait=False)
             self._started = True
@@ -108,102 +121,20 @@ class MotionSafetyCalibrationBench:
         ready = self._interface.wait_for_ready(
             console=True,
             sensors=required_sensor_count,
-            timeout=self._wait_timeout,
+            timeout=self._wait_timeout if timeout is None else timeout,
         )
         if ready is False:
             raise RuntimeError("Motion devices did not become ready before timeout")
         self._console_ready = True
         self._ready_sensor_count = max(self._ready_sensor_count, required_sensor_count)
 
-    @staticmethod
-    def _safe_call(device, method_name: str):
-        try:
-            return getattr(device, method_name)()
-        except Exception:
-            return None
-
-    def _identity(self, role: str, device) -> DeviceIdentity:
-        return DeviceIdentity(
-            role=role,
-            serial=self._safe_call(device, "read_serial_number"),
-            firmware=self._safe_call(device, "get_version"),
-            hardware_id=self._safe_call(device, "get_hardware_id"),
-        )
-
-    def _topology_snapshot(self) -> TopologySnapshot:
-        return TopologySnapshot(
-            console_connected=bool(self._console.is_connected()),
-            left_connected=bool(self._interface.left.is_connected()),
-            right_connected=bool(self._interface.right.is_connected()),
-        )
-
-    def _console_responsive(self) -> bool:
-        try:
-            echoed, length = self._console.echo(b"WI15")
-            return echoed == b"WI15" and length == 4
-        except Exception:
-            return False
-
     def preflight_console(self) -> ConsolePreflightSnapshot:
         self._ensure_started(required_sensor_count=0)
         return ConsolePreflightSnapshot(
             topology=self._topology_snapshot(),
-            console_identity=self._identity("console", self._console),
+            console_identity=self._console_identity(),
             console_responsive=self._console_responsive(),
         )
-
-    def read_user_configuration(self) -> Mapping[str, object]:
-        config = self._console.read_config()
-        if not isinstance(config, MotionConfig) or not isinstance(config.json_data, dict):
-            raise RuntimeError("Complete MotionConfig readback was not returned")
-        return dict(config.json_data)
-
-    def write_user_configuration(
-        self, configuration: Mapping[str, object]
-    ) -> Mapping[str, object] | None:
-        write_result = self._console.write_config(
-            MotionConfig(json_data=dict(configuration))
-        )
-        if not isinstance(write_result, MotionConfig):
-            return None
-        try:
-            return self.read_user_configuration()
-        except Exception:
-            return None
-
-    def bring_up_laser_configuration(self) -> None:
-        if not self._interface.apply_laser_power():
-            raise RuntimeError("Laser configuration bring-up failed")
-
-    def read_register(self, name: str) -> float:
-        return self._registers.read(name)
-
-    def read_trigger_rate_hz(self) -> float:
-        response = self._console.get_trigger_json()
-        if not isinstance(response, dict) or "TriggerFrequencyHz" not in response:
-            raise RuntimeError("Trigger-frequency readback was unavailable")
-        rate = float(response["TriggerFrequencyHz"])
-        if not math.isfinite(rate):
-            raise RuntimeError("Trigger-frequency readback was not finite")
-        return rate
-
-    def write_trigger_rate_hz(self, rate_hz: float) -> SettingReadback | None:
-        requested = float(rate_hz)
-        try:
-            current = self._console.get_trigger_json()
-            if not isinstance(current, dict):
-                return None
-            updated = dict(current)
-            updated["TriggerFrequencyHz"] = requested
-            if not self._console.set_trigger_json(updated):
-                return None
-            response = self._console.get_trigger_json()
-            if not isinstance(response, dict) or "TriggerFrequencyHz" not in response:
-                return None
-            actual = float(response["TriggerFrequencyHz"])
-        except Exception:
-            return None
-        return SettingReadback("trigger_rate_hz_write", requested, actual)
 
     def start_trigger(self) -> None:
         rate_hz = self.read_trigger_rate_hz()
@@ -300,7 +231,7 @@ class MotionSafetyCalibrationBench:
         evidence = self._power_cycle_coordinator.perform(
             minimum_off_s=minimum_off_s,
             expected_console_serial=expected_console_serial,
-            is_console_connected=lambda: bool(self._console.is_connected()),
+            is_console_connected=self._console_alive,
             read_console_serial=lambda: self._safe_call(
                 self._console, "read_serial_number"
             ),
@@ -308,6 +239,23 @@ class MotionSafetyCalibrationBench:
         if evidence.reconnect_observed:
             self._ensure_started(required_sensor_count=0)
         return evidence
+
+    def _console_alive(self) -> bool:
+        """Is the console really powered and talking, right now?
+
+        The connection-monitor state alone is not sufficient during an
+        observed power cycle: on Windows a surprise-removed COM port can
+        linger in enumeration while a handle stays open (live NCR: runs
+        WI-00015-20260814T175646Z / T180030Z never observed a real
+        power-off). A powered-off console cannot answer an echo, so the
+        round-trip is required in addition to the monitor state.
+        """
+        try:
+            if not self._console.is_connected():
+                return False
+            return self._console_responsive()
+        except Exception:
+            return False
 
     @staticmethod
     def _topology_masks(topology: ShippingTopology) -> tuple[int, int, int]:
@@ -317,6 +265,8 @@ class MotionSafetyCalibrationBench:
             return 0, 0xFF, 1
         if topology is ShippingTopology.DUAL:
             return 0xFF, 0xFF, 2
+        if topology is ShippingTopology.CONSOLE_ONLY:
+            return 0x00, 0x00, 0
         raise ValueError("Unsupported shipping topology")
 
     def _scan_identities(self) -> tuple[DeviceIdentity, DeviceIdentity]:
@@ -350,7 +300,10 @@ class MotionSafetyCalibrationBench:
         self, declared_topology: ShippingTopology, *, duration_s: float
     ) -> NormalScanEvidence:
         left_mask, right_mask, sensor_count = self._topology_masks(declared_topology)
-        self._ensure_started(required_sensor_count=sensor_count)
+        self._ensure_started(
+            required_sensor_count=sensor_count,
+            timeout=self._scan_ready_timeout_s,
+        )
         topology = self._topology_snapshot()
         identities = self._scan_identities()
         topology_check = validate_shipping_topology(

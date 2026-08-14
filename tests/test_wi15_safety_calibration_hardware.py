@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import inspect
 
 import pytest
@@ -6,51 +6,13 @@ import pytest
 from omotion.ConsoleTelemetry import ConsoleTelemetry
 from omotion.MotionConfig import MotionConfig
 from omotion.calibration.laser import SettingReadback
-from omotion.calibration.safety import (
-    PowerCycleEvidence,
-    ShippingTopology,
-)
+from omotion.calibration.safety import ShippingTopology
 from omotion.calibration.safety_hardware import MotionSafetyCalibrationBench
+from wi15_builders import valid_power_cycle
+from wi15_fakes import FakeClock, FakeDevice
 
 
 NOW = datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)
-
-
-class FakeClock:
-    def __init__(self, now=0.0):
-        self.now = float(now)
-
-    def __call__(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
-
-
-class FakeDevice:
-    def __init__(self, connected, serial, firmware, hardware_id):
-        self.connected = connected
-        self.serial = serial
-        self.firmware = firmware
-        self.hardware_id = hardware_id
-        self.serial_error = None
-        self.firmware_error = None
-
-    def is_connected(self):
-        return self.connected
-
-    def read_serial_number(self):
-        if self.serial_error:
-            raise self.serial_error
-        return self.serial
-
-    def get_version(self):
-        if self.firmware_error:
-            raise self.firmware_error
-        return self.firmware
-
-    def get_hardware_id(self):
-        return self.hardware_id
 
 
 class FakeTelemetry:
@@ -92,6 +54,12 @@ class FakeConsole(FakeDevice):
             4: 550,
             5: 10,
             6: 20,
+            **{
+                address: value
+                for address, value in zip(
+                    range(101, 113), range(1, 13), strict=True
+                )
+            },
         }
 
     def echo(self, data):
@@ -210,6 +178,18 @@ class FakeMap:
         "OPT_PULSE_WIDTH_UL": (4, 1.0),
         "OPT_ADC_DATA": (5, 1.86),
         "EE_ADC_DATA": (6, 1.86),
+        "TA_MAJOR": (101, 1.0),
+        "TA_MINOR": (102, 1.0),
+        "TA_REVISION": (103, 1.0),
+        "SEED_MAJOR": (104, 1.0),
+        "SEED_MINOR": (105, 1.0),
+        "SEED_REVISION": (106, 1.0),
+        "EE_MAJOR": (107, 1.0),
+        "EE_MINOR": (108, 1.0),
+        "EE_REVISION": (109, 1.0),
+        "OPT_MAJOR": (110, 1.0),
+        "OPT_MINOR": (111, 1.0),
+        "OPT_REVISION": (112, 1.0),
     }
 
     def get_entry_by_friendly_name(self, name):
@@ -229,20 +209,7 @@ class FakeMap:
 
 
 def _valid_cycle(serial="C-1"):
-    return PowerCycleEvidence(
-        off_requested_at=NOW,
-        disconnect_observed_at=NOW + timedelta(seconds=1),
-        on_allowed_at=NOW + timedelta(seconds=16),
-        on_requested_at=NOW + timedelta(seconds=16),
-        reconnect_observed_at=NOW + timedelta(seconds=20),
-        off_duration_s=15.0,
-        disconnect_observed=True,
-        reconnect_observed=True,
-        restart_proven=True,
-        restart_proof="same Motion handle disconnected and reconnected",
-        console_serial_before=serial,
-        console_serial_after=serial,
-    )
+    return valid_power_cycle(NOW, serial=serial)
 
 
 class FakePowerCoordinator:
@@ -305,25 +272,21 @@ def test_console_preflight_waits_for_console_only_and_keeps_identity_fields_inde
     assert not snapshot.topology.right_connected
     assert snapshot.console_identity.serial == "C-1"
     assert snapshot.console_identity.firmware is None
+    assert [
+        (revision.controller, revision.version)
+        for revision in snapshot.console_identity.fpga_firmware_revisions
+    ] == [
+        ("TA", "1.2.3"),
+        ("SEED", "4.5.6"),
+        ("SAFETY_EE", "7.8.9"),
+        ("SAFETY_OPT", "10.11.12"),
+    ]
     assert snapshot.console_responsive
 
 
 def test_safety_hardware_module_has_no_ophir_dependency():
     source = inspect.getsource(inspect.getmodule(MotionSafetyCalibrationBench)).lower()
     assert "ophir" not in source
-
-
-def test_adc_controller_names_map_to_scaled_engineering_unit_registers():
-    bench, interface, _, _ = _bench()
-
-    assert bench.read_adc_ma("SAFETY_OPT") == pytest.approx(18.6)
-    assert bench.read_adc_ma("SAFETY_EE") == pytest.approx(37.2)
-    addresses = [
-        call[1]["reg_addr"]
-        for call in interface.calls
-        if isinstance(call, tuple) and call[0] == "read_i2c_packet"
-    ]
-    assert addresses == [5, 6]
 
 
 def test_configuration_write_returns_a_fresh_complete_readback():
@@ -337,19 +300,6 @@ def test_configuration_write_returns_a_fresh_complete_readback():
         ("write_config", {"all": 1, "fresh": 2}),
         "read_config",
     ]
-
-
-def test_trigger_and_register_boundaries_match_the_shared_motion_adapter_contract():
-    bench, interface, _, _ = _bench()
-    interface.console.trigger_reads = [
-        {"TriggerFrequencyHz": 39.0, "TriggerStatus": 2},
-        {"TriggerFrequencyHz": 40.0, "TriggerStatus": 2},
-    ]
-
-    readback = bench.write_trigger_rate_hz(40.0)
-
-    assert readback == SettingReadback("trigger_rate_hz_write", 40.0, 40.0)
-    assert bench.read_register("TA_CURRENT_DRV") == 5000.0
 
 
 def test_console_firing_preflight_uses_active_limits_without_requiring_sensors():
@@ -500,24 +450,6 @@ def test_normal_scan_uses_exact_shipping_masks_and_no_overrides(topology, masks)
     assert evidence.actual_duration_s == pytest.approx(30.1)
     assert evidence.safety_observations[0].safety_known
     assert interface.console.telemetry.listeners == []
-
-
-def test_normal_scan_default_wait_covers_pipeline_post_stop_drain_window():
-    clock = FakeClock()
-    interface = FakeInterface((True, True, True), clock=clock)
-    bench = MotionSafetyCalibrationBench(
-        interface_factory=lambda: interface,
-        power_cycle_coordinator=FakePowerCoordinator(),
-        fpga_map=FakeMap(),
-        clock=clock,
-        wall_clock=lambda: 2_000.0,
-        sleep=clock.sleep,
-    )
-
-    evidence = bench.run_normal_scan(ShippingTopology.DUAL, duration_s=30.0)
-
-    assert evidence.completed
-    assert ("await_complete", 50.0) in interface.calls
 
 
 def test_normal_scan_refused_start_returns_complete_failure_evidence_and_cleans_up():

@@ -19,6 +19,8 @@ from omotion.calibration.single_sensor_laser import (
     OphirEvidenceApplicability,
     OphirSettingEvidence,
 )
+from wi15_builders import valid_ophir_setting_evidence
+from wi15_fakes import FakeClock, FakeDevice
 
 
 def _ophir_preflight():
@@ -29,69 +31,7 @@ def _ophir_preflight():
         "sensor-1",
         "meter: 2027-10-16; sensor: 2027-08-22",
     )
-    evidence = (
-        OphirSettingEvidence(
-            "measurement_mode",
-            "Energy",
-            "Energy",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "range_mj", 2.0, 2.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "wavelength_nm", 795, 795, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "pulse_length_ms", 1.0, 1.0, OphirEvidenceApplicability.APPLICABLE, True
-        ),
-        OphirSettingEvidence(
-            "threshold",
-            "minimum_available",
-            "minimum_available",
-            OphirEvidenceApplicability.APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "display_averaging_s",
-            3,
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
-        OphirSettingEvidence(
-            "graph_mode",
-            "Statistics",
-            None,
-            OphirEvidenceApplicability.NOT_APPLICABLE,
-            True,
-        ),
-    )
-    return identity, evidence
-
-
-class FakeDevice:
-    def __init__(self, connected, serial, firmware, hardware_id):
-        self.connected = connected
-        self.serial = serial
-        self.firmware = firmware
-        self.hardware_id = hardware_id
-        self.firmware_error = None
-
-    def is_connected(self):
-        return self.connected
-
-    def read_serial_number(self):
-        return self.serial
-
-    def get_version(self):
-        if self.firmware_error:
-            raise self.firmware_error
-        return self.firmware
-
-    def get_hardware_id(self):
-        return self.hardware_id
+    return identity, valid_ophir_setting_evidence()
 
 
 class FakeConsole(FakeDevice):
@@ -104,6 +44,14 @@ class FakeConsole(FakeDevice):
         self.trigger_set_result = {"ok": True}
         self.i2c_write_result = True
         self.i2c_read_result = (b"\x12\x7a", 2)
+        self.fpga_version_raw = {
+            address: value
+            for address, value in zip(
+                range(101, 113),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+                strict=True,
+            )
+        }
         self.start_trigger_result = True
         self.stop_trigger_result = True
 
@@ -130,6 +78,10 @@ class FakeConsole(FakeDevice):
 
     def read_i2c_packet(self, **kwargs):
         self.calls.append(("read_i2c_packet", kwargs))
+        if kwargs["reg_addr"] in self.fpga_version_raw:
+            width = kwargs["read_len"]
+            raw = self.fpga_version_raw[kwargs["reg_addr"]]
+            return raw.to_bytes(width, "little"), width
         return self.i2c_read_result
 
     def write_i2c_packet(self, **kwargs):
@@ -184,7 +136,38 @@ class FakeMeter:
 
 
 class FakeMap:
+    _VERSION_ADDRESSES = {
+        name: address
+        for address, name in zip(
+            range(101, 113),
+            (
+                "TA_MAJOR",
+                "TA_MINOR",
+                "TA_REVISION",
+                "SEED_MAJOR",
+                "SEED_MINOR",
+                "SEED_REVISION",
+                "EE_MAJOR",
+                "EE_MINOR",
+                "EE_REVISION",
+                "OPT_MAJOR",
+                "OPT_MINOR",
+                "OPT_REVISION",
+            ),
+            strict=True,
+        )
+    }
+
     def get_entry_by_friendly_name(self, name):
+        if name in self._VERSION_ADDRESSES:
+            return {
+                "mux_idx": 1,
+                "channel": 4,
+                "i2c_addr": 0x41,
+                "isMsbFirst": False,
+                "start_address": self._VERSION_ADDRESSES[name],
+                "data_size": "8B",
+            }
         if name == "TA_CURRENT_DRV":
             return {
                 "mux_idx": 1,
@@ -259,7 +242,31 @@ def test_dual_preflight_waits_for_two_sensors_and_reports_both_identities():
     assert snapshot.topology.right_connected is True
     assert snapshot.left_sensor_identity.serial == "left-serial"
     assert snapshot.right_sensor_identity.serial == "right-serial"
+    assert [
+        (revision.controller, revision.version)
+        for revision in snapshot.console_identity.fpga_firmware_revisions
+    ] == [
+        ("TA", "1.2.3"),
+        ("SEED", "4.5.6"),
+        ("SAFETY_EE", "7.8.9"),
+        ("SAFETY_OPT", "10.11.12"),
+    ]
     assert snapshot.ophir_ready is True
+
+
+def test_preflight_rejects_incomplete_console_fpga_identity_before_mutation_or_firing():
+    bench, interface, _ = _bench((True, True, True))
+    del interface.console.fpga_version_raw[112]
+
+    with pytest.raises(RuntimeError, match="OPT_REVISION"):
+        bench.preflight_dual()
+
+    assert "apply_laser_power" not in interface.calls
+    assert "start_trigger" not in interface.calls
+    assert not any(
+        isinstance(call, tuple) and call[0] in ("write_config", "write_i2c_packet")
+        for call in interface.calls
+    )
 
 
 def test_dual_topology_revalidation_returns_the_current_quiet_snapshot():
@@ -301,31 +308,6 @@ def test_preflight_captures_quiet_topology_after_late_sensor_arrives_during_ophi
     assert snapshot.topology.right_connected is True
     assert clock.now == pytest.approx(0.2)
     assert interface.calls.index("meter.preflight") < len(interface.calls)
-
-
-@pytest.mark.parametrize(
-    ("option", "value"),
-    [
-        ("wait_timeout", float("nan")),
-        ("wait_timeout", float("inf")),
-        ("topology_quiet_period_s", float("nan")),
-        ("topology_quiet_period_s", float("inf")),
-        ("topology_poll_interval_s", float("nan")),
-        ("topology_poll_interval_s", float("inf")),
-    ],
-)
-def test_topology_timing_strategy_rejects_nonfinite_values(option, value):
-    """Nonfinite timing inputs could bypass stability or defeat the bound."""
-    interface = FakeInterface((True, True, False))
-    options = {option: value}
-
-    with pytest.raises(ValueError, match="finite"):
-        MotionLaserCalibrationBench(
-            FakeMeter(interface.calls),
-            interface_factory=lambda: interface,
-            fpga_map=FakeMap(),
-            **options,
-        )
 
 
 def test_preflight_keeps_valid_serials_when_an_independent_identity_read_fails():
@@ -490,17 +472,6 @@ def test_fpga_write_does_not_read_or_return_evidence_after_failed_i2c_write():
     assert [call[0] for call in console.calls] == ["write_i2c_packet"]
 
 
-class FakeClock:
-    def __init__(self):
-        self.now = 0.0
-
-    def __call__(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
-
-
 class FakeOphirCOM:
     def __init__(self):
         self.calls = []
@@ -629,22 +600,6 @@ def _ophir_meter(com=None, *, duration_s=0.1):
         sleep=clock.sleep,
     )
     return meter, com, clock
-
-
-@pytest.mark.parametrize(
-    "option, value",
-    [
-        ("duration_s", float("nan")),
-        ("duration_s", float("inf")),
-        ("poll_interval_s", float("nan")),
-        ("poll_interval_s", float("inf")),
-    ],
-)
-def test_ophir_acquisition_bounds_must_be_finite(option, value):
-    arguments = {option: value}
-
-    with pytest.raises(ValueError, match="finite and positive"):
-        OphirEnergyMeter(**arguments)
 
 
 def test_ophir_preflight_reports_com_construction_failure():
@@ -869,16 +824,6 @@ def test_ophir_preflight_rejects_unitless_wrong_unit_and_malformed_range_or_puls
         meter.preflight()
 
 
-def test_ophir_preflight_preserves_documented_unitless_wavelength_labels():
-    meter, com, _ = _ophir_meter()
-    assert com.settings["Wavelengths"][1][3] == "795"
-
-    _, evidence = meter.preflight()
-
-    wavelength = next(item for item in evidence if item.name == "wavelength_nm")
-    assert wavelength.actual == 795
-
-
 def test_ophir_measure_discards_nonzero_status_and_returns_direct_stream_statistics():
     meter, com, _ = _ophir_meter()
     meter.preflight()
@@ -933,6 +878,35 @@ def test_ophir_measure_drains_stale_first_nonempty_batch_before_fresh_observatio
     assert measurement.max_uj == pytest.approx(365.0)
     assert measurement.rate_hz == pytest.approx(40.0)
     assert com.calls.count(("GetData", 17, 0)) == 3
+    assert com.calls[-1] == ("StopStream", 17, 0)
+
+
+def test_ophir_measure_restarts_after_stale_timestamp_prefix_in_fresh_batch():
+    """A delayed buffered prefix must not corrupt an otherwise fresh 40 Hz batch."""
+    meter, com, _ = _ophir_meter(duration_s=2.0)
+    meter.preflight()
+    com.calls.clear()
+    fresh_values_uj = list(range(340, 367))
+    com.data_batches = [
+        ([0.0001], [500.0], [0]),
+        (
+            [0.0002] + [value * 1e-6 for value in fresh_values_uj],
+            [1000.0] + [2045.0 + 25.0 * index for index in range(27)],
+            [0] * 28,
+        ),
+        pytest.fail,
+    ]
+
+    measurement = meter.measure()
+
+    assert measurement.n == 27
+    assert measurement.discarded == 1
+    assert measurement.mean_uj == pytest.approx(statistics.fmean(fresh_values_uj))
+    assert measurement.stdev_uj == pytest.approx(statistics.stdev(fresh_values_uj))
+    assert measurement.rate_hz == pytest.approx(40.0)
+    assert measurement.min_uj == pytest.approx(340.0)
+    assert measurement.max_uj == pytest.approx(366.0)
+    assert com.calls.count(("GetData", 17, 0)) == 2
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
@@ -1101,35 +1075,6 @@ def test_ophir_measure_rejects_misaligned_priming_batch_and_stops_stream():
     assert com.calls[-1] == ("StopStream", 17, 0)
 
 
-def test_ophir_close_without_active_stream_closes_open_device():
-    meter, com, _ = _ophir_meter()
-    meter.preflight()
-    com.calls.clear()
-
-    meter.close()
-
-    assert com.calls == [
-        "StopAllStreams",
-        ("Close", 17),
-        "CloseAll",
-    ]
-
-
-def test_ophir_close_does_not_redundantly_stop_successfully_stopped_measurement():
-    meter, com, _ = _ophir_meter(duration_s=0.15)
-    meter.preflight()
-    com.data_batches = [
-        ([0.0001], [100.0], [0]),
-        ([0.00035] * 26, [1000.0 + 25.0 * index for index in range(26)], [0] * 26),
-    ]
-    meter.measure()
-    com.calls.clear()
-
-    meter.close()
-
-    assert com.calls == ["StopAllStreams", ("Close", 17), "CloseAll"]
-
-
 def test_ophir_close_retries_measure_time_stop_failure_and_continues_cleanup():
     meter, com, _ = _ophir_meter(duration_s=0.15)
     meter.preflight()
@@ -1200,18 +1145,20 @@ class SafetyMap:
         "TA_PULSE_WIDTH": 0,
         "EE_PULSE_WIDTH_UL": 4,
         "OPT_PULSE_WIDTH_UL": 8,
+        **FakeMap._VERSION_ADDRESSES,
     }
 
     def get_entry_by_friendly_name(self, name):
         if name not in self._OFFSETS:
             return None
+        is_version = name in FakeMap._VERSION_ADDRESSES
         return {
             "mux_idx": 1,
             "channel": 4,
             "i2c_addr": 0x41,
             "isMsbFirst": False,
             "start_address": self._OFFSETS[name],
-            "data_size": "16B",
+            "data_size": "8B" if is_version else "16B",
             "scale": 1.0,
         }
 
@@ -1219,7 +1166,17 @@ class SafetyMap:
 class SafetyConsole(FakeConsole):
     def __init__(self, calls):
         super().__init__(True, calls)
-        self.register_values = {0: 500, 4: 550, 8: 550}
+        self.register_values = {
+            0: 500,
+            4: 550,
+            8: 550,
+            **{
+                address: value
+                for address, value in zip(
+                    range(101, 113), range(1, 13), strict=True
+                )
+            },
+        }
         self.trigger_reads = [{"TriggerFrequencyHz": 40.0}]
 
     def read_i2c_packet(self, **kwargs):

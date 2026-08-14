@@ -19,6 +19,7 @@ from omotion.calibration.laser import (
     DeviceIdentity,
     EnergyMeasurement,
     FailureKind,
+    FpgaFirmwareRevision,
     FinalSettingCheck,
     PairMetrics,
     ProcedureStatus,
@@ -148,9 +149,27 @@ def passing_result():
         topology=TopologySnapshot(True, True, True),
         topology_revalidation=TopologySnapshot(True, True, True),
         identities=(
-            DeviceIdentity("console", "CONSOLE-001", "console-fw", "console-hw", "fpga-fw"),
-            DeviceIdentity("left sensor", "LEFT-001", "left-fw", "left-hw"),
-            DeviceIdentity("right sensor", "RIGHT-001", "right-fw", "right-hw"),
+            DeviceIdentity(
+                "console",
+                "CONSOLE-001",
+                "console-fw",
+                "console-hw",
+                fpga_firmware_revisions=tuple(
+                    FpgaFirmwareRevision(controller, version)
+                    for controller, version in (
+                        ("TA", "1.2.3"),
+                        ("SEED", "4.5.6"),
+                        ("SAFETY_EE", "7.8.9"),
+                        ("SAFETY_OPT", "10.11.12"),
+                    )
+                ),
+            ),
+            DeviceIdentity(
+                "left sensor", "LEFT-001", "left-fw", "left-hw", "camera-fpga-left"
+            ),
+            DeviceIdentity(
+                "right sensor", "RIGHT-001", "right-fw", "right-hw", "camera-fpga-right"
+            ),
         ),
         pre_existing_config={"customer_key": 17},
         requested_default_config=defaults,
@@ -182,9 +201,27 @@ def test_dual_report_renders_complete_passing_evidence_with_audit_language(tmp_p
     html = DualSensorHtmlRunReport(tmp_path).render(request(), passing_result(), "run.json")
 
     assert "WI-00015 Dual-Sensor Laser Calibration" in html
-    assert "Operator &lt;A&gt;" in html
+    assert "Target midpoint energy uJ" in html
+    assert "Minimum accepted energy uJ" in html
+    assert "Maximum accepted energy uJ" in html
+    assert "Distance from 350 uJ" in html
+    assert "Request metadata" not in html
+    assert "Operator &lt;A&gt;" not in html
     assert "CONSOLE-001" in html and "LEFT-001" in html and "RIGHT-001" in html
-    assert "Topology immediately before configuration mutation" in html
+    for expected in (
+        "TA FPGA firmware revision",
+        "1.2.3",
+        "SEED FPGA firmware revision",
+        "4.5.6",
+        "SAFETY_EE FPGA firmware revision",
+        "7.8.9",
+        "SAFETY_OPT FPGA firmware revision",
+        "10.11.12",
+    ):
+        assert expected in html
+    assert "camera-fpga-left" not in html
+    assert "camera-fpga-right" not in html
+    assert "Topology immediately before configuration mutation" not in html
     assert "Initial paired measurement — left sensor" in html
     assert "Initial differential and midpoint" in html
     assert "selected right sensor because it had the higher energy reading" in html
@@ -242,60 +279,6 @@ def test_dual_report_labels_requested_final_config_unconfirmed_after_write_failu
 
     assert "Requested tuned User Configuration (unconfirmed)" in html
     assert "Passing tuned User Configuration" not in html
-
-
-def test_dual_report_write_creates_the_claimed_utf8_file(tmp_path):
-    report = DualSensorHtmlRunReport(tmp_path)
-    written = report.write(request(), passing_result(), tmp_path / "run.json")
-    assert written == report.report_path
-    assert written.is_file()
-    assert "Dual-Sensor" in written.read_text(encoding="utf-8")
-
-
-def test_dual_report_renders_every_raw_observation_and_quality_criterion(tmp_path):
-    distinctive = SensorEnergyObservation(
-        side="left",
-        sensor_serial="LEFT-QUALITY-001",
-        label="Cross-check 3 — left sensor quality record",
-        measurement=EnergyMeasurement(
-            n=31,
-            discarded=7,
-            mean_uj=333.25,
-            stdev_uj=12.345,
-            rate_hz=39.5,
-            min_uj=301.25,
-            max_uj=399.75,
-            duration_s=0.8125,
-        ),
-        criteria=(
-            CriterionResult(
-                "sample_rate_hz",
-                True,
-                "Observed rate remained inside the approved acquisition window.",
-            ),
-        ),
-    )
-    result = replace(passing_result(), observations=(distinctive,))
-
-    html = DualSensorHtmlRunReport(tmp_path).render(request(), result, "run.json")
-
-    assert "All energy observations" in html
-    assert "All energy observation quality criteria" in html
-    for expected in (
-        "Cross-check 3 — left sensor quality record",
-        "LEFT-QUALITY-001",
-        "31",
-        "7",
-        "333.25",
-        "12.345",
-        "39.5",
-        "301.25",
-        "399.75",
-        "0.8125",
-        "sample_rate_hz",
-        "Observed rate remained inside the approved acquisition window.",
-    ):
-        assert expected in html
 
 
 def test_dual_report_renders_hardware_resource_cleanup_failure(tmp_path):

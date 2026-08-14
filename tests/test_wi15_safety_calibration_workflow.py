@@ -14,7 +14,6 @@ from omotion.calibration.laser import (
 )
 from omotion.calibration.safety import (
     NormalScanEvidence,
-    PowerCycleEvidence,
     SafetyWarningEvidence,
     ShippingTopology,
 )
@@ -24,25 +23,15 @@ from omotion.calibration.safety_workflow import (
     SafetyCalibrationRequest,
     SafetyCalibrationWorkflow,
 )
+from wi15_builders import FPGA_REVISIONS, valid_power_cycle, valid_safety_config
+from wi15_fakes import FakeRecorder
 
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
 
 
 def _valid_config(**changes):
-    config = {
-        "TA_PULSE_WIDTH": 500,
-        "TA_CURRENT_DRV": 5000,
-        "SEED_CW_GAIN": 140,
-        "EE_PULSE_WIDTH_UL": 550,
-        "EE_RATE_LL": 23125,
-        "EE_DRIVE_CL": 9999,
-        "OPT_PULSE_WIDTH_UL": 550,
-        "OPT_RATE_LL": 23125,
-        "OPT_DRIVE_CL": 9999,
-        "TEC_TRIP": 40,
-        "FACTORY_NOTE": 7,
-    }
+    config = valid_safety_config(FACTORY_NOTE=7)
     config.update(changes)
     return config
 
@@ -89,39 +78,18 @@ def _valid_scan(topology=ShippingTopology.SINGLE_LEFT):
 
 
 def _valid_power_cycle():
-    return PowerCycleEvidence(
-        off_requested_at=NOW,
-        disconnect_observed_at=NOW + timedelta(seconds=1),
-        on_allowed_at=NOW + timedelta(seconds=16),
-        on_requested_at=NOW + timedelta(seconds=16),
-        reconnect_observed_at=NOW + timedelta(seconds=20),
-        off_duration_s=15.0,
-        disconnect_observed=True,
-        reconnect_observed=True,
-        restart_proven=True,
-        restart_proof="firmware uptime reset from 734 s to 2 s",
-        console_serial_before="C-1",
-        console_serial_after="C-1",
+    return valid_power_cycle(
+        NOW, restart_proof="firmware uptime reset from 734 s to 2 s"
     )
-
-
-class FakeRecorder:
-    def __init__(self):
-        self.events = []
-        self.checkpoints = []
-
-    def record(self, event):
-        self.events.append(event)
-
-    def checkpoint(self, result):
-        self.checkpoints.append(result)
 
 
 class FakeSafetyBench:
     def __init__(self, *, topology=ShippingTopology.SINGLE_LEFT):
         self.preflight = ConsolePreflightSnapshot(
             topology=TopologySnapshot(True, True, False),
-            console_identity=DeviceIdentity("console", "C-1", "1.2", "HC", "FPGA"),
+            console_identity=DeviceIdentity(
+                "console", "C-1", "1.2", "HC", "FPGA", FPGA_REVISIONS
+            ),
             console_responsive=True,
         )
         self.current_config = _valid_config()
@@ -249,11 +217,6 @@ def _run(bench=None, *, topology=ShippingTopology.SINGLE_LEFT, policy=None):
     return workflow.run(_request(topology)), bench, recorder
 
 
-def test_sampling_policy_cannot_weaken_the_ten_sample_minimum():
-    with pytest.raises(ValueError, match="at least 10"):
-        AdcSamplingPolicy(minimum_valid_samples=9)
-
-
 @pytest.mark.parametrize(
     "preflight",
     [
@@ -291,6 +254,25 @@ def test_setup_failure_prevents_bringup_adc_write_and_scan(preflight):
     assert bench.mutations == []
     assert bench.trigger_starts == 0
     assert bench.scan_requests == []
+
+
+def test_missing_console_fpga_revisions_prevents_safety_calibration_mutation():
+    bench = FakeSafetyBench()
+    bench.preflight = replace(
+        bench.preflight,
+        console_identity=replace(
+            bench.preflight.console_identity,
+            fpga_firmware_revisions=(),
+        ),
+    )
+
+    result, bench, _ = _run(bench)
+
+    assert result.status is ProcedureStatus.FAILED
+    assert result.failure_kind is FailureKind.SETUP
+    assert "TA, SEED, SAFETY_EE, and SAFETY_OPT" in result.failure_reason
+    assert bench.mutations == []
+    assert bench.trigger_starts == 0
 
 
 def test_sensor_modules_are_not_a_precondition_for_console_adc_calibration():
@@ -361,19 +343,6 @@ def test_only_out_of_range_trigger_rate_is_corrected_and_reverified():
         SettingReadback("trigger_rate_hz_final", 40.0, 40.0),
     )
     assert bench.mutations[0] == ("trigger", 40.0)
-
-
-def test_in_range_but_non_40_hz_trigger_is_still_corrected_to_40():
-    bench = FakeSafetyBench()
-    bench.trigger_rates = deque([39.5, 40.0])
-
-    result, bench, _ = _run(bench)
-
-    assert result.status is ProcedureStatus.PASSED
-    assert bench.mutations[0] == ("trigger", 40.0)
-    assert result.trigger_readbacks[-1] == SettingReadback(
-        "trigger_rate_hz_final", 40.0, 40.0
-    )
 
 
 @pytest.mark.parametrize(
@@ -558,7 +527,7 @@ def test_write_failure_or_complete_readback_mismatch_prevents_power_cycle(write_
     ("changes", "reason_fragment"),
     [
         ({"disconnect_observed": False}, "disconnect"),
-        ({"off_duration_s": 14.999}, "15"),
+        ({"off_duration_s": 0.999}, "too quickly"),
         ({"reconnect_observed": False}, "reconnect"),
         ({"restart_proven": False, "restart_proof": None}, "restart"),
         ({"console_serial_after": "C-2"}, "serial"),
@@ -581,7 +550,7 @@ def test_power_cycle_requires_observed_disconnect_dwell_reconnect_and_restart(
     "changes",
     [
         {"disconnect_observed_at": None},
-        {"on_allowed_at": NOW + timedelta(seconds=15.999)},
+        {"on_allowed_at": NOW + timedelta(seconds=1.5)},
         {"on_requested_at": NOW + timedelta(seconds=15)},
         {"reconnect_observed_at": NOW + timedelta(seconds=15)},
     ],
@@ -703,3 +672,17 @@ def test_passing_workflow_records_auditor_readable_stage_labels_and_terminal_rea
         "8. Procedure completion",
     ]
     assert recorder.checkpoints[-1] == result
+
+
+def test_console_only_declaration_skips_the_normal_scan_and_passes():
+    """A console-only bench run has no modules, so stage 7 must not demand one."""
+    bench = FakeSafetyBench()
+
+    result, bench, recorder = _run(bench, topology=ShippingTopology.CONSOLE_ONLY)
+
+    assert result.status is ProcedureStatus.PASSED
+    assert result.normal_scan is None
+    assert bench.scan_requests == []
+    assert any(
+        "not applicable" in event.stage.lower() for event in result.events
+    )

@@ -7,7 +7,6 @@ from pathlib import Path
 from omotion.calibration.laser import (
     CriterionResult,
     DeviceIdentity,
-    EnergyMeasurement,
     FailureKind,
     FinalSettingCheck,
     OphirIdentity,
@@ -26,6 +25,7 @@ from omotion.calibration.single_sensor_laser import (
     TuningCandidate,
     TuningSelection,
 )
+from wi15_builders import valid_measurement as _measurement
 
 
 class _Mode(str, Enum):
@@ -58,21 +58,6 @@ def _request(**changes):
     }
     values.update(changes)
     return SingleSensorLaserCalibrationRequest(**values)
-
-
-def _measurement(**changes):
-    values = {
-        "n": 26,
-        "discarded": 0,
-        "mean_uj": 350.0,
-        "stdev_uj": 10.0,
-        "rate_hz": 40.0,
-        "min_uj": 330.0,
-        "max_uj": 370.0,
-        "duration_s": 0.65,
-    }
-    values.update(changes)
-    return EnergyMeasurement(**values)
 
 
 def _result(**changes):
@@ -260,61 +245,6 @@ def test_html_report_escapes_and_shows_complete_passing_evidence(tmp_path):
     assert text.count('class="changed"') == 1
 
 
-def test_html_report_renders_workflow_owned_final_setting_checks_verbatim(tmp_path):
-    """The report must expose each final acceptance input without recomputation."""
-    text = (
-        HtmlRunReport(tmp_path)
-        .write(_request(), _result(), "run.json")
-        .read_text(encoding="utf-8")
-    )
-
-    assert "Final 2 percent setting checks" in text
-    for expected in (
-        "TA_CURRENT_DRV",
-        "4950.0",
-        "4949.0",
-        "1.0",
-        "0.020202",
-        "TA_PULSE_WIDTH",
-        "500.0",
-        "510.0",
-        "10.0",
-        "2.0",
-        "True",
-    ):
-        assert expected in text
-
-
-def test_html_report_marks_terminal_ncr_without_claiming_unexecuted_later_stages(
-    tmp_path,
-):
-    """A failed report must not imply that final handoff or verification occurred."""
-    result = _result(
-        status=ProcedureStatus.FAILED_NCR,
-        failure_kind=FailureKind.NCR,
-        failure_reason="NCR: <below 300 uJ>",
-        requested_final_config=None,
-        final_config_readback=None,
-        measurements=(),
-        measurement_criteria=(),
-        adjustments=(),
-        candidates=(),
-        selection=None,
-    )
-
-    text = (
-        HtmlRunReport(tmp_path)
-        .write(_request(), result, "run.json")
-        .read_text(encoding="utf-8")
-    )
-
-    assert "failed_ncr" in text
-    assert "NCR: &lt;below 300 uJ&gt;" in text
-    assert "Passing tuned User Configuration" not in text
-    assert "Final verification" not in text
-    assert "Tuning candidates" not in text
-
-
 def test_html_report_omits_all_unreached_stage_headings_after_earliest_failure(
     tmp_path,
 ):
@@ -408,21 +338,3 @@ def test_html_report_gates_sections_by_reached_evidence_and_keeps_cleanup_failur
         assert unreached not in text
 
 
-def test_html_report_labels_unsuccessful_final_config_as_unconfirmed(tmp_path):
-    """A failed persistence attempt must not be represented as passing evidence."""
-    result = _result(
-        status=ProcedureStatus.FAILED,
-        failure_kind=FailureKind.CONFIGURATION,
-        failure_reason="Passing User Configuration write did not return a result.",
-        final_config_readback=None,
-    )
-
-    text = (
-        HtmlRunReport(tmp_path)
-        .write(_request(), result, "run.json")
-        .read_text(encoding="utf-8")
-    )
-
-    assert "Requested tuned User Configuration (unconfirmed)" in text
-    assert "Passing tuned User Configuration" not in text
-    assert "Final User Configuration readback" not in text

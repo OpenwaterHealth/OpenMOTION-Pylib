@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import time
-from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
 
 try:
@@ -24,11 +23,13 @@ from .laser import (
     SettingReadback,
     TopologySnapshot,
     percent_difference,
+    validate_console_fpga_revisions,
     validate_serial,
     within_percent,
 )
 from .safety import (
     MINIMUM_ADC_SAMPLES,
+    MINIMUM_POWER_OFF_S,
     SAFETY_EE_MULTIPLIER,
     SAFETY_OPT_MULTIPLIER,
     AdcReadEvidence,
@@ -44,30 +45,13 @@ from .safety import (
     validate_current_configuration,
     validate_shipping_topology,
 )
-from .single_sensor_laser import (
+from ._procedure import (
     ProcedureEvent,
+    ProcedureFailure as _ProcedureFailure,
     ReportArtifactEvidence,
+    deeply_immutable as _deeply_immutable,
+    finite_number as _finite_number,
 )
-
-
-def _deeply_immutable(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _deeply_immutable(item) for key, item in value.items()}
-        )
-    if isinstance(value, tuple | list):
-        return tuple(_deeply_immutable(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_deeply_immutable(item) for item in value)
-    return value
-
-
-def _finite_number(value: object) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int | float)
-        and math.isfinite(float(value))
-    )
 
 
 @dataclass(frozen=True)
@@ -212,12 +196,6 @@ class RunRecorder(Protocol):
     def checkpoint(self, result: SafetyCalibrationResult) -> None: ...
 
 
-@dataclass(frozen=True)
-class _ProcedureFailure(Exception):
-    kind: FailureKind
-    reason: str
-
-
 class SafetyCalibrationWorkflow:
     """Execute the complete fail-closed Safety Calibration procedure."""
 
@@ -296,8 +274,8 @@ class SafetyCalibrationWorkflow:
         def checkpoint() -> None:
             self._recorder.checkpoint(snapshot())
 
-        def stage(label: str, message: str, **data: object) -> None:
-            event = ProcedureEvent(self._now(), label, message, data)
+        def stage(label: str, message: str) -> None:
+            event = ProcedureEvent(self._now(), label, message)
             events.append(event)
             self._recorder.record(event)
             checkpoint()
@@ -483,12 +461,13 @@ class SafetyCalibrationWorkflow:
 
             stage(
                 "6. Measured power-cycle persistence verification",
-                "Observe console disconnection, keep power off for at least 15 measured "
-                "seconds, prove restart, and verify the complete persisted configuration.",
+                "Observe console disconnection, keep power off for at least "
+                f"{MINIMUM_POWER_OFF_S:g} measured second(s), prove restart, and "
+                "verify the complete persisted configuration.",
             )
             try:
                 power_cycle = self._bench.power_cycle(
-                    minimum_off_s=15.0,
+                    minimum_off_s=MINIMUM_POWER_OFF_S,
                     expected_console_serial=preflight.console_identity.serial.strip(),
                 )
             except Exception as exc:
@@ -526,22 +505,30 @@ class SafetyCalibrationWorkflow:
                     "the intended configuration.",
                 )
 
-            stage(
-                "7. Normal 30-second scan with persisted values",
-                "Run the ordinary production sensor-data path in the declared shipping "
-                "topology, with persisted values active and no overrides.",
-            )
-            try:
-                normal_scan = self._bench.run_normal_scan(
-                    request.shipping_topology, duration_s=30.0
+            if request.shipping_topology is ShippingTopology.CONSOLE_ONLY:
+                stage(
+                    "7. Normal 30-second scan not applicable",
+                    "The console-only declaration has no sensor modules, so the "
+                    "production sensor-data path cannot and need not run.",
                 )
-            except Exception as exc:
-                raise _ProcedureFailure(
-                    FailureKind.MEASUREMENT,
-                    f"Normal 30-second scan failed: {exc}",
-                ) from exc
-            checkpoint()
-            self._validate_normal_scan(normal_scan, request.shipping_topology)
+                checkpoint()
+            else:
+                stage(
+                    "7. Normal 30-second scan with persisted values",
+                    "Run the ordinary production sensor-data path in the declared "
+                    "shipping topology, with persisted values active and no overrides.",
+                )
+                try:
+                    normal_scan = self._bench.run_normal_scan(
+                        request.shipping_topology, duration_s=30.0
+                    )
+                except Exception as exc:
+                    raise _ProcedureFailure(
+                        FailureKind.MEASUREMENT,
+                        f"Normal 30-second scan failed: {exc}",
+                    ) from exc
+                checkpoint()
+                self._validate_normal_scan(normal_scan, request.shipping_topology)
 
             stage(
                 "8. Procedure completion",
@@ -579,6 +566,11 @@ class SafetyCalibrationWorkflow:
             raise _ProcedureFailure(
                 FailureKind.SETUP, "Console serial number is missing or blank."
             )
+        fpga_revisions = validate_console_fpga_revisions(
+            preflight.console_identity
+        )
+        if not fpga_revisions.passed:
+            raise _ProcedureFailure(FailureKind.SETUP, fpga_revisions.detail)
 
     @staticmethod
     def _setting_check(name: str, requested: object, actual: object) -> FinalSettingCheck:
@@ -784,11 +776,13 @@ class SafetyCalibrationWorkflow:
             )
         if (
             not _finite_number(evidence.off_duration_s)
-            or float(evidence.off_duration_s) < 15.0
+            or float(evidence.off_duration_s) < MINIMUM_POWER_OFF_S
         ):
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
-                "Power-off dwell was not at least 15 measured seconds.",
+                "Power-off dwell was not at least "
+                f"{MINIMUM_POWER_OFF_S:g} measured second(s) - the console was "
+                "cycled too quickly for the dwell to be provable.",
             )
         if not evidence.reconnect_observed:
             raise _ProcedureFailure(
@@ -818,15 +812,15 @@ class SafetyCalibrationWorkflow:
                 timestamps_valid
                 and (evidence.on_allowed_at - evidence.disconnect_observed_at)
                 .total_seconds()
-                >= 15.0
+                >= MINIMUM_POWER_OFF_S
             )
         except (TypeError, ValueError):
             dwell_timestamps_valid = False
         if not dwell_timestamps_valid:
             raise _ProcedureFailure(
                 FailureKind.CONFIGURATION,
-                "Power-cycle timestamp evidence is missing, out of order, or does not "
-                "show the complete 15-second off dwell.",
+                "Power-cycle timestamp evidence is missing, out of order, or does "
+                f"not show the complete {MINIMUM_POWER_OFF_S:g}-second off dwell.",
             )
         expected = expected_serial.strip() if isinstance(expected_serial, str) else None
         if (

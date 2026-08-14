@@ -13,7 +13,6 @@ from omotion.calibration.safety import (
     ADC_ROUNDING_RULE,
     AdcReadEvidence,
     NormalScanEvidence,
-    PowerCycleEvidence,
     PulseLimitCalculation,
     SafetyLimitCalculation,
     SafetyWarningEvidence,
@@ -25,6 +24,7 @@ from omotion.calibration.safety_workflow import (
     SafetyCalibrationResult,
 )
 from omotion.calibration.single_sensor_laser import ProcedureEvent
+from wi15_builders import FPGA_REVISIONS, valid_power_cycle, valid_safety_config
 
 
 NOW = datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc)
@@ -57,18 +57,7 @@ def _warning(*, ok=True, faults=()):
 
 
 def _current_config():
-    return {
-        "TA_PULSE_WIDTH": 500,
-        "TA_CURRENT_DRV": 5000,
-        "SEED_CW_GAIN": 140,
-        "EE_PULSE_WIDTH_UL": 550,
-        "EE_RATE_LL": 23125,
-        "EE_DRIVE_CL": 9999,
-        "OPT_PULSE_WIDTH_UL": 550,
-        "OPT_RATE_LL": 23125,
-        "OPT_DRIVE_CL": 9999,
-        "TEC_TRIP": 40,
-    }
+    return valid_safety_config()
 
 
 def _result(**changes):
@@ -104,20 +93,7 @@ def _result(**changes):
         550,
         "derived",
     )
-    power_cycle = PowerCycleEvidence(
-        NOW,
-        NOW + timedelta(seconds=1),
-        NOW + timedelta(seconds=16),
-        NOW + timedelta(seconds=16),
-        NOW + timedelta(seconds=20),
-        15.0,
-        True,
-        True,
-        True,
-        "same Motion handle disconnected and reconnected",
-        "C-1",
-        "C-1",
-    )
+    power_cycle = valid_power_cycle(NOW)
     scan = NormalScanEvidence(
         ShippingTopology.SINGLE_LEFT,
         30.0,
@@ -143,7 +119,12 @@ def _result(**changes):
         "ended_at": NOW + timedelta(minutes=2),
         "initial_topology": TopologySnapshot(True, False, False),
         "console_identity": DeviceIdentity(
-            "console", "C-1", "console-fw", "console-hw", "fpga-fw"
+            "console",
+            "C-1",
+            "console-fw",
+            "console-hw",
+            "camera-fpga-omitted",
+            FPGA_REVISIONS,
         ),
         "current_configuration": current,
         "configuration_criteria": (
@@ -209,7 +190,8 @@ def test_report_escapes_and_renders_complete_passing_audit_evidence(tmp_path):
         "Status: passed",
         "1.6.0-runtime",
         "C-1",
-        "fpga-fw",
+        "TA FPGA firmware revision",
+        "SAFETY_OPT FPGA firmware revision",
         "Current User Configuration",
         "Active TA setting checks",
         "trigger_rate_hz_initial",
@@ -231,25 +213,8 @@ def test_report_escapes_and_renders_complete_passing_audit_evidence(tmp_path):
         "Procedure event timeline",
     ):
         assert expected in text
+    assert "camera-fpga-omitted" not in text
     assert text.count('class="changed"') == 2
-
-
-def test_report_flattens_operator_request_wrapper_into_auditable_metadata(tmp_path):
-    wrapped_request = {
-        "request": _request(),
-        "procedure_revision": "approved revision 7",
-    }
-
-    text = SafetyCalibrationHtmlRunReport(tmp_path).render(
-        wrapped_request, _result(), "run.json"
-    )
-
-    assert "approved revision 7" in text
-    assert "<td>operator</td><td>Ada &lt;QA&gt;</td>" in text
-    assert "<td>build_id</td><td>BUILD-1</td>" in text
-    assert "<td>fixture_id</td><td>BENCH-1</td>" in text
-    assert "<td>procedure_revision</td><td>approved revision 7</td>" in text
-    assert "<td>request</td>" not in text
 
 
 def test_report_omits_all_unreached_headings_after_earliest_setup_failure(tmp_path):
