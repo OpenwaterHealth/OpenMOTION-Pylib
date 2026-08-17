@@ -9,4 +9,9 @@ environment that can import ``omotion`` can run them; no SDK checkout needed.
 
 Current procedures are the WI-00015 calibration runners; operator-facing
 usage lives in ``docs/WI15Procedures.md``.
+
+``framed_prompts`` is not a procedure but a host-facing runner: it executes a
+procedure module with each interactive prompt announced as one sentinel-tagged
+JSON line on stdout, so a hosting program (the Procedures pane) can recognize
+prompts exactly instead of sniffing for them. Terminal use never needs it.
 """

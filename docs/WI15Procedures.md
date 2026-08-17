@@ -36,7 +36,11 @@ python -m omotion.scripts.wi15_safety_calibration --output-dir C:\WI15_runs
 
 Evidence lands under `--output-dir` (default: `wi15_out` in the current
 directory). The test-app's Procedures pane runs these same modules as
-subprocesses and passes `--output-dir` explicitly.
+subprocesses and passes `--output-dir` explicitly — via
+`omotion.scripts.framed_prompts`, a host-facing runner that announces each
+interactive prompt as a sentinel-tagged JSON line on stdout so the pane can
+recognize prompts exactly. The procedure code is identical either way;
+terminal runs never need the wrapper.
 
 ## Required equipment and connections per procedure
 
