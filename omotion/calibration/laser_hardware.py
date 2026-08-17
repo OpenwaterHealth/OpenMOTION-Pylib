@@ -45,8 +45,9 @@ __all__ = [
 
 
 def _default_ophir_com_factory():
-    # pywin32 is an optional, Windows-only runtime dependency.  Keep the import
-    # here so SDK import and all fake-driven tests work without COM installed.
+    # pywin32 is declared in pyproject.toml with a sys_platform == 'win32'
+    # marker.  Keep the import here so SDK import and all fake-driven tests
+    # work on platforms where it is absent.
     import win32com.client
 
     return win32com.client.Dispatch("OphirLMMeasurement.CoLMMeasurement")
