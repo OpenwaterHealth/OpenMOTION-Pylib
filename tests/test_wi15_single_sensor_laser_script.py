@@ -78,7 +78,7 @@ def test_script_source_is_ascii_decodable_and_does_not_use_legacy_tuning():
     assert "omotion.tuning" not in SCRIPT_PATH.read_text(encoding="ascii")
 
 
-def test_main_reprompts_side_echoes_it_and_requires_both_confirmations(monkeypatch, tmp_path):
+def test_main_reprompts_side_and_requires_both_confirmations(monkeypatch, tmp_path):
     """An unconfirmed or ambiguous module selection could fire the wrong fixture."""
     script, recorder, meter, bench, workflow, report = configured_script(monkeypatch, tmp_path)
     messages = []
@@ -95,7 +95,7 @@ def test_main_reprompts_side_echoes_it_and_requires_both_confirmations(monkeypat
     assert workflow.requests[0].fixture_confirmed is True
     assert workflow.requests[0].sdk_version == omotion.__version__
     assert workflow.requests[0].started_at is not None
-    assert any("Selected sensor side: right" in message for message in messages)
+    assert any("Please answer left or right." in message for message in messages)
     assert bench.closed == 1
     assert meter.closed == 0
     assert report.writes[0][1].report_paths == (recorder.json_path, report.report_path)
@@ -235,7 +235,8 @@ def test_terminal_failure_prints_the_structured_category_and_exact_reason(
     )
 
     assert exit_code == 1
-    assert "Final result: failed" in messages
+    assert "Final result: FAIL" in messages
+    assert "# procedure status: failed" in messages
     assert "Problem type: measurement" in messages
     assert (
         "Problem: Adjustment energy measurement failed quality criteria."

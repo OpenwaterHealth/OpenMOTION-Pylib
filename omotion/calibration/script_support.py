@@ -8,12 +8,19 @@ collaborators as arguments.
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
-from .laser import FailureKind, ProcedureStatus
+from .laser import (
+    EnergyMeasurement,
+    FailureKind,
+    ProcedureStatus,
+    SettingReadback,
+)
 from ._procedure import ReportArtifactEvidence, ReportArtifactStatus
 
 
@@ -21,6 +28,212 @@ PROCEDURE_ID = "WI-00015"
 APPROVED_PROCEDURE_REVISION = (
     "WI-00015 automated process addendum approved 2026-08-12"
 )
+
+# Terminal-output convention shared with the test app's Procedures pane:
+# operator lines are plain short sentences; engineer-facing narration is
+# prefixed with DETAIL_PREFIX. The pane hides prefixed lines while its
+# Verbose checkbox is off (display-only - scripts always emit everything, so
+# the toggle can apply retroactively and headless runs see the full stream).
+DETAIL_PREFIX = "# "
+
+
+def emit_detail(output_func: Callable[[str], None], message: str) -> None:
+    """Print an engineer-facing detail line (hidden when Verbose is off)."""
+    output_func(f"{DETAIL_PREFIX}{message}")
+
+
+class _DetailLogHandler(logging.StreamHandler):
+    """Marker subclass so repeated forward_library_logging() calls are no-ops.
+
+    Emits to whatever ``sys.stderr`` currently is, so stream replacement
+    (pytest capture, runner reconfiguration) never leaves it holding a dead
+    stream object.
+    """
+
+    def emit(self, record):
+        self.stream = sys.stderr
+        super().emit(record)
+
+
+def forward_library_logging() -> None:
+    """Route WARNING+ library log records to stderr as detail lines.
+
+    The scripts run as children of the Procedures pane, which merges stderr
+    into its terminal. Without a handler, Python's last-resort handler prints
+    bare messages the pane cannot classify as narration; formatting them with
+    DETAIL_PREFIX keeps them out of the plain operator view while preserving
+    them for verbose reading and the pane's audit log.
+    """
+    root = logging.getLogger()
+    if any(isinstance(handler, _DetailLogHandler) for handler in root.handlers):
+        return
+    handler = _DetailLogHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(f"{DETAIL_PREFIX}%(levelname)s %(name)s: %(message)s")
+    )
+    root.addHandler(handler)
+
+
+class EventEchoRecorder:
+    """Forward recorder calls unchanged; echo each event as a detail line.
+
+    The workflows narrate themselves through ``ProcedureEvent`` records that
+    normally reach only the JSON evidence file; echoing them gives the
+    verbose terminal the same story at no cost to the evidence. The
+    underlying recorder stays reachable as ``wrapped`` (tests assert wiring
+    identity through it).
+    """
+
+    def __init__(self, recorder, output_func: Callable[[str], None]):
+        self.wrapped = recorder
+        self._output = output_func
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
+
+    def record(self, event) -> None:
+        self.wrapped.record(event)
+        message = getattr(event, "message", None)
+        if message:
+            self._output(f"{DETAIL_PREFIX}{message}")
+
+
+def _format_value(value) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int | float):
+        return f"{value:g}"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return ", ".join(
+            f"{key}={_format_value(item)}" for key, item in value.items()
+        )
+    return type(value).__name__
+
+
+def _describe_result(value) -> str:
+    if value is None:
+        return "done"
+    if isinstance(value, EnergyMeasurement):
+        return (
+            f"{value.n} pulses, mean {value.mean_uj:.1f} uJ, "
+            f"stdev {value.stdev_uj:.1f} uJ, rate {value.rate_hz:.1f} Hz"
+        )
+    if isinstance(value, SettingReadback):
+        return (
+            f"requested {_format_value(value.requested)}, "
+            f"read back {_format_value(value.actual)}"
+        )
+    return _format_value(value)
+
+
+class BenchNarrator:
+    """Wrap a bench so every hardware call narrates itself to the terminal.
+
+    Each call prints one ``DETAIL_PREFIX`` line naming the call and a compact
+    result summary, so the verbose view shows exactly what was set and read.
+    Three kinds of always-visible operator lines are layered on top:
+
+    * ``steps`` maps ``(method name, occurrence)`` to a plain line announcing
+      the phase that call begins (e.g. the first ``measure_energy`` starts
+      the measuring-and-adjusting phase).
+    * Laser drive writes print what is being set, in units.
+    * Energy measurements print the measured mean (and the target when one
+      is supplied), which doubles as the not-hung heartbeat during tuning.
+
+    Methods named in ``quiet`` are polled in tight loops; they narrate their
+    first call only. The underlying bench stays reachable as ``wrapped``
+    (tests assert wiring identity through it).
+    """
+
+    _SLOW_METHODS = frozenset(
+        {
+            "preflight",
+            "preflight_dual",
+            "preflight_console",
+            "measure_energy",
+            "power_cycle",
+            "run_normal_scan",
+            "bring_up_laser_configuration",
+            "revalidate_topology",
+            "revalidate_dual_topology",
+            "close",
+        }
+    )
+
+    def __init__(
+        self,
+        bench,
+        output_func: Callable[[str], None],
+        *,
+        steps: Mapping[tuple[str, int], str] | None = None,
+        quiet: tuple[str, ...] = (),
+        target_energy_uj: float | None = None,
+    ):
+        self.wrapped = bench
+        self._output = output_func
+        self._steps = dict(steps or {})
+        self._quiet = frozenset(quiet)
+        self._target_energy_uj = target_energy_uj
+        self._call_counts: dict[str, int] = {}
+
+    def __getattr__(self, name):
+        attribute = getattr(self.wrapped, name)
+        if not callable(attribute):
+            return attribute
+
+        def narrated(*args, **kwargs):
+            return self._narrated_call(name, attribute, args, kwargs)
+
+        return narrated
+
+    def _narrated_call(self, name, method, args, kwargs):
+        count = self._call_counts.get(name, 0) + 1
+        self._call_counts[name] = count
+        step_line = self._steps.get((name, count))
+        if step_line is not None:
+            self._output(step_line)
+        self._announce_intent(name, args)
+        muted = name in self._quiet and count > 1
+        described_args = ", ".join(
+            [_format_value(arg) for arg in args]
+            + [f"{key}={_format_value(item)}" for key, item in kwargs.items()]
+        )
+        if not muted and name in self._SLOW_METHODS:
+            emit_detail(self._output, f"{name}({described_args}) ...")
+        try:
+            result = method(*args, **kwargs)
+        except Exception as error:
+            emit_detail(
+                self._output,
+                f"{name}({described_args}) failed: "
+                f"{type(error).__name__}: {error}",
+            )
+            raise
+        if not muted:
+            emit_detail(
+                self._output,
+                f"{name}({described_args}) -> {_describe_result(result)}",
+            )
+        self._announce_result(name, result)
+        return result
+
+    def _announce_intent(self, name: str, args) -> None:
+        if name != "write_register" or len(args) < 2:
+            return
+        register, value = args[0], args[1]
+        if register == "TA_CURRENT_DRV":
+            self._output(f"Setting the laser current to {value:g} mA ...")
+        elif register == "TA_PULSE_WIDTH":
+            self._output(f"Setting the laser pulse width to {value:g} us ...")
+
+    def _announce_result(self, name: str, result) -> None:
+        if name == "measure_energy" and isinstance(result, EnergyMeasurement):
+            line = f"Measured {result.mean_uj:.0f} uJ."
+            if self._target_energy_uj is not None:
+                line += f" Target is {self._target_energy_uj:g} uJ."
+            self._output(line)
 
 
 @dataclass(frozen=True)
@@ -177,9 +390,17 @@ def finalize_run_artifacts(
         )
         recorder.checkpoint(failed_result)
         output_func(f"Could not create the report: {report_failure}")
+        output_func("Final result: FAIL")
         return 1
     recorder.checkpoint(finalized_result)
-    output_func(f"Final result: {finalized_result.status.value}")
+    emit_detail(output_func, f"procedure status: {finalized_result.status.value}")
+    if finalized_result.status is ProcedureStatus.PASSED:
+        verdict = "PASS"
+    elif finalized_result.status is ProcedureStatus.CANCELED:
+        verdict = "CANCELED"
+    else:
+        verdict = "FAIL"
+    output_func(f"Final result: {verdict}")
     if finalized_result.failure_kind is not None:
         output_func(f"Problem type: {finalized_result.failure_kind.value}")
     if finalized_result.failure_reason is not None:
