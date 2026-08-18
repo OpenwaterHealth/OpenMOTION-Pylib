@@ -144,7 +144,9 @@ class StreamInterface(USBInterfaceBase):
         self.expected_size = expected_size
         self.packets_received = 0
         self.stop_event.clear()
-        self.thread = threading.Thread(target=self._stream_loop, daemon=True)
+        self.thread = threading.Thread(
+            target=self._stream_loop, daemon=True, name=f"{self.desc}-stream"
+        )
         self.thread.start()
         self.isStreaming = True
         logger.info(f"{self.desc}: Streaming started")
