@@ -312,8 +312,8 @@ Fallback (zero span): identity scaling, `BFI = K × 10`, `BVI = μ₁ × 10`. Ca
 
 | Thread | Owner | Daemon | Lifecycle | Purpose |
 |---|---|---|---|---|
-| `CommInterface.read_thread` | `CommInterface` | Yes | `claim()` → `release()` | USB bulk read into `_read_buffer` |
-| `CommInterface.response_thread` | `CommInterface` | Yes | async mode only | Parse packets from buffer, route to response queues |
+| `CommInterface.read_thread` | `CommInterface` | Yes | `start_read_thread()` → `stop_read_thread()` (joined on stop; also exits on fatal USB error) | USB bulk read into `_read_buffer` |
+| `CommInterface.response_thread` | `CommInterface` | Yes | async mode only; same lifecycle as `read_thread` — started by `start_read_thread()`, stopped + joined by `stop_read_thread()`, self-terminates when the read loop dies on a fatal USB error | Parse packets from buffer, route to response queues |
 | `MotionUart.read_thread` | `MotionUart` | Yes | `connect()` → `disconnect()` | Serial read, parse packets or queue by ID |
 | `StreamInterface.thread` | `StreamInterface` | Yes | `start_streaming()` → `stop_streaming()` | Fixed-size USB reads into data queue |
 | `ConsoleTelemetryPoller._thread` | `ConsoleTelemetryPoller` | Yes | `start()` → `stop()` | ~1 Hz console health polls |
