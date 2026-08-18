@@ -12,10 +12,13 @@ from omotion.calibration.laser_hardware import (
     MotionLaserCalibrationBench,
     OphirEnergyMeter,
 )
+from omotion.calibration.laser import TARGET_ENERGY_UJ
 from omotion.calibration.reporting import HtmlRunReport, JsonRunRecorder
 from omotion.calibration.script_support import (
     APPROVED_PROCEDURE_REVISION,
     PROCEDURE_ID,
+    BenchNarrator,
+    EventEchoRecorder,
     OperatorCanceled as _OperatorCanceled,
     OperatorRunReportRequest,
     apply_cleanup_failure,
@@ -23,6 +26,7 @@ from omotion.calibration.script_support import (
     close_best_effort as _close_best_effort,
     confirmed as _confirmed,
     finalize_run_artifacts,
+    forward_library_logging,
     make_parser,
     required_value as _required_value,
     utc_run_id as _run_id,
@@ -39,6 +43,22 @@ bench_factory = MotionLaserCalibrationBench
 workflow_factory = SingleSensorLaserCalibrationWorkflow
 report_factory = HtmlRunReport
 
+# Plain step announcements, keyed by the bench call that begins each phase
+# (see BenchNarrator). The workflow drives the bench in a fixed order:
+# preflight, then the default-configuration write, then the first energy
+# measurement (tuning), then the passing-configuration write.
+NARRATION_STEPS = {
+    ("preflight", 1):
+        "Step 1 of 4: Checking the console, the sensor, and the energy meter ...",
+    ("write_user_configuration", 1):
+        "Step 2 of 4: Writing the standard laser settings ...",
+    ("measure_energy", 1):
+        "Step 3 of 4: Measuring and adjusting the laser energy. "
+        "This can take a few minutes.",
+    ("write_user_configuration", 2):
+        "Step 4 of 4: Saving the tuned settings to the console ...",
+}
+
 
 def _parser() -> argparse.ArgumentParser:
     return make_parser(
@@ -53,7 +73,6 @@ def _selected_side(
     while True:
         side = input_func("Which sensor is installed? (left/right): ").strip().lower()
         if side in ("left", "right"):
-            output_func(f"Selected sensor side: {side}")
             return side
         output_func("Please answer left or right.")
 
@@ -67,6 +86,7 @@ def main(
     """Collect operator evidence, run the workflow, and write terminal artifacts."""
     input_func = input if input_func is None else input_func
     output_func = print if output_func is None else output_func
+    forward_library_logging()
     args = _parser().parse_args(argv)
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
@@ -95,9 +115,16 @@ def main(
     bench = None
     try:
         run_id = _run_id()
-        recorder = recorder_factory(args.output_dir, PROCEDURE_ID, run_id)
+        recorder = EventEchoRecorder(
+            recorder_factory(args.output_dir, PROCEDURE_ID, run_id), output_func
+        )
         meter = meter_factory()
-        bench = bench_factory(meter)
+        bench = BenchNarrator(
+            bench_factory(meter),
+            output_func,
+            steps=NARRATION_STEPS,
+            target_energy_uj=TARGET_ENERGY_UJ,
+        )
         workflow = workflow_factory(bench, recorder)
         request = SingleSensorLaserCalibrationRequest(
             side=side,
@@ -128,6 +155,7 @@ def main(
         )
     except Exception as exc:
         output_func(f"Calibration stopped with an error: {exc}")
+        output_func("Final result: FAIL")
         return 1
     finally:
         if bench is not None:

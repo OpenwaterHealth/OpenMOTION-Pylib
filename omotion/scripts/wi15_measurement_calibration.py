@@ -33,6 +33,8 @@ from omotion.ScanWorkflow import ConfigureRequest
 from omotion.calibration.script_support import (
     OperatorCanceled as _OperatorCanceled,
     confirmed as _confirmed,
+    emit_detail as _emit_detail,
+    forward_library_logging,
     make_parser,
     required_value as _required_value,
     utc_run_id as _run_id,
@@ -130,10 +132,26 @@ def _selected_side(
             candidate = input_func("Which sensor do you want to calibrate? (left/right): ")
         side = candidate.strip().lower()
         if side in ("left", "right"):
-            output_func(f"Calibrating the {side} sensor.")
             return side
         output_func("Please answer left or right.")
         candidate = None
+
+
+# Plain lines for the calibration engine's progress stages; unknown stages
+# surface as detail lines only. The engine names stay engineer-speak, so the
+# raw token is always echoed as detail alongside the plain line.
+_STAGE_LINES = {
+    "flash_sensors": "Checking the camera programs ...",
+    "calibration_scan": (
+        f"Measuring for {CAL_SCAN_DURATION_SEC} seconds. "
+        "Do not touch the setup."
+    ),
+    "compute_calibration": "Computing the calibration values ...",
+    "gate": "Checking the values against the limits ...",
+    "write_calibration": "Saving the calibration to the console ...",
+    "validation_scan": "Running a short check scan ...",
+    "evaluate": "Checking the final result ...",
+}
 
 
 def _build_thresholds(
@@ -162,7 +180,14 @@ def main(
     """Confirm phantom placement, calibrate one side, and report the outcome."""
     input_func = input if input_func is None else input_func
     output_func = print if output_func is None else output_func
+    forward_library_logging()
     args = _parser().parse_args(argv)
+
+    def fail(problem: str) -> int:
+        output_func(f"Problem: {problem}")
+        output_func("Final result: FAIL")
+        return 1
+
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
         side = _selected_side(args.side, input_func, output_func)
@@ -180,7 +205,7 @@ def main(
 
     thresholds, thresholds_label = _build_thresholds(
         args.thresholds_json, args.bench_thresholds)
-    output_func(f"Limits: {thresholds_label}")
+    _emit_detail(output_func, f"limits: {thresholds_label}")
     if args.bench_thresholds:
         output_func("*** WARNING: bench mode - a PASS here does NOT "
                     "prove image brightness ***")
@@ -189,14 +214,14 @@ def main(
     output_root = Path(args.output_dir) / f"measurement-calibration-{run_id}"
     output_root.mkdir(parents=True, exist_ok=True)
 
+    output_func(f"Step 1 of 3: Checking the console and the {side} sensor ...")
     iface = interface_factory(
         data_dir=str(output_root / "scans"), operator_id=operator)
     iface.start()
     try:
         if not iface.wait_for_ready(console=True, sensors=0,
                                     timeout=READY_TIMEOUT_S):
-            output_func("FAIL: console is not connected.")
-            return 1
+            return fail("the console is not connected.")
         # Give the sensor side a moment, then require the chosen module.
         deadline = time.time() + READY_TIMEOUT_S
         while time.time() < deadline:
@@ -206,18 +231,18 @@ def main(
             time.sleep(1.0)
         _, l_ok, r_ok = iface.is_device_connected()
         if not (l_ok if side == "left" else r_ok):
-            output_func(f"FAIL: the {side} sensor is not connected "
-                        f"(left={l_ok}, right={r_ok})")
-            return 1
+            _emit_detail(output_func, f"connected: left={l_ok}, right={r_ok}")
+            return fail(f"the {side} sensor is not connected.")
 
         # Cold-camera bring-up: scans only stream from powered AND configured
         # cameras, and a bare script must do that itself - the clinical app
         # does it on connect, the engineering app does not. Power the chosen
         # side, then configure exactly the cameras this run uses.
         sensor = iface.left if side == "left" else iface.right
+        output_func("Step 2 of 3: Preparing the cameras. "
+                    "This can take one minute ...")
         if not sensor.enable_camera_power(0xFF):
-            output_func("FAIL: could not turn on the cameras.")
-            return 1
+            return fail("could not turn on the cameras.")
         configured = threading.Event()
         configure_holder: dict = {}
 
@@ -225,7 +250,6 @@ def main(
             configure_holder["result"] = result
             configured.set()
 
-        output_func("Preparing the cameras. This can take one minute ...")
         if not iface.start_configure_camera_sensors(
             ConfigureRequest(
                 left_camera_mask=0xFF if side == "left" else 0x00,
@@ -234,29 +258,29 @@ def main(
             ),
             on_complete_fn=on_configured,
         ):
-            output_func("FAIL: camera setup could not start.")
-            return 1
+            return fail("camera setup could not start.")
         if not configured.wait(CONFIGURE_TIMEOUT_S):
-            output_func("FAIL: camera setup did not finish.")
-            return 1
+            return fail("camera setup did not finish.")
         configure_result = configure_holder["result"]
         if not getattr(configure_result, "ok", False):
-            output_func("FAIL: camera setup failed: "
+            return fail("camera setup failed: "
                         f"{getattr(configure_result, 'error', '')}")
-            return 1
 
         # Cold-start prerequisite: after any power cycle the laser-driver
         # registers are cleared. This also applies the tuned EPROM overrides
         # (TA_CURRENT_DRV etc.) written by the laser-calibration flow.
         if not iface.apply_laser_power():
-            output_func("FAIL: could not set the laser power.")
-            return 1
+            return fail("could not set the laser power.")
 
         cfg = iface.console.read_config()
         cfg_data = (cfg.json_data or {}) if cfg else {}
         laser_point = {key: cfg_data.get(key)
                        for key in ("TA_PULSE_WIDTH", "TA_CURRENT_DRV")}
-        output_func(f"Laser settings from the console: {laser_point}")
+        _emit_detail(
+            output_func,
+            "console laser drive: "
+            + ", ".join(f"{key}={value}" for key, value in laser_point.items()),
+        )
 
         request = CalibrationRequest(
             operator_id=operator,
@@ -281,7 +305,12 @@ def main(
             done.set()
 
         def on_progress(stage: str) -> None:
-            output_func(f"  [{dt.datetime.now():%H:%M:%S}] {stage}")
+            line = _STAGE_LINES.get(stage)
+            if line is not None:
+                output_func(line)
+            _emit_detail(
+                output_func, f"[{dt.datetime.now():%H:%M:%S}] stage: {stage}"
+            )
 
         def confirm_fn(rows) -> bool:
             """Pre-write gate: show what measured low, then always refuse.
@@ -300,45 +329,55 @@ def main(
                         "the console.")
             return False
 
-        output_func(f"*** STARTING (side={side}). The laser will turn "
-                    "on. Do not touch the setup. ***")
+        output_func(f"Step 3 of 3: Calibrating the {side} sensor. "
+                    "The laser will turn ON.")
+        output_func("*** Do not touch the setup while it runs. ***")
         if not iface.start_calibration(request, on_complete_fn=on_complete,
                                        on_progress_fn=on_progress,
                                        on_confirm_fn=confirm_fn):
-            output_func("FAIL: could not start (is another calibration running?)")
-            return 1
+            return fail("could not start (is another calibration running?)")
         if not done.wait(CAL_MAX_DURATION_SEC + 60):
-            output_func("FAIL: calibration took too long and was "
-                        "stopped.")
             iface.cancel_calibration()
-            return 1
+            return fail("calibration took too long and was stopped.")
 
         result = holder["result"]
         outcome = getattr(result.outcome, "value", str(result.outcome))
-        output_func(f"outcome: {outcome}"
-                    + (f"  error: {result.error}" if result.error else ""))
+        passed = outcome == "passed"
+        _emit_detail(output_func, f"outcome: {outcome}")
         if result.rows:
-            output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} "
-                        f"{'avg_contrast':>13} {'bfi':>8} {'bvi':>8}")
+            _emit_detail(output_func,
+                         f"{'side':<6} {'cam':>3} {'mean':>10} "
+                         f"{'avg_contrast':>13} {'bfi':>8} {'bvi':>8}")
             for row in result.rows:
                 # Cameras display 1-8, matching the engine's L#/R# labels.
-                output_func(
-                    f"  {row.side:<6} {row.cam_id + 1:>3} {row.mean:>10.3f} "
+                _emit_detail(
+                    output_func,
+                    f"{row.side:<6} {row.cam_id + 1:>3} {row.mean:>10.3f} "
                     f"{row.avg_contrast:>13.4f} {row.bfi:>8.3f} "
                     f"{row.bvi:>8.3f}")
+        if passed:
+            output_func("All cameras are within the limits.")
+        elif result.error:
+            output_func(f"Problem: {result.error}")
         if result.csv_path:
             output_func(f"Saved data (CSV): {result.csv_path}")
         if result.json_path:
             output_func(f"Saved data (JSON): {result.json_path}")
 
-        passed = outcome == "passed"
-        output_func(f"Final result: {'passed' if passed else outcome}")
+        if passed:
+            verdict = "PASS"
+        elif outcome == "canceled":
+            verdict = "CANCELED"
+        else:
+            verdict = "FAIL"
+        output_func(f"Final result: {verdict}")
         if passed:
             output_func("Note: for a two-sensor unit, also run this for "
                         "the other side.")
         return 0 if passed else 1
     except Exception as exc:
         output_func(f"Measurement Calibration stopped with an error: {exc}")
+        output_func("Final result: FAIL")
         return 1
     finally:
         try:

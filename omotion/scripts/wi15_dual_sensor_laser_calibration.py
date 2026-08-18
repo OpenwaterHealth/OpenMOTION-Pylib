@@ -22,12 +22,16 @@ from omotion.calibration.reporting import JsonRunRecorder
 from omotion.calibration.script_support import (
     APPROVED_PROCEDURE_REVISION,
     PROCEDURE_ID,
+    BenchNarrator,
+    EventEchoRecorder,
     OperatorRunReportRequest,
     apply_cleanup_failure,
     close_bench_capturing,
     close_best_effort as _close_best_effort,
     confirmed as _confirmed,
+    emit_detail as _emit_detail,
     finalize_run_artifacts,
+    forward_library_logging,
     make_parser,
     required_value as _required_value,
     utc_run_id as _run_id,
@@ -39,6 +43,21 @@ meter_factory = OphirEnergyMeter
 bench_factory = MotionLaserCalibrationBench
 workflow_factory = DualSensorLaserCalibrationWorkflow
 report_factory = DualSensorHtmlRunReport
+
+# Plain step announcements, keyed by the bench call that begins each phase
+# (see BenchNarrator). The placement prompts and the measured-energy
+# heartbeat carry the story inside step 3.
+NARRATION_STEPS = {
+    ("preflight_dual", 1):
+        "Step 1 of 4: Checking the console, both sensors, and the energy meter ...",
+    ("write_user_configuration", 1):
+        "Step 2 of 4: Writing the standard laser settings ...",
+    ("measure_energy", 1):
+        "Step 3 of 4: Measuring both sensors and adjusting the laser. "
+        "This can take several minutes.",
+    ("write_user_configuration", 2):
+        "Step 4 of 4: Saving the final settings to the console ...",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -57,6 +76,7 @@ def main(
     """Collect metadata, run the dual workflow, and finalize both artifacts."""
     input_func = input if input_func is None else input_func
     output_func = print if output_func is None else output_func
+    forward_library_logging()
     args = _parser().parse_args(argv)
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
@@ -75,12 +95,16 @@ def main(
     bench = None
     try:
         run_id = _run_id()
-        recorder = recorder_factory(args.output_dir, PROCEDURE_ID, run_id)
+        recorder = EventEchoRecorder(
+            recorder_factory(args.output_dir, PROCEDURE_ID, run_id), output_func
+        )
         meter = meter_factory()
-        bench = bench_factory(meter)
+        bench = BenchNarrator(
+            bench_factory(meter), output_func, steps=NARRATION_STEPS
+        )
 
         def acknowledge_placement(change: PlacementChangeRequest) -> bool:
-            output_func(change.label)
+            _emit_detail(output_func, change.label)
             prompt = (
                 f"Put the {change.to_side} sensor "
                 f"(serial {change.sensor_serial}) into the 0 cm fixture. "
@@ -115,6 +139,7 @@ def main(
         )
     except Exception as exc:
         output_func(f"Calibration stopped with an error: {exc}")
+        output_func("Final result: FAIL")
         return 1
     finally:
         if bench is not None:

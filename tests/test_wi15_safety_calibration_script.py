@@ -72,8 +72,10 @@ def _configured_script(monkeypatch, tmp_path, terminal_result=None):
 
     class FakeWorkflow:
         def __init__(self, bench, workflow_recorder):
-            assert bench is captured["bench"]
-            assert workflow_recorder is recorder
+            # main() hands the workflow narration wrappers around the exact
+            # bench and recorder it constructed.
+            assert bench.wrapped is captured["bench"]
+            assert workflow_recorder.wrapped is recorder
 
         def run(self, request):
             captured["request"] = request
@@ -259,7 +261,7 @@ def test_runner_declares_console_only_topology_and_finalizes_artifacts(
     assert captured["bench"].coordinator is not None
     assert captured["bench"].closed == 1
     assert recorder.checkpoints[-1].report_artifact.status is ReportArtifactStatus.FINALIZED
-    assert "Final result: passed" in messages
+    assert "Final result: PASS" in messages
     assert any(message.startswith("Saved data (JSON): ") for message in messages)
     assert any(message.startswith("Saved report (HTML): ") for message in messages)
 

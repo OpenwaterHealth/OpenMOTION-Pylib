@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
-import logging
 import math
 from pathlib import Path
 import time
@@ -22,26 +21,47 @@ from omotion.calibration.safety_workflow import (
 from omotion.calibration.script_support import (
     APPROVED_PROCEDURE_REVISION,
     PROCEDURE_ID,
+    BenchNarrator,
+    EventEchoRecorder,
     OperatorRunReportRequest,
     apply_cleanup_failure,
     close_bench_capturing,
     close_best_effort as _close_best_effort,
     finalize_run_artifacts,
+    forward_library_logging,
     make_parser,
     required_value as _required_value,
     utc_run_id as _run_id,
 )
 
 
-# The pane terminal is the operator surface: the SDK's connection-retry
-# warnings during the observed power cycle are expected churn, not operator
-# information, so keep the child's SDK logging to errors only.
-logging.getLogger("openmotion").setLevel(logging.ERROR)
-
 recorder_factory = JsonRunRecorder
 bench_factory = MotionSafetyCalibrationBench
 workflow_factory = SafetyCalibrationWorkflow
 report_factory = SafetyCalibrationHtmlRunReport
+
+# Plain step announcements, keyed by the bench call that begins each phase
+# (see BenchNarrator). The workflow drives the bench in a fixed order:
+# console preflight, configuration read, ADC firing, limit write, power
+# cycle. The SDK's connection-retry warnings during the observed power cycle
+# are expected churn, not operator information; forward_library_logging
+# formats them as detail lines the pane hides unless Verbose is on.
+NARRATION_STEPS = {
+    ("preflight_console", 1):
+        "Step 1 of 5: Checking the console ...",
+    ("read_user_configuration", 1):
+        "Step 2 of 5: Reading the current laser settings ...",
+    ("start_trigger", 1):
+        "Step 3 of 5: Turning the laser on to measure the safety monitors ...",
+    ("write_user_configuration", 1):
+        "Step 4 of 5: Writing the new safety limits to the console ...",
+    ("power_cycle", 1):
+        "Step 5 of 5: Checking that the settings survive a console restart.",
+}
+
+# Polled in tight sampling loops during the ADC acquisition; narrating every
+# call would flood the verbose view.
+QUIET_BENCH_METHODS = ("read_adc_ma", "read_safety_warning")
 
 
 class ManualPowerCycleCoordinator:
@@ -114,7 +134,7 @@ class ManualPowerCycleCoordinator:
 
         off_requested_at = self._utc_now()
         self._output(
-            "6A. Turn the console power OFF, then back ON. Keep it OFF for "
+            "Turn the console power OFF, then back ON. Keep it OFF for "
             f"at least {minimum_off_s:g} second(s). Do not press anything - "
             "the program watches for the power cycle."
         )
@@ -143,7 +163,7 @@ class ManualPowerCycleCoordinator:
         disconnected_at_clock = self._clock()
         disconnect_observed_at = self._utc_now()
         self._output(
-            "6B. Console is OFF. Waiting for it to come back ON."
+            "The console is OFF. Waiting for it to come back ON."
         )
         if not self._wait_for_state(
             is_console_connected, True, self._reconnect_timeout_s
@@ -174,7 +194,7 @@ class ManualPowerCycleCoordinator:
             console_serial_after = read_console_serial()
         except Exception:
             console_serial_after = None
-        self._output("6C. Console is ON again. Checking the saved settings.")
+        self._output("The console is ON again. Checking the saved settings.")
         return PowerCycleEvidence(
             off_requested_at,
             disconnect_observed_at,
@@ -205,6 +225,7 @@ def main(
     """Collect audit metadata, execute the workflow, and finalize artifacts."""
     input_func = input if input_func is None else input_func
     output_func = print if output_func is None else output_func
+    forward_library_logging()
     args = _parser().parse_args(argv)
 
     try:
@@ -227,12 +248,19 @@ def main(
     bench = None
     try:
         run_id = _run_id()
-        recorder = recorder_factory(args.output_dir, PROCEDURE_ID, run_id)
+        recorder = EventEchoRecorder(
+            recorder_factory(args.output_dir, PROCEDURE_ID, run_id), output_func
+        )
         coordinator = ManualPowerCycleCoordinator(
             input_func=input_func,
             output_func=output_func,
         )
-        bench = bench_factory(power_cycle_coordinator=coordinator)
+        bench = BenchNarrator(
+            bench_factory(power_cycle_coordinator=coordinator),
+            output_func,
+            steps=NARRATION_STEPS,
+            quiet=QUIET_BENCH_METHODS,
+        )
         workflow = workflow_factory(bench, recorder)
         request = SafetyCalibrationRequest(
             shipping_topology=topology,
@@ -259,6 +287,7 @@ def main(
         )
     except Exception as exc:
         output_func(f"Safety Calibration stopped with an error: {exc}")
+        output_func("Final result: FAIL")
         return 1
     finally:
         if bench is not None:

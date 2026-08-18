@@ -46,8 +46,10 @@ def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_pl
 
     class FakeWorkflow:
         def __init__(self, workflow_bench, workflow_recorder, placement_callback):
-            assert workflow_bench is bench
-            assert workflow_recorder is recorder
+            # main() hands the workflow narration wrappers around the exact
+            # bench and recorder it constructed.
+            assert workflow_bench.wrapped is bench
+            assert workflow_recorder.wrapped is recorder
             self.placement_callback = placement_callback
 
         def run(self, request):
