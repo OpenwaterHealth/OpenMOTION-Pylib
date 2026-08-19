@@ -167,7 +167,6 @@ class CommInterface(USBInterfaceBase):
             )
 
             self.write(tx_bytes)
-            time.sleep(0.0005)
 
             if not self.async_mode:
                 start = time.monotonic()
@@ -190,26 +189,36 @@ class CommInterface(USBInterfaceBase):
                             continue
                 last_error = TimeoutError("No response")
             else:
+                # Block on the queue instead of sleep-polling: get(timeout=)
+                # wakes the instant _process_responses enqueues the packet.
+                # The 50 ms chunks are only so a dead transport still cancels
+                # an in-flight send promptly (bloodflow-app#130); on the happy
+                # path they add no latency. The old poll loop paid a fixed
+                # ~2.5 ms of sleep per command — the dominant cost of bulk
+                # command streams like the NVCM burn (#233).
                 start_time = time.monotonic()
-                while time.monotonic() - start_time < timeout:
+                while True:
                     if self._transport_down_evt.is_set():
                         raise ConnectionError(
                             f"{self.desc}: transport down, packet id "
                             f"0x{id:04X} not deliverable"
                         )
-                    if self.response_queue.empty():
-                        time.sleep(0.0005)
-                    else:
-                        time.sleep(0.001)
-                        pkt = self.response_queue.get()
-                        if pkt.id != id:
-                            logger.warning(
-                                "%s: discarding stale response id=0x%04X (expected 0x%04X)",
-                                self.desc, pkt.id, id,
-                            )
-                            continue
-                        return pkt
-                raise TimeoutError(f"No response in async mode, packet id 0x{id:04X}")
+                    remaining = timeout - (time.monotonic() - start_time)
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"No response in async mode, packet id 0x{id:04X}"
+                        )
+                    try:
+                        pkt = self.response_queue.get(timeout=min(0.05, remaining))
+                    except queue.Empty:
+                        continue
+                    if pkt.id != id:
+                        logger.warning(
+                            "%s: discarding stale response id=0x%04X (expected 0x%04X)",
+                            self.desc, pkt.id, id,
+                        )
+                        continue
+                    return pkt
 
     def clear_buffer(self):
         with self._buffer_lock:
@@ -357,7 +366,8 @@ class CommInterface(USBInterfaceBase):
                         self._read_buffer.extend(data_bytes)
                         self._buffer_condition.notify()
                     logger.debug(f"Read {len(data)} bytes.")
-                time.sleep(0.001)
+                # No pacing sleep: dev.read blocks (timeout=100 ms) when the
+                # endpoint is idle, so looping straight back cannot busy-spin.
             except usb.core.USBError as e:
                 # During an intentional shutdown the read loop will see USB
                 # errors as the transport is closed; suppress them silently.
