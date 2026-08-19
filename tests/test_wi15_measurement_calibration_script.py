@@ -18,22 +18,30 @@ class FakeConsole:
             json_data={"TA_PULSE_WIDTH": 590.0, "TA_CURRENT_DRV": 5000.0}
         )
 
+    def read_serial_number(self):
+        return "CONSN01"
+
 
 class FakeSensor:
-    def __init__(self):
+    def __init__(self, serial=None):
         self.powered_masks = []
+        self.serial = serial
 
     def enable_camera_power(self, mask):
         self.powered_masks.append(mask)
         return True
+
+    def read_serial_number(self):
+        # Mirrors MotionSensor: None when unprogrammed/unreadable.
+        return self.serial
 
 
 class FakeInterface:
     def __init__(self, *, outcome="passed", refuse_start=False,
                  fire_confirm=False, **_kwargs):
         self.console = FakeConsole()
-        self.left = FakeSensor()
-        self.right = FakeSensor()
+        self.left = FakeSensor(serial="SNL01")
+        self.right = FakeSensor(serial="SNR02")
         self.outcome = outcome
         self.refuse_start = refuse_start
         self.fire_confirm = fire_confirm
@@ -144,7 +152,7 @@ def test_side_prompt_reprompts_until_left_or_right(monkeypatch, tmp_path):
 def test_only_the_selected_side_is_calibrated(
     monkeypatch, tmp_path, side, left_mask, right_mask
 ):
-    code, fake, _ = run_main(
+    code, fake, lines = run_main(
         tmp_path, monkeypatch,
         argv_extra=["--side", side, "--phantom-confirmed"],
     )
@@ -162,6 +170,31 @@ def test_only_the_selected_side_is_calibrated(
     assert unpowered.powered_masks == []
     assert fake.laser_applied == 1
     assert fake.stopped == 1
+    # The transcript records which physical units the run belongs to,
+    # picking the serial of the side actually under calibration.
+    expected_serial = "SNL01" if side == "left" else "SNR02"
+    assert any(
+        "serial numbers: console=CONSN01" in line
+        and f"{side} sensor={expected_serial}" in line
+        for line in lines
+    ), lines
+
+
+def test_unprogrammed_serials_are_reported_not_fatal(monkeypatch, tmp_path):
+    """A missing serial (read returns None) must not fail the run."""
+    script = load_script()
+    fake = FakeInterface()
+    fake.left.serial = None
+    monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
+    lines = []
+    code = script.main(
+        ["--output-dir", str(tmp_path), "--operator", "op",
+         "--side", "left", "--phantom-confirmed"],
+        input_func=lambda prompt: "",
+        output_func=lines.append,
+    )
+    assert code == 0
+    assert any("left sensor=unprogrammed" in line for line in lines), lines
 
 
 def test_scan_durations_match_the_approved_process(monkeypatch, tmp_path):

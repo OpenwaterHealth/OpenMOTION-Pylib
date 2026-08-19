@@ -90,7 +90,12 @@ def test_write_result_csv_round_trip(tmp_path):
         ),
     ]
     out = tmp_path / "calibration-test.csv"
-    write_result_csv(str(out), rows)
+    write_result_csv(
+        str(out), rows,
+        console_serial="CONSN01",
+        left_sensor_serial="SNL01",
+        right_sensor_serial="SNR02",
+    )
     assert out.exists()
     content = out.read_text(encoding="utf-8").splitlines()
     assert len(content) == 2
@@ -99,13 +104,49 @@ def test_write_result_csv_round_trip(tmp_path):
         "camera_index", "side", "cam",
         "mean", "avg_contrast", "bfi", "bvi", "dark",
         "mean_test", "contrast_test", "bfi_test", "bvi_test", "dark_test",
-        "security_id", "hwid",
+        "security_id", "hwid", "sensor_serial", "console_serial",
     ]
     fields = content[1].split(",")
     # cam column should be 1-indexed (cam_id 0 → cam 1)
     assert fields[2] == "1"
     assert "left" in content[1]
     assert "FAIL" in content[1]
+    # left-side row carries the left module serial + the console serial
+    assert fields[-2] == "SNL01"
+    assert fields[-1] == "CONSN01"
+
+
+def test_write_result_csv_serial_columns_by_side_and_default(tmp_path):
+    """sensor_serial follows each row's side; omitted serials write ""."""
+    def _row(idx, side):
+        return CalibrationResultRow(
+            camera_index=idx, side=side, cam_id=idx,
+            mean=200.0, avg_contrast=0.4, bfi=5.0, bvi=5.5, dark=0.0,
+            mean_test="PASS", contrast_test="PASS",
+            bfi_test="PASS", bvi_test="PASS", dark_test="NA",
+            security_id="", hwid="",
+        )
+
+    out = tmp_path / "both-sides.csv"
+    write_result_csv(
+        str(out), [_row(0, "left"), _row(1, "right")],
+        console_serial="CONSN01",
+        left_sensor_serial="SNL01",
+        right_sensor_serial="SNR02",
+    )
+    with open(out, newline="", encoding="utf-8") as f:
+        by_side = {row["side"]: row for row in _csv.DictReader(f)}
+    assert by_side["left"]["sensor_serial"] == "SNL01"
+    assert by_side["right"]["sensor_serial"] == "SNR02"
+    assert by_side["left"]["console_serial"] == "CONSN01"
+    assert by_side["right"]["console_serial"] == "CONSN01"
+
+    bare = tmp_path / "no-serials.csv"
+    write_result_csv(str(bare), [_row(0, "left")])
+    with open(bare, newline="", encoding="utf-8") as f:
+        row0 = next(_csv.DictReader(f))
+    assert row0["sensor_serial"] == ""
+    assert row0["console_serial"] == ""
 
 
 # ----- write_result_json -----
@@ -116,25 +157,28 @@ from omotion.CalibrationWorkflow import write_result_json
 
 
 class _FakeSensor:
-    def __init__(self, hwid: str, fw: str):
+    def __init__(self, hwid: str, fw: str, serial: str = ""):
         self._hwid = hwid
         self._fw = fw
+        self._serial = serial
 
     def get_cached_hardware_id(self) -> str: return self._hwid
     def get_hardware_id(self) -> str: return self._hwid
     def get_version(self) -> str: return self._fw
+    def read_serial_number(self): return self._serial or None
 
 
 class _FakeConsole:
     def get_hardware_id(self) -> str: return "console-hwid-deadbeef"
     def get_version(self) -> str: return "v9.9.9"
+    def read_serial_number(self): return "CONSN01"
 
 
 class _FakeInterface:
     def __init__(self):
         self.console = _FakeConsole()
-        self.left  = _FakeSensor("left-hwid-aaa", "v1.2.3")
-        self.right = _FakeSensor("right-hwid-bbb", "v1.2.3")
+        self.left  = _FakeSensor("left-hwid-aaa", "v1.2.3", serial="SNL01")
+        self.right = _FakeSensor("right-hwid-bbb", "v1.2.3", serial="SNR02")
 
 
 def test_write_result_json_includes_full_provenance(tmp_path):
@@ -177,9 +221,12 @@ def test_write_result_json_includes_full_provenance(tmp_path):
     assert data["passed"] is True
     assert data["console"]["hwid"] == "console-hwid-deadbeef"
     assert data["console"]["firmware_version"] == "v9.9.9"
+    assert data["console"]["serial"] == "CONSN01"
     assert data["sensors"]["left"]["hwid"] == "left-hwid-aaa"
     assert data["sensors"]["left"]["firmware_version"] == "v1.2.3"
+    assert data["sensors"]["left"]["serial"] == "SNL01"
     assert data["sensors"]["right"]["hwid"] == "right-hwid-bbb"
+    assert data["sensors"]["right"]["serial"] == "SNR02"
     assert data["host"]["hostname"]   # populated, content is host-dependent
     assert data["sdk"]["version"]
     assert data["thresholds"]["min_mean_per_camera"] == [50.0]*8
@@ -221,9 +268,45 @@ def test_write_result_json_handles_missing_sensor(tmp_path):
     assert data["sensors"]["left"]["connected"] is True
     assert data["sensors"]["right"]["connected"] is False
     assert data["sensors"]["right"]["camera_mask"] == "0x00"
+    assert data["sensors"]["right"]["serial"] == ""
     assert data["canceled"] is True
     assert data["error"] == "user canceled"
     assert data["cameras"] == []
+
+
+def test_write_result_json_serial_read_is_best_effort(tmp_path):
+    """Devices without read_serial_number (or whose read fails) record ""
+    instead of aborting the manifest write."""
+    iface = _FakeInterface()
+
+    class _NoSerialConsole:
+        def get_hardware_id(self) -> str: return "hw"
+        def get_version(self) -> str: return "v1"
+
+    class _RaisingSerialSensor(_FakeSensor):
+        def read_serial_number(self):
+            raise RuntimeError("USB gone")
+
+    iface.console = _NoSerialConsole()
+    iface.left = _RaisingSerialSensor("left-hwid", "v1.2.3")
+    req = CalibrationRequest(
+        operator_id="op", output_dir=str(tmp_path),
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        thresholds=_thresholds(), duration_sec=5,
+    )
+    out = tmp_path / "best-effort-serial.json"
+    write_result_json(
+        str(out),
+        started_timestamp="20260502_130928",
+        passed=True, canceled=False, error="",
+        request=req, rows=[], calibration=None,
+        scan_paths={},
+        interface=iface,
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["console"]["serial"] == ""
+    assert data["sensors"]["left"]["serial"] == ""
+    assert data["sensors"]["right"]["serial"] == "SNR02"
 
 
 # ----- ft_max_dark_per_camera (#122) -----

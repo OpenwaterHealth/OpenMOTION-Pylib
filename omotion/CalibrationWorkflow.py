@@ -510,11 +510,18 @@ _CSV_FIELDS = [
     "camera_index", "side", "cam",
     "mean", "avg_contrast", "bfi", "bvi", "dark",
     "mean_test", "contrast_test", "bfi_test", "bvi_test", "dark_test",
-    "security_id", "hwid",
+    "security_id", "hwid", "sensor_serial", "console_serial",
 ]
 
 
-def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
+def write_result_csv(
+    path: str,
+    rows: list[CalibrationResultRow],
+    *,
+    console_serial: str = "",
+    left_sensor_serial: str = "",
+    right_sensor_serial: str = "",
+) -> None:
     """Write CalibrationResultRow list to ``path`` in the canonical
     column order. Creates parent directories if needed.
 
@@ -522,6 +529,11 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
     physically labeled. Internally ``CalibrationResultRow.cam_id`` is
     still 0-indexed (so it can be used to lookup into the per-camera
     threshold arrays).
+
+    ``sensor_serial`` is the programmed serial of the module each row's
+    camera belongs to (picked by ``row.side``); ``console_serial`` is the
+    console EEPROM serial, repeated per row so the CSV stays traceable to
+    the physical unit on its own. Both are "" when unprogrammed/unread.
     """
     parent = os.path.dirname(path)
     if parent:
@@ -546,6 +558,11 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
                 "dark_test": r.dark_test,
                 "security_id": r.security_id,
                 "hwid": r.hwid,
+                "sensor_serial": (
+                    left_sensor_serial if r.side == "left"
+                    else right_sensor_serial
+                ),
+                "console_serial": console_serial,
             })
 
 
@@ -572,6 +589,17 @@ def _safe_call(fn: Callable[[], object], default: object = "") -> object:
         return default
 
 
+def _read_device_serial(device) -> str:
+    """Best-effort read of a device's programmed serial number (console
+    EEPROM or sensor module). Returns "" when the device is absent, the
+    serial is unprogrammed, or the read fails — identity reads must never
+    abort report writing.
+    """
+    if device is None:
+        return ""
+    return str(_safe_call(lambda: device.read_serial_number(), "") or "")
+
+
 def _collect_host_info() -> dict:
     return {
         "hostname": _safe_call(socket.gethostname, ""),
@@ -590,8 +618,9 @@ def _collect_sdk_info() -> dict:
 
 def _collect_console_info(console) -> dict:
     if console is None:
-        return {"hwid": "", "firmware_version": ""}
+        return {"serial": "", "hwid": "", "firmware_version": ""}
     return {
+        "serial": _read_device_serial(console),
         "hwid": str(_safe_call(console.get_hardware_id, "") or ""),
         "firmware_version": str(_safe_call(console.get_version, "") or ""),
     }
@@ -601,6 +630,7 @@ def _collect_sensor_info(sensor, camera_mask: int) -> dict:
     if sensor is None:
         return {
             "connected": False,
+            "serial": "",
             "hwid": "",
             "firmware_version": "",
             "camera_mask": f"0x{camera_mask:02X}",
@@ -608,6 +638,7 @@ def _collect_sensor_info(sensor, camera_mask: int) -> dict:
     hwid = _safe_call(sensor.get_cached_hardware_id, "") or _safe_call(sensor.get_hardware_id, "")
     return {
         "connected": True,
+        "serial": _read_device_serial(sensor),
         "hwid": str(hwid or ""),
         "firmware_version": str(_safe_call(sensor.get_version, "") or ""),
         "camera_mask": f"0x{camera_mask:02X}",
@@ -684,9 +715,9 @@ def write_result_json(
 
     Includes the per-camera result table, the calibration arrays that
     were written to the console, the camera/sensor/console identities
-    (security UIDs, HWIDs, firmware versions), and host info — so the
-    file is enough on its own to trace a run back to the exact hardware
-    + firmware that produced it.
+    (serial numbers, security UIDs, HWIDs, firmware versions), and host
+    info — so the file is enough on its own to trace a run back to the
+    exact hardware + firmware that produced it.
     """
     parent = os.path.dirname(path)
     if parent:
@@ -1457,7 +1488,18 @@ class CalibrationWorkflow:
                 csv_path = os.path.join(
                     request.output_dir, f"calibration-{ts}.csv"
                 )
-                write_result_csv(csv_path, rows)
+                write_result_csv(
+                    csv_path, rows,
+                    console_serial=_read_device_serial(
+                        getattr(self._interface, "console", None)
+                    ),
+                    left_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "left", None)
+                    ),
+                    right_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "right", None)
+                    ),
+                )
                 passed = evaluate_passed(rows)
                 pass_count = sum(
                     1 for r in rows
@@ -1798,7 +1840,18 @@ class CalibrationWorkflow:
                 csv_path = os.path.join(
                     request.output_dir, f"test-{ts}.csv"
                 )
-                write_result_csv(csv_path, rows)
+                write_result_csv(
+                    csv_path, rows,
+                    console_serial=_read_device_serial(
+                        getattr(self._interface, "console", None)
+                    ),
+                    left_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "left", None)
+                    ),
+                    right_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "right", None)
+                    ),
+                )
                 # Test "passed" uses the same gate as calibration but
                 # without BFI/BVI participating — Test acceptance is
                 # mean + contrast + dark only (see spec R5/R6).
