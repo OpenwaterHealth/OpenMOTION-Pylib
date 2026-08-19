@@ -397,13 +397,36 @@ def _build_result_rows_from_samples(
                 s for s in samples
                 if s.side == side and s.cam_id == cam_id
             ]
-            if not cam_samples:
-                continue   # silently drop — no data for this active cam
-
-            mean_val = float(np.mean([s.mean for s in cam_samples]))
-            contrast_val = float(np.mean([s.contrast for s in cam_samples]))
-            bfi_val = float(np.mean([s.bfi for s in cam_samples]))
-            bvi_val = float(np.mean([s.bvi for s in cam_samples]))
+            if cam_samples:
+                mean_val = float(np.mean([s.mean for s in cam_samples]))
+                contrast_val = float(np.mean([s.contrast for s in cam_samples]))
+                bfi_val = float(np.mean([s.bfi for s in cam_samples]))
+                bvi_val = float(np.mean([s.bvi for s in cam_samples]))
+                mean_test = _threshold_test(
+                    mean_val, thresholds.min_mean_per_camera, cam_id)
+                contrast_test = _threshold_test(
+                    contrast_val, thresholds.min_contrast_per_camera, cam_id)
+                # BFI / BVI support an optional upper bound for target-style
+                # criteria (e.g. BFI = 0 ± 0.1 → min=-0.1, max=+0.1).
+                bfi_test = _combined_test(
+                    _threshold_test(bfi_val, thresholds.min_bfi_per_camera, cam_id),
+                    _threshold_max_test(bfi_val, thresholds.max_bfi_per_camera, cam_id),
+                )
+                bvi_test = _combined_test(
+                    _threshold_test(bvi_val, thresholds.min_bvi_per_camera, cam_id),
+                    _threshold_max_test(bvi_val, thresholds.max_bvi_per_camera, cam_id),
+                )
+            else:
+                # Active camera, zero corrected samples (dropout, or every
+                # frame discarded upstream): an explicit NaN/FAIL row. A
+                # silently dropped camera was excluded from evaluate_passed
+                # entirely, so a run could PASS with a dead camera (#254).
+                # FAIL is forced rather than derived from the NaNs — NaN
+                # would read PASS wherever a threshold list doesn't cover
+                # this cam_id.
+                mean_val = contrast_val = bfi_val = bvi_val = float("nan")
+                mean_test = contrast_test = "FAIL"
+                bfi_test = bvi_test = "FAIL"
 
             cam_dark_samples = [
                 s for s in dark_samples
@@ -438,16 +461,6 @@ def _build_result_rows_from_samples(
                 except Exception:
                     hwid = ""
 
-            # BFI / BVI support an optional upper bound for target-style
-            # criteria (e.g. BFI = 0 ± 0.1 → min=-0.1, max=+0.1).
-            bfi_test = _combined_test(
-                _threshold_test(bfi_val, thresholds.min_bfi_per_camera, cam_id),
-                _threshold_max_test(bfi_val, thresholds.max_bfi_per_camera, cam_id),
-            )
-            bvi_test = _combined_test(
-                _threshold_test(bvi_val, thresholds.min_bvi_per_camera, cam_id),
-                _threshold_max_test(bvi_val, thresholds.max_bvi_per_camera, cam_id),
-            )
             rows.append(CalibrationResultRow(
                 camera_index=len(rows),
                 side=side,
@@ -457,8 +470,8 @@ def _build_result_rows_from_samples(
                 bfi=bfi_val,
                 bvi=bvi_val,
                 dark=dark_val,
-                mean_test=_threshold_test(mean_val, thresholds.min_mean_per_camera, cam_id),
-                contrast_test=_threshold_test(contrast_val, thresholds.min_contrast_per_camera, cam_id),
+                mean_test=mean_test,
+                contrast_test=contrast_test,
                 bfi_test=bfi_test,
                 bvi_test=bvi_test,
                 dark_test=dark_test,

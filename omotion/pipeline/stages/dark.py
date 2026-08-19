@@ -32,6 +32,14 @@ logger = logging.getLogger("openmotion.sdk.pipeline.stages.dark")
 # flush logs that and falls back to content-based detection per camera.
 _TERMINAL_FSYNC_ABS_OFFSET = 0
 
+# Cap on how many trailing dark-like frames the terminal flush may remove
+# (#254). The flush exists for the firmware's terminal laser-off frame plus
+# the short host-side trigger-stop drain tail — 0-1 frames in a healthy
+# scan, so 10 is a generous margin. Without a cap, a capture whose laser
+# never fired is dark-like end to end and the walk erases the entire
+# pending interval — a perfect capture reported as zero corrected samples.
+TERMINAL_FLUSH_MAX_FRAMES = 10
+
 
 @dataclass(frozen=True)
 class DarkObservation:
@@ -576,8 +584,11 @@ class DarkCorrectionStage:
         The firmware guarantees the end of every scan contains a dark (laser-
         off) frame.  That frame may not fall on a scheduled dark position, so
         the pipeline receives it as a buffered light in pi._light.  Host-side
-        trigger-stop drain can deliver a short dark-like tail; all contiguous
-        dark-like frames at the end are removed from the light list.
+        trigger-stop drain can deliver a short dark-like tail; the contiguous
+        dark-like tail at the end is removed from the light list, capped at
+        TERMINAL_FLUSH_MAX_FRAMES frames so a capture whose laser never
+        fired (dark-like end to end) keeps its earlier frames and reports
+        ~0 DN corrected lights instead of no data at all (#254).
 
         Following the legacy SciencePipeline._flush_terminal_dark logic:
           0. When the workflow reported the firmware's final fsync pulse
@@ -691,9 +702,24 @@ class DarkCorrectionStage:
                 found=True, identified_by=identified_by,
             ))
 
+            # Capped walk (#254): healthy stop tails are 0-1 frames. A tail
+            # that would swallow the whole interval means the laser never
+            # fired — keep the earlier dark-like frames so they emit as
+            # ~0 DN corrected lights instead of vanishing.
+            tail_floor = max(0, len(pi._light) - TERMINAL_FLUSH_MAX_FRAMES)
             tail_start = len(pi._light) - 1
-            while tail_start > 0 and _is_dark_like(pi._light[tail_start - 1]):
+            while (tail_start > tail_floor
+                   and _is_dark_like(pi._light[tail_start - 1])):
                 tail_start -= 1
+            if (tail_start == tail_floor and tail_start > 0
+                    and _is_dark_like(pi._light[tail_start - 1])):
+                logger.warning(
+                    "terminal dark flush capped at %d frames for side=%s "
+                    "cam_id=%d — dark-like tail spans the whole interval "
+                    "(camera unlit: laser off or path blocked); %d frames "
+                    "remain in the light list",
+                    TERMINAL_FLUSH_MAX_FRAMES, side, cam_id, tail_start,
+                )
 
             terminal_var = max(0.0, terminal_light.u2 - terminal_light.u1 ** 2)
             terminal_obs = DarkObservation(

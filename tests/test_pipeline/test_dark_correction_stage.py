@@ -717,3 +717,102 @@ def test_corrected_frame_quality_defaults_to_ok():
         mean=36.0, std=4.8, contrast=0.13, bfi=5.0, bvi=5.0,
     )
     assert ef.quality == "ok"
+
+
+def test_terminal_flush_capped_for_all_dark_interval(caplog):
+    """A capture whose laser never fired is dark-like end to end. The
+    unbounded tail walk used to erase the whole pending interval — a
+    perfect capture reported as zero corrected samples (#254). The flush
+    is capped at TERMINAL_FLUSH_MAX_FRAMES; the earlier dark-like frames
+    stay in the light list and emit as ~0 DN corrected frames.
+    """
+    from omotion.pipeline.stages.dark import TERMINAL_FLUSH_MAX_FRAMES
+
+    stage = _make_stage_with_cal()
+    n_lights = TERMINAL_FLUSH_MAX_FRAMES + 4
+    n = 1 + n_lights
+    types = ["dark"] + ["light"] * n_lights
+    abs_ids = list(range(10, 10 + n))
+    # dark@65; every "light" is dark-like (66 <= pedestal 64 + guard 5).
+    means = [65.0] + [66.0] * n_lights
+    stds = [10.0] + [11.0] * n_lights
+    mean_raw = np.array([[[m] * 8] * 2 for m in means], dtype=np.float32)
+    std_raw = np.array([[[s] * 8] * 2 for s in stds], dtype=np.float32)
+    raw_hist = np.zeros((n, 2, 8, 1024), dtype=np.uint32)
+    raw_hist[:, 0, 0, 0] = 1
+
+    process_batch = FrameBatch(
+        cam_ids=np.zeros(n, dtype=np.int8),
+        frame_ids=np.arange(n, dtype=np.uint8),
+        side_ids=np.zeros(n, dtype=np.int8),
+        raw_histograms=raw_hist,
+        temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
+        timestamp_s=np.arange(n, dtype=np.float64) * 0.025,
+        pdc=None, tcm=None, tcl=None,
+        abs_frame_ids=np.array(abs_ids, dtype=np.int64),
+        frame_type=np.array(types, dtype="<U8"),
+        mean_raw=mean_raw, std_raw=std_raw,
+    )
+    stage.process(process_batch)
+
+    stop_batch = _batch(
+        0, [], [], mean_raw=np.zeros((0, 2, 8), dtype=np.float32),
+        std_raw=np.zeros((0, 2, 8), dtype=np.float32),
+    )
+    with caplog.at_level(logging.WARNING):
+        stage.on_scan_stop(stop_batch)
+
+    closed = [e.corrected_batch for e in stop_batch.events
+              if isinstance(e, IntervalClosed)]
+    assert len(closed) == 1
+    frames = closed[0].frames
+    # The flush removes exactly the cap; the earliest lights survive...
+    assert len(frames) == n_lights - TERMINAL_FLUSH_MAX_FRAMES
+    assert [f.abs_frame_id for f in frames] == abs_ids[1:1 + len(frames)]
+    # ...dark-corrected to ~0 DN — the honest "unlit camera" signature.
+    for f in frames:
+        assert abs(f.mean) < 5.0
+    assert any("terminal dark flush capped" in r.message
+               for r in caplog.records)
+
+
+def test_terminal_flush_short_tail_unaffected_by_cap():
+    """Regression guard: a healthy scan's short dark-like tail (well under
+    the cap) is still flushed completely — genuine lights survive, the
+    tail does not."""
+    stage = _make_stage_with_cal()
+    n = 5
+    types = ["dark", "light", "light", "light", "light"]
+    abs_ids = [10, 11, 12, 13, 14]
+    means = [65.0, 500.0, 510.0, 66.0, 65.0]
+    stds = [10.0, 20.0, 21.0, 11.0, 12.0]
+    mean_raw = np.array([[[m] * 8] * 2 for m in means], dtype=np.float32)
+    std_raw = np.array([[[s] * 8] * 2 for s in stds], dtype=np.float32)
+    raw_hist = np.zeros((n, 2, 8, 1024), dtype=np.uint32)
+    raw_hist[:, 0, 0, 0] = 1
+
+    process_batch = FrameBatch(
+        cam_ids=np.zeros(n, dtype=np.int8),
+        frame_ids=np.arange(n, dtype=np.uint8),
+        side_ids=np.zeros(n, dtype=np.int8),
+        raw_histograms=raw_hist,
+        temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
+        timestamp_s=np.arange(n, dtype=np.float64) * 0.025,
+        pdc=None, tcm=None, tcl=None,
+        abs_frame_ids=np.array(abs_ids, dtype=np.int64),
+        frame_type=np.array(types, dtype="<U8"),
+        mean_raw=mean_raw, std_raw=std_raw,
+    )
+    stage.process(process_batch)
+
+    stop_batch = _batch(
+        0, [], [], mean_raw=np.zeros((0, 2, 8), dtype=np.float32),
+        std_raw=np.zeros((0, 2, 8), dtype=np.float32),
+    )
+    stage.on_scan_stop(stop_batch)
+
+    closed = [e.corrected_batch for e in stop_batch.events
+              if isinstance(e, IntervalClosed)]
+    assert len(closed) == 1
+    abs_ids_in_iv = [f.abs_frame_id for f in closed[0].frames]
+    assert abs_ids_in_iv == [11, 12]

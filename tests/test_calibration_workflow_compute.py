@@ -625,3 +625,79 @@ def test_write_result_json_records_mode():
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         assert data["mode"] == "test"
+
+
+# ----- no-data cameras must not vanish from the rows (#254) -----
+
+
+def test_active_camera_with_no_samples_gets_explicit_fail_row():
+    """A silently dropped camera was excluded from evaluate_passed, so a
+    run could PASS with a dead camera. It must appear as a NaN/FAIL row."""
+    light = [_light("left", 0)]
+    rows = _build_result_rows_from_samples(
+        light, dark_samples=[],
+        left_camera_mask=0x03, right_camera_mask=0x00,
+        thresholds=_full_thresholds(max_dark_per_camera=[3.0] * 8),
+        sensor_left=None, sensor_right=None,
+    )
+    assert [r.cam_id for r in rows] == [0, 1]
+    dead = rows[1]
+    assert math.isnan(dead.mean)
+    assert math.isnan(dead.avg_contrast)
+    assert math.isnan(dead.bfi)
+    assert math.isnan(dead.bvi)
+    assert dead.mean_test == "FAIL"
+    assert dead.contrast_test == "FAIL"
+    assert dead.bfi_test == "FAIL"
+    assert dead.bvi_test == "FAIL"
+    assert dead.dark_test == "FAIL"   # zero dark frames either
+
+
+def test_no_sample_row_fails_even_without_threshold_coverage():
+    """FAIL is forced, not derived from NaN comparisons — a threshold list
+    that doesn't cover the camera must not turn a dead camera into PASS."""
+    rows = _build_result_rows_from_samples(
+        [], dark_samples=[],
+        left_camera_mask=0x01, right_camera_mask=0x00,
+        thresholds=CalibrationThresholds(
+            min_mean_per_camera=[],
+            min_contrast_per_camera=[],
+            min_bfi_per_camera=[],
+            min_bvi_per_camera=[],
+        ),
+        sensor_left=None, sensor_right=None,
+    )
+    assert len(rows) == 1
+    assert rows[0].mean_test == "FAIL"
+    assert rows[0].contrast_test == "FAIL"
+    assert rows[0].bfi_test == "FAIL"
+    assert rows[0].bvi_test == "FAIL"
+
+
+def test_no_sample_row_still_reports_a_real_ambient_dark():
+    """The ambient (dark) measurement is independent of the light path —
+    a camera whose light samples all vanished can still have captured
+    dark frames, and those must be evaluated normally."""
+    dark = [_dark("left", 0, mean=1.5)]
+    rows = _build_result_rows_from_samples(
+        [], dark_samples=dark,
+        left_camera_mask=0x01, right_camera_mask=0x00,
+        thresholds=_full_thresholds(max_dark_per_camera=[3.0] * 8),
+        sensor_left=None, sensor_right=None,
+    )
+    assert rows[0].dark == 1.5
+    assert rows[0].dark_test == "PASS"
+    assert rows[0].mean_test == "FAIL"
+
+
+def test_evaluate_passed_fails_when_a_camera_delivered_nothing():
+    from omotion.CalibrationWorkflow import evaluate_passed
+
+    light = [_light("left", 0)]
+    rows = _build_result_rows_from_samples(
+        light, dark_samples=[],
+        left_camera_mask=0x03, right_camera_mask=0x00,
+        thresholds=_full_thresholds(),
+        sensor_left=None, sensor_right=None,
+    )
+    assert evaluate_passed(rows) is False
