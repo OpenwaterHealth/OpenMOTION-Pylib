@@ -61,6 +61,8 @@ from .CalibrationWorkflow import (
     CalibrationResult,
     CalibrationResultRow,
     CalibrationThresholds,
+    factory_calibration_thresholds,
+    ungated_cameras,
 )
 from .connection_state import ConnectionState
 from .boot_mode import BootMode, parse_boot_info
@@ -110,6 +112,8 @@ __all__ = [
     "CalibrationResult",
     "CalibrationResultRow",
     "CalibrationThresholds",
+    "factory_calibration_thresholds",
+    "ungated_cameras",
     "ConnectionState",
     "FirmwareKind",
     "FirmwareUpdater",

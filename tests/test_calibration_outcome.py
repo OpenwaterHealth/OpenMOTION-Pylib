@@ -52,5 +52,5 @@ def test_legacy_construction_defaults_outcome_to_none():
         test_scan_left_path="", test_scan_right_path="",
         started_timestamp="",
     )
-    assert r.outcome is None and r.rolled_back is False
+    assert r.outcome is None and r.calibration_written is False
     assert t.outcome is None
