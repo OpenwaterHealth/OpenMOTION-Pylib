@@ -56,6 +56,10 @@ def request_obj(tmp_path, thresholds):
         duration_sec=2,
         scan_delay_sec=0,
         max_duration_sec=60,
+        # The permissive thresholds above cannot fail the pre-write gate,
+        # which start_calibration refuses by default (#256). These tests
+        # exercise plumbing, so opt in to the ungated run explicitly.
+        allow_ungated=True,
     )
 
 

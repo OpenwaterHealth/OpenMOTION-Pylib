@@ -69,6 +69,33 @@ class CalibrationThresholds:
     max_dark_per_camera: Optional[list[float]] = None
 
 
+def factory_calibration_thresholds() -> CalibrationThresholds:
+    """The canonical WI-00015 / SPEC-69 factory acceptance thresholds.
+
+    Single source of truth shared by the WI-15 measurement-calibration
+    runner and the apps' ``ft_*`` config defaults — callers that used to
+    hardcode copies of these values import this instead. Mean minimums
+    are per-position (corner cameras 1/8 sit farther from the source, so
+    40 vs the inner cameras' 80); contrast is the absolute speckle floor;
+    BFI/BVI are the SPEC-69 target bands (BFI 0 ± 0.5 must straddle zero
+    — a static phantom legitimately reads slightly negative); dark is the
+    ambient-light ceiling.
+
+    Returns a fresh instance each call: the fields are mutable lists, so
+    a shared module-level constant could be corrupted by one caller
+    editing its thresholds in place.
+    """
+    return CalibrationThresholds(
+        min_mean_per_camera=[40.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 40.0],
+        min_contrast_per_camera=[0.25] * 8,
+        min_bfi_per_camera=[-0.5] * 8,
+        max_bfi_per_camera=[0.5] * 8,
+        min_bvi_per_camera=[4.5] * 8,
+        max_bvi_per_camera=[5.5] * 8,
+        max_dark_per_camera=[3.0] * 8,
+    )
+
+
 @dataclass
 class CalibrationRequest:
     operator_id: str
@@ -109,6 +136,16 @@ class CalibrationRequest:
     trigger_config: Optional[dict] = None
     notes: str = ""
     average_full_scan: bool = False
+    # Explicit opt-in to run with thresholds that cannot fail the
+    # pre-write gate (mean/contrast missing or <= 0 for an active
+    # camera). Without it start_calibration() refuses such a request:
+    # zero thresholds turn the entire #199 protection chain (gate,
+    # never-write, rollback, PASS verdict) into a no-op, which is how a
+    # far-below-spec calibration once reached a console EEPROM and
+    # reported PASSED (#256). Bench/plumbing callers that genuinely
+    # want an ungated run say so here, loudly, instead of encoding it
+    # in threshold values.
+    allow_ungated: bool = False
 
 
 @dataclass
@@ -504,6 +541,43 @@ def evaluate_gate_passed(rows: list[CalibrationResultRow]) -> bool:
         r.mean_test == "PASS" and r.contrast_test == "PASS"
         for r in rows
     )
+
+
+def ungated_cameras(
+    thresholds: CalibrationThresholds,
+    left_camera_mask: int,
+    right_camera_mask: int,
+) -> list[str]:
+    """Active cameras whose pre-write gate is a no-op, as ``L1``..``R8``
+    labels (empty list = the gate can fail, i.e. it actually gates).
+
+    The gate judges mean and contrast, both non-negative quantities, so
+    ``_threshold_test`` can only ever FAIL a camera whose threshold is a
+    number > 0 at an index the list covers. A camera is reported here
+    when either of its two gate thresholds is missing (list ``None`` or
+    too short), non-numeric, NaN, or <= 0 — for that camera
+    ``evaluate_gate_passed`` is unconditionally PASS and the #199
+    protections cannot trigger.
+    """
+    def _effective(t_list: Optional[list], cam_id: int) -> bool:
+        if t_list is None or cam_id >= len(t_list):
+            return False
+        t = t_list[cam_id]
+        if t is None or not isinstance(t, (int, float)):
+            return False
+        return float(t) > 0  # NaN compares False -> ineffective
+
+    labels: list[str] = []
+    for prefix, mask in (("L", left_camera_mask), ("R", right_camera_mask)):
+        for cam_id in range(CAMS_PER_MODULE):
+            if not _camera_active(mask, cam_id):
+                continue
+            if not (
+                _effective(thresholds.min_mean_per_camera, cam_id)
+                and _effective(thresholds.min_contrast_per_camera, cam_id)
+            ):
+                labels.append(f"{prefix}{cam_id + 1}")
+    return labels
 
 
 _CSV_FIELDS = [
@@ -1082,7 +1156,32 @@ class CalibrationWorkflow:
         cannot rescue a handler that never returns. Raising is treated as a
         decline. ``cancel_calibration()`` remains responsive throughout: the
         stop event is re-checked as soon as the handler returns.
+
+        Returns False without starting when a run is already in flight, or
+        when the request's thresholds cannot fail the pre-write gate and
+        ``request.allow_ungated`` is not set (#256) — the refusal reason is
+        logged and sent through ``on_log_fn``.
         """
+        ungated = ungated_cameras(
+            request.thresholds,
+            request.left_camera_mask,
+            request.right_camera_mask,
+        )
+        if ungated and not request.allow_ungated:
+            msg = (
+                "Calibration refused: the pre-write gate cannot fail for "
+                f"{', '.join(ungated)} (min mean/contrast threshold missing "
+                "or <= 0), so a below-spec calibration would be written to "
+                "the console EEPROM and reported PASSED. Supply real "
+                "thresholds (factory_calibration_thresholds()) or set "
+                "CalibrationRequest.allow_ungated=True for a deliberate "
+                "ungated engineering run."
+            )
+            logger.error(msg)
+            if on_log_fn:
+                on_log_fn(msg)
+            return False
+
         with self._lock:
             if self._running:
                 logger.warning("start_calibration refused: already running.")

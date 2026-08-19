@@ -19,6 +19,7 @@ attestation prompt (or --phantom-confirmed) is mandatory for every run.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -27,7 +28,12 @@ import threading
 import time
 from typing import Callable, Sequence
 
-from omotion import CalibrationRequest, CalibrationThresholds
+from omotion import (
+    CalibrationRequest,
+    CalibrationThresholds,
+    factory_calibration_thresholds,
+    ungated_cameras,
+)
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ConfigureRequest
 from omotion.calibration.script_support import (
@@ -72,10 +78,10 @@ STANDARD_TRIGGER_CONFIG = {
     "EnableTaTrigger": True,
 }
 
-# Per-camera acceptance thresholds: the FACTORY values, mirroring the
-# bloodflow-app's live config (config/app_config.json ft_* keys):
-# absolute-brightness minimums per camera (corner cameras 40, inner 80),
-# contrast 0.25, SPEC-69 BFI/BVI, dark <= 3.0.
+# Per-camera acceptance thresholds: the FACTORY values (mean 40/80 with
+# corner cameras relaxed, contrast 0.25, SPEC-69 BFI/BVI, dark <= 3.0),
+# sourced from the SDK's canonical factory_calibration_thresholds() —
+# the same values the bloodflow-app ships in config/app_config.json.
 #
 # The SPEC-69 BFI/BVI gates alone are nearly self-fulfilling right after
 # calibration (i_max/c_max are normalized to the just-measured values, so the
@@ -86,15 +92,7 @@ STANDARD_TRIGGER_CONFIG = {
 #
 # On a dim dev bench use --bench-thresholds (disables the mean/contrast
 # gates, loudly) or --thresholds-json for custom values.
-FACTORY_THRESHOLDS = {
-    "min_mean_per_camera": [40.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 40.0],
-    "min_contrast_per_camera": [0.25] * 8,
-    "min_bfi_per_camera": [-0.5] * 8,   # SPEC-69 BFI Min
-    "max_bfi_per_camera": [0.5] * 8,    # SPEC-69 BFI Max
-    "min_bvi_per_camera": [4.5] * 8,    # SPEC-69 BVI Min
-    "max_bvi_per_camera": [5.5] * 8,    # SPEC-69 BVI Max
-    "max_dark_per_camera": [3.0] * 8,
-}
+FACTORY_THRESHOLDS = dataclasses.asdict(factory_calibration_thresholds())
 BENCH_THRESHOLDS = {
     **FACTORY_THRESHOLDS,
     "min_mean_per_camera": [0.0] * 8,
@@ -209,6 +207,22 @@ def main(
     if args.bench_thresholds:
         output_func("*** WARNING: bench mode - a PASS here does NOT "
                     "prove image brightness ***")
+    else:
+        # Refuse limits that cannot fail (#256): without this, a limits
+        # file that zeroes mean/contrast would write any calibration to
+        # the console and call it PASS. Deliberate ungated runs say
+        # --bench-thresholds instead.
+        ungated = ungated_cameras(
+            thresholds,
+            0xFF if side == "left" else 0x00,
+            0xFF if side == "right" else 0x00,
+        )
+        if ungated:
+            return fail(
+                "the limits disable the brightness check for "
+                f"{', '.join(ungated)}. Use --bench-thresholds if an "
+                "ungated bench run is really intended."
+            )
 
     run_id = _run_id()
     output_root = Path(args.output_dir) / f"measurement-calibration-{run_id}"
@@ -304,6 +318,7 @@ def main(
             trigger_config=dict(STANDARD_TRIGGER_CONFIG),
             notes=f"WI-00015 Measurement Calibration, side={side}, "
                   f"run {run_id}, thresholds: {thresholds_label}",
+            allow_ungated=args.bench_thresholds,
         )
 
         done = threading.Event()

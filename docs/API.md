@@ -278,16 +278,25 @@ pipeline consumer that maintains its own rolling-window average.
 ### Calibration & test
 
 ```python
-from omotion import CalibrationRequest, CalibrationThresholds
-iface.start_calibration(CalibrationRequest(...))   # computes per-camera C_max / I_max
-iface.start_test_scan(request)                     # validates against thresholds
+from omotion import CalibrationRequest, factory_calibration_thresholds
+iface.start_calibration(CalibrationRequest(          # computes per-camera C_max / I_max
+    ..., thresholds=factory_calibration_thresholds()))
+iface.start_test_scan(request)                       # validates against thresholds
 ```
 
 `Calibration` (`c_min`, `c_max`, `i_min`, `i_max`, `source`) is the affine map
 the pipeline uses for BFI/BVI. The connected console's calibration is loaded at
 connect; `iface.scan_workflow.set_realtime_calibration(...)` overrides it.
 `CalibrationResult` / `CalibrationResultRow` / `CalibrationThresholds` describe
-the outcome and the pass/fail gates.
+the outcome and the pass/fail gates. `factory_calibration_thresholds()` is the
+canonical WI-00015/SPEC-69 acceptance set — start from it instead of writing
+your own numbers. Thresholds that *cannot fail* the pre-write gate (min
+mean/contrast missing or ≤ 0 for an active camera — e.g. all-zero lists) are
+refused by `start_calibration`, which returns `False` and reports why through
+`on_log_fn`: a gate that can't fail would let a below-spec calibration
+overwrite the console EEPROM and report PASSED (#256). A deliberate ungated
+bench run must say so with `CalibrationRequest(allow_ungated=True)`.
+`start_test_scan` writes nothing and is not guarded.
 
 ---
 
