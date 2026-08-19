@@ -336,29 +336,14 @@ def main(
                 output_func, f"[{dt.datetime.now():%H:%M:%S}] stage: {stage}"
             )
 
-        def confirm_fn(rows) -> bool:
-            """Pre-write gate: show what measured low, then always refuse.
-
-            A below-threshold calibration is never written - there is no
-            consent path. The rows are printed so the operator can see
-            exactly which cameras failed the spec.
-            """
-            output_func("Camera values are below the limit. Measured values:")
-            output_func(f"  {'side':<6} {'cam':>3} {'mean':>10} {'avg_contrast':>13}")
-            for row in rows:
-                # Cameras display 1-8, matching the engine's L#/R# labels.
-                output_func(f"  {row.side:<6} {row.cam_id + 1:>3} "
-                            f"{row.mean:>10.3f} {row.avg_contrast:>13.4f}")
-            output_func("A result below the limit is never saved to "
-                        "the console.")
-            return False
-
         output_func(f"Step 3 of 3: Calibrating the {side} sensor. "
                     "The laser will turn ON.")
         output_func("*** Do not touch the setup while it runs. ***")
+        # The engine enforces the never-write rule itself: any camera
+        # outside any limit means FAILED and the console EEPROM is never
+        # touched — there is no consent hook to wire up.
         if not iface.start_calibration(request, on_complete_fn=on_complete,
-                                       on_progress_fn=on_progress,
-                                       on_confirm_fn=confirm_fn):
+                                       on_progress_fn=on_progress):
             return fail("could not start (is another calibration running?)")
         if not done.wait(CAL_MAX_DURATION_SEC + 60):
             iface.cancel_calibration()
@@ -381,8 +366,13 @@ def main(
                     f"{row.bvi:>8.3f}")
         if passed:
             output_func("All cameras are within the limits.")
-        elif result.error:
-            output_func(f"Problem: {result.error}")
+        else:
+            if result.error:
+                output_func(f"Problem: {result.error}")
+            else:
+                output_func("One or more cameras are outside the limits.")
+            if not result.calibration_written:
+                output_func("Nothing was saved to the console.")
         if result.csv_path:
             output_func(f"Saved data (CSV): {result.csv_path}")
         if result.json_path:

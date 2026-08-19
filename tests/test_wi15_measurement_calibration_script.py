@@ -38,13 +38,13 @@ class FakeSensor:
 
 class FakeInterface:
     def __init__(self, *, outcome="passed", refuse_start=False,
-                 fire_confirm=False, **_kwargs):
+                 gate_fail=False, **_kwargs):
         self.console = FakeConsole()
         self.left = FakeSensor(serial="SNL01")
         self.right = FakeSensor(serial="SNR02")
         self.outcome = outcome
         self.refuse_start = refuse_start
-        self.fire_confirm = fire_confirm
+        self.gate_fail = gate_fail
         self.requests = []
         self.configure_requests = []
         self.started = 0
@@ -72,33 +72,35 @@ class FakeInterface:
         self.laser_applied += 1
         return True
 
-    def start_calibration(self, request, *, on_complete_fn, on_progress_fn=None,
-                          on_confirm_fn=None):
+    def start_calibration(self, request, *, on_complete_fn, on_progress_fn=None):
         self.requests.append(request)
         if self.refuse_start:
             return False
-        if self.fire_confirm:
+        if self.gate_fail:
+            # Mirrors the engine's never-write gate failure: outcome
+            # FAILED, the measured rows attached, nothing written.
             row = SimpleNamespace(side="right", cam_id=5, mean=62.1,
-                                  avg_contrast=0.31)
-            consented = bool(on_confirm_fn and on_confirm_fn([row]))
-            if not consented:
-                on_complete_fn(
-                    SimpleNamespace(
-                        outcome=SimpleNamespace(value="canceled"),
-                        error="calibration scan below threshold on R5; not written",
-                        rows=[],
-                        csv_path="",
-                        json_path="",
-                    )
+                                  avg_contrast=0.31, bfi=0.0, bvi=5.0)
+            on_complete_fn(
+                SimpleNamespace(
+                    outcome=SimpleNamespace(value="failed"),
+                    error="calibration scan below threshold on R6; "
+                          "nothing written",
+                    rows=[row],
+                    csv_path="cal.csv",
+                    json_path="cal.json",
+                    calibration_written=False,
                 )
-                return True
+            )
+            return True
         on_complete_fn(
             SimpleNamespace(
                 outcome=SimpleNamespace(value=self.outcome),
-                error="" if self.outcome == "passed" else "below threshold",
+                error="",
                 rows=[],
                 csv_path="cal.csv",
                 json_path="cal.json",
+                calibration_written=self.outcome == "passed",
             )
         )
         return True
@@ -108,10 +110,10 @@ class FakeInterface:
 
 
 def run_main(tmp_path, monkeypatch, *, argv_extra=(), answers=(),
-             outcome="passed", refuse_start=False, fire_confirm=False):
+             outcome="passed", refuse_start=False, gate_fail=False):
     script = load_script()
     fake = FakeInterface(outcome=outcome, refuse_start=refuse_start,
-                         fire_confirm=fire_confirm)
+                         gate_fail=gate_fail)
     monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
     replies = iter(answers)
     lines = []
@@ -269,11 +271,12 @@ def test_below_threshold_gate_shows_rows_and_never_writes(monkeypatch, tmp_path)
         tmp_path, monkeypatch,
         argv_extra=["--side", "right", "--phantom-confirmed"],
         answers=(),  # any prompt would exhaust the empty iterator and raise
-        fire_confirm=True,
+        gate_fail=True,
     )
     assert code == 1
-    assert any("below the limit" in line for line in lines)
+    assert any("below threshold" in line for line in lines)
     # cam_id 5 displays as camera 6 - 1-based, matching the engine's labels
     assert any("right" in line and "  6 " in line and "62.100" in line
                for line in lines)
-    assert any("never saved" in line for line in lines)
+    assert any("Nothing was saved to the console." in line for line in lines)
+    assert any("Final result: FAIL" in line for line in lines)

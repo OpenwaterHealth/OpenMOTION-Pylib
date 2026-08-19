@@ -290,12 +290,16 @@ connect; `iface.scan_workflow.set_realtime_calibration(...)` overrides it.
 `CalibrationResult` / `CalibrationResultRow` / `CalibrationThresholds` describe
 the outcome and the pass/fail gates. `factory_calibration_thresholds()` is the
 canonical WI-00015/SPEC-69 acceptance set — start from it instead of writing
-your own numbers. Thresholds that *cannot fail* the pre-write gate (min
-mean/contrast missing or ≤ 0 for an active camera — e.g. all-zero lists) are
-refused by `start_calibration`, which returns `False` and reports why through
-`on_log_fn`: a gate that can't fail would let a below-spec calibration
-overwrite the console EEPROM and report PASSED (#256). A deliberate ungated
-bench run must say so with `CalibrationRequest(allow_ungated=True)`.
+your own numbers. **If any camera misses any threshold the whole run FAILS
+and the console EEPROM is never written**: the proposed calibration is
+applied to the SDK's in-memory cache for the validation scan, and the EEPROM
+write happens only after a fully-passing validation — there is no operator
+override and no rollback. Thresholds that *cannot fail* the pre-write gate
+(min mean/contrast missing or ≤ 0 for an active camera — e.g. all-zero
+lists) are refused by `start_calibration`, which returns `False` and reports
+why through `on_log_fn`: a gate that can't fail would let a below-spec
+calibration onto the console while reporting PASSED (#256). A deliberate
+ungated bench run must say so with `CalibrationRequest(allow_ungated=True)`.
 `start_test_scan` writes nothing and is not guarded.
 
 ---
