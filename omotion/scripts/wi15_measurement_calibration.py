@@ -239,6 +239,15 @@ def main(
         # does it on connect, the engineering app does not. Power the chosen
         # side, then configure exactly the cameras this run uses.
         sensor = iface.left if side == "left" else iface.right
+        # Record which physical units this run belongs to. The same serials
+        # land in the engine's CSV/JSON report files; echoing them here puts
+        # the identity in the operator transcript as well.
+        _emit_detail(
+            output_func,
+            "serial numbers: console="
+            f"{iface.console.read_serial_number() or 'unprogrammed'}, "
+            f"{side} sensor={sensor.read_serial_number() or 'unprogrammed'}",
+        )
         output_func("Step 2 of 3: Preparing the cameras. "
                     "This can take one minute ...")
         if not sensor.enable_camera_power(0xFF):
