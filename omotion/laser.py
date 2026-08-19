@@ -92,6 +92,22 @@ def load_laser_params(force_fault: bool = False) -> list:
         return []
 
 
+def _fault_diff_names() -> set:
+    """friendlyNames whose value the fault set deliberately changes.
+
+    Computed by diffing the two bundled files so a future fault vector
+    (a different register, or several) is picked up automatically. If the
+    baseline fails to load, every fault-set key counts as faulted — in the
+    test-only fault path, erring toward writing the fault file verbatim.
+    """
+    normal = {e["friendlyName"]: e["dataToSend"] for e in load_laser_params()}
+    fault = {
+        e["friendlyName"]: e["dataToSend"]
+        for e in load_laser_params(force_fault=True)
+    }
+    return {k for k, v in fault.items() if normal.get(k) != v}
+
+
 def apply_laser_power(
     console: Any,
     *,
@@ -106,13 +122,21 @@ def apply_laser_power(
     ``laser_params`` list, honoring per-key overrides and the safety DRIVE CL
     values. Returns True on success, False if any I2C write fails.
 
+    ``force_fault`` additionally exempts the deliberately-faulted registers
+    (the fault file's diff vs the baseline) from every user-config override
+    path. Without that, a console whose config carries the same key — e.g.
+    ``EE_PULSE_WIDTH_UL`` written during safety-param calibration — silently
+    restores the safe value right after the fault is staged and the interlock
+    test never trips (sdk#252).
+
     Args:
         console: a connected ``MotionConsole`` (has ``read_config`` and
             ``write_i2c_packet``).
         laser_params: register payloads; defaults to the bundled set
             (``load_laser_params(force_fault)``).
         fpga_map: friendlyName→I2C map; defaults to the bundled ``FpgaMap``.
-        force_fault: when ``laser_params`` is None, load the fault set instead.
+        force_fault: when ``laser_params`` is None, load the fault set instead;
+            always shields the faulted registers from user-config overrides.
         lock: optional mutex (anything with ``lock()``/``unlock()``) held for
             the duration of the I2C writes so the whole sequence is atomic
             w.r.t. other console access. Pass the app's console mutex when
@@ -128,6 +152,19 @@ def apply_laser_power(
         return False
 
     logger.info("Setting laser power from config...")
+
+    faulted_names: set = set()
+    faulted_coords: set = set()
+    if force_fault:
+        faulted_names = _fault_diff_names()
+        for name in faulted_names:
+            entry = fpga_map.get_entry_by_friendly_name(name)
+            if entry is not None:
+                faulted_coords.add((entry["channel"], entry["start_address"]))
+        logger.info(
+            "force_fault: exempting deliberately-faulted register(s) from "
+            "user-config overrides: %s", sorted(faulted_names),
+        )
 
     user_cfg: dict = {}
     try:
@@ -151,6 +188,9 @@ def apply_laser_power(
         skip_entries.add(_EE_DRIVE_CL)
     if opt_thresh is not None or opt_gain is not None:
         skip_entries.add(_OPT_DRIVE_CL)
+    # A faulted DRIVE CL must be written from the fault file, not skipped
+    # here and rewritten from user config below.
+    skip_entries -= faulted_coords
 
     if lock is not None:
         lock.lock()
@@ -177,7 +217,12 @@ def apply_laser_power(
                 )
                 continue
 
-            if friendly_name in user_cfg:
+            if friendly_name in user_cfg and friendly_name in faulted_names:
+                logger.info(
+                    "force_fault: keeping fault value for %s "
+                    "(user-config override suppressed)", friendly_name,
+                )
+            elif friendly_name in user_cfg:
                 override_val = user_cfg[friendly_name]
                 num_bytes = int(data_size.rstrip("B")) // 8
                 scale = fpga_entry.get("scale")
@@ -230,10 +275,14 @@ def apply_laser_power(
                 mux_index=1, channel=ch, device_addr=0x41, reg_addr=0x10, data=data
             )
 
-        if not _write_drive_cl(6, ee_thresh, ee_gain, "Safety EE"):
+        if _EE_DRIVE_CL in faulted_coords:
+            logger.info("force_fault: Safety EE DRIVE CL kept at fault value")
+        elif not _write_drive_cl(6, ee_thresh, ee_gain, "Safety EE"):
             logger.error("Failed to write user-config Safety EE DRIVE CL")
             return False
-        if not _write_drive_cl(7, opt_thresh, opt_gain, "Safety OPT"):
+        if _OPT_DRIVE_CL in faulted_coords:
+            logger.info("force_fault: Safety OPT DRIVE CL kept at fault value")
+        elif not _write_drive_cl(7, opt_thresh, opt_gain, "Safety OPT"):
             logger.error("Failed to write user-config Safety OPT DRIVE CL")
             return False
 

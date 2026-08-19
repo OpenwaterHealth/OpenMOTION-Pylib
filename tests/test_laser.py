@@ -1,5 +1,7 @@
 """omotion.laser — bundled laser-power config + I2C application."""
 
+from types import SimpleNamespace
+
 from omotion.laser import FpgaMap, apply_laser_power, load_laser_params
 
 
@@ -16,6 +18,17 @@ class _FakeConsole:
     def write_i2c_packet(self, *, mux_index, channel, device_addr, reg_addr, data):
         self.writes.append((mux_index, channel, device_addr, reg_addr, bytes(data)))
         return self._write_ok
+
+
+class _ConfigConsole(_FakeConsole):
+    """Fake console whose read_config carries user-config overrides."""
+
+    def __init__(self, cfg, write_ok=True):
+        super().__init__(write_ok=write_ok)
+        self._cfg = cfg
+
+    def read_config(self):
+        return SimpleNamespace(json_data=self._cfg)
 
 
 def test_load_laser_params_returns_bundled_list():
@@ -82,3 +95,110 @@ def test_apply_laser_power_releases_lock_on_write_failure():
     lk = _Lock()
     assert apply_laser_power(_FakeConsole(write_ok=False), lock=lk) is False
     assert lk.locked == 1 and lk.unlocked == 1
+
+
+# ── force_fault vs user-config overrides (sdk#252) ────────────────────────
+#
+# The fault file's whole point is a register value engineered to trip the
+# interlock; a console whose user config carries the same key (e.g.
+# EE_PULSE_WIDTH_UL written during safety-param calibration) used to
+# silently restore the safe value right after the fault was staged, so
+# forceLaserFail never tripped on calibrated units.
+
+def _faulted_entries():
+    """{friendlyName: fault dataToSend} for keys the fault set changes."""
+    normal = {p["friendlyName"]: p["dataToSend"] for p in load_laser_params()}
+    fault = {
+        p["friendlyName"]: p["dataToSend"]
+        for p in load_laser_params(force_fault=True)
+    }
+    return {k: v for k, v in fault.items() if normal.get(k) != v}
+
+
+def test_fault_file_differs_from_baseline():
+    assert _faulted_entries(), "fault file should change at least one register"
+
+
+def test_force_fault_user_override_cannot_neutralize_fault_registers():
+    fmap = FpgaMap()
+    faulted = _faulted_entries()
+    # The bench scenario: user config carries an override for every faulted
+    # key (value irrelevant — it must not win).
+    console = _ConfigConsole({k: 550 for k in faulted})
+
+    assert apply_laser_power(console, force_fault=True) is True
+
+    for name, fault_data in faulted.items():
+        entry = fmap.get_entry_by_friendly_name(name)
+        writes = [
+            w for w in console.writes
+            if w[1] == entry["channel"] and w[3] == entry["start_address"]
+        ]
+        # Exactly one write to the faulted register, carrying the fault
+        # bytes verbatim — no override rewrite, no trailing config write.
+        assert writes == [(
+            entry["mux_idx"], entry["channel"], entry["i2c_addr"],
+            entry["start_address"], bytes(fault_data),
+        )], name
+
+
+def test_force_fault_still_applies_overrides_to_non_faulted_registers():
+    fmap = FpgaMap()
+    faulted = _faulted_entries()
+    assert "TA_CURRENT_DRV" not in faulted  # else pick another register
+    console = _ConfigConsole({"TA_CURRENT_DRV": 0})
+
+    assert apply_laser_power(console, force_fault=True) is True
+
+    entry = fmap.get_entry_by_friendly_name("TA_CURRENT_DRV")
+    num_bytes = int(entry["data_size"].rstrip("B")) // 8
+    writes = [
+        w for w in console.writes
+        if w[1] == entry["channel"] and w[3] == entry["start_address"]
+    ]
+    # Calibrated drive values still apply during the interlock test.
+    assert writes == [(
+        entry["mux_idx"], entry["channel"], entry["i2c_addr"],
+        entry["start_address"], bytes(num_bytes),
+    )]
+
+
+def test_normal_apply_still_honors_override_on_fault_registers():
+    # Without force_fault the per-device override must keep winning — the
+    # exemption is scoped to the interlock test only.
+    fmap = FpgaMap()
+    name = next(iter(_faulted_entries()))
+    entry = fmap.get_entry_by_friendly_name(name)
+    scale = entry["scale"] or 1
+    num_bytes = int(entry["data_size"].rstrip("B")) // 8
+    byteorder = "big" if entry["isMsbFirst"] else "little"
+    console = _ConfigConsole({name: 550})
+
+    assert apply_laser_power(console) is True
+
+    raw = int(round(550 / scale))
+    writes = [
+        w for w in console.writes
+        if w[1] == entry["channel"] and w[3] == entry["start_address"]
+    ]
+    assert writes == [(
+        entry["mux_idx"], entry["channel"], entry["i2c_addr"],
+        entry["start_address"], raw.to_bytes(num_bytes, byteorder=byteorder),
+    )]
+
+
+def test_force_fault_keeps_trailing_drive_cl_write_when_not_faulted():
+    # EE_THRESH/EE_GAIN drive the trailing Safety EE DRIVE CL write (ch 6,
+    # reg 0x10). The current fault file doesn't fault DRIVE CL, so the
+    # config-derived write must survive force_fault untouched.
+    assert (6, 0x10) not in {
+        (FpgaMap().get_entry_by_friendly_name(n)["channel"],
+         FpgaMap().get_entry_by_friendly_name(n)["start_address"])
+        for n in _faulted_entries()
+    }
+    console = _ConfigConsole({"EE_THRESH": 1000, "EE_GAIN": 2})
+
+    assert apply_laser_power(console, force_fault=True) is True
+
+    writes = [w for w in console.writes if w[1] == 6 and w[3] == 0x10]
+    assert writes == [(1, 6, 0x41, 0x10, bytes([0xF4, 0x01]))]  # 500 LSB-first
