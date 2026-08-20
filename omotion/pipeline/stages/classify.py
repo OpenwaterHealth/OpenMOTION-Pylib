@@ -1,8 +1,14 @@
-"""FrameClassificationStage — abs_frame_id unwrap + frame_type labeling.
+"""FrameClassificationStage — packet consensus + abs_frame_id unwrap +
+frame_type labeling.
 
-Per (side, cam_id) pair, the stage maintains a FrameUnwrapper (8-bit →
-monotonic absolute index) and a "first frame seen" guard. Each row is
-labeled with one of: "warmup", "dark", "light", "stale".
+A packet-mate consensus pass repairs wire frame_ids that disagree with a
+strict in-packet majority (FrameIdConsensusCorrection; no-majority packets
+emit FrameIdPacketAnomaly instead) before unwrapping — see sdk#220 and
+the sensor-fw#123 fault-injection contract. Then, per (side, cam_id)
+pair, the stage maintains a FrameUnwrapper (8-bit → monotonic absolute
+index, counter cross-checked against the capture clock) and a "first
+frame seen" guard. Each row is labeled with one of: "warmup", "dark",
+"light", "stale".
 
 Dark frames are determined strictly by position — matching the firmware's
 LaserPulseSkipInterval schedule. Content-based detection is not used;
@@ -15,10 +21,13 @@ See docs/SciencePipeline.md §5.1 (unwrap, quarantine, classification).
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
 
 import numpy as np
 
-from ..batch import FrameBatch
+from ..batch import (
+    FrameBatch, FrameIdConsensusCorrection, FrameIdPacketAnomaly,
+)
 
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.frame_classification")
@@ -140,14 +149,58 @@ class FrameClassificationStage:
         self._stale_counts: dict[tuple[int, int], int] = {}
         self._stale_logged: set[tuple[int, int]] = set()
 
+    def _packet_consensus(self, batch: FrameBatch) -> dict[int, int]:
+        """Packet-mate consensus on wire frame_ids (sdk#220 / sensor-fw#123).
+
+        Cameras in one USB packet share a capture timestamp and must agree
+        on frame_id. When one disagrees and a strict majority exists, the
+        dissenting rows are repaired to the majority value — the frame's
+        histogram data is perfectly good, only its label byte was corrupted
+        in flight, so repairing beats quarantining (zero data loss). The
+        repair applies to the value fed into the unwrapper; the wire record
+        (batch.frame_ids, and therefore the raw CSV) is never mutated.
+
+        Returns {row_index: corrected_raw_id} for the repaired rows.
+        Disagreeing packets with NO strict majority (two cameras, or a tie)
+        emit a FrameIdPacketAnomaly and are left to the per-camera
+        counter-vs-clock check, which quarantines the inconsistent frames.
+        """
+        corrections: dict[int, int] = {}
+        groups: dict[tuple[int, float], list[int]] = defaultdict(list)
+        for i in range(batch.frame_ids.shape[0]):
+            groups[(int(batch.side_ids[i]),
+                    float(batch.timestamp_s[i]))].append(i)
+
+        for (side_idx, ts), indices in groups.items():
+            if len(indices) < 2:
+                continue
+            fids = [int(batch.frame_ids[j]) for j in indices]
+            if len(set(fids)) <= 1:
+                continue
+            majority_fid, majority_n = Counter(fids).most_common(1)[0]
+            if len(indices) >= 3 and majority_n * 2 > len(indices):
+                for j, f in zip(indices, fids):
+                    if f != majority_fid:
+                        corrections[j] = majority_fid
+            else:
+                batch.events.append(FrameIdPacketAnomaly(
+                    side=side_idx, timestamp_s=ts,
+                    cam_ids=[int(batch.cam_ids[j]) for j in indices],
+                    frame_ids=fids,
+                ))
+        return corrections
+
     def process(self, batch: FrameBatch) -> FrameBatch:
         n = batch.frame_ids.shape[0]
         abs_ids = np.zeros(n, dtype=np.int64)
         types = np.empty(n, dtype="<U8")
 
+        consensus = self._packet_consensus(batch)
+
         for i in range(n):
             cam_id = int(batch.cam_ids[i])
-            raw_id = int(batch.frame_ids[i])
+            wire_id = int(batch.frame_ids[i])
+            raw_id = consensus.get(i, wire_id)
             # Side is authoritatively set by the source (see FrameBatch.side_ids
             # docstring). Inferring from raw_histograms would misclassify any
             # zero-filled row — e.g. a firmware-dropped frame — as side 0.
@@ -163,13 +216,26 @@ class FrameClassificationStage:
                 raw_id, float(batch.timestamp_s[i]))
             abs_ids[i] = abs_id
 
+            if accepted and i in consensus:
+                # The repaired id fits this camera's sequence — record the
+                # correction. (If the packet "majority" was itself corrupt,
+                # the counter-vs-clock check rejects it above and the row is
+                # quarantined instead, so a correction is never reported for
+                # a frame that ends up discarded.)
+                batch.events.append(FrameIdConsensusCorrection(
+                    side=side_idx, cam_id=cam_id,
+                    timestamp_s=float(batch.timestamp_s[i]),
+                    wire_frame_id=wire_id, corrected_frame_id=raw_id,
+                    abs_frame_id=abs_id,
+                ))
+
             if not accepted:
                 # Stale leftover frame (unflushed histogram buffer at scan
                 # start, a mid-scan counter blip) or a quarantined corrupt
                 # frame_id (sdk#220). Excluded downstream either way so it
                 # can't poison the dark/timestamp alignment.
                 types[i] = "stale"
-                self._note_stale(side_idx, cam_id, raw_id, reject_reason)
+                self._note_stale(side_idx, cam_id, wire_id, reject_reason)
             elif unwrapper.first_was_stale and abs_id == raw_id:
                 types[i] = "stale"
                 self._note_stale(side_idx, cam_id, raw_id,

@@ -111,6 +111,61 @@ class TimestampMisalignmentWindow(BatchEvent):
 
 
 @dataclass
+class FrameIdConsensusCorrection(BatchEvent):
+    """One camera's wire frame_id disagreed with its packet-mates and was
+    repaired to the packet majority before unwrapping, preserving the
+    frame's histogram data (sdk#220 / sensor-fw#123 fid_single evidence).
+
+    The wire record (raw CSV) keeps the original value — the correction
+    applies to the unwrapped abs_frame_id and everything downstream.
+    Routed to "diagnostics"."""
+    side:               int
+    cam_id:             int
+    timestamp_s:        float
+    wire_frame_id:      int    # the corrupted 8-bit value as received
+    corrected_frame_id: int    # the packet-majority 8-bit value used instead
+    abs_frame_id:       int    # unwrapped id after correction
+
+
+@dataclass
+class FrameIdPacketAnomaly(BatchEvent):
+    """Cameras in one packet disagreed on frame_id with no strict majority
+    to adjudicate (sensor-fw#123 fid_multi evidence). No consensus repair
+    is possible; the per-camera counter-vs-clock check quarantines the
+    inconsistent frames instead. Routed to "diagnostics"."""
+    side:        int
+    timestamp_s: float
+    cam_ids:     list   # cameras in the packet, wire order
+    frame_ids:   list   # their wire frame_ids, same order
+
+
+@dataclass
+class TimestampRepairInputAnomaly(BatchEvent):
+    """Consecutive captures arrived carrying one reused packet timestamp
+    (frozen clock) while the frame counter advanced — the sensor-fw#123
+    timestamp_freeze signature. The affected frames are re-timestamped by
+    TimestampRepairStage; one event is emitted per (side, frozen value).
+    Routed to "diagnostics"."""
+    side:        int
+    timestamp_s: float  # the reused timestamp value
+    n_frames:    int    # frames observed carrying it beyond the first capture
+
+
+@dataclass
+class FrameGapFillAnomaly(BatchEvent):
+    """A gap in one camera's abs_frame_id sequence (lost or quarantined
+    frames) was back-filled with synthetic nan_filled placeholder rows —
+    the sensor-fw#123 packet_drop evidence, emitted when the next frame
+    arrives and the gap becomes visible. Routed to "diagnostics"."""
+    side:          int
+    cam_id:        int
+    gap_start_fid: int    # first missing abs_frame_id
+    gap_end_fid:   int    # last missing abs_frame_id
+    n_filled:      int
+    timestamp_s:   float  # timestamp of the gap-closing frame
+
+
+@dataclass
 class PipelineError(BatchEvent):
     """A stage raised during pipeline.process(); the batch was dropped.
 

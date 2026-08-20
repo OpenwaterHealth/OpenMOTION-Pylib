@@ -97,6 +97,10 @@ Stages produce events when something doesn't fit cleanly into per-frame arrays. 
 | `StencilFallback(...)` | `DarkFrameQuadraticStencil` (inside DarkFrameHoldStage) | `"diagnostics"` |
 | `PipelineError(...)` | `ScanRunner` (a stage raised; the batch was dropped, state preserved) | `"diagnostics"` |
 | `TimestampMisalignmentWindow(...)` | `TimestampRepairStage` (per-side coalesced window; the terminal stop-frame artifact — the firmware's laser-off frame fires ~150 ms off-grid at every scan stop — is reclassified at INFO and NOT reported) | `"diagnostics"` |
+| `FrameIdConsensusCorrection(...)` | `FrameClassificationStage` — one camera's wire frame_id repaired to the packet majority before unwrap; frame data preserved (§5.1) | `"diagnostics"` |
+| `FrameIdPacketAnomaly(...)` | `FrameClassificationStage` — packet frame_ids disagree with no strict majority; the inconsistent frames are quarantined per camera (§5.1) | `"diagnostics"` |
+| `TimestampRepairInputAnomaly(...)` | `TimestampRepairStage` — a packet timestamp was reused across captures (frozen clock); one event per (side, value) (§5.4) | `"diagnostics"` |
+| `FrameGapFillAnomaly(...)` | `TimestampRepairStage` — a per-camera abs_frame_id gap was back-filled with `nan_filled` placeholders (§5.4) | `"diagnostics"` |
 | `TerminalDarkResult(...)` | `DarkCorrectionStage.on_scan_stop` | `"diagnostics"` |
 | `TriggerStateEvent(...)` | `ScanWorkflow` (out of band, via `ScanRunner.dispatch_event`) | `"diagnostics"` |
 
@@ -162,6 +166,17 @@ Per `(side, cam_id)` pair, the stage maintains a `_FrameUnwrapper`. The side
 comes from `batch.side_ids`, which the source sets authoritatively — it is
 never inferred from the histogram payload (a zero-filled row would misroute
 to side 0).
+
+**Packet consensus (before unwrapping).** Cameras in one USB packet share a
+capture timestamp and must agree on frame_id. When one camera disagrees and
+a strict majority exists (≥ 3 cameras), the dissenting rows are repaired to
+the majority value — the frame's histogram data is good, only its label
+byte was corrupted in flight, so repairing beats discarding
+(`FrameIdConsensusCorrection`, zero data loss). The correction feeds the
+unwrapper only; `batch.frame_ids` — and therefore the raw CSV — always
+keeps the wire value. A disagreement with no strict majority (two cameras,
+or a tie) emits `FrameIdPacketAnomaly` and falls through to the per-camera
+check below, which quarantines exactly the inconsistent frames.
 
 **Frame-ID unwrap.** The firmware's 8-bit counter wraps from 255 → 0; the
 unwrapper turns it into a monotonic `abs_frame_id = epoch * 256 + raw`.
@@ -288,9 +303,15 @@ correction. With no usable right anchor the fallback is
 **Gap placeholders.** A gap in a camera's `abs_frame_id` sequence (frames
 lost to USB, or quarantined by §5.1) is back-filled with synthetic rows —
 zero histograms, `frame_type = "light"`, `quality = "nan_filled"`,
-timestamps interpolated across the gap. Downstream, the zero histogram
-yields NaN moments, so placeholders render as honest gaps: sinks store
-NULLs and the realtime side average skips them (§5.11).
+timestamps interpolated across the gap — and reported per gap as a
+`FrameGapFillAnomaly`. Downstream, the zero histogram yields NaN moments,
+so placeholders render as honest gaps: sinks store NULLs and the realtime
+side average skips them (§5.11).
+
+**Frozen-clock evidence.** When the frame counter advances but the packet
+timestamp is a reuse of the camera's previous wire value, one
+`TimestampRepairInputAnomaly` is emitted per (side, frozen value); the
+affected frames are re-timestamped through the normal correction path.
 
 **Misalignment windows.** Contiguous flagged runs are tracked per side and
 reported as one coalesced record each: a `TimestampMisalignmentWindow`

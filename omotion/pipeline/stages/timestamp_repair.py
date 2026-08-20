@@ -51,7 +51,10 @@ from typing import Optional
 
 import numpy as np
 
-from ..batch import FrameBatch, TimestampMisalignmentWindow
+from ..batch import (
+    FrameBatch, FrameGapFillAnomaly, TimestampMisalignmentWindow,
+    TimestampRepairInputAnomaly,
+)
 
 logger = logging.getLogger("openmotion.sdk.pipeline.stages.timestamp_repair")
 
@@ -129,6 +132,14 @@ class TimestampRepairStage:
         # attribution (which runs after the detection pass) can still reach
         # them; logged/dispatched by _flush_pending_closes at end of batch.
         self._pending_closed: dict[int, list] = {0: [], 1: []}
+        # Frozen-clock evidence (sensor-fw#123 timestamp_freeze): per-camera
+        # last WIRE timestamp (pre-correction), the in-batch tally of frames
+        # carrying a reused packet timestamp, and the per-scan set of
+        # (side, ts) values already reported so each frozen value emits one
+        # TimestampRepairInputAnomaly.
+        self._wire_prev: dict[tuple[int, int], tuple[int, float]] = {}
+        self._frozen_pending: dict[tuple[int, float], int] = {}
+        self._frozen_emitted: set[tuple[int, float]] = set()
         # Per-side WARNING throttle state (see _WINDOW_LOG_MIN_INTERVAL_S).
         self._log_last_s: dict[int, float] = {0: float("-inf"), 1: float("-inf")}
         self._log_suppressed: dict[int, int] = {0: 0, 1: 0}
@@ -175,6 +186,17 @@ class TimestampRepairStage:
             ts = float(batch.timestamp_s[i])
             key = (side_idx, cam_id)
 
+            # Frozen-clock signature (sensor-fw#123 timestamp_freeze): the
+            # frame counter advanced but the packet timestamp is a reuse of
+            # this camera's previous WIRE value. Tracked on wire timestamps
+            # (pre-correction) so consecutive frozen packets all register.
+            wire_prev = self._wire_prev.get(key)
+            if (wire_prev is not None and abs_fid > wire_prev[0]
+                    and abs(ts - wire_prev[1]) < 1e-9):
+                fkey = (side_idx, round(ts, 6))
+                self._frozen_pending[fkey] = self._frozen_pending.get(fkey, 0) + 1
+            self._wire_prev[key] = (abs_fid, ts)
+
             # Condition 1: timestamp deviation (checked inline with _last_good)
             is_bad = i in bad_cond2
             if not is_bad and key in self._last_good:
@@ -214,16 +236,33 @@ class TimestampRepairStage:
         if nan_fills:
             batch = self._insert_nan_fills(batch, nan_fills)
 
+        self._flush_frozen(batch.events)
         self._flush_pending_closes(batch.events)
         return batch
+
+    def _flush_frozen(self, events: list) -> None:
+        """Emit one TimestampRepairInputAnomaly per newly seen frozen
+        (side, timestamp) value; later frames carrying an already-reported
+        value add nothing (the evidence is out)."""
+        for (side, ts), count in self._frozen_pending.items():
+            if (side, ts) in self._frozen_emitted:
+                continue
+            self._frozen_emitted.add((side, ts))
+            events.append(TimestampRepairInputAnomaly(
+                side=side, timestamp_s=ts, n_frames=count))
+        self._frozen_pending = {}
 
     # ── Detection ───────────────────────────────────────────────────────
 
     def _detect_frame_id_disagreement(self, batch: FrameBatch) -> set[int]:
         """Condition 2: cameras at the same timestamp with different frame_ids.
 
+        Compares UNWRAPPED ids: FrameClassificationStage's packet consensus
+        repairs wire-level disagreement before unwrapping, so a row it
+        corrected agrees here and is not flagged twice.
+
         Majority vote: cameras in one packet share the capture instant, so
-        when their frame_ids disagree the minority is the liar — flag only
+        when their frame ids disagree the minority is the liar — flag only
         those rows. Flagging the whole group (the old behavior) let one
         corrupted camera condemn every innocent sibling in the packet
         (sdk#220: 18 frames "re-timestamped" when ~3 were corrupt). With no
@@ -239,7 +278,7 @@ class TimestampRepairStage:
         for indices in groups.values():
             if len(indices) < 2:
                 continue
-            fids = [int(batch.frame_ids[j]) for j in indices]
+            fids = [int(batch.abs_frame_ids[j]) for j in indices]
             if len(set(fids)) <= 1:
                 continue
             majority_fid, majority_n = Counter(fids).most_common(1)[0]
@@ -431,6 +470,13 @@ class TimestampRepairStage:
                 prev_fid, prev_ts = self._nan_last_seen[key]
                 gap = abs_fid - prev_fid
                 if gap > 1:
+                    # sensor-fw#123 packet_drop evidence: the gap becomes
+                    # visible when this (gap-closing) frame arrives.
+                    batch.events.append(FrameGapFillAnomaly(
+                        side=key[0], cam_id=key[1],
+                        gap_start_fid=prev_fid + 1, gap_end_fid=abs_fid - 1,
+                        n_filled=gap - 1, timestamp_s=ts,
+                    ))
                     for fid in range(prev_fid + 1, abs_fid):
                         frac = (fid - prev_fid) / gap
                         fills.append((i, {
@@ -546,6 +592,7 @@ class TimestampRepairStage:
                 self._track_window_close(side)
         # Scan stop bypasses the log throttle: the final windows (and any
         # suppressed-count remainder) must never end the scan silently.
+        self._flush_frozen(batch.events)
         self._flush_pending_closes(batch.events, force_log=True)
 
         if self._total_corrected or self._total_nan:
