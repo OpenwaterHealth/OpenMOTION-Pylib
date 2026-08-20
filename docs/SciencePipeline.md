@@ -71,6 +71,7 @@ Three things characterise this design and make it auditable:
 | `tcl` | `(N,)` int64 \| None | TelemetryIngestStage (or replay source) | Laser trigger counter |
 | `abs_frame_ids` | `(N,)` int64 | FrameClassificationStage | Monotonic unwrapped frame counter |
 | `frame_type` | `(N,)` `<U8` | FrameClassificationStage | One of `"warmup"`, `"dark"`, `"light"`, `"stale"` |
+| `quality` | `(N,)` `<U14` | TimestampRepairStage | `"ok"`, `"ts_corrected"` (timestamp rewritten), or `"nan_filled"` (synthetic gap placeholder) — see §5.4 |
 | `mean_raw` | `(N, 2, 8)` float32 | MomentsStage | First moment μ₁ of raw histogram (NaN where count == 0) |
 | `std_raw` | `(N, 2, 8)` float32 | MomentsStage | √(μ₂ − μ₁²) of raw histogram |
 | `contrast_raw` | always `None` | MomentsStage | Reserved; pedestal-subtracted contrast is computed downstream |
@@ -79,10 +80,10 @@ Three things characterise this design and make it auditable:
 | `mean_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | `mean_raw − û₁` (best-effort dark-subtracted mean) |
 | `std_dc_rt` | `(N, 2, 8)` float32 | DarkCorrectionStage | √(std_raw² − σ̂²) (best-effort dark-subtracted std) |
 | `std_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | std after Poisson shot-noise removal |
-| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, **NaN** where mean ≤ 0 or non-finite (no measurement — see §5.8) |
+| `contrast_sn_rt` | `(N, 2, 8)` float32 | ShotNoiseCorrectionStage | `std_sn_rt / mean_dc_rt`, **NaN** where mean ≤ 0 or non-finite (no measurement — see §5.9) |
 | `bfi_live` | `(N, 2, 8)` float32 | BfiBviStage | BFI from realtime corrected (K, μ₁) via calibration |
 | `bvi_live` | `(N, 2, 8)` float32 | BfiBviStage | BVI from realtime corrected mean via calibration |
-| `events` | `list[BatchEvent]` | Stages append | Out-of-band events: `LiveEmit`, `IntervalClosed`, diagnostics. Reduced-mode side averages ride here too: realtime as `LiveEmit(channel="live_side", SideAverageSample)`, corrected as synthetic `IntervalClosed` intervals whose frames carry `cam_id=-1` (see §5.10) |
+| `events` | `list[BatchEvent]` | Stages append | Out-of-band events: `LiveEmit`, `IntervalClosed`, diagnostics. Reduced-mode side averages ride here too: realtime as `LiveEmit(channel="live_side", SideAverageSample)`, corrected as synthetic `IntervalClosed` intervals whose frames carry `cam_id=-1` (see §5.11) |
 
 ### 2.2 BatchEvent types
 
@@ -143,7 +144,7 @@ Tee("live", filter=ft not in {"warmup","stale"})
 - **Cameras:** up to 8 OX02C1B cameras per sensor module, up to 2 sensor modules (left + right), 16 cameras max.
 - **Frame rate:** 40 Hz, frame sync controlled by the console MCU.
 - **Histogram:** 1024 bins per camera per frame, 32-bit counts. A valid frame's bin sum equals its pixel count plus a constant 6-count sentinel — **2,457,606** for the full 1920 × 1280 frame, or **2,201,606** for the debug-cropped 1720 × 1280 frame (`DEBUG_FLAG_CAMERA_CROP`, sensor-fw #86). The parser validates against the set `EXPECTED_HISTOGRAM_SUMS` in `omotion/MotionProcessing.py` (`EXPECTED_HISTOGRAM_SUM` remains the full-frame single value); frames matching none of the valid totals are dropped before they reach the pipeline. Science moments are normalized by the per-frame pixel count, so they are unaffected by which geometry is streaming.
-- **Dark frame protocol:** the firmware deterministically cuts laser illumination on a fixed schedule (see §5.2). The pipeline never has to infer dark/light from the data.
+- **Dark frame protocol:** the firmware deterministically cuts laser illumination on a fixed schedule (see the frame-type table in §5.1). The pipeline never has to infer dark/light from the data.
 - **Frame ID:** each histogram packet carries an 8-bit rolling counter (0–255). The pipeline unwraps this per `(side, cam_id)` pair (§5.1).
 - **Pedestal:** the camera-reported value at zero illumination. Per-side, firmware-version-keyed: 64.0 DN for sensor firmware ≤ 1.5.2, 128.0 DN after. `omotion/pipeline/pedestal.py` resolves this from the connected sensors at scan start (`SensorPedestals.from_sensors(left, right)`).
 
@@ -157,26 +158,57 @@ The remaining sections describe each stage's math and side effects. The order ma
 
 **File:** `omotion/pipeline/stages/classify.py`. **Writes:** `abs_frame_ids`, `frame_type`.
 
-Per `(side, cam_id)` pair, the stage maintains a `_FrameUnwrapper` (the side is inferred from `argmax` of the per-side histogram sum, since each packet's payload lives in only one of the two side slots).
+Per `(side, cam_id)` pair, the stage maintains a `_FrameUnwrapper`. The side
+comes from `batch.side_ids`, which the source sets authoritatively — it is
+never inferred from the histogram payload (a zero-filled row would misroute
+to side 0).
 
-**Frame-ID unwrap.** The firmware's 8-bit counter wraps from 255 → 0. The unwrapper maintains an epoch counter:
+**Frame-ID unwrap.** The firmware's 8-bit counter wraps from 255 → 0; the
+unwrapper turns it into a monotonic `abs_frame_id = epoch * 256 + raw`.
+Both the counter and the capture timestamp travel over an EFT-exposed link
+(FPGA → MCU), so the unwrapper treats them as **two witnesses to the same
+event** and only advances its state on frames where they agree. Each frame's
+*signed* 8-bit step from the last accepted frame,
+`step = ((raw - last_raw + 128) & 0xFF) - 128`, is judged in order:
 
-```
-delta = (raw_frame_id - last_raw) & 0xFF
-if delta <= 128 and raw_frame_id < last_raw:
-    epoch += 1
-abs_frame_id = epoch * 256 + raw_frame_id
-```
+1. **`step ≤ 0` (backward or duplicate)** → rejected as `"stale"`. Covers
+   leftover buffer contents at scan start (raw `1, 255, 173, 4, 5 …`),
+   mid-scan counter blips, and corrupted frame_ids that happen to read
+   backward. Unwrapper state is untouched, so the next genuine frame
+   resumes the sequence.
+2. **Forward step that over-claims time** → quarantined as `"stale"`
+   (sdk#220). A step of `K` frames claims `K × 25 ms` of elapsed time; if
+   the capture timestamps account for substantially less (slack: 1.5 frame
+   periods or 10 % of the claim, whichever is larger), the frame_id byte is
+   corrupt and believing it would poison the epoch — the historic
+   "etch-a-sketch" failure accepted a corrupted `+64` step and then threw
+   away the next 64 *real* frames as backward. Under-claiming is fine:
+   late frames (the firmware's ~150 ms off-grid terminal stop frame,
+   stalls) keep an honest counter, and timestamp anomalies belong to
+   TimestampRepairStage (§5.4).
+3. **Forward step 1–127 consistent with the clock** → accepted; a numeric
+   wrap (`raw ≤ last_raw`) increments the epoch.
 
-A `delta > 128` (apparent large backward jump) is treated as a packet anomaly and the epoch is left unchanged.
+A genuine forward gap > 127 frames (a > 3.2 s intra-scan dropout) is
+indistinguishable from a backward step in 8 bits and is rejected — that
+data is already lost in a gap that large.
 
-**Stale-first guard.** The very first frame received for any `(side, cam_id)` must have `raw_frame_id == 1`. Anything else is a leftover packet from a previous scan; the unwrapper flags it and any subsequent frames whose `abs_frame_id == raw_frame_id` (i.e. epoch still 0) are labelled `"stale"` so they are dropped by the `Tee("raw", filter=ft != "stale")` and live tees.
+**Stale-first guard.** The very first frame received for any `(side,
+cam_id)` must have `raw_frame_id == 1`. Anything else is a leftover packet
+from a previous scan; the unwrapper flags it and any subsequent frames
+whose `abs_frame_id == raw_frame_id` (i.e. epoch still 0) are labelled
+`"stale"`.
+
+Every rejection is counted per camera (first occurrence logged live, totals
+summarised at scan stop — a non-zero count is a hardware-health signal),
+and `"stale"` rows are excluded by every downstream consumer: the tees'
+gates, `iter_rows`, and each stage's own frame-type filter.
 
 **Frame-type labelling.** With `d = discard_count` (default 9) and `Δ = dark_interval` (default 600):
 
 | Condition | `frame_type` |
 |---|---|
-| `first_was_stale` and `abs_id == raw_id` | `"stale"` |
+| unwrapper rejected the frame (rules 1–2 above), or leading stale run | `"stale"` |
 | `abs_id ≤ d` | `"warmup"` |
 | `abs_id == d + 1` OR (`abs_id > d + 1` AND `(abs_id - 1) mod Δ == 0`) | `"dark"` |
 | otherwise | `"light"` |
@@ -216,7 +248,69 @@ Positional marker. Routes the full FrameBatch — including warmup frames — to
 
 If `raw_save_max_duration_s=0` is passed to `default_pipeline()`, the raw tee is omitted entirely.
 
-### 5.4 NoiseFloorStage
+### 5.4 TimestampRepairStage
+
+**File:** `omotion/pipeline/stages/timestamp_repair.py`. **Writes:** `quality`;
+rewrites `timestamp_s` in place for flagged frames; inserts synthetic
+`nan_filled` rows (the only case that rebuilds the batch); appends
+`TimestampMisalignmentWindow` diagnostics events.
+
+Sits after the raw tee so the raw CSV always records the *pre-repair* wire
+capture (the tee snapshots for exactly this reason), and before the science
+stages so everything downstream sees repaired time.
+
+**Division of labour with §5.1:** a corrupted frame *counter* is quarantined
+by the unwrapper and never reaches this stage. This stage owns the other
+corruption: frames whose counter is honest but whose *timestamp* is not
+(the original EFT design case). Each frame is checked two ways:
+
+- **Condition 1 — cadence deviation.** Per `(side, cam)`, a frame's
+  `Δt` from the last good frame should be `fid_gap × T` where `T` is the
+  frame period (started at 25 ms, refined by an EMA over clean single-step
+  intervals to track the real ~25.02 ms cadence). Deviation beyond
+  `tolerance_s` (default 8 ms) flags the frame. An `abs_frame_id`
+  regression here (impossible for unwrapper-accepted frames) is flagged
+  rather than trusted.
+- **Condition 2 — in-packet disagreement.** All cameras in one USB packet
+  share a capture timestamp, so their frame_ids must agree. On
+  disagreement the **majority vote wins**: only the minority rows are
+  flagged. With two cameras or a tie there is nothing to adjudicate with,
+  so the whole group is flagged.
+
+**Correction.** A flagged frame's timestamp is rewritten by interpolating
+between the camera's last good frame and the next good frame in the batch
+(distributed by frame-id count). A right-anchor candidate is only trusted
+if its own timestamp is consistent with the left anchor at the nominal
+cadence — otherwise a yet-to-be-flagged corrupt frame could anchor the
+correction. With no usable right anchor the fallback is
+`left_ts + gap × T`. Corrected rows get `quality = "ts_corrected"`.
+
+**Gap placeholders.** A gap in a camera's `abs_frame_id` sequence (frames
+lost to USB, or quarantined by §5.1) is back-filled with synthetic rows —
+zero histograms, `frame_type = "light"`, `quality = "nan_filled"`,
+timestamps interpolated across the gap. Downstream, the zero histogram
+yields NaN moments, so placeholders render as honest gaps: sinks store
+NULLs and the realtime side average skips them (§5.11).
+
+**Misalignment windows.** Contiguous flagged runs are tracked per side and
+reported as one coalesced record each: a `TimestampMisalignmentWindow`
+event on the `"diagnostics"` channel (always — the scan DB summary must be
+complete) and one WARNING log line, throttled to one per side per 2 s with
+a suppressed-window count on the next emitted line. The throttle exists
+because sustained intermittent corruption churns windows on nearly every
+bad→good alternation — unthrottled, the "coalesced" design degrades into a
+per-frame log flood (the sdk#220 sustained-EFT presentation). Scan stop
+flushes with the throttle bypassed.
+
+**Terminal stop frame.** The firmware's laser-off frame fires ~150 ms off
+the 25 ms grid at every scan stop. A window still open at `on_scan_stop`
+in which every flagged frame is the last its camera produced (one per
+camera) is reclassified as this expected artifact: logged at INFO and
+excluded from the misalignment record. A scan-level summary WARNING
+(window count, frames re-timestamped, frames NaN-filled, % of scan
+affected) closes out any scan where a genuine correction occurred.
+
+### 5.5 NoiseFloorStage
 
 **File:** `omotion/pipeline/stages/noise_floor.py`. **Writes:** mutates `raw_histograms` in place (no new field).
 
@@ -228,7 +322,7 @@ np.putmask(raw_histograms, raw_histograms < threshold, 0)
 
 **Rationale:** low-count bins are dominated by read noise. Zeroing them before moment computation tightens μ₁ and σ against detector noise tails without affecting bins carrying real photon counts.
 
-### 5.5 MomentsStage
+### 5.6 MomentsStage
 
 **File:** `omotion/pipeline/stages/moments.py`. **Writes:** `mean_raw`, `std_raw`. Leaves `contrast_raw = None`.
 
@@ -248,7 +342,7 @@ std_raw    = σ
 
 `contrast_raw` is intentionally left `None`. The valid speckle contrast definition is `K = σ / (μ₁ − pedestal)`, and MomentsStage doesn't know the pedestal; pedestal-subtracted contrast is computed downstream by `ShotNoiseCorrectionStage` (after `mean_dc_rt` is available).
 
-### 5.6 PedestalSubtractionStage
+### 5.7 PedestalSubtractionStage
 
 **File:** `omotion/pipeline/stages/pedestal_sub.py`. **Writes:** `subtracted_mean`.
 
@@ -260,22 +354,22 @@ subtracted_mean = max(0, mean_raw − pedestal)        # per-side broadcast (1, 
 
 `subtracted_mean` is the right quantity for measuring **ambient light on a dark frame** — its baseline is the zero-light pedestal, so any non-zero value is stray light leaking onto the sensor. `ContactQualityWorkflow` reads it that way for its AMBIENT_LIGHT threshold on dark frames (§11.2). For light frames, the right "intensity" quantity is `mean_dc_rt` (mean above the just-measured dark baseline, not above pedestal) — the live UI emits it, and `_ContactQualitySink` reads it for the POOR_CONTACT threshold. The dark-correction path uses `mean_raw` (un-pedestal-subtracted) directly, because the pedestal cancels exactly when you subtract one dark mean from one light mean — both terms carry the same pedestal.
 
-### 5.7 DarkCorrectionStage
+### 5.8 DarkCorrectionStage
 
 **File:** `omotion/pipeline/stages/dark.py`. **Writes:** `dark_baseline_rt`, `mean_dc_rt`, `std_dc_rt`. Appends `IntervalClosed` and `DarkIntegrityWarning` events.
 
 This is the largest stage. It runs **two parallel corrections**:
 
 - **Realtime (per-frame, predicted)** — produces `dark_baseline_rt`, `mean_dc_rt`, `std_dc_rt` on every light frame using the rolling dark history. Available immediately; lower fidelity at interval boundaries. Used by the live UI.
-- **Batched (per dark-interval, interpolated)** — buffers all light frames in the open interval, and when the closing dark arrives, emits `IntervalClosed` carrying a raw `CorrectedInterval` (dark-subtracted mean/std only). The event is then **mutated in place by the downstream stages in the same pass**: `ShotNoiseCorrectionStage` applies shot-noise correction (§5.7.5 math), `BfiBviStage` upgrades it to an `EnrichedCorrectedInterval` with calibrated BFI/BVI, and `DarkFrameHoldStage` prepends the quadratic-stencilled dark row (§5.7.6). By the time the runner dispatches it to the `"final"` channel it is the fully corrected interval. Used by the corrected CSV, the scan DB, and any consumer that needs reproducible offline-grade output.
+- **Batched (per dark-interval, interpolated)** — buffers all light frames in the open interval, and when the closing dark arrives, emits `IntervalClosed` carrying a raw `CorrectedInterval` (dark-subtracted mean/std only). The event is then **mutated in place by the downstream stages in the same pass**: `ShotNoiseCorrectionStage` applies shot-noise correction (§5.8.5 math), `BfiBviStage` upgrades it to an `EnrichedCorrectedInterval` with calibrated BFI/BVI, and `DarkFrameHoldStage` prepends the quadratic-stencilled dark row (§5.8.6). By the time the runner dispatches it to the `"final"` channel it is the fully corrected interval. Used by the corrected CSV, the scan DB, and any consumer that needs reproducible offline-grade output.
 
 The realtime predictor and the batched corrector share one `DarkHistory` (a per-`(side, cam_id)` ring buffer of `DarkObservation(t, u1, std)`, default capacity 4).
 
-#### 5.7.1 DarkIntegrityGuard (dark frames)
+#### 5.8.1 DarkIntegrityGuard (dark frames)
 
 A genuine dark frame's μ₁ should be within ~5 DN of the sensor pedestal. Any higher and the laser likely wasn't actually off (firmware off-by-one, unwrapper alignment quirk). The guard appends a `DarkIntegrityWarning(side, cam_id, abs_frame_id, u1, pedestal, threshold)` event — a diagnostic, not a drop signal. The frame is still appended to history and used downstream.
 
-#### 5.7.2 HybridRealtimePredictor — realtime baseline
+#### 5.8.2 HybridRealtimePredictor — realtime baseline
 
 **Why this exists.** The batched corrector waits for both bounding darks of an interval before emitting, then linearly interpolates the dark baseline backward across the interval. That's accurate but lagged by up to one full dark interval (~15 s at default settings). The realtime stream emits **immediately** with a forward-estimate of where the next dark *would* fall, so the operator's live trace is continuously dark-corrected.
 
@@ -313,11 +407,11 @@ std_dc_rt[i, side, cam]        = √σ²_dc
 dark_baseline_rt[i, side, cam] = û₁
 ```
 
-`mean_dc_rt` and `std_dc_rt` feed ShotNoiseCorrectionStage (§5.8) and ultimately BfiBviStage (§5.9), producing the per-frame realtime BFI/BVI seen by the live UI.
+`mean_dc_rt` and `std_dc_rt` feed ShotNoiseCorrectionStage (§5.9) and ultimately BfiBviStage (§5.10), producing the per-frame realtime BFI/BVI seen by the live UI.
 
 The pedestal cancels exactly in `mean_raw − û₁` because both terms carry the same pedestal; no explicit pedestal subtraction occurs in this path.
 
-#### 5.7.3 PendingInterval — batched buffering
+#### 5.8.3 PendingInterval — batched buffering
 
 For each `(side, cam_id)` the stage holds a `PendingInterval` with:
 
@@ -329,7 +423,7 @@ On every dark frame: append to history and either set `_left` (first dark) or se
 
 When `_right` is set, `flush()` returns a closed `Interval` and rolls `_left ← _right` for the next pass.
 
-#### 5.7.4 LinearInterpolation — batched correction (§8.1, §8.2)
+#### 5.8.4 LinearInterpolation — batched correction (§8.1, §8.2)
 
 For each light frame `lf` in the closed interval `[D_prev, D_next]`:
 
@@ -346,9 +440,9 @@ std           = √corrected_var
 
 The two clamps to zero prevent imaginary standard deviations when dark subtraction over-corrects due to statistical fluctuations. The result is a `CorrectedFrame(abs_frame_id, t, side, cam_id, mean, std, raw_u1, raw_var, dark_var)`.
 
-#### 5.7.5 Enrichment — shot-noise correction + BFI/BVI calibration
+#### 5.8.5 Enrichment — shot-noise correction + BFI/BVI calibration
 
-After linear interpolation, the in-flight `IntervalClosed` event is enriched by the **downstream stages in the same pipeline pass**: `ShotNoiseCorrectionStage` applies shot-noise correction to each `CorrectedFrame`, then `BfiBviStage` replaces the payload with an `EnrichedCorrectedInterval` of `EnrichedCorrectedFrame`s. Same math as the realtime arrays (§5.8, §5.9) but applied once per interval — the dark-frame stencil (§5.7.6) interpolates already-enriched values, not raw means.
+After linear interpolation, the in-flight `IntervalClosed` event is enriched by the **downstream stages in the same pipeline pass**: `ShotNoiseCorrectionStage` applies shot-noise correction to each `CorrectedFrame`, then `BfiBviStage` replaces the payload with an `EnrichedCorrectedInterval` of `EnrichedCorrectedFrame`s. Same math as the realtime arrays (§5.9, §5.10) but applied once per interval — the dark-frame stencil (§5.8.6) interpolates already-enriched values, not raw means.
 
 For one corrected frame `f`:
 
@@ -389,7 +483,7 @@ Case 3 matters as much as the other two: clamping to `√0 = 0` produced `contra
 
 Outer cameras (positions 0 and 7) use higher analog gain to compensate for reduced illumination at the array periphery; central cameras (3 and 4) run at unity gain.
 
-#### 5.7.6 DarkFrameQuadraticStencil — the dark frame's own corrected value
+#### 5.8.6 DarkFrameQuadraticStencil — the dark frame's own corrected value
 
 The leading dark frame `D_prev` of the interval is included in the emitted interval. Its corrected value is not computed by baseline subtraction (its histogram *is* the baseline). Instead, **`DarkFrameHoldStage`** (which runs after `BfiBviStage`, so the interval is already enriched) fills in each metric (`mean`, `std`, `contrast`, `bfi`, `bvi`) with a 4-point quadratic stencil and prepends the resulting row:
 
@@ -415,11 +509,11 @@ v(D_prev) = (−1/6)·v(D_prev − 2)
 
 After producing the stencil value, the stage updates `_prev_interval_tail` with the last two frames of *this* interval (excluding the prepended dark row), ready for the next pass.
 
-#### 5.7.7 Interval emission
+#### 5.8.7 Interval emission
 
 By dispatch time the `IntervalClosed` carries an `EnrichedCorrectedInterval` with frames in chronological order: `[D_prev_stencilled, L_1, L_2, …, L_k]`. The closing dark `D_next` is **not** in this interval — it becomes `D_prev` of the next interval and gets its stencil value then. (The scan's terminal dark therefore never receives a corrected row — the one by-design gap besides warmup.)
 
-#### 5.7.8 Terminal-dark flush — `on_scan_stop(batch)`
+#### 5.8.8 Terminal-dark flush — `on_scan_stop(batch)`
 
 The firmware guarantees the **last frame of every scan is a dark frame**, regardless of when the scan was stopped. For scans shorter than one full dark interval, that terminal dark won't fall on a scheduled dark position, so the pipeline receives it as the last buffered light frame in `pi._light`.
 
@@ -434,7 +528,7 @@ This guarantees the corrected CSV / DB always has output for any scan that reach
 
 If a camera has no dark history at all (scan stopped before frame 10), the flush is silently skipped — there is no baseline to subtract.
 
-### 5.8 ShotNoiseCorrectionStage
+### 5.9 ShotNoiseCorrectionStage
 
 **File:** `omotion/pipeline/stages/shot_noise.py`. **Writes:** `std_sn_rt`, `contrast_sn_rt`.
 
@@ -448,11 +542,11 @@ std_sn_rt    = where(corr_var < 0, NaN, √max(0, corr_var))        # below Pois
 contrast_sn_rt = where(mean_dc_rt > 0, std_sn_rt / mean_dc_rt, NaN)
 ```
 
-`mean_dc_rt > 0` is False for NaN as well as for a non-positive mean, so a frame that never arrived and a camera with no signal above its dark baseline both fall through to NaN — contrast is undefined, not zero (§5.7.5).
+`mean_dc_rt > 0` is False for NaN as well as for a non-positive mean, so a frame that never arrived and a camera with no signal above its dark baseline both fall through to NaN — contrast is undefined, not zero (§5.8.5).
 
-`ADC_GAIN` and `CAMERA_GAIN_MAP` are the same constants used in the batched enrichment (§5.7.5). After dark subtraction the remaining variance still contains photon shot noise; subtracting the expected shot-noise contribution isolates the speckle variance, yielding a contrast `K̃` that is independent of mean photon flux. Without this correction, higher-intensity frames would appear to have artificially lower contrast.
+`ADC_GAIN` and `CAMERA_GAIN_MAP` are the same constants used in the batched enrichment (§5.8.5). After dark subtraction the remaining variance still contains photon shot noise; subtracting the expected shot-noise contribution isolates the speckle variance, yielding a contrast `K̃` that is independent of mean photon flux. Without this correction, higher-intensity frames would appear to have artificially lower contrast.
 
-### 5.9 BfiBviStage
+### 5.10 BfiBviStage
 
 **File:** `omotion/pipeline/stages/bfi_bvi.py`. **Writes:** `bfi_live`, `bvi_live`.
 
@@ -472,7 +566,7 @@ Fallback (degenerate calibration where the span is zero): identity scaling `bfi 
 
 The calibration object passed to `default_pipeline()` must expose `c_min`, `c_max`, `i_min`, `i_max` as `(2, 8)` ndarrays. `omotion.Calibration.Calibration` provides this; in practice it is loaded from the console EEPROM at scan start, or computed by `CalibrationWorkflow` (§11.1).
 
-### 5.10 Reduced-mode side averages (`SideAverageStage`)
+### 5.11 Reduced-mode side averages (`SideAverageStage`)
 
 **File:** `omotion/pipeline/stages/side_avg.py`. Active only when `metadata.reduced_mode` is True; a pass-through otherwise.
 
@@ -483,7 +577,7 @@ The reduced-mode per-side average is a **purely spatial** mean across the enable
 
 Both paths finalize a capture/window when the next begins and flush the last at `on_scan_stop`. The live and corrected averages differ by design — realtime display vs corrected record. Enabled cameras come from `metadata.left_camera_mask` / `right_camera_mask`.
 
-### 5.11 Tee("live")
+### 5.12 Tee("live")
 
 Emits the FrameBatch on the `"live"` channel after filtering out warmup and stale frames. This is the per-frame live stream consumed by the bloodflow-app's `_LivePlotSink` (realtime BFI/BVI/mean/contrast traces — later overwritten in place by the `"final"`-channel refinement, see §8.3), `ContactQualityWorkflow` (DN-scale ambient-light + poor-contact thresholding — see §11.2), and `CalibrationWorkflow` (dark-frame collection).
 
@@ -724,7 +818,7 @@ After the scan, `result()` evaluates per camera: `no_signal` if no light samples
 **The light path is a three-way read, not a two-way one.** A finite `mean_dc_rt` is thresholded normally — rolling-window average against `is_poor_contact`, same as the one-shot check. A non-finite `mean_dc_rt` means one of two structurally different things, and `DarkCorrectionStage` tells them apart via `batch.low_light_rt`:
 
 - **No dark observed yet for this camera** (`low_light_rt = False`) — the realtime predictor has no history to predict from (or the row is warmup/stale and never reaches this code at all), so there is no baseline to subtract and no measurement exists. This is frame/history loss, not a contact-quality condition; the row is skipped and left to the consumer's camera-dropout watchdog.
-- **The frame arrived and was unlit** (`low_light_rt = True`) — `DarkCorrectionStage` classifies a light-typed frame as `dark_like` when `u1 <= pedestal + max_above_pedestal` (the same guard `DarkIntegrityGuard` applies to actual dark frames, §5.7.1), and when that holds it never calls the realtime predictor at all — `mean_dc_rt` stays at its NaN fill by construction, not by a per-frame decision. A covered sensor, a lifted sensor, or a decoupled fiber all present this way. The monitor reports it as `poor_contact` unconditionally.
+- **The frame arrived and was unlit** (`low_light_rt = True`) — `DarkCorrectionStage` classifies a light-typed frame as `dark_like` when `u1 <= pedestal + max_above_pedestal` (the same guard `DarkIntegrityGuard` applies to actual dark frames, §5.8.1), and when that holds it never calls the realtime predictor at all — `mean_dc_rt` stays at its NaN fill by construction, not by a per-frame decision. A covered sensor, a lifted sensor, or a decoupled fiber all present this way. The monitor reports it as `poor_contact` unconditionally.
 
 Treating the two alike inverts the detection window this feature exists for: a signal that's merely weak (still finite, still run through the threshold) would warn, while a signal that's completely gone (`low_light_rt = True`, the strictly worse case) would fall through the same silent-skip branch as a frame that hasn't arrived yet. That gap was a real defect caught in review against bloodflow-app #364 — the disconnected-fiber report this distinction exists to catch. The two cases can't be confused with each other because `dark_like` (stored as `low_light_rt`) is computed from the frame's own raw `u1` *before* the predictor is ever consulted, and it's that same flag which gates whether the predictor runs (`if not dark_like: pred = self._realtime.predict(...)`). A frame with no dark history yet still carries a real, measured `u1` — unless that reading happens to be dark-like on its own terms, `low_light_rt` for it reads `False`.
 

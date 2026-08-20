@@ -122,8 +122,8 @@ iface.stop()
 |---|---|
 | `docs/API.md` | **Public API / interface guide** — how a host app or script drives the SDK (`MotionInterface`, scans, reading the DB, custom sinks). Start here for consumer-facing usage. |
 | `docs/Architecture.md` | Comprehensive — layer diagram, module reference, transport details. |
-| `docs/scan-sequencing.md` | Frame ID unwrapping + histogram packet ordering. |
-| `docs/SciencePipeline.md` | BFI/BVI computation. |
+| `docs/scan-sequencing.md` | Scan lifecycle MCU↔SDK↔app sequencing (configure/start/per-frame/teardown) + firmware correctness analysis. |
+| `docs/SciencePipeline.md` | BFI/BVI computation; frame-ID unwrap + quarantine (§5.1) and timestamp repair (§5.4). |
 | `docs/ScanDatabase.md` | SQLite schema. |
 | `docs/ScanDatabase-HardwareVerification.md` | DB sink test plan. |
 | `docs/ConsoleTelemetry.md` | PDC (dark correction) + TEC telemetry. |

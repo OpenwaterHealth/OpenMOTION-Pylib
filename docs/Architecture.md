@@ -139,7 +139,12 @@ command/response on the sensor):
 - `len` (LE u32) — total packet bytes
 - `timestamp` (LE u32, ms; optional) — firmware TIM5 counter / 100, present
   when packet length matches `header + N × block + 4 + footer`. Wraps every
-  ~42 949 s (~12 h); `parse_histogram_stream` unwraps it monotonically.
+  ~42 949 s (~12 h); `parse_histogram_stream` unwraps it monotonically. The
+  unwrapper only latches a rollover when the sample lands plausibly just past
+  the previous one, and never lets a single implausible jump (a corrupt
+  timestamp byte, sdk#220) become the monotonic reference — one bad sample
+  passes through for the pipeline's repair stage instead of permanently
+  shifting the rest of the scan.
 - Per-camera block (4103 B):
   - `cam` (1 B) — camera index 0–7
   - `histogram` (4096 B) — 1024 bins × LE u32; **last word's high byte is
