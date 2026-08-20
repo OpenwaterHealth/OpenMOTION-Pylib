@@ -47,7 +47,12 @@ from omotion.pipeline.stages.timestamp_repair import TimestampRepairStage
 
 pytestmark = [pytest.mark.sensor, pytest.mark.slow]
 
-MASK = 0x0F                       # 4 cameras — consensus needs >= 3 streaming
+# 4 cameras — consensus needs >= 3 streaming, and fid_multi needs exactly
+# a 2-2 tie, so all four must deliver parseable frames. Cameras 1-4 (mask
+# 0x1E): the bench right module's cam 0 ships a 32x-accumulated histogram
+# every 32nd frame, which the parser's sum check drops, and a 3-camera
+# packet turns fid_multi's tie into a corrupt majority.
+MASK = 0x1E
 CAPTURE_S = {                     # stream long enough for the mode to fire
     DEBUG_FLAG_FID_CORRUPT: 8.0,          # raw must reach 0xC0 (~5 s)
     DEBUG_FLAG_FID_CORRUPT_MULTI: 8.0,
