@@ -172,8 +172,13 @@ DEBUG_FLAG_HISTO_STALL = 0x100  # Stop sending histogram frames after ~45 s whil
 DEBUG_FLAG_HISTO_SPARSE = 0x08  # Send histogram data in small chunks over ~15 s to reduce EMI
 DEBUG_FLAG_CAMERA_CROP = 0x200  # Crop camera output to 1720x1280 (drop right 200 columns) at camera (re)configure — misaligned-optic test (sensor-fw#86)
 DEBUG_FLAG_CAMERA_RAW = 0x400  # Raw "scientific sensor" mode: disable all on-sensor pixel corrections (BLC/DC-BLC/dither/OTP DPC) at camera (re)configure (sensor-fw#89)
-DEBUG_FLAG_FID_CORRUPT = 0x800  # Etch-a-sketch repro: periodic 3-frame bursts clearing the top two bits of one camera's frame_id byte (sensor-fw#123, sdk#220)
-DEBUG_FLAG_FID_CORRUPT_SUST = 0x1000  # Sustained etch-a-sketch repro: ~12.5%/cam/frame corruption all scan — non-resolving warning-flood presentation (sensor-fw#123)
+# HIL fault-injection modes (sensor-fw#123, sdk#220) — deterministic,
+# Debug-firmware-only, exactly one active at a time. See sensor-fw
+# docs/superpowers/specs/2026-08-11-histogram-fault-injection-design.md.
+DEBUG_FLAG_FID_CORRUPT = 0x800  # fid_single: one camera's frame_id top-two-bits cleared in one packet
+DEBUG_FLAG_FID_CORRUPT_MULTI = 0x1000  # fid_multi: same mutation on two cameras in one packet (ambiguous)
+DEBUG_FLAG_TIMESTAMP_FREEZE = 0x2000  # timestamp_freeze: previous packet timestamp reused for three packets
+DEBUG_FLAG_HISTO_DROP_ONCE = 0x4000  # packet_drop: one complete histogram packet consumed but not sent
 
 # Controller Commands
 OW_CTRL_I2C_SCAN = 0x10
