@@ -1,6 +1,6 @@
 """Etch-a-sketch regression suite (openmotion-sdk#220).
 
-The 2026-08-06 EFT field event corrupted one camera's frame_id byte
+The 2026-08-06 field event corrupted one camera's frame_id byte
 (top two bits cleared, raw 0xC5 -> 0x05) while the packet timestamps
 stayed truthful. The pipeline used to treat the frame_id as ground
 truth and amplify the one-byte lie: the unwrapper accepted the bogus
@@ -20,7 +20,7 @@ fixes it asserts the HEALTHY contract for the same wire stream:
   - timestamps that were truthful are never rewritten;
   - the only synthetic rows are honest per-gap placeholders;
   - the live_side stream stays monotonic and full-rate;
-  - sustained corruption (a continuous EFT burst train) produces no
+  - sustained corruption (hits landing all scan long) produces no
     misalignment windows and no warning flood.
 
 Simulation shape (mirrors the incident): side 1 (right), 4 cameras at
@@ -99,7 +99,7 @@ def _burst_rows():
 
 
 def _sustained_rows(p_corrupt: float = 0.10, seed: int = 56):
-    """A continuous EFT burst train: every camera has an independent
+    """Sustained in-flight corruption: every camera has an independent
     per-frame chance of the same corruption, all scan long. Returns the
     rows and the number of hits that actually changed the byte (hits on
     raw < 0x40 are no-ops and invisible by construction)."""

@@ -165,7 +165,7 @@ to side 0).
 
 **Frame-ID unwrap.** The firmware's 8-bit counter wraps from 255 → 0; the
 unwrapper turns it into a monotonic `abs_frame_id = epoch * 256 + raw`.
-Both the counter and the capture timestamp travel over an EFT-exposed link
+Both the counter and the capture timestamp travel over a noise-exposed link
 (FPGA → MCU), so the unwrapper treats them as **two witnesses to the same
 event** and only advances its state on frames where they agree. Each frame's
 *signed* 8-bit step from the last accepted frame,
@@ -262,7 +262,7 @@ stages so everything downstream sees repaired time.
 **Division of labour with §5.1:** a corrupted frame *counter* is quarantined
 by the unwrapper and never reaches this stage. This stage owns the other
 corruption: frames whose counter is honest but whose *timestamp* is not
-(the original EFT design case). Each frame is checked two ways:
+(the stage's original design case). Each frame is checked two ways:
 
 - **Condition 1 — cadence deviation.** Per `(side, cam)`, a frame's
   `Δt` from the last good frame should be `fid_gap × T` where `T` is the
@@ -299,7 +299,7 @@ complete) and one WARNING log line, throttled to one per side per 2 s with
 a suppressed-window count on the next emitted line. The throttle exists
 because sustained intermittent corruption churns windows on nearly every
 bad→good alternation — unthrottled, the "coalesced" design degrades into a
-per-frame log flood (the sdk#220 sustained-EFT presentation). Scan stop
+per-frame log flood (the sdk#220 sustained-corruption presentation). Scan stop
 flushes with the throttle bypassed.
 
 **Terminal stop frame.** The firmware's laser-off frame fires ~150 ms off

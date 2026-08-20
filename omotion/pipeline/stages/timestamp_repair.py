@@ -36,7 +36,7 @@ scan stop — is recognised at on_scan_stop and reclassified as an
 expected artifact (INFO, excluded from the misalignment record).
 
 Regression suite: tests/test_pipeline/test_etch_a_sketch_repro.py.
-Design history: the EFT timestamp-repair design doc (removed from docs/)
+Design history: the original timestamp-repair design doc (removed from docs/)
 is retrievable from git history at
 docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
 """
@@ -62,7 +62,7 @@ _EMA_ALPHA = 0.01
 # Minimum wall-clock spacing between per-side "Misalignment window" WARNINGs.
 # Under sustained intermittent corruption windows open and close on nearly
 # every bad→good alternation; unthrottled that degrades the coalesced-window
-# design into a per-frame log flood (sdk#220 sustained-EFT presentation).
+# design into a per-frame log flood (the sdk#220 sustained-corruption presentation).
 # Suppressed windows are still recorded and dispatched as diagnostics events —
 # only the log line is withheld, and the next emitted line reports how many
 # were suppressed.

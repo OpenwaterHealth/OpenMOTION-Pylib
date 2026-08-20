@@ -9,7 +9,7 @@ LaserPulseSkipInterval schedule. Content-based detection is not used;
 the terminal dark frame (firmware laser-off at scan stop) is handled
 separately by DarkCorrectionStage.on_scan_stop.
 
-See docs/SciencePipeline.md §3 (unwrapping) and §4 (classification).
+See docs/SciencePipeline.md §5.1 (unwrap, quarantine, classification).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ _FRAME_ROLLOVER_THRESHOLD = 128
 _NOMINAL_PERIOD_S = 0.025          # 40 fps capture cadence
 # A forward frame_id step of K frames claims K x 25 ms of elapsed time.
 # When the claim exceeds the capture timestamps' account by more than this
-# slack, the frame_id is lying (EFT-corrupted byte, sdk#220) and the frame
+# slack, the frame_id is lying (corrupted in flight, sdk#220) and the frame
 # is quarantined. Slack = 1.5 periods absolute (FSIN jitter, timestamp
 # rounding) or 10% of the claim (period drift on long genuine dropouts),
 # whichever is larger.
@@ -42,11 +42,11 @@ class _FrameUnwrapper:
     """8-bit rolling → monotonic. One instance per (side, cam_id).
 
     The frame counter and the capture timestamp are two witnesses to the
-    same event, and either can be corrupted in flight (EFT testing corrupts
-    bytes on the FPGA→MCU link — sdk#220 hit the frame_id byte). This class
-    only ever advances its state on frames whose counter step is CONSISTENT
-    with the clock; everything else is rejected without side effects, so a
-    single corrupted byte costs exactly one frame instead of poisoning the
+    same event, and either can be corrupted in flight on the FPGA→MCU link
+    (sdk#220 hit the frame_id byte). This class only ever advances its
+    state on frames whose counter step is CONSISTENT with the clock;
+    everything else is rejected without side effects, so a single
+    corrupted byte costs exactly one frame instead of poisoning the
     sequence.
 
     Acceptance rules, in order:
