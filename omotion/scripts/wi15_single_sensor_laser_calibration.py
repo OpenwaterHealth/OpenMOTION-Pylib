@@ -101,6 +101,15 @@ def main(
             f"Is {side} correct? (yes/no): ", input_func
         ):
             raise _OperatorCanceled
+        output_func(
+            "Only the sensor being calibrated should be connected to the "
+            "system. Disconnect the other sensor module before continuing."
+        )
+        if not _confirmed(
+            f"Is only the {side} sensor connected to the system? (yes/no): ",
+            input_func,
+        ):
+            raise _OperatorCanceled
         if not _confirmed(
             "Is the sensor in the 0 cm fixture? (yes/no): ",
             input_func,

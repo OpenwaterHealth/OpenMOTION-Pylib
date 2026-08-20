@@ -78,14 +78,14 @@ def test_script_source_is_ascii_decodable_and_does_not_use_legacy_tuning():
     assert "omotion.tuning" not in SCRIPT_PATH.read_text(encoding="ascii")
 
 
-def test_main_reprompts_side_and_requires_both_confirmations(monkeypatch, tmp_path):
+def test_main_reprompts_side_and_requires_all_confirmations(monkeypatch, tmp_path):
     """An unconfirmed or ambiguous module selection could fire the wrong fixture."""
     script, recorder, meter, bench, workflow, report = configured_script(monkeypatch, tmp_path)
     messages = []
 
     exit_code = script.main(
         complete_args(tmp_path),
-        input_func=answers("middle", "right", "yes", "yes"),
+        input_func=answers("middle", "right", "yes", "yes", "yes"),
         output_func=messages.append,
     )
 
@@ -115,7 +115,7 @@ def test_bench_close_failure_downgrades_a_pass_and_is_recorded(monkeypatch, tmp_
     bench.close = fail_close
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     assert exit_code == 1
@@ -134,7 +134,7 @@ def test_fixture_confirmation_requires_only_ophir_zero_cm_placement(monkeypatch,
         monkeypatch, tmp_path
     )
     prompts = []
-    replies = iter(("left", "yes", "yes"))
+    replies = iter(("left", "yes", "yes", "yes"))
 
     def capture_prompt(prompt):
         prompts.append(prompt)
@@ -150,6 +150,54 @@ def test_fixture_confirmation_requires_only_ophir_zero_cm_placement(monkeypatch,
     assert workflow.requests[0].fixture_confirmed is True
 
 
+def test_single_sensor_connected_confirmation_is_asked_and_notes_disconnection(
+    monkeypatch, tmp_path
+):
+    """The operator must be told to disconnect the other sensor and confirm it."""
+    script, _recorder, _meter, _bench, _workflow, _report = configured_script(
+        monkeypatch, tmp_path
+    )
+    prompts = []
+    messages = []
+    replies = iter(("left", "yes", "yes", "yes"))
+
+    def capture_prompt(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    exit_code = script.main(
+        complete_args(tmp_path),
+        input_func=capture_prompt,
+        output_func=messages.append,
+    )
+
+    assert exit_code == 0
+    assert "Is only the left sensor connected to the system? (yes/no): " in prompts
+    assert any(
+        "Disconnect the other sensor module" in message for message in messages
+    )
+
+
+def test_declining_single_sensor_confirmation_cancels_before_hardware(
+    monkeypatch, tmp_path
+):
+    """A second or wrong-side sensor caught by the operator must stop the run early."""
+    script = load_script()
+    constructed = []
+    monkeypatch.setattr(
+        script, "recorder_factory", lambda *args: constructed.append("recorder")
+    )
+    monkeypatch.setattr(script, "meter_factory", lambda: constructed.append("meter"))
+
+    exit_code = script.main(
+        complete_args(tmp_path),
+        input_func=answers("left", "yes", "no"),
+    )
+
+    assert exit_code != 0
+    assert constructed == []
+
+
 def test_main_uses_explicit_sdk_fallback_only_when_runtime_version_is_unavailable(
     monkeypatch, tmp_path
 ):
@@ -160,7 +208,7 @@ def test_main_uses_explicit_sdk_fallback_only_when_runtime_version_is_unavailabl
     monkeypatch.delattr(script.omotion, "__version__", raising=False)
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     assert exit_code == 0
@@ -208,7 +256,7 @@ def test_terminal_status_controls_exit_code(monkeypatch, tmp_path, status, expec
     )
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     assert exit_code == expected_exit
@@ -230,7 +278,7 @@ def test_terminal_failure_prints_the_structured_category_and_exact_reason(
 
     exit_code = script.main(
         complete_args(tmp_path),
-        input_func=answers("left", "yes", "yes"),
+        input_func=answers("left", "yes", "yes", "yes"),
         output_func=messages.append,
     )
 
@@ -262,7 +310,7 @@ def test_main_generates_one_run_id_for_recorder_and_workflow_request(
     )
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     assert exit_code == 0
@@ -297,6 +345,7 @@ def test_metadata_prompts_complete_before_hardware_and_cleanup_survives_workflow
             "fixture-2",
             "current",
             "left",
+            "yes",
             "yes",
             "yes",
         ),
@@ -344,7 +393,7 @@ def test_production_main_finalizes_real_json_and_html_before_claiming_report(
     _configure_real_artifact_main(monkeypatch, script, "real-artifacts")
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     run_directory = tmp_path / "WI-00015-real-artifacts"
@@ -380,7 +429,7 @@ def test_production_main_persists_explicit_incomplete_artifact_during_render(
     monkeypatch.setattr(script, "report_factory", InspectingRealReport)
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     assert exit_code == 0
@@ -402,7 +451,7 @@ def test_production_main_report_failure_checkpoints_failed_incomplete_artifact(
     )
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     run_directory = tmp_path / "WI-00015-report-failure"
@@ -428,7 +477,7 @@ def test_production_main_report_factory_failure_replaces_prior_pass(monkeypatch,
     monkeypatch.setattr(script, "report_factory", failing_report_factory)
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     run_directory = tmp_path / "WI-00015-report-factory-failure"
@@ -461,7 +510,7 @@ def test_main_requires_the_claimed_report_path_to_exist(monkeypatch, tmp_path):
     monkeypatch.setattr(script, "report_factory", MisdirectedReport)
 
     exit_code = script.main(
-        complete_args(tmp_path), input_func=answers("left", "yes", "yes")
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
     run_directory = tmp_path / "WI-00015-misdirected-report"

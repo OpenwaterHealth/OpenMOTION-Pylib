@@ -218,10 +218,30 @@ def validate_exact_single_topology(
         else False
     )
     passed = topology.console_connected and selected_present
-    return CriterionResult(
-        "topology",
-        passed,
-        "Expected a console and exactly the declared sensor side.",
+    detail = (
+        "Expected a console and exactly the declared sensor side."
+        if passed
+        else _single_topology_failure_detail(topology, side)
+    )
+    return CriterionResult("topology", passed, detail)
+
+
+def _single_topology_failure_detail(
+    topology: TopologySnapshot, side: SensorSide
+) -> str:
+    if not topology.console_connected:
+        return "The console is not connected."
+    if topology.left_connected and topology.right_connected:
+        return (
+            "Both sensors are connected; disconnect the sensor not being "
+            "calibrated and reconnect only the declared side."
+        )
+    if not topology.left_connected and not topology.right_connected:
+        return "No sensor is connected; connect the declared sensor side."
+    wrong_side = "right" if side == "left" else "left"
+    return (
+        f"The {wrong_side} sensor is connected instead of the declared "
+        f"{side} sensor."
     )
 
 

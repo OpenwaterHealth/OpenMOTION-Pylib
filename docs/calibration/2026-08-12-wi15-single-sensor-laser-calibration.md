@@ -55,7 +55,13 @@ way that conflicts with the approved process.
 The operator entry point is
 `omotion/scripts/wi15_single_sensor_laser_calibration.py`. Before any mutation it asks
 the operator to select `left` or `right`, displays the selection, and requires
-confirmation.
+confirmation. It then prints a reminder to disconnect the sensor not being
+calibrated and requires a separate confirmation that only the declared side
+is connected. This operator confirmation is advisory only - the authoritative
+gate is the fail-closed preflight topology check in section 5, which reads
+the actual Motion discovery topology and fails the procedure before any
+configuration mutation if two sensors or the wrong sensor are connected,
+regardless of how the operator answered.
 
 The shared implementation resides outside the script and receives explicit
 inputs. It must not call `input()` or format terminal prompts. It accepts:

@@ -286,7 +286,10 @@ def test_preflight_rejects_non_exact_topology_before_any_configuration_or_measur
 
     assert result.status is ProcedureStatus.FAILED
     assert result.topology == TopologySnapshot(True, True, True)
-    assert result.failure_reason == "Expected a console and exactly the declared sensor side."
+    assert result.failure_reason == (
+        "Both sensors are connected; disconnect the sensor not being "
+        "calibrated and reconnect only the declared side."
+    )
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == [result]
 
