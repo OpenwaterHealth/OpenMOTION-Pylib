@@ -287,8 +287,9 @@ def test_preflight_rejects_non_exact_topology_before_any_configuration_or_measur
     assert result.status is ProcedureStatus.FAILED
     assert result.topology == TopologySnapshot(True, True, True)
     assert result.failure_reason == (
-        "Both sensors are connected; disconnect the sensor not being "
-        "calibrated and reconnect only the declared side."
+        "Both sensors are connected; use Dual-Sensor Laser Calibration "
+        "instead, or disconnect the sensor not being calibrated to "
+        "continue with Single-Sensor Laser Calibration."
     )
     assert bench.calls == ["preflight:left", "stop_trigger"]
     assert recorder.checkpoints == [result]

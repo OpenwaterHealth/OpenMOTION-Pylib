@@ -61,7 +61,10 @@ is connected. This operator confirmation is advisory only - the authoritative
 gate is the fail-closed preflight topology check in section 5, which reads
 the actual Motion discovery topology and fails the procedure before any
 configuration mutation if two sensors or the wrong sensor are connected,
-regardless of how the operator answered.
+regardless of how the operator answered. When both sensors are connected,
+the failure reason directs the operator to Dual-Sensor Laser Calibration
+instead (and the reverse: Dual-Sensor Laser Calibration's own preflight
+directs the operator to this procedure when only one sensor is connected).
 
 The shared implementation resides outside the script and receives explicit
 inputs. It must not call `input()` or format terminal prompts. It accepts:

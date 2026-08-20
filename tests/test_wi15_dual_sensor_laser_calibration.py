@@ -194,8 +194,14 @@ def run_workflow(
 @pytest.mark.parametrize(
     ("changes", "reason_fragment"),
     [
-        ({"topology": TopologySnapshot(True, True, False)}, "both left and right"),
-        ({"topology": TopologySnapshot(True, False, True)}, "both left and right"),
+        (
+            {"topology": TopologySnapshot(True, True, False)},
+            "Only the left sensor is connected; use Single-Sensor Laser Calibration",
+        ),
+        (
+            {"topology": TopologySnapshot(True, False, True)},
+            "Only the right sensor is connected; use Single-Sensor Laser Calibration",
+        ),
         ({"console_serial": None}, "Console serial"),
         ({"left_serial": "  "}, "Left-sensor serial"),
         ({"right_serial": None}, "Right-sensor serial"),
