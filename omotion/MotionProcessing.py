@@ -68,6 +68,14 @@ MIN_PACKET_SIZE = MIN_HISTO_PACKET_SIZE
 # TIM5 on the sensor MCU runs at 100 kHz; get_timestamp_ms() returns TIM5->CNT/100
 # so the 32-bit counter wraps every 2^32 / 100 / 1000 ≈ 42949.67 seconds (~11.9 hours).
 _TIMESTAMP_ROLLOVER_S: float = (2**32) / 100.0 / 1000.0
+# Corrupt-timestamp guard for the rollover unwrapper (sdk#220): a single
+# EMI-corrupted timestamp jumping forward by more than this is passed through
+# but NOT allowed to advance the monotonic tracker — otherwise the next
+# honest sample reads as a huge backward jump, latches a spurious +11.9 h
+# offset, and every timestamp for the rest of the scan is permanently wrong.
+# 60 s is far beyond any live-stream gap (the firmware stops the scan after
+# 150 ms of silence) and far below the ~21475 s the latch needs.
+_TS_FORWARD_SUSPECT_S: float = 60.0
 # TYPE_HISTO_CMP has: header + compressed_payload(>=1) + uncmp_crc16(2) + footer(3)
 MIN_HISTO_CMP_PACKET_SIZE = PACKET_HEADER_SIZE + 1 + CMP_UNCMP_CRC_SIZE + PACKET_FOOTER_SIZE
 MAX_PACKET_SIZE = 32837
@@ -634,10 +642,26 @@ def parse_histogram_stream(
                     # Unwrap the firmware's 32-bit millisecond timestamp so it
                     # increases monotonically across the ~42949 s rollover boundary.
                     raw_ts = sample.timestamp_s
-                    if _ts_last is not None and (raw_ts + _ts_offset) < (_ts_last - _TIMESTAMP_ROLLOVER_S / 2):
-                        _ts_offset += _TIMESTAMP_ROLLOVER_S
-                    sample.timestamp_s = raw_ts + _ts_offset
-                    _ts_last = sample.timestamp_s
+                    adjusted_ts = raw_ts + _ts_offset
+                    if _ts_last is not None and adjusted_ts < _ts_last - _TIMESTAMP_ROLLOVER_S / 2:
+                        # Rollover-scale backward jump. Latch the offset only
+                        # if one rollover lands the sample plausibly just past
+                        # the tracker — a genuine wrap does, a corrupt
+                        # timestamp byte does not (sdk#220 hardening).
+                        relatched_ts = adjusted_ts + _TIMESTAMP_ROLLOVER_S
+                        if 0.0 <= relatched_ts - _ts_last <= _TS_FORWARD_SUSPECT_S:
+                            _ts_offset += _TIMESTAMP_ROLLOVER_S
+                            adjusted_ts = relatched_ts
+                    sample.timestamp_s = adjusted_ts
+                    # Advance the monotonic tracker only on plausible steps.
+                    # A corrupt outlier passes through (downstream repair
+                    # flags it) but must not become the reference — else the
+                    # next honest sample reads as a rollover-sized backward
+                    # jump and a spurious +11.9 h offset latches onto the
+                    # rest of the scan.
+                    if (_ts_last is None
+                            or -1.0 <= adjusted_ts - _ts_last <= _TS_FORWARD_SUSPECT_S):
+                        _ts_last = adjusted_ts
                     # Normalize to per-scan t0 if a normalizer was supplied
                     # (typically by ScanWorkflow). After this, sample.timestamp_s
                     # is seconds since the first sample emitted in this scan,
@@ -715,10 +739,26 @@ def parse_histogram_stream(
                 offset += packet.bytes_consumed
                 for sample in packet.samples:
                     raw_ts = sample.timestamp_s
-                    if _ts_last is not None and (raw_ts + _ts_offset) < (_ts_last - _TIMESTAMP_ROLLOVER_S / 2):
-                        _ts_offset += _TIMESTAMP_ROLLOVER_S
-                    sample.timestamp_s = raw_ts + _ts_offset
-                    _ts_last = sample.timestamp_s
+                    adjusted_ts = raw_ts + _ts_offset
+                    if _ts_last is not None and adjusted_ts < _ts_last - _TIMESTAMP_ROLLOVER_S / 2:
+                        # Rollover-scale backward jump. Latch the offset only
+                        # if one rollover lands the sample plausibly just past
+                        # the tracker — a genuine wrap does, a corrupt
+                        # timestamp byte does not (sdk#220 hardening).
+                        relatched_ts = adjusted_ts + _TIMESTAMP_ROLLOVER_S
+                        if 0.0 <= relatched_ts - _ts_last <= _TS_FORWARD_SUSPECT_S:
+                            _ts_offset += _TIMESTAMP_ROLLOVER_S
+                            adjusted_ts = relatched_ts
+                    sample.timestamp_s = adjusted_ts
+                    # Advance the monotonic tracker only on plausible steps.
+                    # A corrupt outlier passes through (downstream repair
+                    # flags it) but must not become the reference — else the
+                    # next honest sample reads as a rollover-sized backward
+                    # jump and a spurious +11.9 h offset latches onto the
+                    # rest of the scan.
+                    if (_ts_last is None
+                            or -1.0 <= adjusted_ts - _ts_last <= _TS_FORWARD_SUSPECT_S):
+                        _ts_last = adjusted_ts
                     if t0_normalizer is not None:
                         sample.timestamp_s = t0_normalizer(sample.timestamp_s)
 

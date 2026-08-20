@@ -27,59 +27,102 @@ _FRAME_ID_MODULUS = 256
 _FRAME_ROLLOVER_THRESHOLD = 128
 
 
+_NOMINAL_PERIOD_S = 0.025          # 40 fps capture cadence
+# A forward frame_id step of K frames claims K x 25 ms of elapsed time.
+# When the claim exceeds the capture timestamps' account by more than this
+# slack, the frame_id is lying (EFT-corrupted byte, sdk#220) and the frame
+# is quarantined. Slack = 1.5 periods absolute (FSIN jitter, timestamp
+# rounding) or 10% of the claim (period drift on long genuine dropouts),
+# whichever is larger.
+_STEP_SLACK_ABS_S = 1.5 * _NOMINAL_PERIOD_S
+_STEP_SLACK_FRAC = 0.10
+
+
 class _FrameUnwrapper:
     """8-bit rolling → monotonic. One instance per (side, cam_id).
 
-    Robust against a non-monotonic frame stream. The sensor occasionally
-    emits stale/garbage frames — leftover buffer contents at scan start
-    (e.g. raw 1, 255, 173, 4, 5 …) or a mid-scan counter blip — when its
-    histogram DMA buffer isn't flushed. The old unwrapper trusted every
-    frame after the first, so a backward-looking value (255 after 1) was
-    read as a huge forward jump and the next real frame (4) tripped the
-    rollover test, injecting a permanent +256 epoch offset that shifted the
-    whole positional dark/warmup schedule for the rest of the scan.
+    The frame counter and the capture timestamp are two witnesses to the
+    same event, and either can be corrupted in flight (EFT testing corrupts
+    bytes on the FPGA→MCU link — sdk#220 hit the frame_id byte). This class
+    only ever advances its state on frames whose counter step is CONSISTENT
+    with the clock; everything else is rejected without side effects, so a
+    single corrupted byte costs exactly one frame instead of poisoning the
+    sequence.
 
-    Now each frame is gated by its *signed* 8-bit step from the last
-    accepted frame: only forward steps (1..127) advance state; a backward
-    or duplicate step (<= 0) is rejected as stale and does NOT advance the
-    counter, so isolated garbage frames can't corrupt the epoch. The 8-bit
-    counter can't disambiguate a genuine forward gap > 127 frames (a >3.2 s
-    intra-scan dropout) from a backward step; such ambiguous frames are
-    rejected — that data is already lost in a gap that large.
+    Acceptance rules, in order:
+
+    1. **Backward or duplicate step (<= 0)** — rejected as stale. Covers
+       leftover buffer contents at scan start (raw 1, 255, 173, 4, 5 …),
+       mid-scan counter blips, and corrupted frame_ids that happen to read
+       backward. State is untouched so the next genuine frame resumes the
+       sequence cleanly.
+    2. **Forward step that over-claims time (sdk#220)** — a step of K
+       frames must be backed by ~K x 25 ms of elapsed capture timestamp.
+       A corrupted frame_id reading "+64 frames" while the clock says one
+       frame passed is quarantined, NOT believed: accepting it would bump
+       the epoch early and then reject the next ~64 REAL frames as
+       backward (the "etch-a-sketch" failure). Under-claiming is fine —
+       frames that arrive late (the firmware's ~150 ms off-grid terminal
+       stop frame, stalls) keep an honest counter, and timestamp anomalies
+       are TimestampRepairStage's job, not this one's.
+    3. **Forward step 1..127 consistent with the clock** — accepted; a
+       numeric wrap (raw <= last_raw) increments the epoch.
+
+    A genuine forward gap > 127 frames (a >3.2 s intra-scan dropout) is
+    indistinguishable from a backward step in 8 bits and is rejected —
+    that data is already lost in a gap that large.
     """
 
-    __slots__ = ("epoch", "last_raw", "seen_first", "first_was_stale")
+    __slots__ = ("epoch", "last_raw", "last_ts", "seen_first",
+                 "first_was_stale")
 
     def __init__(self):
         self.epoch = 0
         self.last_raw = -1
+        self.last_ts: float | None = None
         self.seen_first = False
         self.first_was_stale = False
 
-    def unwrap(self, raw_frame_id: int) -> tuple[int, bool]:
-        """Return (abs_frame_id, accepted).
+    def unwrap(self, raw_frame_id: int,
+               timestamp_s: float) -> tuple[int, bool, str | None]:
+        """Return (abs_frame_id, accepted, reject_reason).
 
-        accepted=False marks a stale/non-monotonic frame: the abs_id is
+        accepted=False marks a stale/quarantined frame: the abs_id is
         advisory only and the unwrapper state is left untouched so the
-        next genuine frame resumes the sequence cleanly.
+        next genuine frame resumes the sequence cleanly. reject_reason is
+        None when accepted, else a short human-readable cause.
         """
         if not self.seen_first:
             self.seen_first = True
             self.first_was_stale = (raw_frame_id != 1)
             self.last_raw = raw_frame_id
-            return raw_frame_id, True
+            self.last_ts = float(timestamp_s)
+            return raw_frame_id, True, None
 
         # Signed step in [-128, 127]: positive = forward, <= 0 = backward
         # (stale leftover) or duplicate.
         step = ((raw_frame_id - self.last_raw + 128) & 0xFF) - 128
         if step <= 0:
-            return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, False
+            return (self.epoch * _FRAME_ID_MODULUS + raw_frame_id, False,
+                    "non-monotonic frame id (backward/duplicate)")
 
-        # Forward step (1..127). A wrap shows up as raw <= last_raw.
+        # Forward step (1..127): cross-check the claim against the clock.
+        if self.last_ts is not None:
+            claimed_s = step * _NOMINAL_PERIOD_S
+            elapsed_s = float(timestamp_s) - self.last_ts
+            slack_s = max(_STEP_SLACK_ABS_S, _STEP_SLACK_FRAC * claimed_s)
+            if claimed_s - elapsed_s > slack_s:
+                return (self.epoch * _FRAME_ID_MODULUS + raw_frame_id, False,
+                        f"frame id claims +{step} frames in "
+                        f"{elapsed_s * 1e3:.0f} ms — corrupt frame_id "
+                        "quarantined")
+
+        # A wrap shows up as raw <= last_raw.
         if raw_frame_id <= self.last_raw:
             self.epoch += 1
         self.last_raw = raw_frame_id
-        return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, True
+        self.last_ts = float(timestamp_s)
+        return self.epoch * _FRAME_ID_MODULUS + raw_frame_id, True, None
 
 
 class FrameClassificationStage:
@@ -116,16 +159,17 @@ class FrameClassificationStage:
                 unwrapper = _FrameUnwrapper()
                 self._unwrappers[key] = unwrapper
 
-            abs_id, accepted = unwrapper.unwrap(raw_id)
+            abs_id, accepted, reject_reason = unwrapper.unwrap(
+                raw_id, float(batch.timestamp_s[i]))
             abs_ids[i] = abs_id
 
             if not accepted:
-                # Non-monotonic / stale leftover frame (e.g. unflushed
-                # histogram buffer at scan start or a mid-scan counter blip).
-                # Excluded downstream so it can't poison dark/timestamp align.
+                # Stale leftover frame (unflushed histogram buffer at scan
+                # start, a mid-scan counter blip) or a quarantined corrupt
+                # frame_id (sdk#220). Excluded downstream either way so it
+                # can't poison the dark/timestamp alignment.
                 types[i] = "stale"
-                self._note_stale(side_idx, cam_id, raw_id,
-                                 "non-monotonic frame id (backward/duplicate)")
+                self._note_stale(side_idx, cam_id, raw_id, reject_reason)
             elif unwrapper.first_was_stale and abs_id == raw_id:
                 types[i] = "stale"
                 self._note_stale(side_idx, cam_id, raw_id,

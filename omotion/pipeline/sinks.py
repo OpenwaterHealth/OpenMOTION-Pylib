@@ -269,14 +269,18 @@ class CsvSink:
 
         import numpy as np
 
-        # Tee("raw")'s gate is batch-level, so stale rows (leftover packets
-        # from a previous scan) can still arrive here; iter_rows skips them.
+        # Tee("raw")'s gate is batch-level, so stale rows can still arrive
+        # here; iter_rows skips them. "Stale" covers both leftover packets
+        # from a previous scan AND mid-scan frames quarantined for a
+        # non-monotonic/corrupt frame id (sdk#220) — the classification
+        # stage's per-camera log has the actual reason, so stay neutral here.
         if batch.frame_type is not None:
             n_stale = int(np.sum(batch.frame_type == "stale"))
             if n_stale:
                 logger.warning(
-                    "stale raw frame skipped x%d (leftover packets from a "
-                    "previous scan)", n_stale,
+                    "stale raw frame skipped x%d (pre-scan leftover or "
+                    "quarantined corrupt frame id — see frame_classification "
+                    "log)", n_stale,
                 )
 
         for i, _side_idx, cam_id, frame_type in batch.iter_rows(exclude={"stale"}):

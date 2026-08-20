@@ -1,36 +1,36 @@
-"""Etch-a-sketch repro (openmotion-sdk#220).
+"""Etch-a-sketch regression suite (openmotion-sdk#220).
 
-Characterization tests that REPRODUCE the 2026-08-06 incident: an EFT
-burst clears the top two bits of one camera's frame_id byte (raw
-0xC5 -> 0x05 on the wire) while the packet timestamps stay truthful.
-These tests assert the CURRENT (defective) pipeline behavior so the
-failure is reproducible on command in pure software:
+The 2026-08-06 EFT field event corrupted one camera's frame_id byte
+(top two bits cleared, raw 0xC5 -> 0x05) while the packet timestamps
+stayed truthful. The pipeline used to treat the frame_id as ground
+truth and amplify the one-byte lie: the unwrapper accepted the bogus
++64 step then dropped the next 64 REAL frames as stale,
+TimestampRepairStage rewrote truthful timestamps ~1.6 s into the
+future and fabricated ~60 synthetic rows, condition 2 condemned the
+innocent packet-mates, and the realtime side-average stream fed the
+app partial averages on a non-monotonic time axis — the
+"etch-a-sketch" zigzags.
 
-  - the unwrapper accepts the bogus +64/+65 forward step (epoch bump
-    included) and then drops the next ~64 REAL frames as stale;
-  - TimestampRepairStage sides with the corrupted frame_id, rewrites
-    perfectly good timestamps ~1.6 s into the future, and fabricates
-    64 synthetic NaN-fill rows for a gap that never existed;
-  - condition 2 (in-packet frame_id disagreement) drags the sibling
-    cameras' good frames into the misalignment window;
-  - SideAverageStage's realtime path (no frame_type/quality filter)
-    emits partial-capture averages, NaN samples, and future-dated
-    samples with a non-monotonic time axis -- the bloodflow app's
-    "etch-a-sketch" zigzags.
+This file started as the characterization repro asserting that broken
+behavior (see its history for the defect signature). With the #220
+fixes it asserts the HEALTHY contract for the same wire stream:
 
-When the #220 fixes land, these assertions are EXPECTED TO FAIL.
-Rewrite them to the healthy expectations at that point -- they then
-become the regression suite for #220.
+  - a frame whose counter step is inconsistent with the clock is
+    quarantined (one frame lost per corrupted byte, nothing else);
+  - timestamps that were truthful are never rewritten;
+  - the only synthetic rows are honest per-gap placeholders;
+  - the live_side stream stays monotonic and full-rate;
+  - sustained corruption (a continuous EFT burst train) produces no
+    misalignment windows and no warning flood.
 
 Simulation shape (mirrors the incident): side 1 (right), 4 cameras at
 40 Hz, raw frame_id starting at 1, batched 10 captures x 4 rows like
 LiveUsbSource. The victim is cam 3 (last in packet order); the burst
-corrupts captures 198-200 (raw 0xC6..0xC8 -> 0x06..0x08, i.e. the
-top-two-bits-cleared signature, which only reads as a forward step
-when raw is in 0xC0..0xFF -- same as the field event's 0xC5/0xCA).
+corrupts captures 198-200 (raw 0xC6..0xC8 -> 0x06..0x08 — the
+top-two-bits-cleared signature).
 """
 
-import logging
+import random
 
 import numpy as np
 import pytest
@@ -49,6 +49,7 @@ PERIOD_S = 0.025              # 40 Hz
 N_CAPTURES = 320              # 8 s scan
 BURST_CAPTURES = (198, 199, 200)   # raw 0xC6..0xC8 -> corrupted 0x06..0x08
 CAPTURES_PER_BATCH = 10
+WARMUP = 9                    # classification discard_count
 
 # Distinct per-camera BFI levels so a partial average is numerically
 # distinguishable from the true 4-camera average.
@@ -60,10 +61,9 @@ PARTIAL_AVG_NO_VICTIM = (1.0 + 2.0 + 3.0) / 3            # 2.0
 class _StubBfiStage:
     """Stand-in for the moments->dark->shot-noise->BFI chain.
 
-    Mimics what matters for the repro: real light/dark rows get a
-    finite per-camera BFI; stale rows and NaN-fill rows get NaN (in
-    the real pipeline stale rows are skipped by DarkCorrectionStage
-    and nan_filled rows carry zero histograms -> NaN mean).
+    Real light/dark rows get a finite per-camera BFI; stale rows and
+    nan_filled rows get NaN (in the real pipeline stale rows are skipped
+    by DarkCorrectionStage and nan_filled rows carry zero histograms).
     """
 
     name = "stub_bfi"
@@ -84,34 +84,52 @@ class _StubBfiStage:
         return batch
 
 
-def _wire_rows():
-    """Yield (cam_id, raw_frame_id, timestamp_s) rows as parsed off the
-    wire: 4 cameras per capture sharing one packet timestamp, raw ids
-    starting at 1, with the victim's top two frame_id bits cleared
-    during the burst captures (timestamps untouched -- that is the
-    whole point of the incident)."""
+def _burst_rows():
+    """The incident stream: the victim's frame_id byte loses its top two
+    bits for 3 consecutive captures; timestamps stay truthful."""
+    rows = []
     for capture in range(1, N_CAPTURES + 1):
         t = capture * PERIOD_S
         for cam in CAMS:
             raw = capture & 0xFF
             if cam == VICTIM and capture in BURST_CAPTURES:
                 raw &= 0x3F
-            yield cam, raw, t
+            rows.append((cam, raw, t))
+    return rows, len(BURST_CAPTURES)
 
 
-def _run_chain():
-    """Push the wire rows through the real classify -> repair ->
-    side-average chain in LiveUsbSource-sized batches; collect every
-    output row, live_side sample, and diagnostics event."""
-    classify = FrameClassificationStage(discard_count=9, dark_interval=600)
+def _sustained_rows(p_corrupt: float = 0.10, seed: int = 56):
+    """A continuous EFT burst train: every camera has an independent
+    per-frame chance of the same corruption, all scan long. Returns the
+    rows and the number of hits that actually changed the byte (hits on
+    raw < 0x40 are no-ops and invisible by construction)."""
+    rng = random.Random(seed)
+    rows = []
+    n_effective = 0
+    for capture in range(1, N_CAPTURES + 1):
+        t = capture * PERIOD_S
+        for cam in CAMS:
+            raw = capture & 0xFF
+            if rng.random() < p_corrupt:
+                corrupted = raw & 0x3F
+                if corrupted != raw:
+                    n_effective += 1
+                raw = corrupted
+            rows.append((cam, raw, t))
+    return rows, n_effective
+
+
+def _run_chain(rows):
+    """Push wire rows through the real classify -> repair -> side-average
+    chain in LiveUsbSource-sized batches; collect every output row,
+    live_side sample, and diagnostics event."""
+    classify = FrameClassificationStage(discard_count=WARMUP, dark_interval=600)
     repair = TimestampRepairStage()
     stub = _StubBfiStage()
     side_avg = SideAverageStage(
         enabled=True, left_camera_mask=0x00, right_camera_mask=0x0F)
 
-    rows = list(_wire_rows())
     rows_per_batch = CAPTURES_PER_BATCH * len(CAMS)
-
     out_rows = []       # (cam, abs_fid, ts, frame_type, quality)
     samples = []        # SideAverageSample in emission order
     windows = []        # TimestampMisalignmentWindow events
@@ -151,89 +169,109 @@ def _run_chain():
 
 
 @pytest.fixture(scope="module")
-def run():
-    return _run_chain()
+def burst_run():
+    rows, n_corrupted = _burst_rows()
+    return _run_chain(rows) + (n_corrupted,)
 
 
-def test_misalignment_window_matches_incident_signature(run, caplog):
-    """One coalesced window spanning ~+64 fids with ~64 NaN-fills --
-    the incident log's shape ('frames 1221-1285 ... 60 NaN-filled')."""
-    _, _, windows = run
-    assert len(windows) == 1, windows
-    w = windows[0]
-    assert w.side == SIDE
-    # onset is the first flagged sibling (real fid), end is the
-    # victim's corrupted fid one epoch up -- the +64 span fingerprint.
-    assert w.onset_fid == BURST_CAPTURES[0]
-    assert w.end_fid - w.onset_fid >= 64
-    # 3 corrupted victim rows + 9 innocent sibling rows (condition 2).
-    assert w.n_corrected == 12
-    # 64 fabricated rows for a gap that never existed.
-    assert w.n_nan == 64
+@pytest.fixture(scope="module")
+def sustained_run():
+    rows, n_effective = _sustained_rows()
+    return _run_chain(rows) + (n_effective,)
 
 
-def test_unwrapper_drops_64_real_frames_as_stale(run):
-    """After accepting the bogus jump, the victim's next 64 REAL frames
-    are rejected as stale -- 1.6 s of genuine data discarded."""
-    out_rows, _, _ = run
+def test_corrupt_frames_quarantined_one_for_one(burst_run):
+    """A frame whose counter claims +65 frames in 25 ms is quarantined —
+    each corrupted byte costs exactly its own frame, and the unwrapper
+    resumes on the victim's next honest frame instead of discarding the
+    following 64 real ones."""
+    out_rows, _, _, n_corrupted = burst_run
     stale = [r for r in out_rows if r[3] == "stale"]
-    assert len(stale) == 64
+    assert len(stale) == n_corrupted           # was 64 before the fix
     assert all(r[0] == VICTIM for r in stale)
 
-
-def test_good_timestamps_rewritten_into_the_future(run):
-    """The victim's corrupted-fid frames had TRUTHFUL timestamps
-    (~4.95-5.00 s); the 'repair' moved them ~1.6 s into the future."""
-    out_rows, _, _ = run
-    victim_corrected = [r for r in out_rows
-                        if r[0] == VICTIM and r[4] == "ts_corrected"]
-    assert len(victim_corrected) == 3
-    assert max(r[2] for r in victim_corrected) > 6.5   # device time was ~5.0
-
-    # And 9 innocent sibling frames were dragged in by condition 2.
-    sibling_corrected = [r for r in out_rows
-                         if r[0] != VICTIM and r[4] == "ts_corrected"]
-    assert len(sibling_corrected) == 9
+    # The victim's accepted post-warmup sequence skips only the corrupted
+    # captures (warmup frames are typed "warmup", not light/dark).
+    victim_abs = [r[1] for r in out_rows
+                  if r[0] == VICTIM and r[3] in ("light", "dark")
+                  and r[4] != "nan_filled"]
+    assert (set(range(WARMUP + 1, N_CAPTURES + 1)) - set(victim_abs)
+            == set(BURST_CAPTURES))
 
 
-def test_synthetic_rows_fabricated_for_phantom_gap(run):
-    """64 nan_filled rows typed 'light' are inserted for frame ids the
-    camera never skipped, timestamped across the fabricated 1.6 s."""
-    out_rows, _, _ = run
+def test_truthful_timestamps_never_rewritten(burst_run):
+    """No frame is re-timestamped and no misalignment window opens: the
+    timestamps were honest, and with the corrupt counter quarantined
+    upstream there is nothing left to 'repair'."""
+    out_rows, _, windows, _ = burst_run
+    assert windows == []
+    assert all(r[4] != "ts_corrected" for r in out_rows)
+    # Every surviving real row keeps its wire timestamp: t = abs_fid x 25 ms.
+    for cam, abs_fid, ts, ftype, quality in out_rows:
+        if ftype in ("light", "dark") and quality == "ok":
+            assert abs(ts - abs_fid * PERIOD_S) < 1e-9
+
+
+def test_gap_backfilled_with_honest_placeholders(burst_run):
+    """The quarantined captures leave a 3-frame gap, backfilled with
+    nan_filled placeholders whose timestamps interpolate the REAL gap —
+    not a fabricated 1.6 s future (was 64 future-dated rows)."""
+    out_rows, _, _, n_corrupted = burst_run
     fills = [r for r in out_rows if r[4] == "nan_filled"]
-    assert len(fills) == 64
-    assert all(r[0] == VICTIM for r in fills)
-    assert all(r[3] == "light" for r in fills)
-    fill_ts = [r[2] for r in fills]
-    assert max(fill_ts) > 6.0    # sweeps into the fabricated future
+    assert len(fills) == n_corrupted
+    assert {r[1] for r in fills} == set(BURST_CAPTURES)
+    for _, abs_fid, ts, _, _ in fills:
+        assert abs(ts - abs_fid * PERIOD_S) < PERIOD_S  # inside the real gap
 
 
-def test_live_side_trace_zigzags(run):
-    """The realtime side-average stream -- what the app plots -- shows
-    the three zigzag ingredients: partial-capture averages, a
-    future-dated sample, and a non-monotonic time axis."""
-    _, samples, _ = run
-    assert len(samples) > N_CAPTURES + 100   # ~2x emission during blackout
+def test_innocent_siblings_left_alone(burst_run):
+    """Condition 2 no longer condemns the packet-mates: with the corrupt
+    rows quarantined before the repair stage, the siblings' frames pass
+    through untouched (was 9 innocent frames rewritten)."""
+    out_rows, _, _, _ = burst_run
+    sibling_rows = [r for r in out_rows if r[0] != VICTIM]
+    assert all(r[4] in ("ok", "nan_filled") for r in sibling_rows)
+    assert all(r[4] == "ok" for r in sibling_rows
+               if r[3] in ("light", "dark"))
 
-    healthy = [s.bfi for s in samples if 1.0 < s.t < 4.8]
-    assert healthy and all(abs(b - FULL_AVG) < 1e-6 for b in healthy)
 
-    # During the stale blackout the victim never contributes, and its
-    # interleaved bogus-fid rows chop each real capture into partial
-    # emissions: 3-camera averages where 4 cameras are enabled.
-    partial = [s for s in samples
-               if np.isfinite(s.bfi)
-               and abs(s.bfi - PARTIAL_AVG_NO_VICTIM) < 1e-6]
-    assert len(partial) >= 60
+def test_live_side_trace_stays_sane(burst_run):
+    """The stream the app plots: one sample per capture, monotonic time
+    axis, full-rate averages — with an honest 3-camera partial average
+    for the three captures whose victim frame was quarantined (that is
+    what a genuinely missing camera should look like)."""
+    _, samples, _, _ = burst_run
+    # One sample per capture after warmup; the final capture stays open
+    # (no on_scan_stop in this harness).
+    assert len(samples) == N_CAPTURES - WARMUP - 1
 
-    # The re-timestamped victim frame surfaces as a single-camera
-    # "side average" a second and a half in the future.
-    future = [s for s in samples if s.t > 6.4 and np.isfinite(s.bfi)]
-    assert any(abs(s.bfi - CAM_BFI[VICTIM]) < 1e-6 for s in future)
-
-    # Non-monotonic time axis: after sweeping to ~6.5 s the stream
-    # jumps back to real time (~5.0 s) -- the plot draws backwards.
     ts = [s.t for s in samples]
-    max_backjump = max(
-        (ts[i - 1] - ts[i] for i in range(1, len(ts))), default=0.0)
-    assert max_backjump > 1.0
+    assert all(b >= a for a, b in zip(ts, ts[1:]))      # was 1.6 s backjumps
+
+    for s in samples:
+        assert np.isfinite(s.bfi)
+        expected = (PARTIAL_AVG_NO_VICTIM
+                    if s.frame_id in BURST_CAPTURES else FULL_AVG)
+        assert abs(s.bfi - expected) < 1e-6
+
+
+def test_sustained_corruption_no_flood(sustained_run):
+    """A continuous burst train (10%/cam/frame, whole scan) — the field
+    'kill the session' presentation — now degrades gracefully: every
+    effective hit costs its own frame, no misalignment windows open, no
+    frames are re-timestamped, and the time axis never runs backwards.
+    (Before the fix: 157 windows, ~2.6 WARNINGs/s, half the scan
+    fabricated or discarded.)"""
+    out_rows, samples, windows, n_effective = sustained_run
+    assert n_effective > 50                      # the scenario has teeth
+    assert windows == []
+    assert all(r[4] != "ts_corrected" for r in out_rows)
+
+    stale = [r for r in out_rows if r[3] == "stale"]
+    assert len(stale) == n_effective             # one-for-one, no amplification
+
+    ts = [s.t for s in samples]
+    assert all(b >= a for a, b in zip(ts, ts[1:]))
+    # Nearly every capture still yields a sample (a capture disappears
+    # only if all four cameras were hit at once — vanishingly rare).
+    assert len(samples) >= N_CAPTURES - WARMUP - 1 - 3

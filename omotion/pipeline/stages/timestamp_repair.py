@@ -1,23 +1,41 @@
 """TimestampRepairStage — EMI timestamp correction + NaN-fill.
 
-Detects EMI-induced timestamp misalignment via two conditions:
-  1. Timestamp deviation: |actual_Δt - expected_Δt| > tolerance
-  2. In-packet frame_id disagreement: cameras at the same timestamp
-     report different frame_ids
+Division of labour (sdk#220): a corrupted frame COUNTER is quarantined
+upstream by FrameClassificationStage's unwrapper (counter step vs clock
+cross-check) and never reaches this stage. This stage owns the other
+corruption — frames whose counter is honest but whose TIMESTAMP is not —
+detected via two conditions:
+  1. Cadence deviation: |actual_Δt - expected_Δt| > tolerance, with the
+     expected period EMA-tracked from clean single-step intervals. An
+     abs_frame_id regression (impossible for unwrapper-accepted frames)
+     is flagged too, never trusted.
+  2. In-packet frame_id disagreement: cameras in one packet share the
+     capture timestamp, so their frame_ids must agree. Majority vote —
+     only the minority rows are flagged; with two cameras or a tie the
+     whole group is flagged (nothing to adjudicate with).
 
-Bad frames get their timestamps corrected in-place. Within the batch,
-the stage looks ahead for a re-anchor (the next good frame from the
-same camera). If no re-anchor exists in the batch, it falls back to
-nominal-period interpolation. Missing abs_frame_id gaps get synthetic
-NaN-fill rows inserted (the only case that rebuilds the batch).
+Bad frames get their timestamps corrected in-place by interpolating
+between the camera's last good frame and the next good frame in the
+batch; a right-anchor candidate is only trusted when its own timestamp
+is consistent with the left anchor at the nominal cadence. With no
+usable right anchor the fallback is left anchor + gap x nominal period.
+Missing abs_frame_id gaps (USB loss or quarantined frames) get synthetic
+NaN-fill rows inserted (the only case that rebuilds the batch), with
+timestamps interpolated across the real gap.
 
-Misalignment windows are tracked PER SIDE, log one coalesced WARNING
-each, and emit a TimestampMisalignmentWindow diagnostics event so the
-scan DB's session_meta summary records them. The firmware's terminal
-stop frame — the laser-off frame fired ~150 ms off the 25 ms grid at
-every scan stop — is recognised at on_scan_stop and reclassified as an
+Misalignment windows are tracked PER SIDE and coalesced. Every window is
+dispatched as a TimestampMisalignmentWindow diagnostics event (the scan
+DB summary must be complete); the WARNING log line is throttled to one
+per side per _WINDOW_LOG_MIN_INTERVAL_S with a suppressed-window count,
+because sustained intermittent corruption churns windows on nearly every
+bad→good alternation and would otherwise flood the log. Window closes
+are flushed at end-of-batch, after NaN-fill collection, so fill counts
+attribute to the window they belong to. The firmware's terminal stop
+frame — the laser-off frame fired ~150 ms off the 25 ms grid at every
+scan stop — is recognised at on_scan_stop and reclassified as an
 expected artifact (INFO, excluded from the misalignment record).
 
+Regression suite: tests/test_pipeline/test_etch_a_sketch_repro.py.
 Design history: the EFT timestamp-repair design doc (removed from docs/)
 is retrievable from git history at
 docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
@@ -26,7 +44,8 @@ docs/superpowers/specs/2026-06-05-eft-timestamp-repair-design.md.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -40,6 +59,14 @@ _INITIAL_NOMINAL_PERIOD_S = 0.025
 _DEFAULT_TOLERANCE_S = 0.008
 _TOLERANCE_EPS_S = 1e-9
 _EMA_ALPHA = 0.01
+# Minimum wall-clock spacing between per-side "Misalignment window" WARNINGs.
+# Under sustained intermittent corruption windows open and close on nearly
+# every bad→good alternation; unthrottled that degrades the coalesced-window
+# design into a per-frame log flood (sdk#220 sustained-EFT presentation).
+# Suppressed windows are still recorded and dispatched as diagnostics events —
+# only the log line is withheld, and the next emitted line reports how many
+# were suppressed.
+_WINDOW_LOG_MIN_INTERVAL_S = 2.0
 
 
 @dataclass
@@ -98,6 +125,13 @@ class TimestampRepairStage:
         self._total_corrected = 0
         self._total_nan = 0
         self._terminal_frames = 0
+        # Windows closed during the current process() call, held so NaN-fill
+        # attribution (which runs after the detection pass) can still reach
+        # them; logged/dispatched by _flush_pending_closes at end of batch.
+        self._pending_closed: dict[int, list] = {0: [], 1: []}
+        # Per-side WARNING throttle state (see _WINDOW_LOG_MIN_INTERVAL_S).
+        self._log_last_s: dict[int, float] = {0: float("-inf"), 1: float("-inf")}
+        self._log_suppressed: dict[int, int] = {0: 0, 1: 0}
 
     # ── Main entry ──────────────────────────────────────────────────────
 
@@ -151,6 +185,13 @@ class TimestampRepairStage:
                     actual_dt = ts - prev_ts
                     if abs(actual_dt - expected_dt) > self._tolerance + _TOLERANCE_EPS_S:
                         is_bad = True
+                else:
+                    # abs_frame_id regression/duplicate. The unwrapper never
+                    # emits these for accepted frames, so reaching here means
+                    # corrupted state slipped through — flag it; treating it
+                    # as good would silently re-anchor _last_good backwards
+                    # and close a live window on a bogus frame.
+                    is_bad = True
 
             if is_bad:
                 corrected_ts = self._interpolate(key, abs_fid, good_ahead.get(key))
@@ -160,23 +201,34 @@ class TimestampRepairStage:
                 self._track_window_open(side_idx, key, abs_fid, ts)
                 self._last_good[key] = (abs_fid, corrected_ts)
             else:
-                self._track_window_close(side_idx, batch.events)
+                self._track_window_close(side_idx)
                 self._update_nominal_period(key, abs_fid, ts)
                 self._last_good[key] = (abs_fid, ts)
 
         batch.quality = quality
 
-        # Insert NaN-fill rows for missing abs_frame_id gaps
+        # Insert NaN-fill rows for missing abs_frame_id gaps. Runs before the
+        # pending-close flush so fills are attributed to the window they
+        # belong to even when it closed earlier in this same batch.
         nan_fills = self._collect_nan_fills(batch)
         if nan_fills:
             batch = self._insert_nan_fills(batch, nan_fills)
 
+        self._flush_pending_closes(batch.events)
         return batch
 
     # ── Detection ───────────────────────────────────────────────────────
 
     def _detect_frame_id_disagreement(self, batch: FrameBatch) -> set[int]:
-        """Condition 2: cameras at the same timestamp with different frame_ids."""
+        """Condition 2: cameras at the same timestamp with different frame_ids.
+
+        Majority vote: cameras in one packet share the capture instant, so
+        when their frame_ids disagree the minority is the liar — flag only
+        those rows. Flagging the whole group (the old behavior) let one
+        corrupted camera condemn every innocent sibling in the packet
+        (sdk#220: 18 frames "re-timestamped" when ~3 were corrupt). With no
+        strict majority (two cameras, or a tie) there is nothing to
+        adjudicate with, so the whole group is flagged as before."""
         bad: set[int] = set()
         groups: dict[tuple[int, float], list[int]] = defaultdict(list)
         for i in range(len(batch.cam_ids)):
@@ -187,7 +239,14 @@ class TimestampRepairStage:
         for indices in groups.values():
             if len(indices) < 2:
                 continue
-            if len({int(batch.frame_ids[j]) for j in indices}) > 1:
+            fids = [int(batch.frame_ids[j]) for j in indices]
+            if len(set(fids)) <= 1:
+                continue
+            majority_fid, majority_n = Counter(fids).most_common(1)[0]
+            if majority_n * 2 > len(indices):
+                bad.update(j for j, f in zip(indices, fids)
+                           if f != majority_fid)
+            else:
                 bad.update(indices)
         return bad
 
@@ -224,13 +283,25 @@ class TimestampRepairStage:
         else:
             return abs_fid * self._nominal_period
 
-        # Try to find a right anchor from the look-ahead
+        # Try to find a right anchor from the look-ahead. The look-ahead only
+        # excludes condition-2-flagged rows — a row that condition 1 will
+        # flag later in this same pass is still in the list, carrying a
+        # corrupted timestamp. Guard against anchoring on it: a candidate is
+        # only trusted when its timestamp is self-consistent with the left
+        # anchor at the nominal cadence.
         if good_frames:
             for right_fid, right_ts in good_frames:
-                if right_fid > abs_fid:
-                    fid_span = right_fid - left_fid
-                    if fid_span > 0:
-                        return left_ts + (abs_fid - left_fid) / fid_span * (right_ts - left_ts)
+                if right_fid <= abs_fid:
+                    continue
+                fid_span = right_fid - left_fid
+                if fid_span <= 0:
+                    continue
+                expected_span_s = fid_span * self._nominal_period
+                anchor_slack_s = max(2 * self._tolerance,
+                                     0.1 * expected_span_s)
+                if abs((right_ts - left_ts) - expected_span_s) > anchor_slack_s:
+                    continue  # candidate's own timestamp looks corrupt
+                return left_ts + (abs_fid - left_fid) / fid_span * (right_ts - left_ts)
 
         # Fallback: nominal period from left anchor
         return left_ts + (abs_fid - left_fid) * self._nominal_period
@@ -269,28 +340,56 @@ class TimestampRepairStage:
         w.n_corrected += 1
         w.frames.append((key, abs_fid))
 
-    def _track_window_close(self, side: int, events: list) -> None:
-        """Close this side's open misalignment window, if any: record it,
-        emit one coalesced WARNING for the whole window (per spec R3 — never
-        one line per frame), and append a TimestampMisalignmentWindow event
-        so the diagnostics channel / scan-DB summary record it. Called on the
-        first good same-side frame after a divergent run."""
+    def _track_window_close(self, side: int) -> None:
+        """Close this side's open misalignment window, if any, by moving it
+        to the pending list. Called on the first good same-side frame after
+        a divergent run. Recording/logging/event dispatch happen in
+        _flush_pending_closes at the end of the batch — after NaN-fill
+        collection, so fills land in the window they belong to."""
         w = self._open_window[side]
         if w is None:
             return
         self._open_window[side] = None
-        self._scan_windows.append(w)
-        logger.warning(
-            "Misalignment window: side=%d frames %d-%d (t=%.2f-%.2fs), "
-            "%d frames re-timestamped, %d frames NaN-filled",
-            w.side, w.onset_fid, w.end_fid, w.onset_t, w.end_t,
-            w.n_corrected, w.n_nan,
-        )
-        events.append(TimestampMisalignmentWindow(
-            side=w.side, onset_fid=w.onset_fid, end_fid=w.end_fid,
-            onset_t=w.onset_t, end_t=w.end_t,
-            n_corrected=w.n_corrected, n_nan=w.n_nan,
-        ))
+        self._pending_closed[side].append(w)
+
+    def _flush_pending_closes(self, events: list, *, force_log: bool = False) -> None:
+        """Record each pending closed window, dispatch its
+        TimestampMisalignmentWindow diagnostics event (always — the scan DB
+        summary must be complete), and emit the coalesced WARNING, throttled
+        to one per side per _WINDOW_LOG_MIN_INTERVAL_S. Under sustained
+        intermittent corruption, windows churn on nearly every bad→good
+        alternation and unthrottled logging degrades to a per-frame flood;
+        the throttle keeps the terminal readable while the suppressed count
+        keeps the volume honest. ``force_log`` (scan stop) bypasses the
+        throttle so the final window is never silent."""
+        for side in (0, 1):
+            pending = self._pending_closed[side]
+            if not pending:
+                continue
+            self._pending_closed[side] = []
+            for w in pending:
+                self._scan_windows.append(w)
+                events.append(TimestampMisalignmentWindow(
+                    side=w.side, onset_fid=w.onset_fid, end_fid=w.end_fid,
+                    onset_t=w.onset_t, end_t=w.end_t,
+                    n_corrected=w.n_corrected, n_nan=w.n_nan,
+                ))
+                now_s = time.monotonic()
+                if (not force_log and
+                        now_s - self._log_last_s[side] < _WINDOW_LOG_MIN_INTERVAL_S):
+                    self._log_suppressed[side] += 1
+                    continue
+                suppressed = self._log_suppressed[side]
+                self._log_suppressed[side] = 0
+                self._log_last_s[side] = now_s
+                logger.warning(
+                    "Misalignment window: side=%d frames %d-%d (t=%.2f-%.2fs), "
+                    "%d frames re-timestamped, %d frames NaN-filled%s",
+                    w.side, w.onset_fid, w.end_fid, w.onset_t, w.end_t,
+                    w.n_corrected, w.n_nan,
+                    (f" (+{suppressed} more window(s) since last report)"
+                     if suppressed else ""),
+                )
 
     def _is_terminal_artifact(self, w: _WindowStats) -> bool:
         """True when a window still open at scan stop is the firmware's
@@ -344,7 +443,16 @@ class TimestampRepairStage:
                             "quality": "nan_filled",
                         }))
                         self._total_nan += 1
+                        # Attribute the fill to this side's live window: the
+                        # still-open one, else the most recent window closed
+                        # earlier in this batch (held in _pending_closed until
+                        # the end-of-batch flush precisely so this attribution
+                        # can reach it — the old post-pass lookup credited
+                        # fills to whichever window happened to be open after
+                        # the pass, or dropped them from the count entirely).
                         w = self._open_window[key[0]]
+                        if w is None and self._pending_closed[key[0]]:
+                            w = self._pending_closed[key[0]][-1]
                         if w is not None:
                             w.n_nan += 1
 
@@ -435,7 +543,10 @@ class TimestampRepairStage:
                     "as misalignment", side, w.n_corrected,
                 )
             else:
-                self._track_window_close(side, batch.events)
+                self._track_window_close(side)
+        # Scan stop bypasses the log throttle: the final windows (and any
+        # suppressed-count remainder) must never end the scan silently.
+        self._flush_pending_closes(batch.events, force_log=True)
 
         if self._total_corrected or self._total_nan:
             pct = (self._total_corrected + self._total_nan) / max(1, self._total_frames_seen) * 100
