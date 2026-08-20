@@ -218,21 +218,63 @@ def validate_exact_single_topology(
         else False
     )
     passed = topology.console_connected and selected_present
-    return CriterionResult(
-        "topology",
-        passed,
-        "Expected a console and exactly the declared sensor side.",
+    detail = (
+        "Expected a console and exactly the declared sensor side."
+        if passed
+        else _single_topology_failure_detail(topology, side)
+    )
+    return CriterionResult("topology", passed, detail)
+
+
+def _single_topology_failure_detail(
+    topology: TopologySnapshot, side: SensorSide
+) -> str:
+    if not topology.console_connected:
+        return "The console is not connected."
+    if topology.left_connected and topology.right_connected:
+        return (
+            "Both sensors are connected; use Dual-Sensor Laser Calibration "
+            "instead, or disconnect the sensor not being calibrated to "
+            "continue with Single-Sensor Laser Calibration."
+        )
+    if not topology.left_connected and not topology.right_connected:
+        return "No sensor is connected; connect the declared sensor side."
+    wrong_side = "right" if side == "left" else "left"
+    return (
+        f"The {wrong_side} sensor is connected instead of the declared "
+        f"{side} sensor."
     )
 
 
 def validate_exact_dual_topology(topology: TopologySnapshot) -> CriterionResult:
     """Require a console with both declared shipping sensors connected."""
-    return CriterionResult(
-        "topology",
+    passed = (
         topology.console_connected
         and topology.left_connected
-        and topology.right_connected,
-        "Expected a console with both left and right sensors connected.",
+        and topology.right_connected
+    )
+    detail = (
+        "Expected a console with both left and right sensors connected."
+        if passed
+        else _dual_topology_failure_detail(topology)
+    )
+    return CriterionResult("topology", passed, detail)
+
+
+def _dual_topology_failure_detail(topology: TopologySnapshot) -> str:
+    if not topology.console_connected:
+        return "The console is not connected."
+    if not topology.left_connected and not topology.right_connected:
+        return (
+            "No sensor is connected; connect both sensor modules to "
+            "continue with Dual-Sensor Laser Calibration, or connect one "
+            "sensor and use Single-Sensor Laser Calibration instead."
+        )
+    connected_side = "left" if topology.left_connected else "right"
+    return (
+        f"Only the {connected_side} sensor is connected; use "
+        "Single-Sensor Laser Calibration instead, or connect the other "
+        "sensor module to continue with Dual-Sensor Laser Calibration."
     )
 
 

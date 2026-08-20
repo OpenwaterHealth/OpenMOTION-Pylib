@@ -121,6 +121,11 @@ Before configuration mutation or laser action:
    calibration-due reads must pass; and
 5. all Ophir settings and readbacks in the process addendum must pass.
 
+When only one sensor is connected (or none), the topology failure reason
+directs the operator to Single-Sensor Laser Calibration instead (and the
+reverse: Single-Sensor Laser Calibration's own preflight directs the
+operator to this procedure when both sensors are connected).
+
 The required meter configuration restates the WI-00015 step-4 setup values
 (the process addendum controls):
 
