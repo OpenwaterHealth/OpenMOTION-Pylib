@@ -457,11 +457,13 @@ class MotionLaserCalibrationBench(MotionConsoleBenchBase):
             self._started = True
         if self._ready_sensor_count >= required_sensor_count:
             return
-        self._interface.wait_for_ready(
+        ready = self._interface.wait_for_ready(
             console=True,
             sensors=required_sensor_count,
             timeout=self._wait_timeout,
         )
+        if not ready:
+            raise RuntimeError(self._not_ready_reason(self._wait_timeout))
         self._ready_sensor_count = required_sensor_count
 
     def _wait_for_stable_topology(self) -> TopologySnapshot:
@@ -504,11 +506,12 @@ class MotionLaserCalibrationBench(MotionConsoleBenchBase):
         self._declared_side = side
         self._declared_dual = False
         selected = self._interface.left if side == "left" else self._interface.right
+        console_responsive, console_identity = self._console_preflight()
         return PreflightSnapshot(
             topology=topology,
-            console_identity=self._console_identity(),
+            console_identity=console_identity,
             selected_sensor_identity=self._identity("sensor", selected),
-            console_responsive=self._console_responsive(),
+            console_responsive=console_responsive,
             ophir_identity=ophir_identity,
             ophir_ready=ophir_ready,
             ophir_setting_evidence=ophir_evidence,
@@ -531,14 +534,15 @@ class MotionLaserCalibrationBench(MotionConsoleBenchBase):
         topology = self._wait_for_stable_topology()
         self._declared_side = None
         self._declared_dual = True
+        console_responsive, console_identity = self._console_preflight()
         return DualPreflightSnapshot(
             topology=topology,
-            console_identity=self._console_identity(),
+            console_identity=console_identity,
             left_sensor_identity=self._identity("left sensor", self._interface.left),
             right_sensor_identity=self._identity(
                 "right sensor", self._interface.right
             ),
-            console_responsive=self._console_responsive(),
+            console_responsive=console_responsive,
             ophir_identity=ophir_identity,
             ophir_ready=ophir_ready,
             ophir_setting_evidence=ophir_evidence,

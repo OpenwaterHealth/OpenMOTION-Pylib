@@ -123,17 +123,22 @@ class MotionSafetyCalibrationBench(MotionConsoleBenchBase):
             sensors=required_sensor_count,
             timeout=self._wait_timeout if timeout is None else timeout,
         )
-        if ready is False:
-            raise RuntimeError("Motion devices did not become ready before timeout")
+        if not ready:
+            raise RuntimeError(
+                self._not_ready_reason(
+                    self._wait_timeout if timeout is None else timeout
+                )
+            )
         self._console_ready = True
         self._ready_sensor_count = max(self._ready_sensor_count, required_sensor_count)
 
     def preflight_console(self) -> ConsolePreflightSnapshot:
         self._ensure_started(required_sensor_count=0)
+        console_responsive, console_identity = self._console_preflight()
         return ConsolePreflightSnapshot(
             topology=self._topology_snapshot(),
-            console_identity=self._console_identity(),
-            console_responsive=self._console_responsive(),
+            console_identity=console_identity,
+            console_responsive=console_responsive,
         )
 
     def start_trigger(self) -> None:

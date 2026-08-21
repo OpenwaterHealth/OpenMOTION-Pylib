@@ -180,6 +180,7 @@ class MotionConsole(SignalWrapper):
         self.telemetry = ConsoleTelemetryPoller(self)
 
         self._state = ConnectionState.DISCONNECTED
+        self._state_reason = ""
         self._state_cv = threading.Condition()
         self._monitor = None  # set by MotionInterface.start()
         self._version = "v0.0.0"
@@ -195,6 +196,11 @@ class MotionConsole(SignalWrapper):
     @property
     def state(self) -> ConnectionState:
         return self._state
+
+    @property
+    def state_reason(self) -> str:
+        """Reason given for the last state transition ("" before any)."""
+        return self._state_reason
 
     def is_connected(self) -> bool:
         return self._state == ConnectionState.CONNECTED
@@ -244,6 +250,7 @@ class MotionConsole(SignalWrapper):
                 return
             old = self._state
             self._state = new_state
+            self._state_reason = reason
             self._state_cv.notify_all()
         try:
             self.signal_state_changed.emit(self, old, new_state, reason)
@@ -1023,16 +1030,17 @@ class MotionConsole(SignalWrapper):
             )
 
             self.uart.clear_buffer()
-            # r.print_packet()
 
-            if r.packetType == OW_ERROR:
-                logger.error("Error Reading I2C Device")
+            if r is None or r.packetType == OW_ERROR or r.data_len <= 0:
+                logger.error(
+                    "I2C read failed: %s (mux=%d ch=%d addr=0x%02X reg=0x%02X len=%d)",
+                    "UART not open" if r is None
+                    else "console returned OW_ERROR" if r.packetType == OW_ERROR
+                    else "console returned no data",
+                    mux_index, channel, device_addr, reg_addr, read_len,
+                )
                 return None, None
-
-            if r.data_len > 0:
-                return r.data, r.data_len
-            else:
-                return None, None
+            return r.data, r.data_len
 
         except Exception as e:
             # The underlying error is already logged by MotionUart.send_packet()

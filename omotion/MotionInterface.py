@@ -190,6 +190,26 @@ class MotionInterface:
         """Return the list of currently-connected sensor handles."""
         return [s for s in (self.left, self.right) if s.is_connected()]
 
+    def describe_connections(self) -> str:
+        """Each handle's state and last transition reason, plus whether the
+        console COM port is enumerated - what a readiness timeout needs to be
+        debugged (#263). Passive; never raises."""
+        parts = [
+            f"{label}={handle.state.name} "
+            f"({handle.state_reason or 'no transition yet'})"
+            for label, handle in (
+                ("console", self.console),
+                ("left", self.left),
+                ("right", self.right),
+            )
+        ]
+        try:
+            port = self.console.uart.find_port()
+            parts.append(f"console COM port: {port or 'not enumerated'}")
+        except Exception as error:
+            parts.append(f"console COM port: enumeration failed ({error})")
+        return "; ".join(parts)
+
     def wait_for_ready(
         self,
         *,
