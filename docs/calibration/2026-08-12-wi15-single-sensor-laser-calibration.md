@@ -23,7 +23,7 @@ unit may not be processed by running this procedure twice.
 
 This specification implements the Laser Calibration requirements in:
 
-- `docs/WI-00015-automated-process-addendum.md`; and
+- the approved WI-00015 automated process addendum (filed separately); and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if this file is inadvertently interpreted in a

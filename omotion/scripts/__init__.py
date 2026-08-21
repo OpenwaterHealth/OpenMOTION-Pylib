@@ -7,6 +7,6 @@ test-app's Procedures pane (which drives it as a subprocess). Living inside
 the package - rather than the repo's ``scripts/`` directory - means any
 environment that can import ``omotion`` can run them; no SDK checkout needed.
 
-Current procedures are the WI-00015 calibration runners; operator-facing
-usage lives in ``docs/WI15Procedures.md``.
+Current procedures are the WI-00015 calibration runners; the filed procedure
+specifications live in ``docs/calibration/``.
 """

@@ -27,7 +27,7 @@ persisted values active and no overrides.
 
 This specification implements Safety Calibration in:
 
-- `docs/WI-00015-automated-process-addendum.md`; and
+- the approved WI-00015 automated process addendum (filed separately); and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if the sources conflict.

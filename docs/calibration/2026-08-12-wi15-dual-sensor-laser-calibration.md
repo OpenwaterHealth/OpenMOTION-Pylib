@@ -23,7 +23,7 @@ It permits at most three complete post-adjustment cross-checks.
 This specification implements the Dual-Sensor Laser Calibration requirements
 in:
 
-- `docs/WI-00015-automated-process-addendum.md`; and
+- the approved WI-00015 automated process addendum (filed separately); and
 - WI-00015 revision 2, as modified by the team-approved automated process.
 
 The process addendum controls if the sources conflict.
@@ -392,8 +392,7 @@ The software implementation is divided at the intended reusable boundaries:
   `omotion/calibration/dual_sensor_laser_report.py`;
 - shared script scaffolding (argument parsing, operator prompts,
   artifact/resource finalization): `omotion/calibration/script_support.py`;
-- operator CLI: `omotion/scripts/wi15_dual_sensor_laser_calibration.py`; and
-- invocation guidance: `docs/WI15Procedures.md`.
+- operator CLI: `omotion/scripts/wi15_dual_sensor_laser_calibration.py`.
 
 Focused automated coverage is provided by:
 
