@@ -1346,3 +1346,91 @@ def test_measure_energy_stop_exception_is_reported_instead_of_returning_measurem
         bench.measure_energy()
 
     assert calls[-2:] == ["meter.measure", "stop_trigger"]
+
+
+# --- #263: preflight must report what actually failed ------------------------
+
+
+class NeverReadyInterface(FakeInterface):
+    def wait_for_ready(self, **kwargs):
+        self.calls.append(("interface.wait_for_ready", kwargs))
+        return False
+
+    def describe_connections(self):
+        return (
+            "console=DISCONNECTED (connect_retry_exhausted:could not open port "
+            "'COM5'); left=CONNECTED (ping_ok); right=CONNECTED (ping_ok); "
+            "console COM port: COM5"
+        )
+
+
+def _never_ready_bench(interface):
+    return MotionLaserCalibrationBench(
+        FakeMeter(interface.calls),
+        interface_factory=lambda: interface,
+        fpga_map=FakeMap(),
+        wait_timeout=3.5,
+        topology_quiet_period_s=0.0,
+    )
+
+
+def test_preflight_fails_closed_with_connection_evidence_when_devices_never_connect():
+    """Field case (#263): the child never connected to the console and the run
+    was reported as a TA register read failure ~10.7 s in instead."""
+    interface = NeverReadyInterface((False, True, True))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _never_ready_bench(interface).preflight_dual()
+
+    assert str(excinfo.value) == (
+        "Motion devices not ready within 3.5 s: console=DISCONNECTED "
+        "(connect_retry_exhausted:could not open port 'COM5'); "
+        "left=CONNECTED (ping_ok); right=CONNECTED (ping_ok); console COM port: COM5"
+    )
+    assert "meter.preflight" not in interface.calls
+    assert not any(
+        isinstance(call, tuple) and call[0] == "read_i2c_packet"
+        for call in interface.calls
+    )
+
+
+def test_not_ready_reason_falls_back_to_topology_without_interface_diagnostics():
+    class BareNeverReadyInterface(FakeInterface):
+        def wait_for_ready(self, **kwargs):
+            return False
+
+    interface = BareNeverReadyInterface((False, True, False))
+
+    with pytest.raises(
+        RuntimeError,
+        match="console not connected, left sensor connected, right sensor not connected",
+    ):
+        _never_ready_bench(interface).preflight("left")
+
+
+def test_unresponsive_console_is_reported_before_any_fpga_register_is_read():
+    bench, interface, _ = _bench((True, True, True))
+    interface.console.echo = lambda data: (b"", 0)
+
+    snapshot = bench.preflight_dual()
+
+    assert snapshot.console_responsive is False
+    assert snapshot.console_identity.serial == "console-serial"
+    assert snapshot.console_identity.fpga_firmware_revisions == ()
+    assert not any(
+        isinstance(call, tuple) and call[0] == "read_i2c_packet"
+        for call in interface.calls
+    )
+
+
+def test_fpga_revision_read_failure_names_the_register_and_its_location():
+    bench, interface, _ = _bench((True, True, True))
+    interface.console.fpga_version_raw.clear()
+    interface.console.i2c_read_result = (None, None)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"register TA_MAJOR: No I2C readback for TA_MAJOR "
+        r"\(mux 1 ch 4 addr 0x41 reg 0x65\)",
+    ):
+        bench.preflight_dual()

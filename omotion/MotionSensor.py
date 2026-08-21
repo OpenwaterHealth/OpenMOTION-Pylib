@@ -309,6 +309,7 @@ class MotionSensor(SignalWrapper):
 
         # State machine
         self._state = ConnectionState.DISCONNECTED
+        self._state_reason = ""
         self._state_cv = threading.Condition()
         self._monitor = None  # set by MotionInterface.start()
 
@@ -368,12 +369,18 @@ class MotionSensor(SignalWrapper):
     # State machine
     # ──────────────────────────────────────────────────────────────────
 
+    @property
+    def state_reason(self) -> str:
+        """Reason given for the last state transition ("" before any)."""
+        return self._state_reason
+
     def _set_state(self, new_state: ConnectionState, reason: str = "") -> None:
         with self._state_cv:
             if self._state == new_state:
                 return
             old = self._state
             self._state = new_state
+            self._state_reason = reason
             self._state_cv.notify_all()
         try:
             self.signal_state_changed.emit(self, old, new_state, reason)

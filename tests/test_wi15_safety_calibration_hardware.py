@@ -517,3 +517,23 @@ def test_normal_scan_reapplies_the_laser_drive_point_before_scanning():
     bench, interface, _, _ = _bench((True, True, False))
     bench.run_normal_scan(ShippingTopology.SINGLE_LEFT, duration_s=1.0)
     assert "apply_laser_power" in interface.calls
+
+
+def test_console_preflight_fails_closed_when_devices_never_connect():
+    """#263: a readiness timeout must not fall through to the first console
+    command (the TA_MAJOR revision read) and be reported as that."""
+    clock = FakeClock()
+    interface = FakeInterface((False, False, False), clock=clock)
+    interface.wait_for_ready = lambda **kwargs: False
+    bench, interface, _, _ = _bench(interface=interface)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Motion devices not ready within 3.5 s: console not connected",
+    ):
+        bench.preflight_console()
+
+    assert not any(
+        isinstance(call, tuple) and call[0] == "read_i2c_packet"
+        for call in interface.calls
+    )

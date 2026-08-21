@@ -67,7 +67,11 @@ class FpgaRegisterIO:
             or length != width
             or len(data) != width
         ):
-            raise RuntimeError(f"Incomplete FPGA readback for {name}")
+            raise RuntimeError(
+                f"No I2C readback for {name} (mux {entry['mux_idx']} "
+                f"ch {entry['channel']} addr 0x{entry['i2c_addr']:02X} "
+                f"reg 0x{entry['start_address']:02X})"
+            )
         raw = int.from_bytes(data, byteorder=byteorder, signed=False)
         return raw * scale
 
@@ -105,8 +109,11 @@ def read_console_fpga_firmware_revisions(
             try:
                 value = registers.read(register_name)
             except Exception as error:
+                # str(error) is what reaches the operator (the workflow drops
+                # the __cause__ chain), so carry the cause text here.
                 raise RuntimeError(
-                    f"Could not read {controller} FPGA firmware revision register {register_name}."
+                    f"Could not read {controller} FPGA firmware revision "
+                    f"register {register_name}: {error}"
                 ) from error
             if (
                 isinstance(value, bool)
@@ -170,6 +177,38 @@ class MotionConsoleBenchBase:
             return echoed == b"WI15" and length == 4
         except Exception:
             return False
+
+    def _not_ready_reason(self, timeout_s: float) -> str:
+        """Why a readiness wait expired, with the interface's own evidence.
+
+        ``wait_for_ready`` only returns False. Without this, preflight went on
+        to the first console command whose failure is not swallowed and
+        reported that instead (#263: "could not read TA_MAJOR" for a console
+        that never connected).
+        """
+        describe = getattr(self._interface, "describe_connections", None)
+        try:
+            details = describe() if callable(describe) else ""
+        except Exception as error:
+            details = f"unavailable ({error})"
+        if not details:
+            topology = self._topology_snapshot()
+            details = ", ".join(
+                f"{label} {'connected' if connected else 'not connected'}"
+                for label, connected in (
+                    ("console", topology.console_connected),
+                    ("left sensor", topology.left_connected),
+                    ("right sensor", topology.right_connected),
+                )
+            )
+        return f"Motion devices not ready within {timeout_s:g} s: {details}"
+
+    def _console_preflight(self) -> tuple[bool, DeviceIdentity]:
+        """Echo first; read FPGA revisions only from a console that answers,
+        so an unresponsive console is reported as that."""
+        if not self._console_responsive():
+            return False, self._identity("console", self._console)
+        return True, self._console_identity()
 
     def _topology_snapshot(self) -> TopologySnapshot:
         return TopologySnapshot(
