@@ -3,7 +3,7 @@
 import logging
 
 import numpy as np
-from omotion.pipeline.batch import FrameBatch
+from omotion.pipeline.batch import CameraStreamGap, FrameBatch, FrameQuarantined
 from omotion.pipeline.stages.classify import FrameClassificationStage
 
 
@@ -27,7 +27,22 @@ def _batch_with_raw_ids(raw_ids_per_side_cam):
         side_ids=side_ids,
         raw_histograms=raw_hists,
         temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
-        timestamp_s=np.arange(n, dtype=np.float64),
+        timestamp_s=np.arange(n, dtype=np.float64) * 0.025,
+        pdc=None, tcm=None, tcl=None,
+    )
+
+
+def _packet_batch(rows):
+    """Build rows of (packet_id, timestamp_s, side, cam_id, frame_id)."""
+    n = len(rows)
+    return FrameBatch(
+        cam_ids=np.array([r[3] for r in rows], dtype=np.int8),
+        frame_ids=np.array([r[4] for r in rows], dtype=np.uint8),
+        side_ids=np.array([r[2] for r in rows], dtype=np.int8),
+        packet_ids=np.array([r[0] for r in rows], dtype=np.int64),
+        raw_histograms=np.zeros((n, 2, 8, 1024), dtype=np.uint32),
+        temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
+        timestamp_s=np.array([r[1] for r in rows], dtype=np.float64),
         pdc=None, tcm=None, tcl=None,
     )
 
@@ -42,7 +57,15 @@ def test_first_frame_with_raw_id_1_is_warmup_not_stale():
 def test_first_frame_with_raw_id_other_than_1_is_stale():
     batch = _batch_with_raw_ids({(0, 0): [42, 43, 44]})
     FrameClassificationStage(discard_count=9, dark_interval=600).process(batch)
-    assert batch.frame_type[0] == "stale"
+    assert list(batch.frame_type) == ["stale", "stale", "stale"]
+
+
+def test_leading_garbage_does_not_seed_unwrapper_state():
+    batch = _batch_with_raw_ids({(0, 0): [173, 1, 2, 3]})
+    FrameClassificationStage(discard_count=9, dark_interval=600).process(batch)
+
+    assert list(batch.frame_type) == ["stale", "warmup", "warmup", "warmup"]
+    np.testing.assert_array_equal(batch.abs_frame_ids, [173, 1, 2, 3])
 
 
 def test_warmup_range_marks_first_9_as_warmup():
@@ -66,10 +89,10 @@ def test_dark_schedule_fires_at_intervals():
 
 
 def test_unwrap_handles_8bit_rollover():
-    raw_ids = list(range(250, 256)) + list(range(0, 5))
+    raw_ids = list(range(1, 256)) + list(range(0, 5))
     batch = _batch_with_raw_ids({(0, 0): raw_ids})
     FrameClassificationStage(discard_count=9, dark_interval=600).process(batch)
-    expected_abs = [250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260]
+    expected_abs = list(range(1, 261))
     np.testing.assert_array_equal(batch.abs_frame_ids, expected_abs)
 
 
@@ -148,12 +171,12 @@ def test_dropped_stale_frames_are_logged_and_summarised(caplog):
     stage = FrameClassificationStage(discard_count=9, dark_interval=600)
     with caplog.at_level(logging.WARNING):
         stage.process(batch)
-        assert any("dropping stale frame" in r.message for r in caplog.records), \
-            "expected a live WARNING when a stale frame is dropped"
+        assert any("quarantining frame" in r.message for r in caplog.records), \
+            "expected a live WARNING when a frame is quarantined"
         caplog.clear()
         stage.on_scan_stop(batch)
     summary = [r.message for r in caplog.records if "Scan summary" in r.message]
-    assert summary, "expected a stale-frame scan summary at on_scan_stop"
+    assert summary, "expected a quarantine scan summary at on_scan_stop"
     assert "2" in summary[0]  # 255 and 173 were dropped
 
 
@@ -177,3 +200,89 @@ def test_reset_clears_unwrapper_state():
     stage.process(batch2)
     assert batch2.abs_frame_ids[0] == 1
     assert batch2.frame_type[0] == "warmup"
+
+
+def test_camera_gap_alerts_after_eight_then_reports_recovery(caplog):
+    stage = FrameClassificationStage(expected_camera_masks=(0x03, 0))
+    first = _packet_batch([
+        (1, 0.000, 0, 0, 1),
+        (1, 0.000, 0, 1, 1),
+    ])
+    stage.process(first)
+
+    # Camera 1 is absent from exactly eight captures: no alert yet.
+    eight_missing = _packet_batch([
+        (fid, (fid - 1) * 0.025, 0, 0, fid)
+        for fid in range(2, 10)
+    ])
+    with caplog.at_level(logging.WARNING):
+        stage.process(eight_missing)
+    assert not any(isinstance(e, CameraStreamGap)
+                   for e in eight_missing.events)
+    assert "CAMERA STREAM ALERT" not in caplog.text
+
+    # The ninth missing capture crosses the threshold, exactly once.
+    ninth_missing = _packet_batch([(10, 0.225, 0, 0, 10)])
+    with caplog.at_level(logging.WARNING):
+        stage.process(ninth_missing)
+    alerts = [e for e in ninth_missing.events
+              if isinstance(e, CameraStreamGap)]
+    assert len(alerts) == 1
+    assert alerts[0].state == "missing"
+    assert alerts[0].missing_frames == 9
+    assert alerts[0].first_missing_packet_id == 2
+    assert alerts[0].packet_id == 10
+    assert "side=left(0) cam_id=1" in caplog.text
+
+    still_missing = _packet_batch([(11, 0.250, 0, 0, 11)])
+    stage.process(still_missing)
+    assert not any(isinstance(e, CameraStreamGap)
+                   for e in still_missing.events)
+
+    resumed = _packet_batch([
+        (12, 0.275, 0, 0, 12),
+        (12, 0.275, 0, 1, 12),
+    ])
+    with caplog.at_level(logging.WARNING):
+        stage.process(resumed)
+    recoveries = [e for e in resumed.events
+                  if isinstance(e, CameraStreamGap)]
+    assert len(recoveries) == 1
+    assert recoveries[0].state == "resumed"
+    assert recoveries[0].missing_frames == 10
+    assert recoveries[0].packet_id == 12
+    assert "camera stream resumed" in caplog.text
+
+    # The first return is isolated; the next coherent packet safely rejoins.
+    assert resumed.frame_type[1] == "stale"
+    confirmed = _packet_batch([
+        (13, 0.300, 0, 0, 13),
+        (13, 0.300, 0, 1, 13),
+    ])
+    stage.process(confirmed)
+    assert confirmed.frame_type[1] == "light"
+    assert confirmed.abs_frame_ids[1] == 13
+
+
+def test_unannounced_large_gap_fails_closed_without_delivery_evidence():
+    stage = FrameClassificationStage()
+    batch = _batch_with_raw_ids({(0, 0): [1, 11, 12]})
+    batch.timestamp_s[:] = [0.000, 0.250, 0.275]
+    stage.process(batch)
+
+    assert list(batch.frame_type) == ["warmup", "stale", "stale"]
+    np.testing.assert_array_equal(batch.abs_frame_ids, [1, 11, 12])
+    quarantined = [e for e in batch.events
+                   if isinstance(e, FrameQuarantined)]
+    assert len(quarantined) == 2
+    assert {event.reason for event in quarantined} == {"gap_too_large"}
+
+
+def test_large_corrupt_pair_does_not_poison_clean_counter_state():
+    stage = FrameClassificationStage()
+    batch = _batch_with_raw_ids({(0, 0): [1, 65, 2]})
+    batch.timestamp_s[:] = [0.000, 1.600, 0.025]
+    stage.process(batch)
+
+    assert list(batch.frame_type) == ["warmup", "stale", "warmup"]
+    np.testing.assert_array_equal(batch.abs_frame_ids, [1, 65, 2])
