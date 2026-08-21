@@ -110,6 +110,9 @@ class TelemetrySample:
     t2: float
     t3: float
     tec_adc: tuple[int, int, int, int]
+    # TecStats.tec_status — the TEC over-temp trip result (False = tripped,
+    # laser shut down by firmware), not a TMPGD settled-to-setpoint pin.
+    # See tec_status() below and issue #206.
     tec_good: bool
 
     def __str__(self):
@@ -1909,6 +1912,20 @@ class MotionConsole(SignalWrapper):
     def tec_status(self) -> Tuple[str, str, str, str, bool]:
         """
         Get TEC status: (voltage, Temperature Setpoint, TEC Current, TEC Voltage, TEC Good)
+
+        ``tec_good`` is ``TecStats.tec_status`` from console FW — the TEC
+        over-temp **trip** result, not a TMPGD "temperature settled" pin.
+        ``tec_trip_evaluate()`` (console-fw ``Core/Src/uart_comms.c``) is its
+        only writer: it clears the bit when the TEC sense voltage crosses
+        ``TEC_TRIP_VALUE``, opens the safety disconnect, and re-arms only after
+        200 consecutive clean polls. ``False`` therefore means the console has
+        tripped and shut the laser down. Note the trip is disarmed when
+        ``TEC_TRIP_VALUE == 0.0``, and firmware then always reports ``True``.
+
+        This method raises rather than returning a sentinel on failure, so a
+        caller can never mistake a failed read for a trip; pollers that cache
+        the value should track "was it ever read" separately (see
+        ``ConsoleTelemetry.tec_known``). See issue #206.
 
         Returns:
             tuple: (volt, temp_set, tec_curr, tec_volt, tec_good)
