@@ -199,12 +199,31 @@ def _run_chain(rows):
     events = {"windows": [], "corrections": [], "anomalies": [],
               "frozen": [], "gap_fills": []}
 
+    def collect(batch_events):
+        for ev in batch_events:
+            if isinstance(ev, LiveEmit) and ev.channel == "live_side":
+                samples.append(ev.payload)
+            elif isinstance(ev, TimestampMisalignmentWindow):
+                events["windows"].append(ev)
+            elif isinstance(ev, FrameIdConsensusCorrection):
+                events["corrections"].append(ev)
+            elif isinstance(ev, FrameIdPacketAnomaly):
+                events["anomalies"].append(ev)
+            elif isinstance(ev, TimestampRepairInputAnomaly):
+                events["frozen"].append(ev)
+            elif isinstance(ev, FrameGapFillAnomaly):
+                events["gap_fills"].append(ev)
+
     for start in range(0, len(rows), rows_per_batch):
         chunk = rows[start:start + rows_per_batch]
         n = len(chunk)
         batch = FrameBatch(
             cam_ids=np.array([r[0] for r in chunk], dtype=np.int8),
             frame_ids=np.array([r[1] for r in chunk], dtype=np.uint8),
+            packet_ids=np.array(
+                [(start + i) // len(CAMS) for i in range(n)],
+                dtype=np.int64,
+            ),
             side_ids=np.full(n, SIDE, dtype=np.int8),
             raw_histograms=np.zeros((n, 2, 8, 1024), dtype=np.uint32),
             temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
@@ -224,19 +243,12 @@ def _run_chain(rows):
                 str(batch.frame_type[i]),
                 str(batch.quality[i]),
             ))
-        for ev in batch.events:
-            if isinstance(ev, LiveEmit) and ev.channel == "live_side":
-                samples.append(ev.payload)
-            elif isinstance(ev, TimestampMisalignmentWindow):
-                events["windows"].append(ev)
-            elif isinstance(ev, FrameIdConsensusCorrection):
-                events["corrections"].append(ev)
-            elif isinstance(ev, FrameIdPacketAnomaly):
-                events["anomalies"].append(ev)
-            elif isinstance(ev, TimestampRepairInputAnomaly):
-                events["frozen"].append(ev)
-            elif isinstance(ev, FrameGapFillAnomaly):
-                events["gap_fills"].append(ev)
+        collect(batch.events)
+
+    # Frozen-clock evidence is deliberately coalesced across the entire scan.
+    before_stop = len(batch.events)
+    repair.on_scan_stop(batch)
+    collect(batch.events[before_stop:])
 
     return out_rows, samples, events
 
@@ -315,6 +327,7 @@ class TestFidMulti:
             assert a.side == SIDE
             assert sorted(a.cam_ids) == sorted(CAMS)
             assert len(set(a.frame_ids)) == 2      # the 2-2 tie
+            assert a.reason == "no_single_outlier_consensus"
         assert self.events["corrections"] == []
 
     def test_loss_bounded_to_the_inconsistent_frames(self):
@@ -418,3 +431,77 @@ def test_sustained_corruption_no_flood_no_shredding():
 
     ts = [s.t for s in samples]
     assert all(b >= a for a, b in zip(ts, ts[1:]))
+
+
+# ── Adversarial witness combinations found during PR review ─────────────
+
+
+def _replace_capture(rows, capture, *, frame_delta=0, timestamp_delta_s=0.0):
+    """Mutate one complete packet while retaining its packet boundaries."""
+    target_t = capture * PERIOD_S
+    return [
+        (
+            cam,
+            ((raw + frame_delta) & 0xFF) if abs(ts - target_t) < 1e-12 else raw,
+            ts + timestamp_delta_s if abs(ts - target_t) < 1e-12 else ts,
+        )
+        for cam, raw, ts in rows
+    ]
+
+
+@pytest.mark.parametrize("timestamp_delta_s", [10.0, -1.0])
+def test_timestamp_outlier_does_not_poison_frame_state(timestamp_delta_s):
+    """One bad packet timestamp must cost no later, honest captures."""
+    rows = _replace_capture(
+        _clean_rows(), 50, timestamp_delta_s=timestamp_delta_s,
+    )
+    out_rows, samples, events = _run_chain(rows)
+
+    assert not _stale(out_rows)
+    assert not _quality(out_rows, "nan_filled")
+    corrected = _quality(out_rows, "ts_corrected")
+    assert len(corrected) == len(CAMS)
+    assert {r[1] for r in corrected} == {50}
+    assert not events["anomalies"]
+    assert all(b.t >= a.t for a, b in zip(samples, samples[1:]))
+
+
+def test_shared_one_count_frame_id_error_is_not_admitted():
+    """A packet-wide +1 counter error is small but still the wrong capture."""
+    rows = _replace_capture(_clean_rows(), 198, frame_delta=1)
+    out_rows, _, events = _run_chain(rows)
+
+    stale = _stale(out_rows)
+    assert len(stale) == len(CAMS)
+    assert all(abs(r[2] - 198 * PERIOD_S) < 1e-12 for r in stale)
+    fills = _quality(out_rows, "nan_filled")
+    assert len(fills) == len(CAMS)
+    assert {r[1] for r in fills} == {198}
+    assert not _quality(out_rows, "ts_corrected")
+    assert not events["windows"]
+
+
+def test_matched_large_counter_and_timestamp_jump_fails_closed():
+    """Two mutually consistent corrupt witnesses must not fabricate a gap."""
+    rows = _replace_capture(
+        _clean_rows(), 198,
+        frame_delta=64,
+        timestamp_delta_s=64 * PERIOD_S,
+    )
+    out_rows, _, events = _run_chain(rows)
+
+    assert len(_stale(out_rows)) == len(CAMS)
+    assert len(_quality(out_rows, "nan_filled")) == len(CAMS)
+    assert sum(e.n_filled for e in events["gap_fills"]) == len(CAMS)
+    assert not _quality(out_rows, "ts_corrected")
+
+
+def test_timestamp_freeze_is_not_misreported_as_frame_id_packet_anomaly():
+    """Repeated timestamps identify a fault, not a 16-camera packet."""
+    out_rows, _, events = _run_chain(_timestamp_freeze_rows())
+
+    assert not events["anomalies"]
+    assert len(events["frozen"]) == 1
+    assert events["frozen"][0].n_frames == len(FREEZE_CAPTURES) * len(CAMS)
+    corrected_ids = {r[1] for r in _quality(out_rows, "ts_corrected")}
+    assert corrected_ids == set(FREEZE_CAPTURES)

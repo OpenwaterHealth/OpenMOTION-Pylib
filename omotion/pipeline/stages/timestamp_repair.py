@@ -4,15 +4,15 @@ Division of labour (sdk#220): a corrupted frame COUNTER is quarantined
 upstream by FrameClassificationStage's unwrapper (counter step vs clock
 cross-check) and never reaches this stage. This stage owns the other
 corruption — frames whose counter is honest but whose TIMESTAMP is not —
-detected via two conditions:
-  1. Cadence deviation: |actual_Δt - expected_Δt| > tolerance, with the
+detected by cadence deviation: |actual_Δt - expected_Δt| > tolerance, with the
      expected period EMA-tracked from clean single-step intervals. An
      abs_frame_id regression (impossible for unwrapper-accepted frames)
      is flagged too, never trusted.
-  2. In-packet frame_id disagreement: cameras in one packet share the
-     capture timestamp, so their frame_ids must agree. Majority vote —
-     only the minority rows are flagged; with two cameras or a tie the
-     whole group is flagged (nothing to adjudicate with).
+
+Packet identity and frame-id consensus are resolved upstream by
+FrameClassificationStage using source packet ids. Timestamps are never used
+as packet identity here because a frozen sensor clock legitimately repeats
+one timestamp across multiple packets.
 
 Bad frames get their timestamps corrected in-place by interpolating
 between the camera's last good frame and the next good frame in the
@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -70,6 +70,11 @@ _EMA_ALPHA = 0.01
 # only the log line is withheld, and the next emitted line reports how many
 # were suppressed.
 _WINDOW_LOG_MIN_INTERVAL_S = 2.0
+_TERMINAL_RESIDUAL_MIN_S = 0.075
+_TERMINAL_RESIDUAL_MAX_S = 0.250
+# A shifted clock that remains internally cadence-consistent for this many
+# consecutive captures is a new timeline, not a transient corrupt burst.
+_RESYNC_CONSISTENT_FRAMES = 8
 
 
 @dataclass
@@ -88,6 +93,7 @@ class _WindowStats:
     # (key, abs_fid) of each flagged frame — consulted at scan stop to
     # recognise the firmware's terminal stop-frame artifact.
     frames: list = field(default_factory=list)
+    residuals_s: list[float] = field(default_factory=list)
 
 
 class TimestampRepairStage:
@@ -100,18 +106,14 @@ class TimestampRepairStage:
 
     name = "timestamp_repair"
 
-    def __init__(self, *, tolerance_s: float = _DEFAULT_TOLERANCE_S,
-                 max_buffer_frames: int = 16):
+    def __init__(self, *, tolerance_s: float = _DEFAULT_TOLERANCE_S):
         """Configure the stage.
 
         Args:
             tolerance_s: max |actual Δt − expected Δt| (seconds) before a
-                frame's timestamp is treated as EMI-corrupted (condition 1).
-            max_buffer_frames: reserved bound on the look-ahead used when
-                re-anchoring a divergent run.
+                frame's timestamp is treated as EMI-corrupted.
         """
         self._tolerance = float(tolerance_s)
-        self._max_buffer = int(max_buffer_frames)
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -121,7 +123,14 @@ class TimestampRepairStage:
         reset()."""
         self._nominal_period = _INITIAL_NOMINAL_PERIOD_S
         self._last_good: dict[tuple[int, int], tuple[int, float]] = {}
+        # Original timestamps from a divergent run. Eight mutually
+        # cadence-consistent frames establish a genuine shifted timeline.
+        self._run_last: dict[tuple[int, int], tuple[int, float]] = {}
+        self._run_len: dict[tuple[int, int], int] = {}
         self._open_window: dict[int, Optional[_WindowStats]] = {0: None, 1: None}
+        # A healthy sibling must not close a window still held open by
+        # another camera on the same side.
+        self._divergent: dict[int, set[tuple[int, int]]] = {0: set(), 1: set()}
         self._scan_windows: list[_WindowStats] = []
         self._total_frames_seen = 0
         self._nan_last_seen: dict[tuple[int, int], tuple[int, float]] = {}
@@ -132,14 +141,10 @@ class TimestampRepairStage:
         # attribution (which runs after the detection pass) can still reach
         # them; logged/dispatched by _flush_pending_closes at end of batch.
         self._pending_closed: dict[int, list] = {0: [], 1: []}
-        # Frozen-clock evidence (sensor-fw#123 timestamp_freeze): per-camera
-        # last WIRE timestamp (pre-correction), the in-batch tally of frames
-        # carrying a reused packet timestamp, and the per-scan set of
-        # (side, ts) values already reported so each frozen value emits one
-        # TimestampRepairInputAnomaly.
+        # Frozen-clock evidence accumulates for the whole scan so a freeze
+        # crossing batch boundaries still reports its complete row count.
         self._wire_prev: dict[tuple[int, int], tuple[int, float]] = {}
-        self._frozen_pending: dict[tuple[int, float], int] = {}
-        self._frozen_emitted: set[tuple[int, float]] = set()
+        self._frozen_counts: dict[tuple[int, float], int] = {}
         # Per-side WARNING throttle state (see _WINDOW_LOG_MIN_INTERVAL_S).
         self._log_last_s: dict[int, float] = {0: float("-inf"), 1: float("-inf")}
         self._log_suppressed: dict[int, int] = {0: 0, 1: 0}
@@ -149,9 +154,8 @@ class TimestampRepairStage:
     def process(self, batch: FrameBatch) -> FrameBatch:
         """Detect and repair EMI timestamp corruption for one batch.
 
-        Flags each non-warmup/stale frame via condition 2 (in-packet
-        frame_id disagreement) or condition 1 (timestamp deviation vs the
-        frame_id cadence), rewrites bad timestamps in place by re-anchoring
+        Flags each non-warmup/stale frame whose timestamp deviates from the
+        frame-id cadence, rewrites bad timestamps in place by re-anchoring
         interpolation, and inserts synthetic NaN-fill rows for missing
         abs_frame_id gaps. Sets ``batch.quality`` and returns the batch
         (a new, larger batch when NaN-fills were inserted)."""
@@ -166,15 +170,12 @@ class TimestampRepairStage:
         self._total_frames_seen += n
         quality = np.full(n, "ok", dtype="<U14")
 
-        # Condition 2 (batch-wide): in-packet frame_id disagreement
-        bad_cond2 = self._detect_frame_id_disagreement(batch)
+        # Packet/frame-id integrity is resolved once, upstream, by
+        # FrameClassificationStage using source packet ids. Re-deriving it
+        # here from timestamps would conflate a frozen clock with one packet.
+        good_ahead = self._build_good_lookahead(batch)
 
-        # Pre-build good-frame lookahead for re-anchoring.
-        # A frame is "provisionally good" if it passes condition 2.
-        # Condition 1 is checked inline below (needs _last_good context).
-        good_ahead = self._build_good_lookahead(batch, bad_cond2)
-
-        # Single pass: detect condition 1 inline, correct, track windows
+        # Single pass: detect cadence deviations, correct, track windows.
         for i in range(n):
             ftype = str(batch.frame_type[i])
             if ftype in ("warmup", "stale"):
@@ -194,12 +195,12 @@ class TimestampRepairStage:
             if (wire_prev is not None and abs_fid > wire_prev[0]
                     and abs(ts - wire_prev[1]) < 1e-9):
                 fkey = (side_idx, round(ts, 6))
-                self._frozen_pending[fkey] = self._frozen_pending.get(fkey, 0) + 1
+                self._frozen_counts[fkey] = self._frozen_counts.get(fkey, 0) + 1
             self._wire_prev[key] = (abs_fid, ts)
 
-            # Condition 1: timestamp deviation (checked inline with _last_good)
-            is_bad = i in bad_cond2
-            if not is_bad and key in self._last_good:
+            # Timestamp deviation checked inline with the trusted anchor.
+            is_bad = False
+            if key in self._last_good:
                 prev_fid, prev_ts = self._last_good[key]
                 fid_gap = abs_fid - prev_fid
                 if fid_gap > 0:
@@ -215,17 +216,29 @@ class TimestampRepairStage:
                     # and close a live window on a bogus frame.
                     is_bad = True
 
+            if is_bad and self._note_divergent_run(key, abs_fid, ts):
+                logger.warning(
+                    "Timestamp timeline re-anchored: side=%d cam=%d after "
+                    "%d mutually cadence-consistent divergent frames; "
+                    "accepting device timestamps from frame %d (t=%.3fs)",
+                    side_idx, cam_id, _RESYNC_CONSISTENT_FRAMES, abs_fid, ts,
+                )
+                is_bad = False
+
             if is_bad:
                 corrected_ts = self._interpolate(key, abs_fid, good_ahead.get(key))
                 batch.timestamp_s[i] = corrected_ts
                 quality[i] = "ts_corrected"
                 self._total_corrected += 1
-                self._track_window_open(side_idx, key, abs_fid, ts)
-                self._last_good[key] = (abs_fid, corrected_ts)
+                self._track_window_open(
+                    side_idx, key, abs_fid, ts, corrected_ts,
+                )
             else:
-                self._track_window_close(side_idx)
+                self._run_last.pop(key, None)
+                self._run_len.pop(key, None)
                 self._update_nominal_period(key, abs_fid, ts)
                 self._last_good[key] = (abs_fid, ts)
+                self._note_good(side_idx, key)
 
         batch.quality = quality
 
@@ -236,70 +249,24 @@ class TimestampRepairStage:
         if nan_fills:
             batch = self._insert_nan_fills(batch, nan_fills)
 
-        self._flush_frozen(batch.events)
         self._flush_pending_closes(batch.events)
         return batch
 
-    def _flush_frozen(self, events: list) -> None:
-        """Emit one TimestampRepairInputAnomaly per newly seen frozen
-        (side, timestamp) value; later frames carrying an already-reported
-        value add nothing (the evidence is out)."""
-        for (side, ts), count in self._frozen_pending.items():
-            if (side, ts) in self._frozen_emitted:
-                continue
-            self._frozen_emitted.add((side, ts))
+    def _emit_frozen(self, events: list) -> None:
+        """Emit complete per-scan frozen-clock evidence."""
+        for (side, ts), count in sorted(self._frozen_counts.items()):
             events.append(TimestampRepairInputAnomaly(
                 side=side, timestamp_s=ts, n_frames=count))
-        self._frozen_pending = {}
+        self._frozen_counts = {}
 
     # ── Detection ───────────────────────────────────────────────────────
 
-    def _detect_frame_id_disagreement(self, batch: FrameBatch) -> set[int]:
-        """Condition 2: cameras at the same timestamp with different frame_ids.
-
-        Compares UNWRAPPED ids: FrameClassificationStage's packet consensus
-        repairs wire-level disagreement before unwrapping, so a row it
-        corrected agrees here and is not flagged twice.
-
-        Majority vote: cameras in one packet share the capture instant, so
-        when their frame ids disagree the minority is the liar — flag only
-        those rows. Flagging the whole group (the old behavior) let one
-        corrupted camera condemn every innocent sibling in the packet
-        (sdk#220: 18 frames "re-timestamped" when ~3 were corrupt). With no
-        strict majority (two cameras, or a tie) there is nothing to
-        adjudicate with, so the whole group is flagged as before."""
-        bad: set[int] = set()
-        groups: dict[tuple[int, float], list[int]] = defaultdict(list)
-        for i in range(len(batch.cam_ids)):
-            ft = str(batch.frame_type[i])
-            if ft in ("warmup", "stale"):
-                continue
-            groups[(int(batch.side_ids[i]), float(batch.timestamp_s[i]))].append(i)
-        for indices in groups.values():
-            if len(indices) < 2:
-                continue
-            fids = [int(batch.abs_frame_ids[j]) for j in indices]
-            if len(set(fids)) <= 1:
-                continue
-            majority_fid, majority_n = Counter(fids).most_common(1)[0]
-            if majority_n * 2 > len(indices):
-                bad.update(j for j, f in zip(indices, fids)
-                           if f != majority_fid)
-            else:
-                bad.update(indices)
-        return bad
-
     # ── Look-ahead for re-anchoring ─────────────────────────────────────
 
-    def _build_good_lookahead(self, batch: FrameBatch,
-                              bad_set: set[int]) -> dict[tuple[int, int], list]:
-        """Collect, per (side, cam), the (abs_fid, ts) of frames not flagged
-        by condition 2 and not warmup/stale — the candidate right-anchors
-        that ``_interpolate`` searches when re-anchoring a bad frame."""
+    def _build_good_lookahead(self, batch: FrameBatch) -> dict[tuple[int, int], list]:
+        """Collect candidate right anchors, per camera."""
         ahead: dict[tuple[int, int], list] = defaultdict(list)
         for i in range(len(batch.cam_ids)):
-            if i in bad_set:
-                continue
             ft = str(batch.frame_type[i])
             if ft in ("warmup", "stale"):
                 continue
@@ -345,6 +312,26 @@ class TimestampRepairStage:
         # Fallback: nominal period from left anchor
         return left_ts + (abs_fid - left_fid) * self._nominal_period
 
+    def _note_divergent_run(self, key: tuple[int, int],
+                            abs_fid: int, ts: float) -> bool:
+        """Return True when a divergent run proves a coherent new timeline."""
+        previous = self._run_last.get(key)
+        if previous is None:
+            run_len = 1
+        else:
+            previous_fid, previous_ts = previous
+            fid_gap = abs_fid - previous_fid
+            expected_dt = fid_gap * self._nominal_period
+            consistent = (
+                fid_gap > 0
+                and abs((ts - previous_ts) - expected_dt)
+                <= self._tolerance + _TOLERANCE_EPS_S
+            )
+            run_len = self._run_len.get(key, 1) + 1 if consistent else 1
+        self._run_last[key] = (abs_fid, ts)
+        self._run_len[key] = run_len
+        return run_len >= _RESYNC_CONSISTENT_FRAMES
+
     # ── Nominal period tracking ─────────────────────────────────────────
 
     def _update_nominal_period(self, key: tuple[int, int],
@@ -366,7 +353,8 @@ class TimestampRepairStage:
     # ── Window tracking (coalesced logging) ─────────────────────────────
 
     def _track_window_open(self, side: int, key: tuple[int, int],
-                           abs_fid: int, ts: float) -> None:
+                           abs_fid: int, ts: float,
+                           corrected_ts: float) -> None:
         """Open this side's misalignment window (or extend it) and count the
         re-timestamped frame, for coalesced per-window logging. ``ts`` is the
         original pre-correction device timestamp."""
@@ -378,6 +366,15 @@ class TimestampRepairStage:
         w.end_t = ts
         w.n_corrected += 1
         w.frames.append((key, abs_fid))
+        w.residuals_s.append(ts - corrected_ts)
+        self._divergent[side].add(key)
+
+    def _note_good(self, side: int, key: tuple[int, int]) -> None:
+        """Close a side window only after every divergent camera recovers."""
+        divergent = self._divergent[side]
+        divergent.discard(key)
+        if self._open_window[side] is not None and not divergent:
+            self._track_window_close(side)
 
     def _track_window_close(self, side: int) -> None:
         """Close this side's open misalignment window, if any, by moving it
@@ -389,6 +386,7 @@ class TimestampRepairStage:
         if w is None:
             return
         self._open_window[side] = None
+        self._divergent[side].clear()
         self._pending_closed[side].append(w)
 
     def _flush_pending_closes(self, events: list, *, force_log: bool = False) -> None:
@@ -432,13 +430,17 @@ class TimestampRepairStage:
 
     def _is_terminal_artifact(self, w: _WindowStats) -> bool:
         """True when a window still open at scan stop is the firmware's
-        terminal stop frame: every flagged frame is the LAST frame its
-        (side, cam) ever produced, and each camera was flagged exactly once.
-        (The laser-off stop frame fires ~150 ms off the 25 ms grid by
-        protocol — its timestamp is truthful, just not on the capture
-        schedule.) A genuine end-of-scan EMI burst flags multiple frames per
-        camera and stays a real window."""
+        terminal stop frame: one shared frame id, one final row per affected
+        camera, and a 75–250 ms positive clock residual. The laser-off stop
+        frame is ~150 ms off-grid by protocol; arbitrary terminal outliers
+        remain genuine misalignment windows."""
         if not w.frames:
+            return False
+        if len({fid for _, fid in w.frames}) != 1:
+            return False
+        if any(not (_TERMINAL_RESIDUAL_MIN_S <= residual
+                    <= _TERMINAL_RESIDUAL_MAX_S)
+               for residual in w.residuals_s):
             return False
         seen_keys: set = set()
         for key, fid in w.frames:
@@ -517,12 +519,20 @@ class TimestampRepairStage:
         new_cam = np.zeros(n_new, dtype=np.int8)
         new_fid = np.zeros(n_new, dtype=np.uint8)
         new_sid = np.zeros(n_new, dtype=np.int8)
+        new_pid = (np.full(n_new, -1, dtype=np.int64)
+                   if batch.packet_ids is not None else None)
         new_abs = np.zeros(n_new, dtype=np.int64)
         new_ts = np.zeros(n_new, dtype=np.float64)
         new_ft = np.empty(n_new, dtype="<U14")
         new_q = np.empty(n_new, dtype="<U14")
         new_hist = np.zeros((n_new, 2, 8, 1024), dtype=np.uint32)
         new_temp = np.zeros((n_new, 2, 8), dtype=np.float32)
+        new_pdc = (None if batch.pdc is None
+                   else np.full(n_new, np.nan, dtype=batch.pdc.dtype))
+        new_tcm = (None if batch.tcm is None
+                   else np.zeros(n_new, dtype=batch.tcm.dtype))
+        new_tcl = (None if batch.tcl is None
+                   else np.zeros(n_new, dtype=batch.tcl.dtype))
 
         # Build insertion map: for each original index, which fills precede it
         fill_before: dict[int, list[dict]] = defaultdict(list)
@@ -543,18 +553,27 @@ class TimestampRepairStage:
             new_cam[out] = batch.cam_ids[i]
             new_fid[out] = batch.frame_ids[i]
             new_sid[out] = batch.side_ids[i]
+            if new_pid is not None:
+                new_pid[out] = batch.packet_ids[i]
             new_abs[out] = batch.abs_frame_ids[i]
             new_ts[out] = batch.timestamp_s[i]
             new_ft[out] = str(batch.frame_type[i])
             new_q[out] = str(batch.quality[i])
             new_hist[out] = batch.raw_histograms[i]
             new_temp[out] = batch.temperature_c[i]
+            if new_pdc is not None:
+                new_pdc[out] = batch.pdc[i]
+            if new_tcm is not None:
+                new_tcm[out] = batch.tcm[i]
+            if new_tcl is not None:
+                new_tcl[out] = batch.tcl[i]
             out += 1
 
         new_batch = FrameBatch(
             cam_ids=new_cam, frame_ids=new_fid, side_ids=new_sid,
+            packet_ids=new_pid,
             raw_histograms=new_hist, temperature_c=new_temp,
-            timestamp_s=new_ts, pdc=None, tcm=None, tcl=None,
+            timestamp_s=new_ts, pdc=new_pdc, tcm=new_tcm, tcl=new_tcl,
         )
         new_batch.abs_frame_ids = new_abs
         new_batch.frame_type = new_ft
@@ -580,6 +599,7 @@ class TimestampRepairStage:
                 continue
             if self._is_terminal_artifact(w):
                 self._open_window[side] = None
+                self._divergent[side].clear()
                 self._total_corrected -= w.n_corrected
                 self._terminal_frames += w.n_corrected
                 logger.info(
@@ -592,7 +612,7 @@ class TimestampRepairStage:
                 self._track_window_close(side)
         # Scan stop bypasses the log throttle: the final windows (and any
         # suppressed-count remainder) must never end the scan silently.
-        self._flush_frozen(batch.events)
+        self._emit_frozen(batch.events)
         self._flush_pending_closes(batch.events, force_log=True)
 
         if self._total_corrected or self._total_nan:

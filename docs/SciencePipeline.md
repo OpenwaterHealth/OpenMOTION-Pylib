@@ -63,6 +63,8 @@ Three things characterise this design and make it auditable:
 |---|---|---|---|
 | `cam_ids` | `(N,)` int8 | Source (parse) | Camera index 0..7 |
 | `frame_ids` | `(N,)` uint8 | Source (parse) | Firmware rolling 8-bit counter |
+| `side_ids` | `(N,)` int8 | Source (parse) | Sensor module: 0 left, 1 right |
+| `packet_ids` | `(N,)` int64 | Source (parse) | Per-side source-packet ordinal; rows from one packet share an id |
 | `raw_histograms` | `(N, 2, 8, 1024)` uint32 | Source (parse) | Raw 1024-bin histogram per side × cam; mutated in place by NoiseFloorStage |
 | `temperature_c` | `(N, 2, 8)` float32 | Source (parse) | Sensor-reported temperature |
 | `timestamp_s` | `(N,)` float64 | Source (parse) | Sensor timestamp; normalised to scan start by `_BaseSource` |
@@ -99,6 +101,8 @@ Stages produce events when something doesn't fit cleanly into per-frame arrays. 
 | `TimestampMisalignmentWindow(...)` | `TimestampRepairStage` (per-side coalesced window; the terminal stop-frame artifact — the firmware's laser-off frame fires ~150 ms off-grid at every scan stop — is reclassified at INFO and NOT reported) | `"diagnostics"` |
 | `FrameIdConsensusCorrection(...)` | `FrameClassificationStage` — one camera's wire frame_id repaired to the packet majority before unwrap; frame data preserved (§5.1) | `"diagnostics"` |
 | `FrameIdPacketAnomaly(...)` | `FrameClassificationStage` — packet frame_ids disagree with no strict majority; the inconsistent frames are quarantined per camera (§5.1) | `"diagnostics"` |
+| `FrameQuarantined(...)` | `FrameClassificationStage` — one row failed the counter/clock adjudication; includes packet, wire, prior absolute frame/clock anchor, step, elapsed-time, and reason evidence (§5.1) | `"diagnostics"` |
+| `CameraStreamGap(...)` | `FrameClassificationStage` — an enabled camera was absent from more than eight source packets, or subsequently resumed; includes side/camera, packet/timestamp bounds, state, and missed count (§5.1) | `"diagnostics"` |
 | `TimestampRepairInputAnomaly(...)` | `TimestampRepairStage` — a packet timestamp was reused across captures (frozen clock); one event per (side, value) (§5.4) | `"diagnostics"` |
 | `FrameGapFillAnomaly(...)` | `TimestampRepairStage` — a per-camera abs_frame_id gap was back-filled with `nan_filled` placeholders (§5.4) | `"diagnostics"` |
 | `TerminalDarkResult(...)` | `DarkCorrectionStage.on_scan_stop` | `"diagnostics"` |
@@ -120,14 +124,14 @@ class Stage(Protocol):
 
 Stages may also implement an optional `on_scan_stop(batch)` lifecycle hook (used by `DarkCorrectionStage` for the terminal-dark flush — see §6.6).
 
-`Pipeline.process(batch)` calls each stage's `process()` in order. `Pipeline.reset()` calls every stage's `reset()` and is invoked at scan start and whenever any stage raises during a scan (`ScanRunner.run()` then continues with the next batch).
+`Pipeline.process(batch)` calls each stage's `process()` in order. `Pipeline.reset()` calls every stage's `reset()` and is invoked at scan start / replay reuse. If a stage raises mid-scan, `ScanRunner` drops that batch but preserves stage state so the next batch can resume the existing frame and dark-history sequence.
 
 The full chain assembled by `default_pipeline()` is:
 
 ```
 FrameClassificationStage
 TelemetryIngestStage                                       # when telemetry wired
-Tee("raw", emit_if_any=ft != "stale", max_duration_s=…)   # conditional
+Tee("raw", max_duration_s=…)                              # conditional
 TimestampRepairStage
 NoiseFloorStage
 MomentsStage
@@ -167,8 +171,11 @@ comes from `batch.side_ids`, which the source sets authoritatively — it is
 never inferred from the histogram payload (a zero-filled row would misroute
 to side 0).
 
-**Packet consensus (before unwrapping).** Cameras in one USB packet share a
-capture timestamp and must agree on frame_id. When one camera disagrees and
+**Packet consensus (before unwrapping).** `LiveUsbSource` preserves the parser's
+packet boundary as `batch.packet_ids`; cameras in one USB packet must agree on
+frame_id. Timestamp equality is deliberately not used as packet identity,
+because a frozen sensor clock can repeat one value across multiple packets.
+When one camera disagrees and
 a strict majority exists (≥ 3 cameras), the dissenting rows are repaired to
 the majority value — the frame's histogram data is good, only its label
 byte was corrupted in flight, so repairing beats discarding
@@ -182,7 +189,9 @@ check below, which quarantines exactly the inconsistent frames.
 unwrapper turns it into a monotonic `abs_frame_id = epoch * 256 + raw`.
 Both the counter and the capture timestamp travel over a noise-exposed link
 (FPGA → MCU), so the unwrapper treats them as **two witnesses to the same
-event** and only advances its state on frames where they agree. Each frame's
+event**. Counter state and the trusted clock anchor are kept separately: a
+single-step timestamp outlier may advance the counter without becoming the
+next clock anchor. Each frame's
 *signed* 8-bit step from the last accepted frame,
 `step = ((raw - last_raw + 128) & 0xFF) - 128`, is judged in order:
 
@@ -191,33 +200,50 @@ event** and only advances its state on frames where they agree. Each frame's
    mid-scan counter blips, and corrupted frame_ids that happen to read
    backward. Unwrapper state is untouched, so the next genuine frame
    resumes the sequence.
-2. **Forward step that over-claims time** → quarantined as `"stale"`
-   (sdk#220). A step of `K` frames claims `K × 25 ms` of elapsed time; if
-   the capture timestamps account for substantially less (slack: 1.5 frame
-   periods or 10 % of the claim, whichever is larger), the frame_id byte is
-   corrupt and believing it would poison the epoch — the historic
-   "etch-a-sketch" failure accepted a corrupted `+64` step and then threw
-   away the next 64 *real* frames as backward. Under-claiming is fine:
-   late frames (the firmware's ~150 ms off-grid terminal stop frame,
-   stalls) keep an honest counter, and timestamp anomalies belong to
-   TimestampRepairStage (§5.4).
-3. **Forward step 1–127 consistent with the clock** → accepted; a numeric
-   wrap (`raw ≤ last_raw`) increments the epoch.
+2. **Single forward step** → accepted. When its timestamp disagrees with the
+   trusted clock anchor, the counter advances but the clock anchor does not;
+   TimestampRepairStage repairs that one timestamp without poisoning future
+   classification.
+3. **Forward step 2–8** → accepted only when elapsed time supports the full
+   step (slack: 12 ms or 10 % of the claimed duration, whichever is larger).
+   This admits bounded real packet loss but rejects a shared off-by-one frame
+   id whose timestamp stayed on the ordinary cadence.
+4. **Forward step > 8** → the first returning row is quarantined even if its
+   timestamp agrees, and is held only as an isolated resynchronization
+   candidate only when the source-packet delivery monitor independently saw
+   that enabled camera disappear for more than eight captures and then
+   return. If the next row advances by exactly one frame and 25 ms, the pair
+   supplies enough evidence to re-anchor the resumed camera. Otherwise
+   the candidate is discarded and the prior accepted state remains intact.
+   This prevents one jointly corrupted counter/timestamp pair (for example
+   `frame_id +64`, `timestamp +1.6 s`) from shifting the epoch permanently,
+   while allowing a real camera outage to recover without wedging the scan.
 
-A genuine forward gap > 127 frames (a > 3.2 s intra-scan dropout) is
-indistinguishable from a backward step in 8 bits and is rejected — that
-data is already lost in a gap that large.
+There is an unavoidable boundary: a small counter jump (2–8) accompanied by
+the exactly matching clock jump is indistinguishable from real bounded packet
+loss without a third independent capture witness. It is accepted and the
+missing ids are represented as NaN gaps; the raw rows and diagnostics preserve
+the evidence. The hard bound makes that ambiguity finite and fail-closed for
+larger claims.
 
-**Stale-first guard.** The very first frame received for any `(side,
-cam_id)` must have `raw_frame_id == 1`. Anything else is a leftover packet
-from a previous scan; the unwrapper flags it and any subsequent frames
-whose `abs_frame_id == raw_frame_id` (i.e. epoch still 0) are labelled
-`"stale"`.
+**Stale-first guard.** The very first accepted frame for any `(side, cam_id)`
+must have `raw_frame_id == 1`. Any other leading value is quarantined without
+seeding state, so a garbage prefix cannot wedge or offset the unwrapper; a
+later `1` starts the sequence normally.
 
-Every rejection is counted per camera (first occurrence logged live, totals
-summarised at scan stop — a non-zero count is a hardware-health signal),
-and `"stale"` rows are excluded by every downstream consumer: the tees'
-gates, `iter_rows`, and each stage's own frame-type filter.
+**Camera delivery warning.** The factory passes the enabled left/right camera
+masks into this stage. For every source packet, the stage compares its camera
+rows to that side's enabled mask. Eight consecutive missing captures produce
+no alert; the ninth emits one error-level log and a `CameraStreamGap` event
+with `state="missing"`. Continued absence is coalesced. The next row from that camera
+emits one recovery log and `CameraStreamGap(state="resumed")` with the total
+missed count. These are early observability signals only: the existing
+prolonged-loss/disconnect path remains responsible for halting the scan.
+
+Every rejection emits `FrameQuarantined`, is counted by reason (first example
+logged live, totals summarised at scan stop), and is labelled `"stale"`.
+Science stages and live tees exclude stale rows. The raw tee and `CsvSink`
+retain them intentionally, preserving the wire evidence needed in post.
 
 **Frame-type labelling.** With `d = discard_count` (default 9) and `Δ = dark_interval` (default 600):
 
@@ -256,9 +282,10 @@ aggregator — telemetry history is owned by the scan, not the pipeline pass.
 
 **File:** `omotion/pipeline/tee.py`. **Writes:** appends `LiveEmit(channel="raw", payload=batch)`.
 
-Positional marker. Routes the full FrameBatch — including warmup frames — to any sink subscribed to `"raw"` (e.g. `CsvSink`). Two gates can suppress emission:
+Positional marker. Routes a snapshot of the full wire FrameBatch — including
+warmup and quarantined `"stale"` rows — to any sink subscribed to `"raw"`
+(e.g. `CsvSink`). One gate can suppress emission:
 
-- `emit_if_any=lambda ft: ft != "stale"` — never emit batches whose every frame is stale. **This is a batch-level gate, not a row filter**: if any frame passes, the whole batch (stale rows included) is emitted, and sinks do per-row filtering via `FrameBatch.iter_rows(exclude=...)`.
 - `max_duration_s` — once the batch's first timestamp exceeds this cap, no further raw emission (used to bound raw-CSV file size on long clinical scans)
 
 If `raw_save_max_duration_s=0` is passed to `default_pipeline()`, the raw tee is omitted entirely.
@@ -277,20 +304,19 @@ stages so everything downstream sees repaired time.
 **Division of labour with §5.1:** a corrupted frame *counter* is quarantined
 by the unwrapper and never reaches this stage. This stage owns the other
 corruption: frames whose counter is honest but whose *timestamp* is not
-(the stage's original design case). Each frame is checked two ways:
+(the stage's original design case). Each frame is checked by cadence:
 
-- **Condition 1 — cadence deviation.** Per `(side, cam)`, a frame's
+- **Cadence deviation.** Per `(side, cam)`, a frame's
   `Δt` from the last good frame should be `fid_gap × T` where `T` is the
   frame period (started at 25 ms, refined by an EMA over clean single-step
   intervals to track the real ~25.02 ms cadence). Deviation beyond
   `tolerance_s` (default 8 ms) flags the frame. An `abs_frame_id`
   regression here (impossible for unwrapper-accepted frames) is flagged
   rather than trusted.
-- **Condition 2 — in-packet disagreement.** All cameras in one USB packet
-  share a capture timestamp, so their frame_ids must agree. On
-  disagreement the **majority vote wins**: only the minority rows are
-  flagged. With two cameras or a tie there is nothing to adjudicate with,
-  so the whole group is flagged.
+
+Packet/frame-id integrity is not re-derived here. It was already decided in
+§5.1 from `packet_ids`; grouping equal timestamps here would turn a frozen
+clock into a false frame-id anomaly.
 
 **Correction.** A flagged frame's timestamp is rewritten by interpolating
 between the camera's last good frame and the next good frame in the batch
@@ -326,7 +352,8 @@ flushes with the throttle bypassed.
 **Terminal stop frame.** The firmware's laser-off frame fires ~150 ms off
 the 25 ms grid at every scan stop. A window still open at `on_scan_stop`
 in which every flagged frame is the last its camera produced (one per
-camera) is reclassified as this expected artifact: logged at INFO and
+camera), all cameras share the same final wire frame id, and every residual
+is between 75 and 250 ms is reclassified as this expected artifact: logged at INFO and
 excluded from the misalignment record. A scan-level summary WARNING
 (window count, frames re-timestamped, frames NaN-filled, % of scan
 affected) closes out any scan where a genuine correction occurred.
@@ -610,11 +637,11 @@ Sinks subscribe to channels by declaring a `channels: set[str]` attribute. The r
 
 | Channel | Payload | Cadence | Source | Typical consumers |
 |---|---|---|---|---|
-| `"raw"` | `FrameBatch` (full, including warmup) | Per batch (~10–100 frames) | `Tee("raw")` | `CsvSink` (raw per-cam CSV — **the only raw record**; the scan DB does not store raw histograms) |
+| `"raw"` | `FrameBatch` (full, including warmup and quarantined rows) | Per batch (~10–100 frames) | `Tee("raw")` | `CsvSink` (raw per-cam CSV — **the only raw record**; the scan DB does not store raw histograms) |
 | `"live"` | `FrameBatch` (excluding warmup/stale) | Per batch | `Tee("live")` | bloodflow-app `_LivePlotSink` (realtime per-frame plot — later overwritten by `"final"` corrections, see §8.3), `ContactQualityWorkflow._ContactQualitySink` (DN thresholding), `ContactQualityMonitor` (live per-camera edge detection, see §11.3), `CalibrationWorkflow._CalibrationCollectorSink` (dark frames) |
 | `"live_side"` | `SideAverageSample` | Per capture per side (reduced mode only) | `SideAverageStage` (realtime path) | bloodflow-app `_LivePlotSink` (reduced-mode live trace) |
 | `"final"` | `EnrichedCorrectedInterval` | Per closed dark interval (~1 per `dark_interval/40` seconds; default ~15 s) | `IntervalClosed` from `DarkCorrectionStage` (per-camera; enriched + stencilled by downstream stages) and `SideAverageStage` (reduced-mode `cam_id=-1` side averages) | `CsvSink` (corrected CSV), `ScanDBSink` (`session_data` — the DB's only science record), bloodflow-app `_FinalBatchSink` (overwrites the realtime points plotted from `"live"` with interval-corrected BFI/BVI/mean/contrast), `CalibrationWorkflow` (corrected light samples) |
-| `"diagnostics"` | `DarkIntegrityWarning`, `StencilFallback`, `TerminalDarkResult`, `PipelineError`, `TriggerStateEvent` | As they occur | Stages append to `batch.events`; the runner also routes out-of-band events here | `DiagnosticsLogSink` (always injected — WARNING logs + scan-end summary), `ScanDBSink` (integrity summary → `session_meta`), bloodflow-app `_TriggerStateSink` |
+| `"diagnostics"` | Integrity and lifecycle `BatchEvent`s, including packet corrections, anomalies, and quarantines | As they occur | Stages append to `batch.events`; the runner also routes out-of-band events here | `DiagnosticsLogSink` (always injected — WARNING logs + scan-end summary), `ScanDBSink` (integrity summary → `session_meta`), bloodflow-app `_TriggerStateSink` |
 
 (There is no `"telemetry"` channel today — console telemetry is written by a
 poller listener outside the pipeline; see §9.)
@@ -641,7 +668,7 @@ The runner consumes `for batch in source`, so any object that yields `FrameBatch
 
 **Used by:** every live scan, via `ScanWorkflow.start_scan()`.
 
-Per-side packet queues feed per-side reader threads that run `omotion.MotionProcessing.parse_histogram_stream`. Parsed `HistogramSample`s accumulate into `FrameBatch`es (default `batch_size_frames=10`, with a `flush_interval_s=0.25` time-based flush) and are pushed to a shared batch queue that the runner iterates.
+Per-side packet queues feed per-side reader threads that run `omotion.MotionProcessing.parse_histogram_stream`. Its packet callback assigns one per-side packet ordinal to all samples in the parsed packet. Complete packets accumulate into `FrameBatch`es (default `batch_size_frames=10`, with a `flush_interval_s=0.25` time-based flush) and are pushed to a shared batch queue that the runner iterates; a batch boundary never splits a packet.
 
 `close()` follows a strict shutdown sequence to avoid losing the firmware's terminal dark frame:
 
@@ -654,7 +681,7 @@ Per-side packet queues feed per-side reader threads that run `omotion.MotionProc
 
 **Used by:** offline analysis, regression testing, the `view_corrected_scan.py` script.
 
-Replays a raw-histogram CSV produced by `CsvSink` (one CSV per side, optionally one or both). Schema: `cam_id, frame_id, timestamp_s, type, 0..1023, temperature, sum, tcm, tcl, pdc`. Yields `FrameBatch`es of `batch_size_frames` (default 100) per side, in order.
+Replays a raw-histogram CSV produced by `CsvSink` (one CSV per side, optionally one or both). Schema: `cam_id, frame_id, timestamp_s, type, 0..1023, temperature, sum, tcm, tcl, pdc`. Yields `FrameBatch`es of `batch_size_frames` (default 100) per side, in order. Because the legacy schema has no packet-id column, replay reconstructs packet boundaries in row order: a timestamp change or repeated camera starts the next packet. The repeated-camera rule preserves boundaries during a timestamp freeze.
 
 The metadata to attach is the caller's responsibility — replay sources don't know the original scan's `scan_id` / `subject_id` / camera masks.
 
@@ -698,7 +725,7 @@ The runner calls `on_scan_start(metadata)` on every sink before the first batch,
 
 Writes the two legacy CSV families. File creation is lazy on first `consume()`.
 
-- **Raw CSV** — one file per side, named `{scan_id}_{subject_id}_{side}_mask{XX}_raw.csv`. Schema: `cam_id, frame_id, timestamp_s, type, 0..1023, temperature, sum, tcm, tcl, pdc`. Each frame's `type` column is the `frame_type` written by FrameClassificationStage (`"warmup" | "dark" | "light" | "stale"`). Telemetry columns (`tcm`, `tcl`, `pdc`) carry TelemetryIngestStage's per-frame stamps (§5.2); cells are blank when no telemetry sample preceded the frame or no aggregator was wired (replays of pre-telemetry scans stay column-compatible).
+- **Raw CSV** — one file per side, named `{scan_id}_{subject_id}_{side}_mask{XX}_raw.csv`. Schema: `cam_id, frame_id, timestamp_s, type, 0..1023, temperature, sum, tcm, tcl, pdc`. Each frame's `type` column is the `frame_type` written by FrameClassificationStage (`"warmup" | "dark" | "light" | "stale"`). Quarantined stale rows are retained here as wire evidence, while science/live consumers exclude them. Telemetry columns (`tcm`, `tcl`, `pdc`) carry TelemetryIngestStage's per-frame stamps (§5.2); cells are blank when no telemetry sample preceded the frame or no aggregator was wired (replays of pre-telemetry scans stay column-compatible).
 - **Corrected CSV** — one file per scan, named `{scan_id}_corrected.csv`.
   - **Normal mode** (82 columns): `frame_id, timestamp_s, {bfi,bvi,mean,contrast,temp}_{l,r}{1..8}`. Per-frame rows are accumulated in `_corrected_acc` until every expected `(side, cam)` slot has contributed a `mean`; only then is the row written.
   - **Reduced mode** (6 columns): `frame_id, timestamp_s, bfi_left, bfi_right, bvi_left, bvi_right`. Each `EnrichedCorrectedFrame` writes into the row's `bfi_{side}`/`bvi_{side}` slot based on `frame.side`; a row is flushed once both expected sides have contributed (or only one, if the other's camera mask is zero).
@@ -707,7 +734,7 @@ On `on_complete`, any partial accumulator rows are flushed verbatim (with blanks
 
 ### 8.2 ScanDBSink
 
-**Channels:** `{"final"}`.
+**Channels:** `{"final", "diagnostics"}`.
 
 SQLite endpoint — **the corrected (final-branch) record only**. On `on_scan_start`, opens a `ScanDatabase` and creates a session row labelled `{scan_id}_{subject_id}`, stamping `session_meta` with `scan_id`, `subject_id`, `operator`, `started_at_iso`, `duration_sec`, `data_semantics: "final"`, and `sdk_flags` (`reduced_mode`, camera masks). Sessions without `data_semantics` were written by older SDKs and hold realtime (live-branch) values in `session_data`.
 
@@ -735,7 +762,14 @@ The SDK itself ships no UI sink — only the bloodflow-app wires PyQt6 signals t
 
 **Channels:** `{"diagnostics"}`. **Always injected** by `ScanWorkflow` (independent of storage flags).
 
-Logs every integrity event at WARNING — `DarkIntegrityWarning` (laser apparently on during a dark frame), `TerminalDarkResult(found=False)` (terminal interval lost), `StencilFallback`, `PipelineError` (a batch was dropped) — and emits a per-type count summary at scan end. Routine events (`TriggerStateEvent`, successful `TerminalDarkResult`) are ignored. `ScanDBSink` independently writes the same summary (count + first/last frame per type) into the session's `session_meta["diagnostics"]`, so the DB record itself shows whether a scan had integrity problems.
+Logs low-volume integrity events at WARNING and emits a per-type count summary
+at scan end. High-volume per-row packet events are coalesced so sustained
+corruption cannot flood the log; the classifier separately logs the first
+quarantine example for each reason. Routine events (`TriggerStateEvent`,
+successful `TerminalDarkResult`) are ignored. `ScanDBSink` independently
+writes counts and first/last locations into
+`session_meta["diagnostics"]`; packet-integrity types also retain first/last
+event details and quarantine reason counts for post-scan diagnosis.
 
 ### 8.5 Writing your own sink
 

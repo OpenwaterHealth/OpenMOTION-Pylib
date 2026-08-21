@@ -63,11 +63,23 @@ CAPTURE_S = {                     # stream long enough for the mode to fire
 
 @pytest.fixture(scope="module")
 def hil_sensor(sensor_right):
-    """Bring the right module's cameras up once for all fault modes
-    (power -> program FPGA -> configure registers, the ScanWorkflow
-    sequence). The right module is the bench unit carrying the
-    fault-matrix firmware."""
-    s = sensor_right
+    """Return the bench unit carrying the fault-matrix firmware."""
+    try:
+        yield sensor_right
+    finally:
+        # Leave the bench passive even when an assertion or timeout aborts a
+        # capture midway through bring-up.
+        sensor_right.set_debug_flags(0)
+        sensor_right.disable_aggregator_fsin()
+        sensor_right.disable_camera(MASK)
+        sensor_right.disable_camera_power(MASK)
+
+
+def _bring_up(s):
+    """Run the production power/program/configure lifecycle for one scan."""
+    if s.disable_camera_power(MASK) is False:
+        pytest.fail(f"disable_camera_power(0x{MASK:02X}) returned False")
+    time.sleep(0.3)
     if s.enable_camera_power(MASK) is False:
         pytest.fail(f"enable_camera_power(0x{MASK:02X}) returned False")
     time.sleep(0.5)
@@ -76,13 +88,12 @@ def hil_sensor(sensor_right):
     time.sleep(0.1)
     if s.camera_configure_registers(MASK) is False:
         pytest.fail(f"camera_configure_registers(0x{MASK:02X}) returned False")
-    yield s
-    s.set_debug_flags(0)
 
 
 def _capture_rows(sensor, flag: int, duration_s: float):
     """Arm one fault mode, stream laser-less for duration_s, and return
-    the parsed rows [(cam_id, raw_fid, ts, ...)] in wire order."""
+    the parsed rows [(cam_id, raw_fid, ts, packet_id)] in wire order."""
+    _bring_up(sensor)
     assert sensor.set_debug_flags(flag), "set_debug_flags failed"
     q: queue.Queue = queue.Queue()
     sensor.uart.histo.flush_stale_data(expected_size=HISTOGRAM_BYTES)
@@ -99,12 +110,22 @@ def _capture_rows(sensor, flag: int, duration_s: float):
         sensor.set_debug_flags(0)
 
     rows = []
+    next_packet_id = 0
+
+    def on_packet(packet):
+        nonlocal next_packet_id
+        packet_id = next_packet_id
+        next_packet_id += 1
+        rows.extend(
+            (sample.cam_id, sample.frame_id, sample.timestamp_s, packet_id)
+            for sample in packet.samples
+        )
+
     stop_evt = threading.Event()
     stop_evt.set()      # parse until the queue drains, then return
     parse_histogram_stream(
         q, stop_evt, bytearray(),
-        on_row_fn=lambda cam, fid, ts, hist, row_sum, temp:
-            rows.append((cam, fid, ts)),
+        on_packet_fn=on_packet,
         expected_row_sum=EXPECTED_HISTOGRAM_SUMS,
     )
     return rows
@@ -118,14 +139,14 @@ def _run_stages(rows):
     repair = TimestampRepairStage()
     events = []
 
-    batches, current, current_ts, captures = [], [], None, 0
+    batches, current, current_packet, captures = [], [], None, 0
     for row in rows:
-        if row[2] != current_ts:
-            current_ts = row[2]
-            captures += 1
-            if captures > 10 and current:
+        if row[3] != current_packet:
+            if captures >= 10 and current:
                 batches.append(current)
-                current, captures = [], 1
+                current, captures = [], 0
+            current_packet = row[3]
+            captures += 1
         current.append(row)
     if current:
         batches.append(current)
@@ -135,6 +156,7 @@ def _run_stages(rows):
         batch = FrameBatch(
             cam_ids=np.array([r[0] for r in chunk], dtype=np.int8),
             frame_ids=np.array([r[1] for r in chunk], dtype=np.uint8),
+            packet_ids=np.array([r[3] for r in chunk], dtype=np.int64),
             side_ids=np.full(n, 1, dtype=np.int8),
             raw_histograms=np.zeros((n, 2, 8, 1024), dtype=np.uint32),
             temperature_c=np.zeros((n, 2, 8), dtype=np.float32),
@@ -144,6 +166,9 @@ def _run_stages(rows):
         batch = classify.process(batch)
         batch = repair.process(batch)
         events.extend(batch.events)
+    before_stop = len(batch.events)
+    repair.on_scan_stop(batch)
+    events.extend(batch.events[before_stop:])
     return events
 
 
