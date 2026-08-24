@@ -322,7 +322,14 @@ readbacks, measurement criteria, candidates, selections, and cleanup
 readbacks. JSON serialization consumes this workflow-owned evidence without
 recomputing acceptance.
 
-`report.html` is not listed as finalized in durable JSON until its atomic
+The durable artifacts are named `<console-serial>-single-laser-cal-run.json`
+and `<console-serial>-single-laser-cal-report.html` inside the per-run
+`WI-00015-<timestamp>` directory, so a folder of runs identifies unit and
+test type without opening anything (the serial prefix is omitted when
+preflight never read one; the JSON lives under `run.json` until finalization
+renames it atomically).
+
+The HTML report is not listed as finalized in durable JSON until its atomic
 write has produced a file. Report construction or rendering failure records a
 failed report-artifact state, replaces a prior workflow pass with a structured
 report failure, and exits nonzero. Live UI/report consumers use the same

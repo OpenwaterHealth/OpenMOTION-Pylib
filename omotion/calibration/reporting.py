@@ -98,6 +98,21 @@ class JsonRunRecorder:
             return
         self._write({**self._latest_checkpoint, "events": self._events})
 
+    def rename_evidence(self, filename: str) -> Path:
+        """Move the JSON evidence to *filename* inside the run directory.
+
+        Called at finalization, once the run's identity evidence exists, so
+        the durable file can carry the unit and procedure in its name. The
+        move is a same-directory atomic replace; later writes go to the new
+        path. If nothing has been recorded yet, only the target path changes.
+        """
+        target = self.run_directory / filename
+        if target != self.json_path:
+            if self.json_path.exists():
+                os.replace(self.json_path, target)
+            self.json_path = target
+        return self.json_path
+
     def checkpoint(self, result: object) -> None:
         """Persist the exact result supplied by the workflow without interpretation."""
         payload = json_safe_value(result)

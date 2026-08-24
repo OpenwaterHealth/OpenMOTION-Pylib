@@ -21,6 +21,7 @@ from .laser import (
     ProcedureStatus,
     SettingReadback,
 )
+from .reporting import _safe_component
 from ._procedure import ReportArtifactEvidence, ReportArtifactStatus
 
 
@@ -324,6 +325,38 @@ def apply_cleanup_failure(result, cleanup_failure: str | None, recorder):
     return result
 
 
+def system_serial_number(result) -> str | None:
+    """The console serial that identifies the system a run belongs to.
+
+    Read from the run's own evidence - the safety result carries a top-level
+    ``console_identity``; the laser results carry an ``identities`` tuple with
+    the console entry in it. None when preflight never read a serial (e.g. the
+    console never connected) or the console is unprogrammed.
+    """
+    console = getattr(result, "console_identity", None)
+    identities = [console] if console is not None else []
+    identities += list(getattr(result, "identities", ()) or ())
+    for identity in identities:
+        if getattr(identity, "role", None) == "console":
+            serial = getattr(identity, "serial", None)
+            if serial is not None and str(serial).strip():
+                return str(serial).strip()
+    return None
+
+
+def run_artifact_stem(procedure_slug: str, result) -> str:
+    """``<system-serial>-<slug>`` when the serial is known, else the slug.
+
+    The file names carry what someone scanning a folder of runs needs - which
+    unit and which procedure. The WI id and the exact time already live on the
+    run directory and inside the report content, so they stay out of the file
+    names.
+    """
+    serial = system_serial_number(result)
+    slug = _safe_component(procedure_slug)
+    return f"{_safe_component(serial)}-{slug}" if serial else slug
+
+
 def finalize_run_artifacts(
     *,
     request,
@@ -331,14 +364,29 @@ def finalize_run_artifacts(
     recorder,
     report_factory,
     procedure_revision: str,
+    procedure_slug: str,
     output_func: Callable[[str], None],
 ) -> int:
     """Persist incomplete/finalized report evidence and print the terminal lines.
 
     Every stage transition is checkpointed before the next fallible step so an
-    interruption can never leave a claimed-but-missing artifact.
+    interruption can never leave a claimed-but-missing artifact. The artifacts
+    are named ``<system-serial>-<procedure_slug>-run.json`` /
+    ``-report.html`` (see run_artifact_stem); the JSON, live under its initial
+    name since the first recorded event, is atomically renamed first - and on
+    a rename failure keeps its old name, because naming must never cost
+    evidence.
     """
-    report_path = Path(recorder.run_directory) / "report.html"
+    stem = run_artifact_stem(procedure_slug, result)
+    rename_evidence = getattr(recorder, "rename_evidence", None)
+    if callable(rename_evidence):
+        try:
+            rename_evidence(f"{stem}-run.json")
+        except OSError as exc:
+            emit_detail(output_func, f"evidence rename failed, keeping "
+                                     f"{Path(recorder.json_path).name}: {exc}")
+    report_name = f"{stem}-report.html"
+    report_path = Path(recorder.run_directory) / report_name
     incomplete_result = replace(
         result,
         report_paths=(Path(recorder.json_path),),
@@ -348,7 +396,7 @@ def finalize_run_artifacts(
     )
     recorder.checkpoint(incomplete_result)
     try:
-        report = report_factory(recorder.run_directory)
+        report = report_factory(recorder.run_directory, report_name)
         report_path = Path(report.report_path)
         finalized_result = replace(
             incomplete_result,

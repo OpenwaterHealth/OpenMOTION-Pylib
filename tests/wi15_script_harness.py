@@ -43,6 +43,11 @@ class FakeRecorder:
     def checkpoint(self, result):
         self.checkpoints.append(result)
 
+    def rename_evidence(self, filename):
+        # Mirrors JsonRunRecorder: repoint (and move, were anything written).
+        self.json_path = self.run_directory / filename
+        return self.json_path
+
 
 class FakeMeter:
     def __init__(self):
@@ -64,8 +69,8 @@ class FakeBench:
 
 
 class FakeReport:
-    def __init__(self, directory):
-        self.report_path = Path(directory) / "report.html"
+    def __init__(self, directory, filename="report.html"):
+        self.report_path = Path(directory) / filename
         self.writes = []
 
     def write(self, request, result, json_path):

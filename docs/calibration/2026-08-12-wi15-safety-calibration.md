@@ -261,6 +261,12 @@ Record:
   and
 - terminal disposition and reason.
 
+The durable artifacts are named `<console-serial>-safety-cal-run.json` and
+`<console-serial>-safety-cal-report.html` inside the per-run
+`WI-00015-<timestamp>` directory (serial prefix omitted when preflight never
+read one; the JSON lives under `run.json` until finalization renames it
+atomically).
+
 ## 14. Automated tests
 
 Unit tests cover:

@@ -135,6 +135,7 @@ def main(
             recorder=recorder,
             report_factory=report_factory,
             procedure_revision=procedure_revision,
+            procedure_slug="dual-laser-cal",
             output_func=output_func,
         )
     except Exception as exc:
