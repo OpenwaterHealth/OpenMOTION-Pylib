@@ -286,7 +286,14 @@ bloodflow-app's Calibrate button. Against the sections above:
 **Implemented:**
 
 - One side per run on the static phantom with a mandatory placement
-  attestation (section 6's placement/no-touch confirmation).
+  attestation (section 6's placement/no-touch confirmation). The
+  attestation is phrased positively - ensure the module has been moved
+  from the 0 cm fixture to the static phantom - per Ethan's 2026-08-24
+  direction.
+- Operator and fixture-ID collection matching the other WI-15
+  procedures (`--operator`/`--fixture-id` or a required prompt); the
+  fixture ID is recorded in the engine request notes, which land in the
+  engine's JSON evidence.
 - 15-second calibration scan and 2-second validation scan (sections 7
   and 11; the engine gained a first-class `validation_duration_sec`
   on 2026-08-14 - previously the validation scan reused the calibration

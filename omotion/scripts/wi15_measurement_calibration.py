@@ -188,12 +188,14 @@ def main(
 
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
+        fixture_id = _required_value(
+            args.fixture_id, "Fixture ID: ", input_func)
         side = _selected_side(args.side, input_func, output_func)
         if not args.phantom_confirmed and not _confirmed(
-            f"Put the {side} sensor on the phantom with the weight "
+            f"Ensure the {side} sensor module has been moved from the "
+            "0 cm fixture to the static phantom, with the weight "
             "(WI Figure H). Remove the covers. Do not touch the setup "
-            "during the test. NEVER use the 0 cm energy-meter fixture "
-            "for this. Ready? (yes/no): ",
+            "during the test. Ready? (yes/no): ",
             input_func,
         ):
             raise _OperatorCanceled
@@ -317,7 +319,8 @@ def main(
             max_duration_sec=CAL_MAX_DURATION_SEC,
             trigger_config=dict(STANDARD_TRIGGER_CONFIG),
             notes=f"WI-00015 Measurement Calibration, side={side}, "
-                  f"run {run_id}, thresholds: {thresholds_label}",
+                  f"run {run_id}, fixture={fixture_id}, "
+                  f"thresholds: {thresholds_label}",
             allow_ungated=args.bench_thresholds,
         )
 

@@ -118,7 +118,8 @@ def run_main(tmp_path, monkeypatch, *, argv_extra=(), answers=(),
     replies = iter(answers)
     lines = []
     code = script.main(
-        ["--output-dir", str(tmp_path), "--operator", "op", *argv_extra],
+        ["--output-dir", str(tmp_path), "--operator", "op",
+         "--fixture-id", "fx-1", *argv_extra],
         input_func=lambda prompt: next(replies),
         output_func=lines.append,
     )
@@ -191,12 +192,80 @@ def test_unprogrammed_serials_are_reported_not_fatal(monkeypatch, tmp_path):
     lines = []
     code = script.main(
         ["--output-dir", str(tmp_path), "--operator", "op",
-         "--side", "left", "--phantom-confirmed"],
+         "--fixture-id", "fx-1", "--side", "left", "--phantom-confirmed"],
         input_func=lambda prompt: "",
         output_func=lines.append,
     )
     assert code == 0
     assert any("left sensor=unprogrammed" in line for line in lines), lines
+
+
+def test_fixture_id_is_collected_like_the_other_procedures_and_recorded(
+    monkeypatch, tmp_path
+):
+    """Fixture collection is mandatory: prompted when not supplied, blank
+    answers reprompted, and the collected ID lands in the run evidence
+    (engine request notes) - parity with the laser/safety procedures (#268)."""
+    script = load_script()
+    fake = FakeInterface()
+    monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
+    prompts = []
+    replies = iter(("", "  ", "FIX-42"))
+
+    def prompt(text):
+        prompts.append(text)
+        return next(replies)
+
+    code = script.main(
+        ["--output-dir", str(tmp_path), "--operator", "op",
+         "--side", "left", "--phantom-confirmed"],
+        input_func=prompt,
+        output_func=lambda _line: None,
+    )
+
+    assert code == 0
+    assert prompts == ["Fixture ID: "] * 3
+    assert "fixture=FIX-42" in fake.requests[0].notes
+
+
+def test_supplied_fixture_id_skips_the_prompt_and_is_recorded(
+    monkeypatch, tmp_path
+):
+    code, fake, _lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "left", "--phantom-confirmed"],
+    )
+    assert code == 0
+    assert "fixture=fx-1" in fake.requests[0].notes
+
+
+def test_phantom_attestation_is_positive_and_names_the_static_phantom(
+    monkeypatch, tmp_path
+):
+    """The prompt tells the operator what to do - move the module from the
+    0 cm fixture to the static phantom - instead of warning what not to do,
+    and calls the static phantom by its full name (#268)."""
+    script = load_script()
+    fake = FakeInterface()
+    monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
+    prompts = []
+
+    def prompt(text):
+        prompts.append(text)
+        return "yes"
+
+    code = script.main(
+        ["--output-dir", str(tmp_path), "--operator", "op",
+         "--fixture-id", "fx-1", "--side", "right"],
+        input_func=prompt,
+        output_func=lambda _line: None,
+    )
+
+    assert code == 0
+    attestation = prompts[-1]
+    assert "moved from the 0 cm fixture to the static phantom" in attestation
+    assert "right sensor module" in attestation
+    assert "NEVER" not in attestation
 
 
 def test_scan_durations_match_the_approved_process(monkeypatch, tmp_path):
