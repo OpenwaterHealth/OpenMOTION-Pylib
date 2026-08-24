@@ -625,3 +625,105 @@ def test_write_result_json_records_mode():
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         assert data["mode"] == "test"
+
+
+# ----- _CalibrationCollectorSink nan_filled skip (#270) -----
+
+from omotion.CalibrationWorkflow import _CalibrationCollectorSink
+from omotion.pipeline.stages.dark import (
+    EnrichedCorrectedFrame,
+    EnrichedCorrectedInterval,
+)
+
+
+def _enriched(cam_id, abs_frame_id, *, side="left", mean=200.0, contrast=0.3,
+              bfi=4.0, bvi=6.0, quality="ok"):
+    return EnrichedCorrectedFrame(
+        abs_frame_id=abs_frame_id, t=abs_frame_id * 0.025,
+        side=side, cam_id=cam_id,
+        mean=mean, std=mean * contrast, contrast=contrast,
+        bfi=bfi, bvi=bvi, quality=quality,
+    )
+
+
+def _nan_filled(cam_id, abs_frame_id, *, side="left"):
+    nan = float("nan")
+    return _enriched(cam_id, abs_frame_id, side=side, mean=nan, contrast=nan,
+                     bfi=nan, bvi=nan, quality="nan_filled")
+
+
+def test_collector_sink_skips_nan_filled_placeholders():
+    """Gap-fill placeholders are not measurements and must not become
+    calibration Samples (#270)."""
+    sink = _CalibrationCollectorSink()
+    sink.on_scan_start(None)
+    sink.consume("final", EnrichedCorrectedInterval(
+        left_abs=0, right_abs=4,
+        frames=[
+            _enriched(0, 1),
+            _enriched(0, 2),
+            _nan_filled(0, 3),
+            _enriched(0, 4),
+        ],
+    ))
+    assert [s.absolute_frame_id for s in sink.corrected_samples] == [1, 2, 4]
+    assert all(math.isfinite(s.mean) for s in sink.corrected_samples)
+
+
+def test_one_dropped_frame_does_not_nan_the_calibration_averages():
+    """Field failure 2026-08-24 (#270): one frame dropped on every camera
+    (FrameGapFillAnomaly x8, 0.2% of the scan) turned every per-camera
+    mean/contrast/BFI/BVI into NaN and failed the whole run. With the
+    placeholders skipped, the aggregates stay finite and the gate judges
+    the real frames."""
+    sink = _CalibrationCollectorSink()
+    sink.on_scan_start(None)
+    for cam_id in range(8):
+        sink.consume("final", EnrichedCorrectedInterval(
+            left_abs=600, right_abs=612,
+            frames=[
+                _enriched(cam_id, 606),
+                _enriched(cam_id, 607),
+                _nan_filled(cam_id, 608),     # the dropped frame, NaN-filled
+                _enriched(cam_id, 609),
+            ],
+        ))
+
+    rows = _build_result_rows_from_samples(
+        sink.corrected_samples,
+        left_camera_mask=0xFF, right_camera_mask=0x00,
+        thresholds=_full_thresholds(),
+        sensor_left=None, sensor_right=None,
+    )
+    assert len(rows) == 8
+    for r in rows:
+        assert math.isfinite(r.mean)
+        assert math.isfinite(r.avg_contrast)
+        assert math.isfinite(r.bfi)
+        assert math.isfinite(r.bvi)
+        assert r.mean_test == "PASS"
+        assert r.contrast_test == "PASS"
+
+
+def test_real_nan_stats_still_fail_the_gate():
+    """The fix must not launder genuine NaN out of real frames: a real
+    (quality "ok") frame with NaN contrast — e.g. a zero-light scan —
+    keeps poisoning that camera's average and fails its gate."""
+    sink = _CalibrationCollectorSink()
+    sink.on_scan_start(None)
+    sink.consume("final", EnrichedCorrectedInterval(
+        left_abs=0, right_abs=3,
+        frames=[
+            _enriched(0, 1),
+            _enriched(0, 2, contrast=float("nan")),   # real frame, bad data
+        ],
+    ))
+    rows = _build_result_rows_from_samples(
+        sink.corrected_samples,
+        left_camera_mask=0x01, right_camera_mask=0x00,
+        thresholds=_full_thresholds(),
+        sensor_left=None, sensor_right=None,
+    )
+    assert len(rows) == 1
+    assert math.isnan(rows[0].avg_contrast)
+    assert rows[0].contrast_test == "FAIL"
