@@ -36,6 +36,7 @@ from omotion import (
 )
 from omotion.MotionInterface import MotionInterface
 from omotion.ScanWorkflow import ConfigureRequest
+from omotion.calibration.reporting import _safe_component
 from omotion.calibration.script_support import (
     OperatorCanceled as _OperatorCanceled,
     confirmed as _confirmed,
@@ -152,6 +153,52 @@ _STAGE_LINES = {
 }
 
 
+def _serial_first_output_root(
+    output_root: Path,
+    console_serial: str,
+    output_func: Callable[[str], None],
+) -> Path:
+    """Rename the run folder to ``<console-serial>-<original name>``.
+
+    Serial first, matching the other WI-15 procedures, so a folder listing
+    sorts by unit. Called only after the interface has released its file
+    handles. A collision gets a ``-N`` suffix; a rename failure keeps the
+    original name - naming must never cost evidence.
+    """
+    if not console_serial:
+        return output_root
+    basename = f"{_safe_component(console_serial)}-{output_root.name}"
+    attempt = 0
+    while True:
+        name = basename if attempt == 0 else f"{basename}-{attempt}"
+        target = output_root.parent / name
+        # Explicit existence check: POSIX rename would silently replace an
+        # empty target directory.
+        if target.exists():
+            attempt += 1
+            continue
+        try:
+            os.rename(output_root, target)
+        except FileExistsError:
+            attempt += 1
+            continue
+        except OSError as exc:
+            _emit_detail(output_func, f"run-folder rename failed, keeping "
+                                      f"{output_root.name}: {exc}")
+            return output_root
+        return target
+
+
+def _remap_path(path: str, old_root: Path, new_root: Path) -> str:
+    """Re-anchor an engine artifact path after the run-folder rename."""
+    if new_root == old_root:
+        return path
+    try:
+        return str(new_root / Path(path).relative_to(old_root))
+    except ValueError:
+        return path
+
+
 def _build_thresholds(
     path: str | None, bench: bool
 ) -> tuple[CalibrationThresholds, str]:
@@ -180,11 +227,6 @@ def main(
     output_func = print if output_func is None else output_func
     forward_library_logging()
     args = _parser().parse_args(argv)
-
-    def fail(problem: str) -> int:
-        output_func(f"Problem: {problem}")
-        output_func("Final result: FAIL")
-        return 1
 
     try:
         operator = _required_value(args.operator, "Operator: ", input_func)
@@ -220,21 +262,31 @@ def main(
             0xFF if side == "right" else 0x00,
         )
         if ungated:
-            return fail(
-                "the limits disable the brightness check for "
-                f"{', '.join(ungated)}. Use --bench-thresholds if an "
-                "ungated bench run is really intended."
-            )
+            output_func("Problem: the limits disable the brightness check "
+                        f"for {', '.join(ungated)}. Use --bench-thresholds "
+                        "if an ungated bench run is really intended.")
+            output_func("Final result: FAIL")
+            return 1
 
     run_id = _run_id()
-    output_root = Path(args.output_dir) / f"measurement-calibration-{run_id}"
+    output_root = Path(args.output_dir) / f"measurement-cal-{run_id}"
     output_root.mkdir(parents=True, exist_ok=True)
 
     output_func(f"Step 1 of 3: Checking the console and the {side} sensor ...")
     iface = interface_factory(
         data_dir=str(output_root / "scans"), operator_id=operator)
     iface.start()
-    try:
+    # Filled during the run; consumed after iface.stop() has released the
+    # file handles, when the run folder gains its serial-first name and the
+    # final artifact paths and verdict are printed.
+    run_info: dict = {"verdict": "FAIL", "result": None, "console_serial": ""}
+
+    def calibrate() -> int:
+        def fail(problem: str) -> int:
+            # The single "Final result:" line is printed after the run.
+            output_func(f"Problem: {problem}")
+            return 1
+
         if not iface.wait_for_ready(console=True, sensors=0,
                                     timeout=READY_TIMEOUT_S):
             return fail("the console is not connected.")
@@ -257,12 +309,16 @@ def main(
         sensor = iface.left if side == "left" else iface.right
         # Record which physical units this run belongs to. The same serials
         # land in the engine's CSV/JSON report files; echoing them here puts
-        # the identity in the operator transcript as well.
+        # the identity in the operator transcript as well. The console
+        # serial also names the artifacts and (post-run) the run folder.
+        console_serial = iface.console.read_serial_number() or ""
+        sensor_serial = sensor.read_serial_number() or ""
+        run_info["console_serial"] = console_serial
         _emit_detail(
             output_func,
             "serial numbers: console="
-            f"{iface.console.read_serial_number() or 'unprogrammed'}, "
-            f"{side} sensor={sensor.read_serial_number() or 'unprogrammed'}",
+            f"{console_serial or 'unprogrammed'}, "
+            f"{side} sensor={sensor_serial or 'unprogrammed'}",
         )
         output_func("Step 2 of 3: Preparing the cameras. "
                     "This can take one minute ...")
@@ -322,6 +378,8 @@ def main(
                   f"run {run_id}, fixture={fixture_id}, "
                   f"thresholds: {thresholds_label}",
             allow_ungated=args.bench_thresholds,
+            artifact_prefix=(f"{_safe_component(console_serial)}-"
+                             if console_serial else ""),
         )
 
         done = threading.Event()
@@ -353,6 +411,7 @@ def main(
             return fail("calibration took too long and was stopped.")
 
         result = holder["result"]
+        run_info["result"] = result
         outcome = getattr(result.outcome, "value", str(result.outcome))
         passed = outcome == "passed"
         _emit_detail(output_func, f"outcome: {outcome}")
@@ -376,31 +435,39 @@ def main(
                 output_func("One or more cameras are outside the limits.")
             if not result.calibration_written:
                 output_func("Nothing was saved to the console.")
-        if result.csv_path:
-            output_func(f"Saved data (CSV): {result.csv_path}")
-        if result.json_path:
-            output_func(f"Saved data (JSON): {result.json_path}")
-
         if passed:
-            verdict = "PASS"
+            run_info["verdict"] = "PASS"
         elif outcome == "canceled":
-            verdict = "CANCELED"
-        else:
-            verdict = "FAIL"
-        output_func(f"Final result: {verdict}")
-        if passed:
-            output_func("Note: for a two-sensor unit, also run this for "
-                        "the other side.")
+            run_info["verdict"] = "CANCELED"
         return 0 if passed else 1
+
+    try:
+        code = calibrate()
     except Exception as exc:
         output_func(f"Measurement Calibration stopped with an error: {exc}")
-        output_func("Final result: FAIL")
-        return 1
+        code = 1
     finally:
+        # Must complete before the folder rename below - the interface
+        # holds open files under output_root until it stops.
         try:
             iface.stop()
         except Exception:
             pass
+
+    final_root = _serial_first_output_root(
+        output_root, run_info["console_serial"], output_func)
+    result = run_info["result"]
+    if result is not None:
+        for label, path in (("CSV", result.csv_path),
+                            ("JSON", result.json_path)):
+            if path:
+                remapped = _remap_path(path, output_root, final_root)
+                output_func(f"Saved data ({label}): {remapped}")
+    output_func(f"Final result: {run_info['verdict']}")
+    if run_info["verdict"] == "PASS":
+        output_func("Note: for a two-sensor unit, also run this for "
+                    "the other side.")
+    return code
 
 
 if __name__ == "__main__":

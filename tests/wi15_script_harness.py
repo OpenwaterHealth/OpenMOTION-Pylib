@@ -43,6 +43,14 @@ class FakeRecorder:
     def checkpoint(self, result):
         self.checkpoints.append(result)
 
+    def rename_run_directory(self, basename):
+        # Mirrors JsonRunRecorder's path bookkeeping. No disk move: this
+        # fake never writes, and prebuilt FakeReports keep working against
+        # whichever directory they were handed.
+        self.run_directory = self.run_directory.parent / basename
+        self.json_path = self.run_directory / self.json_path.name
+        return self.run_directory
+
     def rename_evidence(self, filename):
         # Mirrors JsonRunRecorder: repoint (and move, were anything written).
         self.json_path = self.run_directory / filename
@@ -75,6 +83,9 @@ class FakeReport:
 
     def write(self, request, result, json_path):
         self.writes.append((request, result, Path(json_path)))
+        # The run directory may have been renamed (a path-only move in
+        # FakeRecorder) after this report was constructed.
+        self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.write_text("report", encoding="ascii")
         return self.report_path
 

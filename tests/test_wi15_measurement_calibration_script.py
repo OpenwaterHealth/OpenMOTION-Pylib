@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -13,13 +14,17 @@ def load_script():
 
 
 class FakeConsole:
+    def __init__(self, serial="CONSN01"):
+        self.serial = serial
+
     def read_config(self):
         return SimpleNamespace(
             json_data={"TA_PULSE_WIDTH": 590.0, "TA_CURRENT_DRV": 5000.0}
         )
 
     def read_serial_number(self):
-        return "CONSN01"
+        # Mirrors MotionConsole: None when unprogrammed/unreadable.
+        return self.serial
 
 
 class FakeSensor:
@@ -38,8 +43,8 @@ class FakeSensor:
 
 class FakeInterface:
     def __init__(self, *, outcome="passed", refuse_start=False,
-                 gate_fail=False, **_kwargs):
-        self.console = FakeConsole()
+                 gate_fail=False, console_serial="CONSN01", **_kwargs):
+        self.console = FakeConsole(serial=console_serial)
         self.left = FakeSensor(serial="SNL01")
         self.right = FakeSensor(serial="SNR02")
         self.outcome = outcome
@@ -72,10 +77,21 @@ class FakeInterface:
         self.laser_applied += 1
         return True
 
+    def _artifact_paths(self, request):
+        # Mirrors the engine's naming: <prefix>calibration-<ts>.csv/.json
+        # inside request.output_dir.
+        return (
+            os.path.join(request.output_dir,
+                         f"{request.artifact_prefix}calibration-x.csv"),
+            os.path.join(request.output_dir,
+                         f"{request.artifact_prefix}calibration-x.json"),
+        )
+
     def start_calibration(self, request, *, on_complete_fn, on_progress_fn=None):
         self.requests.append(request)
         if self.refuse_start:
             return False
+        csv_path, json_path = self._artifact_paths(request)
         if self.gate_fail:
             # Mirrors the engine's never-write gate failure: outcome
             # FAILED, the measured rows attached, nothing written.
@@ -87,8 +103,8 @@ class FakeInterface:
                     error="calibration scan below threshold on R6; "
                           "nothing written",
                     rows=[row],
-                    csv_path="cal.csv",
-                    json_path="cal.json",
+                    csv_path=csv_path,
+                    json_path=json_path,
                     calibration_written=False,
                 )
             )
@@ -98,8 +114,8 @@ class FakeInterface:
                 outcome=SimpleNamespace(value=self.outcome),
                 error="",
                 rows=[],
-                csv_path="cal.csv",
-                json_path="cal.json",
+                csv_path=csv_path,
+                json_path=json_path,
                 calibration_written=self.outcome == "passed",
             )
         )
@@ -110,10 +126,11 @@ class FakeInterface:
 
 
 def run_main(tmp_path, monkeypatch, *, argv_extra=(), answers=(),
-             outcome="passed", refuse_start=False, gate_fail=False):
+             outcome="passed", refuse_start=False, gate_fail=False,
+             console_serial="CONSN01"):
     script = load_script()
     fake = FakeInterface(outcome=outcome, refuse_start=refuse_start,
-                         gate_fail=gate_fail)
+                         gate_fail=gate_fail, console_serial=console_serial)
     monkeypatch.setattr(script, "interface_factory", lambda **kwargs: fake)
     replies = iter(answers)
     lines = []
@@ -333,6 +350,59 @@ def test_refused_engine_start_fails_and_stops_interface(monkeypatch, tmp_path):
     )
     assert code == 1
     assert fake.stopped == 1
+
+
+def test_run_folder_and_artifacts_are_named_serial_first(monkeypatch, tmp_path):
+    """After the run the folder is <console-serial>-measurement-cal-<runid>
+    and the engine artifacts carry the same serial-first prefix, so listings
+    sort by unit (#268). The printed paths point at the renamed folder."""
+    code, fake, lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "left", "--phantom-confirmed"],
+    )
+
+    assert code == 0
+    assert fake.requests[0].artifact_prefix == "CONSN01-"
+    renamed = list(tmp_path.glob("CONSN01-measurement-cal-*"))
+    assert len(renamed) == 1
+    assert not list(tmp_path.glob("measurement-cal-*"))
+    csv_lines = [line for line in lines
+                 if line.startswith("Saved data (CSV): ")]
+    assert len(csv_lines) == 1
+    assert str(renamed[0]) in csv_lines[0]
+    assert "CONSN01-calibration-x.csv" in csv_lines[0]
+    json_lines = [line for line in lines
+                  if line.startswith("Saved data (JSON): ")]
+    assert len(json_lines) == 1
+    assert "CONSN01-calibration-x.json" in json_lines[0]
+
+
+def test_failed_runs_also_get_the_serial_first_folder(monkeypatch, tmp_path):
+    """Failure evidence must sort by unit too - the rename happens whenever
+    the console serial was read, not only on a pass."""
+    code, _fake, _lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "right", "--phantom-confirmed"],
+        gate_fail=True,
+    )
+
+    assert code == 1
+    assert len(list(tmp_path.glob("CONSN01-measurement-cal-*"))) == 1
+    assert not list(tmp_path.glob("measurement-cal-*"))
+
+
+def test_unprogrammed_console_keeps_the_plain_folder_and_no_prefix(
+    monkeypatch, tmp_path
+):
+    code, fake, _lines = run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--side", "left", "--phantom-confirmed"],
+        console_serial=None,
+    )
+
+    assert code == 0
+    assert fake.requests[0].artifact_prefix == ""
+    assert len(list(tmp_path.glob("measurement-cal-*"))) == 1
 
 
 def test_below_threshold_gate_shows_rows_and_never_writes(monkeypatch, tmp_path):

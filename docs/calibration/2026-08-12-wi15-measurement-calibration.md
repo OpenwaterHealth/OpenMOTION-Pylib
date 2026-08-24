@@ -309,7 +309,13 @@ bloodflow-app's Calibrate button. Against the sections above:
 - Target-side-only update preserving the other side: the engine copies
   the non-targeted side from the live console calibration baseline
   (section 9; bloodflow-app #117 semantics).
-- Engine CSV/JSON evidence artifacts (part of section 15).
+- Engine CSV/JSON evidence artifacts (part of section 15), named
+  serial-first (`<console-serial>-calibration-<ts>.csv/.json` via the
+  engine's `artifact_prefix`) inside a run folder that is renamed
+  `<console-serial>-measurement-cal-<runid>` once the interface has
+  released its file handles - so listings sort by unit, matching the
+  other WI-15 procedures. Prefix and rename are skipped when the console
+  serial is unreadable.
 
 **Divergences and future work:**
 

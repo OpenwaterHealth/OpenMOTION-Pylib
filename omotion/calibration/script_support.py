@@ -370,14 +370,23 @@ def finalize_run_artifacts(
     """Persist incomplete/finalized report evidence and print the terminal lines.
 
     Every stage transition is checkpointed before the next fallible step so an
-    interruption can never leave a claimed-but-missing artifact. The artifacts
-    are named ``<system-serial>-<procedure_slug>-run.json`` /
-    ``-report.html`` (see run_artifact_stem); the JSON, live under its initial
-    name since the first recorded event, is atomically renamed first - and on
-    a rename failure keeps its old name, because naming must never cost
-    evidence.
+    interruption can never leave a claimed-but-missing artifact. The run
+    directory becomes ``<system-serial>-<procedure_slug>-<run-id>`` and the
+    artifacts inside it ``<system-serial>-<procedure_slug>-run.json`` /
+    ``-report.html`` (see run_artifact_stem) - serial first, so listings sort
+    by unit. The JSON, live under its initial name since the first recorded
+    event, is renamed atomically; any rename failure keeps the old name,
+    because naming must never cost evidence.
     """
     stem = run_artifact_stem(procedure_slug, result)
+    rename_directory = getattr(recorder, "rename_run_directory", None)
+    if callable(rename_directory):
+        try:
+            rename_directory(f"{stem}-{_safe_component(request.run_id)}")
+        except OSError as exc:
+            emit_detail(output_func,
+                        f"run-folder rename failed, keeping "
+                        f"{Path(recorder.run_directory).name}: {exc}")
     rename_evidence = getattr(recorder, "rename_evidence", None)
     if callable(rename_evidence):
         try:

@@ -327,10 +327,11 @@ record as `unspecified`/unset):
 - terminal outcome and NCR reason.
 
 The durable artifacts are named `<console-serial>-dual-laser-cal-run.json`
-and `<console-serial>-dual-laser-cal-report.html` inside the per-run
-`WI-00015-<timestamp>` directory (serial prefix omitted when preflight never
-read one; the JSON lives under `run.json` until finalization renames it
-atomically).
+and `<console-serial>-dual-laser-cal-report.html`, and at finalization the
+per-run directory itself (created as `WI-00015-<timestamp>`) is renamed to
+`<console-serial>-dual-laser-cal-<timestamp>` - serial first throughout, so
+listings sort by unit (serial prefix omitted when preflight never read one;
+the JSON lives under `run.json` until finalization renames it atomically).
 
 ## 14. Automated tests
 

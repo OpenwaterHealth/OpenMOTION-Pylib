@@ -95,3 +95,33 @@ def test_rename_evidence_before_any_write_only_repoints(tmp_path):
     assert not (recorder.run_directory / "run.json").exists()
     recorder.checkpoint({"status": "passed"})
     assert renamed.is_file()
+
+
+def test_rename_run_directory_moves_contents_and_recorder_paths(tmp_path):
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", "run-3")
+    recorder.checkpoint({"status": "in_progress"})
+    original = recorder.run_directory
+
+    target = recorder.rename_run_directory("CS-9-safety-cal-run-3")
+
+    assert target == tmp_path / "CS-9-safety-cal-run-3"
+    assert recorder.run_directory == target
+    assert recorder.json_path == target / "run.json"
+    assert not original.exists()
+    assert json.loads(recorder.json_path.read_text(encoding="utf-8")) == {
+        "status": "in_progress"
+    }
+    recorder.checkpoint({"status": "passed"})
+    assert json.loads(recorder.json_path.read_text(encoding="utf-8")) == {
+        "status": "passed"
+    }
+
+
+def test_rename_run_directory_collisions_get_a_numeric_suffix(tmp_path):
+    (tmp_path / "CS-9-safety-cal-run-4").mkdir()
+    recorder = JsonRunRecorder(tmp_path, "WI-00015", "run-4")
+
+    target = recorder.rename_run_directory("CS-9-safety-cal-run-4")
+
+    assert target == tmp_path / "CS-9-safety-cal-run-4-1"
+    assert recorder.run_directory == target

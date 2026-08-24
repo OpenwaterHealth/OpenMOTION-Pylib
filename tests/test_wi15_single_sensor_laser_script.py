@@ -403,11 +403,12 @@ def test_production_main_finalizes_real_json_and_html_before_claiming_report(
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-real-artifacts"
+    run_directory = tmp_path / "single-laser-cal-real-artifacts"
     payload = json.loads(
         (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
     )
     assert exit_code == 0
+    assert not (tmp_path / "WI-00015-real-artifacts").exists()
     assert (run_directory / "single-laser-cal-report.html").is_file()
     assert payload["status"] == "passed"
     assert payload["report_artifact"]["status"] == ReportArtifactStatus.FINALIZED.value
@@ -443,9 +444,11 @@ def test_artifact_names_carry_the_console_serial_and_test_type(
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-named-artifacts"
+    # The run directory is renamed serial-first too, so listings sort by
+    # unit; the serial is sanitized into a safe filename component.
+    run_directory = tmp_path / "CS-01-A-single-laser-cal-named-artifacts"
     assert exit_code == 0
-    # The serial is sanitized into a safe filename component.
+    assert not (tmp_path / "WI-00015-named-artifacts").exists()
     json_path = run_directory / "CS-01-A-single-laser-cal-run.json"
     report_path = run_directory / "CS-01-A-single-laser-cal-report.html"
     assert json_path.is_file()
@@ -508,7 +511,7 @@ def test_production_main_report_failure_checkpoints_failed_incomplete_artifact(
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-report-failure"
+    run_directory = tmp_path / "single-laser-cal-report-failure"
     payload = json.loads(
         (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
     )
@@ -540,7 +543,7 @@ def test_production_main_report_factory_failure_replaces_prior_pass(monkeypatch,
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-report-factory-failure"
+    run_directory = tmp_path / "single-laser-cal-report-factory-failure"
     payload = json.loads(
         (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
     )
@@ -577,7 +580,7 @@ def test_main_requires_the_claimed_report_path_to_exist(monkeypatch, tmp_path):
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-misdirected-report"
+    run_directory = tmp_path / "single-laser-cal-misdirected-report"
     payload = json.loads(
         (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
     )
