@@ -56,10 +56,13 @@ from . import db_key, db_migrate, db_open, db_schema
 from .SessionPlayback import materialize_corrected_csv
 from .Calibration import Calibration
 from .CalibrationWorkflow import (
+    CalibrationOutcome,
     CalibrationRequest,
     CalibrationResult,
     CalibrationResultRow,
     CalibrationThresholds,
+    factory_calibration_thresholds,
+    ungated_cameras,
 )
 from .connection_state import ConnectionState
 from .boot_mode import BootMode, parse_boot_info
@@ -104,10 +107,13 @@ __all__ = [
     "db_schema",
     "materialize_corrected_csv",
     "Calibration",
+    "CalibrationOutcome",
     "CalibrationRequest",
     "CalibrationResult",
     "CalibrationResultRow",
     "CalibrationThresholds",
+    "factory_calibration_thresholds",
+    "ungated_cameras",
     "ConnectionState",
     "FirmwareKind",
     "FirmwareUpdater",

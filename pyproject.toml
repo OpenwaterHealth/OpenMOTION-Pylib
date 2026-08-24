@@ -20,6 +20,8 @@ dependencies = [
   "pyusb>=1.3.1",
   "libusb1>=3.3.1",
   "requests>=2.33.0",
+  # Ophir Centauri COM driver (omotion.calibration.laser_hardware).
+  "pywin32>=311; sys_platform == 'win32'",
 ]
 
 classifiers = [
@@ -48,7 +50,7 @@ Issues     = "https://github.com/OpenwaterHealth/openmotion-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["omotion"]
+include = ["omotion", "omotion.*"]
 namespaces = false
 
 [tool.setuptools]

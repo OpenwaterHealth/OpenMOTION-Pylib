@@ -106,7 +106,7 @@ class BfiBviStage:
                     mean=float(f.mean), std=float(f.std),
                     contrast=float(contrast),
                     bfi=float(bfi), bvi=float(bvi),
-                    quality=f.quality,
+                    quality=f.quality, temp_c=f.temp_c,
                 ))
             event.corrected_batch = EnrichedCorrectedInterval(
                 left_abs=ci.left_abs, right_abs=ci.right_abs,

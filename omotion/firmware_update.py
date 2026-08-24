@@ -170,10 +170,15 @@ def resolve_asset(
         return name
 
     if mode is BootMode.BOOTLOADER:
+        # Lead with the device state, not the release: an operator picking an
+        # old release is trying to roll back, and the real answer is that a
+        # converted unit cannot leave the bootloader over USB (#225).
         raise UnsupportedReleaseError(
-            f"this release has no signed image ({preferences[0]}), so it predates "
-            f"bootloader support; {kind.value} needs {_MIN_BOOTLOADER_TAG[kind]} "
-            "or newer to update a device that has the bootloader installed"
+            f"the bootloader is active on this {kind.value}, and rolling back to "
+            f"a pre-bootloader release is not possible over USB: the bootloader "
+            f"only accepts signed images, and this release has none "
+            f"({preferences[0]}). Use {_MIN_BOOTLOADER_TAG[kind]} or newer; "
+            "removing the bootloader requires SWD access to the board"
         )
     raise UnsupportedReleaseError(
         f"this release has none of {', '.join(preferences)}; cannot update a "
@@ -294,8 +299,10 @@ class FirmwareUpdateError(RuntimeError):
 
 # Downloaded-file provenance, so update() can find a sibling asset for whatever
 # boot mode the device turns out to be in. In-process only: callers download and
-# flash within one session, and a stale entry is harmless because the sibling
-# lookup is a directory listing, not a cache.
+# flash within one session. Also the authority on which files count as siblings
+# — the download directory may be shared across releases, so a directory
+# listing could offer a leftover from a different version. A stale entry whose
+# file is gone is skipped at lookup time.
 _DOWNLOADS: dict[str, tuple[FirmwareKind, str]] = {}
 
 
@@ -416,8 +423,17 @@ class FirmwareUpdater:
 
         provenance = _provenance(bin_path)
         if provenance is not None:
-            kind, _tag = provenance
-            siblings = [p.name for p in bin_path.parent.iterdir() if p.is_file()]
+            kind, tag = provenance
+            # Only files downloaded from the same release may stand in for
+            # bin_path. The directory itself is no authority: callers reuse one
+            # downloads/ folder across releases, and a listing would let a
+            # higher-preference leftover from a different version win (#218).
+            parent = bin_path.parent.resolve()
+            siblings = [
+                Path(p).name
+                for p, prov in _DOWNLOADS.items()
+                if prov == (kind, tag) and Path(p).parent == parent and Path(p).is_file()
+            ]
             # Raises UnsupportedReleaseError if this release has nothing for
             # the mode — e.g. a bootloader unit pointed at a legacy release.
             return bin_path.parent / resolve_asset(kind, mode, siblings)
