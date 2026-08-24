@@ -326,6 +326,13 @@ record as `unspecified`/unset):
 - resource-cleanup and report-artifact finalization evidence; and
 - terminal outcome and NCR reason.
 
+The durable artifacts are named `<console-serial>-dual-laser-cal-run.json`
+and `<console-serial>-dual-laser-cal-report.html`, and at finalization the
+per-run directory itself (created as `WI-00015-<timestamp>`) is renamed to
+`<console-serial>-dual-laser-cal-<timestamp>` - serial first throughout, so
+listings sort by unit (serial prefix omitted when preflight never read one;
+the JSON lives under `run.json` until finalization renames it atomically).
+
 ## 14. Automated tests
 
 Unit tests cover:

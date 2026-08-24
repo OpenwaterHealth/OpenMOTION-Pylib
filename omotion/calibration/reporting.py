@@ -98,6 +98,51 @@ class JsonRunRecorder:
             return
         self._write({**self._latest_checkpoint, "events": self._events})
 
+    def rename_run_directory(self, basename: str) -> Path:
+        """Rename the run directory (same parent), preserving uniqueness.
+
+        Called at finalization, once identity evidence exists, so runs sort
+        by unit in a folder listing. Collisions get the same ``-N`` suffix
+        the constructor uses. The recorder's paths follow the move.
+        """
+        parent = self.run_directory.parent
+        attempt = 0
+        while True:
+            name = basename if attempt == 0 else f"{basename}-{attempt}"
+            target = parent / name
+            if target == self.run_directory:
+                return self.run_directory
+            # Explicit existence check: POSIX rename would silently replace
+            # an empty target directory. The residual race is acceptable -
+            # each run owns its own directory.
+            if target.exists():
+                attempt += 1
+                continue
+            try:
+                os.rename(self.run_directory, target)
+            except FileExistsError:
+                attempt += 1
+                continue
+            break
+        self.run_directory = target
+        self.json_path = target / self.json_path.name
+        return target
+
+    def rename_evidence(self, filename: str) -> Path:
+        """Move the JSON evidence to *filename* inside the run directory.
+
+        Called at finalization, once the run's identity evidence exists, so
+        the durable file can carry the unit and procedure in its name. The
+        move is a same-directory atomic replace; later writes go to the new
+        path. If nothing has been recorded yet, only the target path changes.
+        """
+        target = self.run_directory / filename
+        if target != self.json_path:
+            if self.json_path.exists():
+                os.replace(self.json_path, target)
+            self.json_path = target
+        return self.json_path
+
     def checkpoint(self, result: object) -> None:
         """Persist the exact result supplied by the workflow without interpretation."""
         payload = json_safe_value(result)

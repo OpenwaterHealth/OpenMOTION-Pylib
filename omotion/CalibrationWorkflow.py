@@ -140,6 +140,10 @@ class CalibrationRequest:
     #   }
     trigger_config: Optional[dict] = None
     notes: str = ""
+    # Prepended verbatim to the calibration-<ts>.csv/.json artifact names
+    # (e.g. "CS0123-" so files sort by console serial). The caller supplies
+    # a filesystem-safe value; empty keeps the historical names.
+    artifact_prefix: str = ""
     average_full_scan: bool = False
     # Explicit opt-in to run with thresholds that cannot fail the
     # pre-write gate (mean/contrast missing or <= 0 for an active
@@ -1466,7 +1470,8 @@ class CalibrationWorkflow:
                     # as a validation-stage failure.
                     rows = gate_rows
                     csv_path = os.path.join(
-                        request.output_dir, f"calibration-{ts}.csv"
+                        request.output_dir,
+                        f"{request.artifact_prefix}calibration-{ts}.csv",
                     )
                     write_result_csv(
                         csv_path, rows,
@@ -1558,7 +1563,8 @@ class CalibrationWorkflow:
                     sensor_right=getattr(self._interface, "right", None),
                 )
                 csv_path = os.path.join(
-                    request.output_dir, f"calibration-{ts}.csv"
+                    request.output_dir,
+                    f"{request.artifact_prefix}calibration-{ts}.csv",
                 )
                 write_result_csv(
                     csv_path, rows,
@@ -1679,7 +1685,8 @@ class CalibrationWorkflow:
                 # so failed/canceled runs still leave a record for triage.
                 try:
                     json_path = os.path.join(
-                        request.output_dir, f"calibration-{ts}.json"
+                        request.output_dir,
+                        f"{request.artifact_prefix}calibration-{ts}.json",
                     )
                     write_result_json(
                         json_path,

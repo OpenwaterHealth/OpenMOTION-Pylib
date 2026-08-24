@@ -60,7 +60,9 @@ def configured_script(monkeypatch, tmp_path, result=FakeResult(ProcedureStatus.P
     monkeypatch.setattr(script, "meter_factory", lambda: meter)
     monkeypatch.setattr(script, "bench_factory", lambda value: bench)
     monkeypatch.setattr(script, "workflow_factory", lambda *args: workflow)
-    monkeypatch.setattr(script, "report_factory", lambda directory: report)
+    monkeypatch.setattr(
+        script, "report_factory", lambda directory, filename: report
+    )
     return script, recorder, meter, bench, workflow, report
 
 
@@ -335,7 +337,7 @@ def test_metadata_prompts_complete_before_hardware_and_cleanup_survives_workflow
             raise RuntimeError("workflow boom")
 
     monkeypatch.setattr(script, "workflow_factory", lambda *args: RaisingWorkflow())
-    monkeypatch.setattr(script, "report_factory", lambda directory: FakeReport(directory))
+    monkeypatch.setattr(script, "report_factory", FakeReport)
 
     exit_code = script.main(
         ["--output-dir", str(tmp_path)],
@@ -357,7 +359,9 @@ def test_metadata_prompts_complete_before_hardware_and_cleanup_survives_workflow
     assert meter.closed == 0
 
 
-def _configure_real_artifact_main(monkeypatch, script, run_id, *, obstruct_report=False):
+def _configure_real_artifact_main(
+    monkeypatch, script, run_id, *, obstruct_report=False, identities=()
+):
     meter = FakeMeter()
     bench = FakeBench(meter)
     monkeypatch.setattr(script, "_run_id", lambda: run_id)
@@ -375,10 +379,13 @@ def _configure_real_artifact_main(monkeypatch, script, run_id, *, obstruct_repor
                 sdk_version=request.sdk_version,
                 started_at=request.started_at,
                 ended_at=datetime.now(timezone.utc),
+                identities=identities,
             )
             self.recorder.checkpoint(result)
             if obstruct_report:
-                (self.recorder.run_directory / "report.html").mkdir()
+                (
+                    self.recorder.run_directory / "single-laser-cal-report.html"
+                ).mkdir()
             return result
 
     monkeypatch.setattr(script, "workflow_factory", ArtifactWorkflow)
@@ -396,16 +403,64 @@ def test_production_main_finalizes_real_json_and_html_before_claiming_report(
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-real-artifacts"
-    payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    run_directory = tmp_path / "single-laser-cal-real-artifacts"
+    payload = json.loads(
+        (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
-    assert (run_directory / "report.html").is_file()
+    assert not (tmp_path / "WI-00015-real-artifacts").exists()
+    assert (run_directory / "single-laser-cal-report.html").is_file()
     assert payload["status"] == "passed"
     assert payload["report_artifact"]["status"] == ReportArtifactStatus.FINALIZED.value
     assert [Path(item).name for item in payload["report_paths"]] == [
-        "run.json",
-        "report.html",
+        "single-laser-cal-run.json",
+        "single-laser-cal-report.html",
     ]
+
+
+def test_artifact_names_carry_the_console_serial_and_test_type(
+    monkeypatch, tmp_path
+):
+    """A run whose preflight read the console serial names its files with it,
+    so a folder of runs is tellable apart without opening anything (#268)."""
+    from omotion.calibration.laser import DeviceIdentity
+
+    script = load_script()
+    _configure_real_artifact_main(
+        monkeypatch,
+        script,
+        "named-artifacts",
+        identities=(
+            DeviceIdentity(
+                role="console",
+                serial="CS 01/A",
+                firmware="1.0",
+                hardware_id="hw",
+            ),
+        ),
+    )
+
+    exit_code = script.main(
+        complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
+    )
+
+    # The run directory is renamed serial-first too, so listings sort by
+    # unit; the serial is sanitized into a safe filename component.
+    run_directory = tmp_path / "CS-01-A-single-laser-cal-named-artifacts"
+    assert exit_code == 0
+    assert not (tmp_path / "WI-00015-named-artifacts").exists()
+    json_path = run_directory / "CS-01-A-single-laser-cal-run.json"
+    report_path = run_directory / "CS-01-A-single-laser-cal-report.html"
+    assert json_path.is_file()
+    assert report_path.is_file()
+    assert not (run_directory / "run.json").exists()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [Path(item).name for item in payload["report_paths"]] == [
+        json_path.name,
+        report_path.name,
+    ]
+    # The report's raw-evidence link points at the renamed JSON.
+    assert f'href="{json_path.name}"' in report_path.read_text(encoding="utf-8")
 
 
 def test_production_main_persists_explicit_incomplete_artifact_during_render(
@@ -417,8 +472,8 @@ def test_production_main_persists_explicit_incomplete_artifact_during_render(
     observed = {}
 
     class InspectingRealReport:
-        def __init__(self, directory):
-            self._real = script.HtmlRunReport(directory)
+        def __init__(self, directory, filename):
+            self._real = script.HtmlRunReport(directory, filename)
             self.report_path = self._real.report_path
 
         def write(self, request, result, json_path):
@@ -435,7 +490,9 @@ def test_production_main_persists_explicit_incomplete_artifact_during_render(
     assert exit_code == 0
     assert observed["status"] == "passed"
     assert observed["report_artifact"]["status"] == "incomplete"
-    assert [Path(item).name for item in observed["report_paths"]] == ["run.json"]
+    assert [Path(item).name for item in observed["report_paths"]] == [
+        "single-laser-cal-run.json"
+    ]
 
 
 def test_production_main_report_failure_checkpoints_failed_incomplete_artifact(
@@ -454,16 +511,22 @@ def test_production_main_report_failure_checkpoints_failed_incomplete_artifact(
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-report-failure"
-    payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    run_directory = tmp_path / "single-laser-cal-report-failure"
+    payload = json.loads(
+        (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 1
     assert payload["status"] == "failed"
     assert payload["failure_kind"] == FailureKind.REPORT.value
     assert payload["report_artifact"]["status"] == ReportArtifactStatus.FAILED.value
-    assert payload["report_artifact"]["path"].endswith("report.html")
+    assert payload["report_artifact"]["path"].endswith(
+        "single-laser-cal-report.html"
+    )
     assert payload["report_artifact"]["failure"]
-    assert [Path(item).name for item in payload["report_paths"]] == ["run.json"]
-    assert not (run_directory / "report.html").is_file()
+    assert [Path(item).name for item in payload["report_paths"]] == [
+        "single-laser-cal-run.json"
+    ]
+    assert not (run_directory / "single-laser-cal-report.html").is_file()
 
 
 def test_production_main_report_factory_failure_replaces_prior_pass(monkeypatch, tmp_path):
@@ -471,7 +534,7 @@ def test_production_main_report_factory_failure_replaces_prior_pass(monkeypatch,
     script = load_script()
     _configure_real_artifact_main(monkeypatch, script, "report-factory-failure")
 
-    def failing_report_factory(_directory):
+    def failing_report_factory(_directory, _filename):
         raise RuntimeError("report construction failed")
 
     monkeypatch.setattr(script, "report_factory", failing_report_factory)
@@ -480,13 +543,17 @@ def test_production_main_report_factory_failure_replaces_prior_pass(monkeypatch,
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-report-factory-failure"
-    payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    run_directory = tmp_path / "single-laser-cal-report-factory-failure"
+    payload = json.loads(
+        (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 1
     assert payload["status"] == "failed"
     assert payload["failure_kind"] == FailureKind.REPORT.value
     assert payload["report_artifact"]["failure"] == "report construction failed"
-    assert Path(payload["report_artifact"]["path"]) == run_directory / "report.html"
+    assert Path(payload["report_artifact"]["path"]) == (
+        run_directory / "single-laser-cal-report.html"
+    )
     assert (
         payload["report_artifact"]["status"]
         == ReportArtifactStatus.FAILED.value
@@ -499,8 +566,8 @@ def test_main_requires_the_claimed_report_path_to_exist(monkeypatch, tmp_path):
     _configure_real_artifact_main(monkeypatch, script, "misdirected-report")
 
     class MisdirectedReport:
-        def __init__(self, directory):
-            self.report_path = Path(directory) / "report.html"
+        def __init__(self, directory, filename):
+            self.report_path = Path(directory) / filename
 
         def write(self, *_args):
             other_path = self.report_path.with_name("other.html")
@@ -513,9 +580,11 @@ def test_main_requires_the_claimed_report_path_to_exist(monkeypatch, tmp_path):
         complete_args(tmp_path), input_func=answers("left", "yes", "yes", "yes")
     )
 
-    run_directory = tmp_path / "WI-00015-misdirected-report"
-    payload = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    run_directory = tmp_path / "single-laser-cal-misdirected-report"
+    payload = json.loads(
+        (run_directory / "single-laser-cal-run.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 1
     assert payload["status"] == "failed"
     assert payload["report_artifact"]["status"] == "failed"
-    assert not (run_directory / "report.html").exists()
+    assert not (run_directory / "single-laser-cal-report.html").exists()

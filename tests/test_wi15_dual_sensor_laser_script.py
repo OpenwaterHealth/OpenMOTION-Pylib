@@ -81,7 +81,7 @@ def configured_script(monkeypatch, tmp_path, terminal_result=None, *, request_pl
     monkeypatch.setattr(script, "meter_factory", lambda: meter)
     monkeypatch.setattr(script, "bench_factory", lambda value: bench)
     monkeypatch.setattr(script, "workflow_factory", FakeWorkflow)
-    monkeypatch.setattr(script, "report_factory", lambda directory: FakeReport(directory))
+    monkeypatch.setattr(script, "report_factory", FakeReport)
     return script, recorder, meter, bench, captured
 
 
