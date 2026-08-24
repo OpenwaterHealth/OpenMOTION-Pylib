@@ -957,7 +957,9 @@ class _CalibrationCollectorSink:
       closes. The sink slices each frame down to a legacy ``Sample``-shaped
       object (mean, std_dev, contrast, BFI, BVI) so the existing math
       functions (``_compute_calibration_from_samples``, ``_build_result_rows_from_samples``)
-      keep working unchanged.
+      keep working unchanged. Synthetic ``quality == "nan_filled"``
+      placeholder frames (gap fill for frames lost in transit) are
+      skipped — they are not measurements (#270).
 
     * ``"live"``   — each payload is a per-frame ``FrameBatch``. The sink
       picks out rows where ``frame_type == "dark"`` and emits a Sample
@@ -988,6 +990,16 @@ class _CalibrationCollectorSink:
         if channel == "final":
             self.batches.append(payload)
             for f in payload.frames:
+                # nan_filled frames are synthetic placeholders inserted by
+                # TimestampRepairStage for frames that never arrived; one of
+                # them NaNs the whole per-camera np.mean aggregate and fails
+                # the run (#270). Same skip policy as side_avg.py /
+                # batch.iter_rows. Real frames whose derived stats are NaN
+                # (e.g. zero-light contrast) must still flow through so the
+                # gate fails on them loudly — do not relax this into
+                # NaN-aware averaging downstream.
+                if str(getattr(f, "quality", "ok")) == "nan_filled":
+                    continue
                 self.corrected_samples.append(Sample(
                     side=f.side,
                     cam_id=f.cam_id,
