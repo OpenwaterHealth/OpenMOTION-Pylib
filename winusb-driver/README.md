@@ -69,8 +69,12 @@ key and the derived/built outputs are never committed:
 
 The legacy PFX password is read from `$env:OW_DRIVER_PFX_PASSWORD` (or
 prompted) and is never written to the repo or logs. CI
-(`.github/workflows/driver-msi.yml`) prefers EV: it sets up eSigner CKA from
-the `ES_USERNAME`/`ES_PASSWORD`/`ES_TOTP_SECRET` secrets and exports
-`CODESIGN_THUMBPRINT`; when those secrets are absent it falls back to
-decoding the legacy `OW_DRIVER_PFX_BASE64` secret with a warning. It then
-runs this script and uploads the zip as an artifact.
+(`.github/workflows/driver-msi.yml`) signs EV **only on manual
+`workflow_dispatch`** — eSigner cloud signings are metered, so the shipping
+driver is signed once per driver change (dispatch → download the artifact →
+vendor the zip into bloodflow-app `resources/`). PR-triggered runs always
+use the legacy `OW_DRIVER_PFX_BASE64` secret (zero eSigner cost, build
+validation only). The EV path sets up eSigner CKA from the
+`ES_USERNAME`/`ES_PASSWORD`/`ES_TOTP_SECRET` secrets and exports
+`CODESIGN_THUMBPRINT`. Either way it then runs this script and uploads the
+zip as an artifact.
