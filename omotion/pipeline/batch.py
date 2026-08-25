@@ -375,7 +375,7 @@ class FrameBatch:
 
     # (N, 2, 8) float32 — raw contrast. Intentionally left None by
     # MomentsStage because contrast requires pedestal subtraction
-    # (K = std / (mean - pedestal)). Computed downstream by BfiBviStage.
+    # (K = std / (mean - pedestal)). Computed downstream by ShotNoiseCorrectionStage.
     contrast_raw:   Optional[np.ndarray] = None
 
     # ── PedestalSubtractionStage output ──────────────────────────────────

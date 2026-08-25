@@ -1,8 +1,8 @@
 """MomentsStage — vectorized first/second moment + std.
 
-See docs/SciencePipeline.md §5.5.
+See docs/SciencePipeline.md §5.6.
 
-Note: contrast_raw is intentionally NOT computed here. SciencePipeline §5.5
+Note: contrast_raw is intentionally NOT computed here. SciencePipeline §5.6
 defines K = std / (u1 - pedestal), i.e. pedestal-subtracted mean, but
 MomentsStage has no pedestal. Pedestal-subtracted contrast is computed
 downstream in ShotNoiseCorrectionStage. contrast_raw is left as None.
