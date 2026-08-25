@@ -186,6 +186,11 @@ Remove-Item $zip -ErrorAction SilentlyContinue
 $payload = @($msi)
 if (Test-Path "cab1.cab") { $payload += "cab1.cab" }
 Compress-Archive -Path $payload -DestinationPath $zip -Force
+if (-not $evMode) {
+    Write-Host "NOTE: $zip is COMMITTED content holding the EV-signed driver." -ForegroundColor Yellow
+    Write-Host "      This legacy-signed rebuild overwrote it in your working tree -- revert" -ForegroundColor Yellow
+    Write-Host "      before committing (git checkout -- winusb-driver/$zip)." -ForegroundColor Yellow
+}
 
 # -- 6. refresh the bloodflow-app vendored zip --
 if ($AppResourcesZip) {
