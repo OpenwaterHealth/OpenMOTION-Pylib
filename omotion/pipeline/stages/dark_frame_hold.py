@@ -143,6 +143,11 @@ class DarkFrameHoldStage:
         DarkFrameQuadraticStencil.interpolate_dark_value for the fallback chain).
 
         Returns None if there is no v(D+1) (interval has no corrected light frames).
+
+        temp_c is fabricated by the same stencil as the other metrics
+        (issue #221). Unlike them it is Optional on the neighbours: a
+        missing stamp counts as a missing neighbour, and with no stamped
+        v(D+1) the dark row's temp stays None instead of raising.
         """
         if not enriched_frames:
             return None
@@ -164,6 +169,8 @@ class DarkFrameHoldStage:
                 v_plus_1=r1, v_plus_2=r2,
             )
 
+        temp_c = _interp("temp_c") if right1.temp_c is not None else None
+
         return EnrichedCorrectedFrame(
             abs_frame_id=d_prev_abs,
             t=d_prev_t,
@@ -175,6 +182,7 @@ class DarkFrameHoldStage:
             bfi=_interp("bfi"),
             bvi=_interp("bvi"),
             quality="ok",
+            temp_c=temp_c,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────

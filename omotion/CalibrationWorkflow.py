@@ -1,11 +1,16 @@
 """Calibration procedure orchestrator.
 
-Submits two short scans through ScanWorkflow, computes (2, 8)
-calibration arrays from scan #1, writes them to the console (which
-auto-refreshes the SDK cache), runs scan #2 with the freshly-written
-calibration, writes a per-camera CSV with mean/contrast/BFI/BVI plus
-pass/fail vs caller-supplied thresholds, and returns a
-CalibrationResult.
+Submits two short scans through ScanWorkflow: computes (2, 8)
+calibration arrays from scan #1, gates on scan #1's mean/contrast,
+applies the proposed calibration to the SDK's in-memory cache only,
+runs validation scan #2 against it, writes a per-camera CSV with
+mean/contrast/BFI/BVI plus pass/fail vs caller-supplied thresholds,
+and returns a CalibrationResult.
+
+If any camera misses any threshold the whole run FAILS and the console
+EEPROM is never touched — the write happens only after a fully-passing
+validation. There is no operator override and no rollback: nothing to
+roll back, because nothing was written.
 
 The workflow does not talk to USB/UART directly. It calls into the
 existing ScanWorkflow and processes the raw-histogram CSVs ScanWorkflow
@@ -69,6 +74,33 @@ class CalibrationThresholds:
     max_dark_per_camera: Optional[list[float]] = None
 
 
+def factory_calibration_thresholds() -> CalibrationThresholds:
+    """The canonical WI-00015 / SPEC-69 factory acceptance thresholds.
+
+    Single source of truth shared by the WI-15 measurement-calibration
+    runner and the apps' ``ft_*`` config defaults — callers that used to
+    hardcode copies of these values import this instead. Mean minimums
+    are per-position (corner cameras 1/8 sit farther from the source, so
+    40 vs the inner cameras' 80); contrast is the absolute speckle floor;
+    BFI/BVI are the SPEC-69 target bands (BFI 0 ± 0.5 must straddle zero
+    — a static phantom legitimately reads slightly negative); dark is the
+    ambient-light ceiling.
+
+    Returns a fresh instance each call: the fields are mutable lists, so
+    a shared module-level constant could be corrupted by one caller
+    editing its thresholds in place.
+    """
+    return CalibrationThresholds(
+        min_mean_per_camera=[40.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 40.0],
+        min_contrast_per_camera=[0.25] * 8,
+        min_bfi_per_camera=[-0.5] * 8,
+        max_bfi_per_camera=[0.5] * 8,
+        min_bvi_per_camera=[4.5] * 8,
+        max_bvi_per_camera=[5.5] * 8,
+        max_dark_per_camera=[3.0] * 8,
+    )
+
+
 @dataclass
 class CalibrationRequest:
     operator_id: str
@@ -79,6 +111,12 @@ class CalibrationRequest:
     duration_sec: int  # required; caller supplies from config
     scan_delay_sec: int = CALIBRATION_DEFAULT_SCAN_DELAY_SEC
     max_duration_sec: int = CALIBRATION_DEFAULT_MAX_DURATION_SEC
+    # Averaging window of the validation scan (phase 4), in seconds. The
+    # approved WI-00015 process runs a 15-second calibration scan and a
+    # 2-second validation scan: validation only reads back the just-written
+    # calibration, so a stable BFI/BVI average (80 frames at 40 Hz) is
+    # enough. The leading scan_delay_sec skip applies to both sub-scans.
+    validation_duration_sec: int = 2
     # Trigger config dict (matches the JSON payload expected by
     # console.set_trigger_json). When non-None the workflow re-sends
     # this to the console firmware before each sub-scan, which resets
@@ -102,7 +140,21 @@ class CalibrationRequest:
     #   }
     trigger_config: Optional[dict] = None
     notes: str = ""
+    # Prepended verbatim to the calibration-<ts>.csv/.json artifact names
+    # (e.g. "CS0123-" so files sort by console serial). The caller supplies
+    # a filesystem-safe value; empty keeps the historical names.
+    artifact_prefix: str = ""
     average_full_scan: bool = False
+    # Explicit opt-in to run with thresholds that cannot fail the
+    # pre-write gate (mean/contrast missing or <= 0 for an active
+    # camera). Without it start_calibration() refuses such a request:
+    # zero thresholds turn the entire #199 protection chain (gate,
+    # never-write, rollback, PASS verdict) into a no-op, which is how a
+    # far-below-spec calibration once reached a console EEPROM and
+    # reported PASSED (#256). Bench/plumbing callers that genuinely
+    # want an ungated run say so here, loudly, instead of encoding it
+    # in threshold values.
+    allow_ungated: bool = False
 
 
 @dataclass
@@ -131,14 +183,20 @@ class CalibrationOutcome(str, enum.Enum):
     meaningful, and could not distinguish a watchdog timeout from an
     operator cancel)."""
     PASSED = "passed"        # ran end-to-end, all cameras met thresholds
-    FAILED = "failed"        # ran end-to-end, >=1 camera missed a threshold
+    FAILED = "failed"        # ran to a verdict, >=1 camera missed a threshold
+                             # (at the pre-write gate or at validation);
+                             # nothing was written to the console
     CANCELED = "canceled"    # cancel_calibration() stopped it
     TIMED_OUT = "timed_out"  # max_duration_sec watchdog stopped it
     ERROR = "error"          # broke before completing (flash, USB, degenerate data, ...)
+    OVERRIDDEN = "overridden"  # written to the console under explicit operator
+                               # override (start_calibration on_override_fn);
+                               # >=1 camera missed a threshold. Never "passed".
 
 
 def _resolve_outcome(
     *, ok: bool, passed: bool, canceled: bool, timed_out: bool,
+    overridden: bool = False,
 ) -> CalibrationOutcome:
     if timed_out:
         return CalibrationOutcome.TIMED_OUT
@@ -146,6 +204,8 @@ def _resolve_outcome(
         return CalibrationOutcome.CANCELED
     if not ok:
         return CalibrationOutcome.ERROR
+    if overridden:
+        return CalibrationOutcome.OVERRIDDEN
     return CalibrationOutcome.PASSED if passed else CalibrationOutcome.FAILED
 
 
@@ -165,12 +225,18 @@ class CalibrationResult:
     validation_scan_right_path: str
     started_timestamp: str
     outcome: Optional[CalibrationOutcome] = None
-    rolled_back: bool = False   # set by Task 3
-    # True when the operator explicitly approved writing a calibration
-    # whose scan-1 means/contrast were below threshold (#199 pre-write
-    # gate). A consented run is never rolled back — the operator already
-    # said this unit is simply dim.
-    consented_below_threshold: bool = False
+    # True only when this run wrote the console EEPROM — i.e. every
+    # camera cleared every threshold and the post-validation write
+    # succeeded. Any other outcome leaves the console untouched: the
+    # proposed calibration only ever existed in the SDK's in-memory
+    # cache during the validation scan.
+    calibration_written: bool = False
+    # Operator override (start_calibration(on_override_fn=...)): True when
+    # the operator consented at the pre-write gate, plus the justification
+    # they gave. ``outcome`` is OVERRIDDEN only when that consent led to a
+    # write.
+    override_granted: bool = False
+    override_justification: str = ""
 
 
 @dataclass
@@ -500,15 +566,59 @@ def evaluate_gate_passed(rows: list[CalibrationResultRow]) -> bool:
     )
 
 
+def ungated_cameras(
+    thresholds: CalibrationThresholds,
+    left_camera_mask: int,
+    right_camera_mask: int,
+) -> list[str]:
+    """Active cameras whose pre-write gate is a no-op, as ``L1``..``R8``
+    labels (empty list = the gate can fail, i.e. it actually gates).
+
+    The gate judges mean and contrast, both non-negative quantities, so
+    ``_threshold_test`` can only ever FAIL a camera whose threshold is a
+    number > 0 at an index the list covers. A camera is reported here
+    when either of its two gate thresholds is missing (list ``None`` or
+    too short), non-numeric, NaN, or <= 0 — for that camera
+    ``evaluate_gate_passed`` is unconditionally PASS and the #199
+    protections cannot trigger.
+    """
+    def _effective(t_list: Optional[list], cam_id: int) -> bool:
+        if t_list is None or cam_id >= len(t_list):
+            return False
+        t = t_list[cam_id]
+        if t is None or not isinstance(t, (int, float)):
+            return False
+        return float(t) > 0  # NaN compares False -> ineffective
+
+    labels: list[str] = []
+    for prefix, mask in (("L", left_camera_mask), ("R", right_camera_mask)):
+        for cam_id in range(CAMS_PER_MODULE):
+            if not _camera_active(mask, cam_id):
+                continue
+            if not (
+                _effective(thresholds.min_mean_per_camera, cam_id)
+                and _effective(thresholds.min_contrast_per_camera, cam_id)
+            ):
+                labels.append(f"{prefix}{cam_id + 1}")
+    return labels
+
+
 _CSV_FIELDS = [
     "camera_index", "side", "cam",
     "mean", "avg_contrast", "bfi", "bvi", "dark",
     "mean_test", "contrast_test", "bfi_test", "bvi_test", "dark_test",
-    "security_id", "hwid",
+    "security_id", "hwid", "sensor_serial", "console_serial",
 ]
 
 
-def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
+def write_result_csv(
+    path: str,
+    rows: list[CalibrationResultRow],
+    *,
+    console_serial: str = "",
+    left_sensor_serial: str = "",
+    right_sensor_serial: str = "",
+) -> None:
     """Write CalibrationResultRow list to ``path`` in the canonical
     column order. Creates parent directories if needed.
 
@@ -516,6 +626,11 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
     physically labeled. Internally ``CalibrationResultRow.cam_id`` is
     still 0-indexed (so it can be used to lookup into the per-camera
     threshold arrays).
+
+    ``sensor_serial`` is the programmed serial of the module each row's
+    camera belongs to (picked by ``row.side``); ``console_serial`` is the
+    console EEPROM serial, repeated per row so the CSV stays traceable to
+    the physical unit on its own. Both are "" when unprogrammed/unread.
     """
     parent = os.path.dirname(path)
     if parent:
@@ -540,6 +655,11 @@ def write_result_csv(path: str, rows: list[CalibrationResultRow]) -> None:
                 "dark_test": r.dark_test,
                 "security_id": r.security_id,
                 "hwid": r.hwid,
+                "sensor_serial": (
+                    left_sensor_serial if r.side == "left"
+                    else right_sensor_serial
+                ),
+                "console_serial": console_serial,
             })
 
 
@@ -566,6 +686,17 @@ def _safe_call(fn: Callable[[], object], default: object = "") -> object:
         return default
 
 
+def _read_device_serial(device) -> str:
+    """Best-effort read of a device's programmed serial number (console
+    EEPROM or sensor module). Returns "" when the device is absent, the
+    serial is unprogrammed, or the read fails — identity reads must never
+    abort report writing.
+    """
+    if device is None:
+        return ""
+    return str(_safe_call(lambda: device.read_serial_number(), "") or "")
+
+
 def _collect_host_info() -> dict:
     return {
         "hostname": _safe_call(socket.gethostname, ""),
@@ -584,8 +715,9 @@ def _collect_sdk_info() -> dict:
 
 def _collect_console_info(console) -> dict:
     if console is None:
-        return {"hwid": "", "firmware_version": ""}
+        return {"serial": "", "hwid": "", "firmware_version": ""}
     return {
+        "serial": _read_device_serial(console),
         "hwid": str(_safe_call(console.get_hardware_id, "") or ""),
         "firmware_version": str(_safe_call(console.get_version, "") or ""),
     }
@@ -595,6 +727,7 @@ def _collect_sensor_info(sensor, camera_mask: int) -> dict:
     if sensor is None:
         return {
             "connected": False,
+            "serial": "",
             "hwid": "",
             "firmware_version": "",
             "camera_mask": f"0x{camera_mask:02X}",
@@ -602,6 +735,7 @@ def _collect_sensor_info(sensor, camera_mask: int) -> dict:
     hwid = _safe_call(sensor.get_cached_hardware_id, "") or _safe_call(sensor.get_hardware_id, "")
     return {
         "connected": True,
+        "serial": _read_device_serial(sensor),
         "hwid": str(hwid or ""),
         "firmware_version": str(_safe_call(sensor.get_version, "") or ""),
         "camera_mask": f"0x{camera_mask:02X}",
@@ -671,16 +805,18 @@ def write_result_json(
     interface,
     mode: str = "calibrate",
     outcome: str = "",
-    calibration_rolled_back: bool = False,
-    consented_below_threshold: bool = False,
+    calibration_written: bool = False,
+    override_granted: bool = False,
+    override_justification: str = "",
 ) -> None:
     """Write a self-describing JSON manifest of the calibration run.
 
-    Includes the per-camera result table, the calibration arrays that
-    were written to the console, the camera/sensor/console identities
-    (security UIDs, HWIDs, firmware versions), and host info — so the
-    file is enough on its own to trace a run back to the exact hardware
-    + firmware that produced it.
+    Includes the per-camera result table, the proposed calibration arrays
+    (``calibration_written`` records whether this run put them on the
+    console EEPROM), the camera/sensor/console identities
+    (serial numbers, security UIDs, HWIDs, firmware versions), and host
+    info — so the file is enough on its own to trace a run back to the
+    exact hardware + firmware that produced it.
     """
     parent = os.path.dirname(path)
     if parent:
@@ -703,10 +839,15 @@ def write_result_json(
         "canceled": canceled,
         "error": error,
         "outcome": outcome,
-        "calibration_rolled_back": calibration_rolled_back,
-        # #199 — this calibration was written on the operator's explicit
-        # authority despite below-threshold scan means/contrast.
-        "consented_below_threshold": consented_below_threshold,
+        # True only when this run wrote the console EEPROM (every camera
+        # cleared every threshold). The "calibration" arrays below are the
+        # proposed values either way — written on a pass, discarded (never
+        # on the console) otherwise.
+        "calibration_written": calibration_written,
+        # Operator override at the pre-write gate (bloodflow-app#482): the
+        # console was written although >=1 camera missed a threshold.
+        "override_granted": override_granted,
+        "override_justification": override_justification,
         "operator_id": request.operator_id,
         "notes": request.notes,
         "host": _collect_host_info(),
@@ -723,6 +864,7 @@ def write_result_json(
         "request": {
             "duration_sec": request.duration_sec,
             "scan_delay_sec": request.scan_delay_sec,
+            "validation_duration_sec": request.validation_duration_sec,
             "max_duration_sec": request.max_duration_sec,
             "left_camera_mask": request.left_camera_mask,
             "right_camera_mask": request.right_camera_mask,
@@ -833,7 +975,9 @@ class _CalibrationCollectorSink:
       closes. The sink slices each frame down to a legacy ``Sample``-shaped
       object (mean, std_dev, contrast, BFI, BVI) so the existing math
       functions (``_compute_calibration_from_samples``, ``_build_result_rows_from_samples``)
-      keep working unchanged.
+      keep working unchanged. Synthetic ``quality == "nan_filled"``
+      placeholder frames (gap fill for frames lost in transit) are
+      skipped — they are not measurements (#270).
 
     * ``"live"``   — each payload is a per-frame ``FrameBatch``. The sink
       picks out rows where ``frame_type == "dark"`` and emits a Sample
@@ -864,6 +1008,16 @@ class _CalibrationCollectorSink:
         if channel == "final":
             self.batches.append(payload)
             for f in payload.frames:
+                # nan_filled frames are synthetic placeholders inserted by
+                # TimestampRepairStage for frames that never arrived; one of
+                # them NaNs the whole per-camera np.mean aggregate and fails
+                # the run (#270). Same skip policy as side_avg.py /
+                # batch.iter_rows. Real frames whose derived stats are NaN
+                # (e.g. zero-light contrast) must still flow through so the
+                # gate fails on them loudly — do not relax this into
+                # NaN-aware averaging downstream.
+                if str(getattr(f, "quality", "ok")) == "nan_filled":
+                    continue
                 self.corrected_samples.append(Sample(
                     side=f.side,
                     cam_id=f.cam_id,
@@ -1024,27 +1178,57 @@ class CalibrationWorkflow:
         on_log_fn: Optional[Callable[[str], None]] = None,
         on_progress_fn: Optional[Callable[[str], None]] = None,
         on_complete_fn: Optional[Callable[[CalibrationResult], None]] = None,
-        on_confirm_fn: Optional[
-            Callable[[list["CalibrationResultRow"]], bool]
+        on_override_fn: Optional[
+            Callable[[list[CalibrationResultRow]], object]
         ] = None,
     ) -> bool:
         """Run the calibration procedure on a worker thread.
 
-        ``on_confirm_fn`` implements the pre-write gate (#199). It is called
-        — on the worker thread — only when the calibration scan's means or
-        contrasts miss their thresholds, with the per-camera rows measured
-        so far, and must return True to authorise writing the console EEPROM
-        anyway or False to abort untouched. **When it is not supplied, a
-        failing gate aborts without writing**, which is the conservative
-        default: the console keeps whatever calibration it already had.
+        **If any camera misses any threshold, the whole run FAILS and the
+        console EEPROM is never written.** The pre-write gate (#199)
+        judges the calibration scan's mean/contrast; the proposed
+        calibration is then applied to the SDK's in-memory cache only, the
+        validation scan measures BFI/BVI/dark against it, and the EEPROM
+        write happens after — and only after — every camera clears every
+        threshold. There is no rollback: a failed run has nothing to undo.
+        (Deliberate ungated bench runs gate-disable via
+        ``CalibrationRequest.allow_ungated`` instead.)
 
-        The handler blocks the worker thread, so it must bound its own wait
-        — the watchdog is paused across the call precisely so operator think
-        time isn't charged against ``max_duration_sec``, which also means it
-        cannot rescue a handler that never returns. Raising is treated as a
-        decline. ``cancel_calibration()`` remains responsive throughout: the
-        stop event is re-checked as soon as the handler returns.
+        ``on_override_fn`` is the engineering-only operator override
+        (bloodflow-app#482, ``omotion.calibration.override``); the clinical
+        app never passes it. When given, a pre-write gate failure calls it
+        on the worker thread with the gate rows instead of failing. A truthy
+        return (``bool``, or an object with ``accepted``/``justification``)
+        lets the run continue to validation, after which the console is
+        written with outcome ``OVERRIDDEN`` — unless any camera fails the
+        ambient-dark check, which is never overridable and leaves the
+        console untouched. A falsy return is the usual FAILED path.
+
+        Returns False without starting when a run is already in flight, or
+        when the request's thresholds cannot fail the pre-write gate and
+        ``request.allow_ungated`` is not set (#256) — the refusal reason is
+        logged and sent through ``on_log_fn``.
         """
+        ungated = ungated_cameras(
+            request.thresholds,
+            request.left_camera_mask,
+            request.right_camera_mask,
+        )
+        if ungated and not request.allow_ungated:
+            msg = (
+                "Calibration refused: the pre-write gate cannot fail for "
+                f"{', '.join(ungated)} (min mean/contrast threshold missing "
+                "or <= 0), so a below-spec calibration would be written to "
+                "the console EEPROM and reported PASSED. Supply real "
+                "thresholds (factory_calibration_thresholds()) or set "
+                "CalibrationRequest.allow_ungated=True for a deliberate "
+                "ungated engineering run."
+            )
+            logger.error(msg)
+            if on_log_fn:
+                on_log_fn(msg)
+            return False
+
         with self._lock:
             if self._running:
                 logger.warning("start_calibration refused: already running.")
@@ -1076,9 +1260,10 @@ class CalibrationWorkflow:
             timed_out = False
             prior_cal: Optional[Calibration] = None
             wrote_calibration = False
-            rolled_back = False
-            consented = False
-            t_proc0 = time.monotonic()
+            applied_override = False
+            override_granted = False
+            override_justification = ""
+            below = ""
 
             logger.info(
                 "Calibration: starting procedure (operator=%s, output_dir=%s, "
@@ -1116,8 +1301,8 @@ class CalibrationWorkflow:
             # (#132 — "all of the corrected data ... averaged, not just
             # the rolling average numbers"). Dark frames flow through
             # on_dark_frame_fn, not on_corrected_batch, so they're not
-            # affected by this widening. Phase 4 (validation scan)
-            # keeps the original window.
+            # affected by this widening. Phase 4 (validation scan) uses
+            # its own validation_duration_sec window.
             phase1_window_frames = (
                 10 ** 9 if request.average_full_scan else window_frames
             )
@@ -1292,12 +1477,12 @@ class CalibrationWorkflow:
                 )
 
                 # ── Phase 2.5: pre-write gate (#199) ──────────────────────
-                # The console EEPROM is not touched until either the
-                # calibration scan's own mean/contrast clear their bars or
-                # the operator explicitly authorises writing anyway. Before
-                # this gate existed the write happened here unconditionally
-                # and a bad run was undone afterwards, which meant every
-                # failed calibration briefly destroyed the previous one.
+                # If any camera misses its mean/contrast bar the whole run
+                # FAILS here, nothing written — unless the caller supplied
+                # the engineering-only on_override_fn and the operator
+                # consents (bloodflow-app#482). Both quantities are
+                # calibration-independent, so judging them on the
+                # calibration scan is sound (see evaluate_gate_passed).
                 _emit_progress("gate")
                 logger.info(
                     "Calibration phase 2.5: pre-write gate on calibration-"
@@ -1312,113 +1497,134 @@ class CalibrationWorkflow:
                     sensor_left=getattr(self._interface, "left", None),
                     sensor_right=getattr(self._interface, "right", None),
                 )
-                if evaluate_gate_passed(gate_rows):
-                    logger.info(
-                        "Calibration phase 2.5 done: gate PASS — proceeding "
-                        "to write."
-                    )
-                else:
-                    below = ", ".join(
-                        f"{'L' if r.side == 'left' else 'R'}{r.cam_id + 1}"
-                        for r in gate_rows
-                        if r.mean_test == "FAIL" or r.contrast_test == "FAIL"
-                    )
+                gate_passed = evaluate_gate_passed(gate_rows)
+                below = ", ".join(
+                    f"{'L' if r.side == 'left' else 'R'}{r.cam_id + 1}"
+                    for r in gate_rows
+                    if r.mean_test == "FAIL" or r.contrast_test == "FAIL"
+                )
+                if not gate_passed and on_override_fn is not None:
+                    _emit_progress("override")
                     logger.warning(
                         "Calibration phase 2.5: gate FAIL — below threshold "
-                        "on %s. Console EEPROM not written yet.", below,
+                        "on %s. Asking the operator for an override (console "
+                        "EEPROM not written yet).", below,
                     )
                     _emit_log(
-                        "Calibration: scan means/contrast below threshold "
-                        f"({below}) — awaiting confirmation before writing."
+                        "Calibration: scan mean/contrast below threshold on "
+                        f"{below}. Nothing has been written; asking the "
+                        "operator whether to continue under override…"
                     )
-                    if on_confirm_fn is None:
-                        error = (
-                            "calibration scan below threshold on "
-                            f"{below}; not written (no confirmation handler)"
-                        )
-                        canceled = True
-                        return
-
-                    # Pause the watchdog: the operator's think time must not
-                    # be charged against max_duration_sec, or a slow answer
-                    # would surface as a bogus timeout.
-                    wd.cancel()
-                    t_wait0 = time.monotonic()
                     try:
-                        consented = bool(on_confirm_fn(gate_rows))
-                    except Exception as e:
+                        decision = on_override_fn(list(gate_rows))
+                    except Exception:
                         logger.exception(
-                            "Calibration gate: confirmation handler raised; "
-                            "treating as declined."
+                            "on_override_fn raised; treating as declined."
                         )
-                        consented = False
-                        error = f"gate confirmation failed: {e}"
-                    wait_s = time.monotonic() - t_wait0
-                    logger.info(
-                        "Calibration phase 2.5: operator %s after %.1fs.",
-                        "APPROVED the write" if consented else "declined",
-                        wait_s,
+                        decision = False
+                    override_granted = bool(
+                        getattr(decision, "accepted", decision)
                     )
-                    if self._stop_evt.is_set():
-                        canceled = True
-                        if not error:
-                            error = "canceled at pre-write gate"
-                        return
-                    if not consented:
-                        canceled = True
-                        if not error:
-                            error = (
-                                "declined at pre-write gate: calibration "
-                                f"scan below threshold on {below}"
-                            )
-                        return
-                    # Restart the watchdog on the remaining budget, with the
-                    # wait excluded.
-                    remaining = request.max_duration_sec - (
-                        time.monotonic() - t_proc0 - wait_s
+                    override_justification = str(
+                        getattr(decision, "justification", "") or ""
                     )
-                    wd = threading.Timer(max(1.0, remaining), _watchdog)
-                    wd.daemon = True
-                    wd.start()
+                    if override_granted:
+                        logger.warning(
+                            "Calibration phase 2.5: operator OVERRIDE granted "
+                            "(%s). Continuing to validation; the console will "
+                            "be written under override unless the ambient-"
+                            "dark check fails.", override_justification,
+                        )
+                        _emit_log(
+                            "Calibration: override accepted — continuing to "
+                            "validation. The console will be written under "
+                            "override unless the ambient-dark check fails."
+                        )
+                    else:
+                        _emit_log("Calibration: override declined.")
+                if not gate_passed and not override_granted:
+                    logger.warning(
+                        "Calibration phase 2.5: gate FAIL — below threshold "
+                        "on %s. Run FAILED; console EEPROM untouched.", below,
+                    )
                     _emit_log(
-                        "Calibration: proceeding with operator approval "
-                        "despite below-threshold scan."
+                        "Calibration: FAILED — scan mean/contrast below "
+                        f"threshold on {below}. Nothing was written to "
+                        "the console."
                     )
+                    # The gate rows are this run's result table (there is
+                    # no validation scan to build one from); the CSV is
+                    # written so the failure leaves the same evidence trail
+                    # as a validation-stage failure.
+                    rows = gate_rows
+                    csv_path = os.path.join(
+                        request.output_dir,
+                        f"{request.artifact_prefix}calibration-{ts}.csv",
+                    )
+                    write_result_csv(
+                        csv_path, rows,
+                        console_serial=_read_device_serial(
+                            getattr(self._interface, "console", None)
+                        ),
+                        left_sensor_serial=_read_device_serial(
+                            getattr(self._interface, "left", None)
+                        ),
+                        right_sensor_serial=_read_device_serial(
+                            getattr(self._interface, "right", None)
+                        ),
+                    )
+                    error = (
+                        "calibration scan below threshold on "
+                        f"{below}; nothing written"
+                    )
+                    ok = True          # ran to an honest FAILED verdict
+                    return
+                logger.info(
+                    "Calibration phase 2.5 done: %s — proceeding to validation.",
+                    "gate PASS" if gate_passed else "operator override granted",
+                )
 
-                _emit_progress("write_calibration")
-                _emit_log("Calibration: writing to console…")
-                logger.info("Calibration phase 3: writing to console EEPROM.")
+                # ── Phase 3: apply proposed calibration IN MEMORY ─────────
+                # The validation scan must measure BFI/BVI with the new
+                # calibration applied, but the console EEPROM must stay
+                # untouched until the verdict is in. set_realtime_calibration
+                # installs the proposed arrays into the same SDK cache the
+                # corrected pipeline reads at scan start; the finally block
+                # restores the console's own calibration unless this run
+                # ends in the post-validation write.
+                _emit_log(
+                    "Calibration: applying proposed calibration for "
+                    "validation (console not written yet)…"
+                )
+                logger.info(
+                    "Calibration phase 3: proposed calibration applied to "
+                    "the in-memory cache only (console EEPROM untouched)."
+                )
                 prior_cal = self._interface.get_calibration()
-                cal_obj = self._interface.write_calibration(
+                self._interface.scan_workflow.set_realtime_calibration(
                     cal_obj.c_min, cal_obj.c_max,
                     cal_obj.i_min, cal_obj.i_max,
                 )
-                wrote_calibration = True
-                logger.info(
-                    "Calibration phase 3 done — calibration written and "
-                    "cached (source=%s).", cal_obj.source,
-                )
-
-                if self._stop_evt.is_set():
-                    canceled = True
-                    error = "canceled after calibration write"
-                    return
+                applied_override = True
 
                 _emit_progress("validation_scan")
                 _emit_log("Calibration: starting validation scan…")
+                validation_window_frames = int(
+                    round(request.validation_duration_sec * CAPTURE_HZ))
                 logger.info(
                     "Calibration phase 4: validation scan, "
-                    "duration=%d sec (= %d duration + %d delay)",
-                    request.duration_sec + request.scan_delay_sec,
-                    request.duration_sec, request.scan_delay_sec,
+                    "duration=%d sec (= %d validation + %d delay)",
+                    request.validation_duration_sec + request.scan_delay_sec,
+                    request.validation_duration_sec, request.scan_delay_sec,
                 )
                 _reset_firmware_trigger("phase 4 (pre-scan)")
                 val_left, val_right, val_samples, val_dark_samples = _run_subscan_capture(
                     self._interface, request,
                     subject_id=f"calib2_{request.operator_id}",
-                    duration_sec=request.duration_sec + request.scan_delay_sec,
+                    duration_sec=request.validation_duration_sec
+                    + request.scan_delay_sec,
                     skip_leading_frames=skip_frames,
-                    frame_window_count=window_frames,
+                    frame_window_count=validation_window_frames,
                     stop_evt=self._stop_evt,
                 )
                 logger.info(
@@ -1445,9 +1651,21 @@ class CalibrationWorkflow:
                     sensor_right=getattr(self._interface, "right", None),
                 )
                 csv_path = os.path.join(
-                    request.output_dir, f"calibration-{ts}.csv"
+                    request.output_dir,
+                    f"{request.artifact_prefix}calibration-{ts}.csv",
                 )
-                write_result_csv(csv_path, rows)
+                write_result_csv(
+                    csv_path, rows,
+                    console_serial=_read_device_serial(
+                        getattr(self._interface, "console", None)
+                    ),
+                    left_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "left", None)
+                    ),
+                    right_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "right", None)
+                    ),
+                )
                 passed = evaluate_passed(rows)
                 pass_count = sum(
                     1 for r in rows
@@ -1464,6 +1682,74 @@ class CalibrationWorkflow:
                     pass_count, len(rows), "PASS" if passed else "FAIL",
                     csv_path,
                 )
+
+                dark_failed = ", ".join(
+                    f"{'L' if r.side == 'left' else 'R'}{r.cam_id + 1}"
+                    for r in rows if r.dark_test == "FAIL"
+                )
+                if passed or (override_granted and not dark_failed):
+                    # ── Phase 6: every camera cleared every threshold — or
+                    # the operator consented at the gate and no camera failed
+                    # the ambient-dark check — only now does the console
+                    # EEPROM get written. The returned object is the console
+                    # read-back (cache refreshed, source="console"), so no
+                    # override restore is needed.
+                    _emit_progress("write_calibration")
+                    if passed:
+                        _emit_log(
+                            "Calibration: all cameras within limits — writing "
+                            "to console…"
+                        )
+                        logger.info(
+                            "Calibration phase 6: writing validated calibration "
+                            "to console EEPROM."
+                        )
+                    else:
+                        _emit_log(
+                            "Calibration: writing to console UNDER OPERATOR "
+                            f"OVERRIDE (below threshold on {below})…"
+                        )
+                        logger.warning(
+                            "Calibration phase 6: writing calibration to "
+                            "console EEPROM under operator override (%s).",
+                            override_justification,
+                        )
+                    cal_obj = self._interface.write_calibration(
+                        cal_obj.c_min, cal_obj.c_max,
+                        cal_obj.i_min, cal_obj.i_max,
+                    )
+                    wrote_calibration = True
+                    logger.info(
+                        "Calibration phase 6 done — calibration written and "
+                        "cached (source=%s).", cal_obj.source,
+                    )
+                elif override_granted:
+                    # Ambient-dark failure is a data-integrity fault (room
+                    # light leaking in), never a dim laser: an override
+                    # cannot write past it.
+                    error = (
+                        f"ambient-dark check failed on {dark_failed}; the "
+                        "override cannot write this calibration; nothing "
+                        "written"
+                    )
+                    _emit_log(
+                        "Calibration: FAILED — ambient-dark check failed on "
+                        f"{dark_failed}. An override cannot write this "
+                        "calibration. Nothing was written to the console."
+                    )
+                    logger.warning(
+                        "Calibration: ambient-dark FAIL on %s under override "
+                        "— console EEPROM untouched.", dark_failed,
+                    )
+                else:
+                    _emit_log(
+                        "Calibration: FAILED — nothing was written to "
+                        "the console."
+                    )
+                    logger.info(
+                        "Calibration: validation FAILED — console EEPROM "
+                        "untouched."
+                    )
                 ok = True
             except Exception as e:
                 logger.exception("Calibration worker failed.")
@@ -1491,47 +1777,31 @@ class CalibrationWorkflow:
                         error = "canceled"
                 outcome = _resolve_outcome(
                     ok=ok, passed=passed, canceled=canceled, timed_out=timed_out,
+                    overridden=override_granted and wrote_calibration,
                 )
 
-                if (
-                    wrote_calibration and prior_cal is not None
-                    and outcome is not CalibrationOutcome.PASSED
-                    and not consented
-                ):
-                    # The write in phase 3 predates the validation verdict.
-                    # Anything short of PASSED means the new calibration is
-                    # unvalidated — put the previous one back (best-effort;
-                    # the console may be gone).
-                    #
-                    # Skipped when the operator consented at the pre-write
-                    # gate: they were shown the below-threshold numbers and
-                    # asked for this calibration anyway, so undoing it would
-                    # discard exactly what they approved. Such a run still
-                    # reports FAILED — the verdict is honest, the write is
-                    # simply intentional.
-                    try:
-                        self._interface.write_calibration(
-                            prior_cal.c_min, prior_cal.c_max,
-                            prior_cal.i_min, prior_cal.i_max,
-                        )
-                        rolled_back = True
-                        _emit_log(
-                            "Calibration: restored previous calibration "
-                            "(run did not pass)."
+                if applied_override and not wrote_calibration:
+                    # The proposed calibration only ever lived in the SDK's
+                    # in-memory cache (phase 3). Put the console's own
+                    # calibration back so later scans — and the next run's
+                    # #117 baseline — read what the EEPROM actually holds.
+                    # Pure cache operation: nothing was written to the
+                    # console, so there is nothing to undo on it.
+                    if prior_cal is not None:
+                        self._interface.scan_workflow._install_calibration(
+                            prior_cal
                         )
                         logger.info(
-                            "Calibration: EEPROM rolled back to pre-run values."
-                        )
-                    except Exception as e:
-                        logger.exception("Calibration: EEPROM rollback failed.")
-                        error = (
-                            f"{error}; rollback failed: {e}"
-                            if error else f"rollback failed: {e}"
+                            "Calibration: in-memory cache restored to the "
+                            "console calibration (source=%s); EEPROM was "
+                            "never written.", prior_cal.source,
                         )
 
                 if cal_obj is not None:
                     logger.info(
-                        "Calibration: final calibration on console:\n%s",
+                        "Calibration: %s:\n%s",
+                        "final calibration on console" if wrote_calibration
+                        else "proposed calibration (NOT written)",
                         _format_calibration(cal_obj),
                     )
 
@@ -1539,7 +1809,8 @@ class CalibrationWorkflow:
                 # so failed/canceled runs still leave a record for triage.
                 try:
                     json_path = os.path.join(
-                        request.output_dir, f"calibration-{ts}.json"
+                        request.output_dir,
+                        f"{request.artifact_prefix}calibration-{ts}.json",
                     )
                     write_result_json(
                         json_path,
@@ -1558,8 +1829,9 @@ class CalibrationWorkflow:
                             "validation_right": val_right,
                         },
                         interface=self._interface,
-                        calibration_rolled_back=rolled_back,
-                        consented_below_threshold=consented,
+                        calibration_written=wrote_calibration,
+                        override_granted=override_granted,
+                        override_justification=override_justification,
                     )
                     logger.info("Calibration manifest written: %s", json_path)
                 except Exception:
@@ -1582,8 +1854,9 @@ class CalibrationWorkflow:
                     validation_scan_right_path=val_right,
                     started_timestamp=ts,
                     outcome=outcome,
-                    rolled_back=rolled_back,
-                    consented_below_threshold=consented,
+                    calibration_written=wrote_calibration,
+                    override_granted=override_granted,
+                    override_justification=override_justification,
                 )
                 with self._lock:
                     self._running = False
@@ -1788,7 +2061,18 @@ class CalibrationWorkflow:
                 csv_path = os.path.join(
                     request.output_dir, f"test-{ts}.csv"
                 )
-                write_result_csv(csv_path, rows)
+                write_result_csv(
+                    csv_path, rows,
+                    console_serial=_read_device_serial(
+                        getattr(self._interface, "console", None)
+                    ),
+                    left_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "left", None)
+                    ),
+                    right_sensor_serial=_read_device_serial(
+                        getattr(self._interface, "right", None)
+                    ),
+                )
                 # Test "passed" uses the same gate as calibration but
                 # without BFI/BVI participating — Test acceptance is
                 # mean + contrast + dark only (see spec R5/R6).
@@ -1858,7 +2142,6 @@ class CalibrationWorkflow:
                         },
                         interface=self._interface,
                         mode="test",
-                        calibration_rolled_back=False,
                     )
                     logger.info("Test scan manifest written: %s", json_path)
                 except Exception:

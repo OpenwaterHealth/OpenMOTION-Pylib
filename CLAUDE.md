@@ -37,6 +37,7 @@ Three-tier API: facade → device wrapper → transport.
 | Transport | `omotion/StreamInterface.py` | 382 | USB bulk streaming (sensor IF 1 = histo, IF 2 = IMU). Daemon reader thread per endpoint. |
 | Workflow | `omotion/ScanWorkflow.py` | 1110 | Full acquisition orchestration. Owns hardware bring-up + lifecycle; feeds frames into the pipeline. |
 | Workflow | `omotion/CalibrationWorkflow.py` | 1643 | Per-camera gain / I_max calibration. |
+| Procedure | `omotion/calibration/` | — | Auditable WI-00015 laser and safety calibration workflows, hardware adapters, and reports. |
 | **Science** | `omotion/pipeline/` | — | **Stage-based BFI/BVI pipeline** (`sources`, stages in `pipeline.py`, `sinks`, `runner`, `factory`, `pedestal`, `batch`, `tee`, `telemetry`). **The science lives here.** Full reference: `docs/SciencePipeline.md`. |
 | Science | `omotion/MotionProcessing.py` | 730 | Wire-level histogram packet **parsing only** — a thin shim feeding the pipeline. (BFI/BVI moved to `omotion/pipeline/`; this module is slated to dissolve eventually.) |
 | Config | `omotion/config.py` | 291 | VID/PID, baud, packet types, command opcodes, `DEBUG_FLAG_*` bits. Single source of truth. |
@@ -121,8 +122,8 @@ iface.stop()
 |---|---|
 | `docs/API.md` | **Public API / interface guide** — how a host app or script drives the SDK (`MotionInterface`, scans, reading the DB, custom sinks). Start here for consumer-facing usage. |
 | `docs/Architecture.md` | Comprehensive — layer diagram, module reference, transport details. |
-| `docs/scan-sequencing.md` | Frame ID unwrapping + histogram packet ordering. |
-| `docs/SciencePipeline.md` | BFI/BVI computation. |
+| `docs/scan-sequencing.md` | Scan lifecycle MCU↔SDK↔app sequencing (configure/start/per-frame/teardown) + firmware correctness analysis. |
+| `docs/SciencePipeline.md` | BFI/BVI computation; frame-ID unwrap + quarantine (§5.1) and timestamp repair (§5.4). |
 | `docs/ScanDatabase.md` | SQLite schema. |
 | `docs/ScanDatabase-HardwareVerification.md` | DB sink test plan. |
 | `docs/ConsoleTelemetry.md` | PDC (dark correction) + TEC telemetry. |

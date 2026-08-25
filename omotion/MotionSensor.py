@@ -309,6 +309,7 @@ class MotionSensor(SignalWrapper):
 
         # State machine
         self._state = ConnectionState.DISCONNECTED
+        self._state_reason = ""
         self._state_cv = threading.Condition()
         self._monitor = None  # set by MotionInterface.start()
 
@@ -368,12 +369,18 @@ class MotionSensor(SignalWrapper):
     # State machine
     # ──────────────────────────────────────────────────────────────────
 
+    @property
+    def state_reason(self) -> str:
+        """Reason given for the last state transition ("" before any)."""
+        return self._state_reason
+
     def _set_state(self, new_state: ConnectionState, reason: str = "") -> None:
         with self._state_cv:
             if self._state == new_state:
                 return
             old = self._state
             self._state = new_state
+            self._state_reason = reason
             self._state_cv.notify_all()
         try:
             self.signal_state_changed.emit(self, old, new_state, reason)
@@ -432,6 +439,7 @@ class MotionSensor(SignalWrapper):
         backoff = [0.05, 0.1, 0.25, 0.5, 1.0]
         last_error: Optional[Exception] = None
         for delay in backoff:
+            composite: Optional[MotionComposite] = None
             try:
                 dev = self._find_dev()
                 if dev is None:
@@ -490,10 +498,19 @@ class MotionSensor(SignalWrapper):
                     "%s connect attempt failed (%s); retrying in %.0f ms",
                     self.name, e, delay * 1000,
                 )
-                # Roll back any partial open.
+                # Roll back any partial open. Close the *local* composite,
+                # not just self.uart: when open() itself raised, self.uart
+                # was never assigned, and skipping close orphaned the
+                # composite — leaking its claimed USB interfaces and (before
+                # CommInterface deferred it to start_read_thread) a
+                # _process_responses thread per failed attempt, ~52 of which
+                # showed up in a packaged-app fault dump (2026-08-17) after
+                # a day of connect/disconnect cycles. On attempts where open
+                # succeeded, composite is self.uart — same object, same
+                # close.
                 try:
-                    if self.uart is not None:
-                        self.uart.close()
+                    if composite is not None:
+                        composite.close()
                 except Exception:
                     pass
                 self.uart = None

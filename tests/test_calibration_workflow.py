@@ -56,6 +56,10 @@ def request_obj(tmp_path, thresholds):
         duration_sec=2,
         scan_delay_sec=0,
         max_duration_sec=60,
+        # The permissive thresholds above cannot fail the pre-write gate,
+        # which start_calibration refuses by default (#256). These tests
+        # exercise plumbing, so opt in to the ungated run explicitly.
+        allow_ungated=True,
     )
 
 
@@ -422,64 +426,71 @@ def test_cancel_outcome_is_canceled_not_timed_out(interface, request_obj):
     assert "max_duration_sec" not in holder["r"].error
 
 
-def test_fail_verdict_rolls_back_eeprom(interface, request_obj, thresholds):
-    """An *unconsented* FAILED calibration must not leave the unvalidated
-    calibration on the console: write_calibration is called a second time
-    with the pre-run values and the result reports rolled_back=True.
+def test_fail_verdict_never_writes(interface, request_obj, thresholds):
+    """A FAILED calibration must leave the console EEPROM untouched: the
+    write happens only after a fully-passing validation, so a validation
+    failure means write_calibration is never called at all, and the SDK's
+    in-memory cache is restored to the console's own calibration.
 
     The failure is forced on BFI rather than mean. Mean and contrast are
-    now judged one scan earlier by the pre-write gate (#199), which aborts
-    before writing at all — so there would be nothing to roll back. BFI is
-    a calibrated quantity, knowable only after the validation scan, which
-    is precisely the case the rollback still exists for.
+    judged one scan earlier by the pre-write gate (#199), which fails the
+    run before the validation scan even starts — BFI is a calibrated
+    quantity, knowable only after the validation scan, which makes it the
+    last threshold that can stop the write.
     """
     from dataclasses import replace
-    from omotion.CalibrationWorkflow import CalibrationThresholds
+    from omotion.CalibrationWorkflow import (
+        CalibrationOutcome, CalibrationThresholds,
+    )
     _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
     prior = interface.get_calibration()
-    # Snapshot before starting — the demo interface's cached calibration
-    # object could in principle be refreshed by a later write, so compare
-    # against copies taken now rather than re-reading `prior` after the
-    # run completes.
-    prior_c_min = prior.c_min.copy()
-    prior_c_max = prior.c_max.copy()
     strict = CalibrationThresholds(
         min_mean_per_camera=[0.0] * 8,      # gate passes …
-        min_contrast_per_camera=[0.0] * 8,  # … so the write happens
+        min_contrast_per_camera=[0.0] * 8,  # … so validation is reached
         min_bfi_per_camera=[1e9] * 8,       # then validation fails
         min_bvi_per_camera=[-1e9] * 8,
     )
     req = replace(request_obj, thresholds=strict)
-    calls = []
-    def _record_write(cmin, cmax, imin, imax):
-        calls.append((cmin, cmax, imin, imax))
-        return Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
-                           source="test")
-    interface.write_calibration = MagicMock(side_effect=_record_write)
+    interface.write_calibration = MagicMock()
     done = threading.Event(); holder = {}
     interface.start_calibration(
         req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
     assert done.wait(30)
     r = holder["r"]
     assert r.ok and not r.passed
-    assert r.rolled_back is True
-    assert len(calls) == 2                       # new write + restore
-    np.testing.assert_array_equal(calls[1][0], prior_c_min)
-    np.testing.assert_array_equal(calls[1][1], prior_c_max)
+    assert r.outcome is CalibrationOutcome.FAILED
+    assert r.calibration_written is False
+    interface.write_calibration.assert_not_called()
+    # The proposed calibration lived in the in-memory cache for the
+    # validation scan only; afterwards the cache must hold the console's
+    # own calibration again.
+    assert interface.get_calibration() is prior
 
 
-def test_pass_verdict_does_not_roll_back(interface, request_obj):
+def test_pass_verdict_writes_once_after_validation(interface, request_obj):
     # happy-path arrangement from test_happy_path_produces_csv_and_passes
     if not _have_fixtures():
         pytest.skip("fixture CSVs missing")
 
     _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
+    # Record the order of the steps that matter: the in-memory apply must
+    # precede the validation scan, and the single EEPROM write must be
+    # the very last step.
+    order = []
+    sw = interface.scan_workflow
+    real_set_rt = sw.set_realtime_calibration
+    sw.set_realtime_calibration = (
+        lambda *a, **kw: (order.append("apply_in_memory"),
+                          real_set_rt(*a, **kw))[1]
+    )
+    fake_start = sw.start_scan   # installed by _make_fake_scan_workflow
+    sw.start_scan = lambda req: (order.append("scan"), fake_start(req))[1]
     interface.write_calibration = MagicMock(
-        return_value=Calibration(
-            c_min=np.zeros((2, 8)), c_max=np.full((2, 8), 0.5),
-            i_min=np.zeros((2, 8)), i_max=np.full((2, 8), 200.0),
-            source="console",
-        )
+        side_effect=lambda cmin, cmax, imin, imax: (
+            order.append("eeprom_write"),
+            Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
+                        source="console"),
+        )[1]
     )
 
     done = threading.Event()
@@ -489,45 +500,35 @@ def test_pass_verdict_does_not_roll_back(interface, request_obj):
         on_complete_fn=lambda r: (holder.update(r=r), done.set()),
     )
     assert done.wait(timeout=60.0), "calibration didn't complete"
-    assert holder["r"].rolled_back is False
+    assert holder["r"].passed is True
+    assert holder["r"].calibration_written is True
     interface.write_calibration.assert_called_once()
+    assert order == ["scan", "apply_in_memory", "scan", "eeprom_write"]
 
 
-def test_rollback_failure_is_best_effort(interface, request_obj):
-    """If the restore write itself raises (e.g. console USB died), the
-    result still completes, rolled_back stays False, and the error text
-    carries the rollback failure."""
-    # strict thresholds as above; write_calibration succeeds on call 1,
-    # raises RuntimeError("usb gone") on call 2. Failure forced on BFI so
-    # the pre-write gate (#199) lets the run reach the write — see
-    # test_fail_verdict_rolls_back_eeprom.
-    from dataclasses import replace
-    from omotion.CalibrationWorkflow import CalibrationThresholds
+def test_write_failure_after_pass_is_error_and_restores_cache(
+    interface, request_obj,
+):
+    """If the post-validation EEPROM write raises (e.g. console USB died),
+    the run completes as ERROR, reports calibration_written=False, and the
+    in-memory cache is restored to the console calibration — the override
+    applied for the validation scan must not outlive the run."""
+    from omotion.CalibrationWorkflow import CalibrationOutcome
     _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
-    strict = CalibrationThresholds(
-        min_mean_per_camera=[0.0] * 8,
-        min_contrast_per_camera=[0.0] * 8,
-        min_bfi_per_camera=[1e9] * 8,       # fails only at validation
-        min_bvi_per_camera=[-1e9] * 8,
-    )
-    req = replace(request_obj, thresholds=strict)
-
-    calls = []
-    def _write_side_effect(cmin, cmax, imin, imax):
-        calls.append((cmin, cmax, imin, imax))
-        if len(calls) == 1:
-            return Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
-                               source="test")
-        raise RuntimeError("usb gone")
-    interface.write_calibration = MagicMock(side_effect=_write_side_effect)
+    prior = interface.get_calibration()
+    interface.write_calibration = MagicMock(
+        side_effect=RuntimeError("usb gone"))
 
     done = threading.Event(); holder = {}
     interface.start_calibration(
-        req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+        request_obj,
+        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
     assert done.wait(30)
     r = holder["r"]
-    assert r.rolled_back is False
-    assert "rollback failed" in r.error
+    assert r.outcome is CalibrationOutcome.ERROR
+    assert r.calibration_written is False
+    assert "usb gone" in r.error
+    assert interface.get_calibration() is prior
 
 
 def test_watchdog_timeout_outcome_is_timed_out(interface, request_obj):
@@ -569,10 +570,9 @@ def test_watchdog_timeout_outcome_is_timed_out(interface, request_obj):
 
 # ── Pre-write gate (#199) ─────────────────────────────────────────────────
 #
-# The console EEPROM must not be touched until either the calibration
-# scan's own mean/contrast clear their bars, or the operator explicitly
-# authorises writing anyway. Before the gate existed, every failed
-# calibration briefly destroyed the previous one and then restored it.
+# If any camera misses its mean/contrast bar on the calibration scan the
+# whole run FAILS right there: no validation scan, no operator override,
+# and the console EEPROM is never touched.
 
 
 def _gate_failing_thresholds():
@@ -586,9 +586,10 @@ def _gate_failing_thresholds():
     )
 
 
-def test_gate_failure_without_handler_never_writes(interface, request_obj):
-    """No confirmation handler is the conservative default: abort, and
-    leave whatever calibration the console already had."""
+def test_gate_failure_fails_run_and_never_writes(interface, request_obj):
+    """One camera below the gate → the whole run is FAILED, the EEPROM is
+    untouched, and the result still carries the measured rows + CSV so
+    the operator can see exactly which cameras missed."""
     from dataclasses import replace
     from omotion.CalibrationWorkflow import CalibrationOutcome
     _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
@@ -602,136 +603,40 @@ def test_gate_failure_without_handler_never_writes(interface, request_obj):
 
     r = holder["r"]
     interface.write_calibration.assert_not_called()
-    assert r.outcome is CalibrationOutcome.CANCELED
+    assert r.outcome is CalibrationOutcome.FAILED
     assert "below threshold" in r.error
-    assert r.rolled_back is False
-    assert r.consented_below_threshold is False
+    assert "nothing written" in r.error
+    assert r.calibration_written is False
+    # The gate rows double as the run's result table so the UI can show
+    # what missed; the evidence CSV is written like any other failure.
+    assert r.rows, "gate failure must still deliver the measured rows"
+    assert all(row.mean_test == "FAIL" for row in r.rows)
+    assert r.csv_path and os.path.exists(r.csv_path)
 
 
-def test_gate_decline_never_writes(interface, request_obj):
-    from dataclasses import replace
-    from omotion.CalibrationWorkflow import CalibrationOutcome
-    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
-    interface.write_calibration = MagicMock()
-
-    seen = {}
-    def _decline(rows):
-        seen["rows"] = rows
-        return False
-
-    req = replace(request_obj, thresholds=_gate_failing_thresholds())
-    done = threading.Event(); holder = {}
-    interface.start_calibration(
-        req, on_confirm_fn=_decline,
-        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
-    assert done.wait(30)
-
-    interface.write_calibration.assert_not_called()
-    assert holder["r"].outcome is CalibrationOutcome.CANCELED
-    assert "declined" in holder["r"].error
-    # The handler is handed the measured rows so the UI can show the
-    # operator what missed, rather than a bare yes/no prompt.
-    assert seen["rows"], "confirm handler got no rows"
-    assert all(r.mean_test == "FAIL" for r in seen["rows"])
-
-
-def test_gate_consent_proceeds_and_keeps_the_write(interface, request_obj):
-    """Consent means write, run the validation scan, and — crucially —
-    do NOT roll back afterwards, even though the verdict is FAILED. The
-    operator was shown the numbers and asked for this calibration."""
-    from dataclasses import replace
-    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
-    calls = []
-    def _record_write(cmin, cmax, imin, imax):
-        calls.append((cmin, cmax, imin, imax))
-        return Calibration(c_min=cmin, c_max=cmax, i_min=imin, i_max=imax,
-                           source="test")
-    interface.write_calibration = MagicMock(side_effect=_record_write)
-
-    req = replace(request_obj, thresholds=_gate_failing_thresholds())
-    done = threading.Event(); holder = {}
-    interface.start_calibration(
-        req, on_confirm_fn=lambda rows: True,
-        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
-    assert done.wait(30)
-
-    r = holder["r"]
-    assert r.consented_below_threshold is True
-    assert r.passed is False          # honest verdict — mean still failed
-    assert r.rolled_back is False     # but the write stands
-    assert len(calls) == 1, "consented run must not write twice"
-    # Validation still ran, so the operator gets BFI/BVI numbers too —
-    # r.rows is built from the *validation* samples in phase 5, so its
-    # presence is the proof. (The fake scan workflow doesn't emit scan
-    # CSVs, so the *_scan_*_path fields are empty even on a happy path.)
-    assert r.rows, "no result rows from the validation scan"
-    assert all(row.bfi_test in ("PASS", "FAIL") for row in r.rows)
-
-
-def test_gate_passes_silently_when_scan_is_good(interface, request_obj):
-    """A healthy unit must never see the prompt."""
-    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
-    interface.write_calibration = MagicMock(
-        return_value=Calibration(
-            c_min=np.zeros((2, 8)), c_max=np.full((2, 8), 0.5),
-            i_min=np.zeros((2, 8)), i_max=np.full((2, 8), 200.0),
-            source="console"))
-    asked = []
-    done = threading.Event(); holder = {}
-    interface.start_calibration(
-        request_obj,
-        on_confirm_fn=lambda rows: asked.append(rows) or True,
-        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
-    assert done.wait(60)
-
-    assert asked == [], "gate prompted on a passing scan"
-    assert holder["r"].consented_below_threshold is False
-
-
-def test_gate_handler_exception_is_treated_as_decline(interface, request_obj):
-    """A broken UI callback must not write the EEPROM by accident."""
+def test_gate_failure_skips_validation_scan(interface, request_obj):
+    """The run fails fast: after the calibration scan misses the gate no
+    second (validation) scan is started and no in-memory calibration is
+    applied."""
     from dataclasses import replace
     _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
     interface.write_calibration = MagicMock()
-
-    def _boom(rows):
-        raise RuntimeError("qml died")
+    sw = interface.scan_workflow
+    scan_count = []
+    fake_start = sw.start_scan   # installed by _make_fake_scan_workflow
+    sw.start_scan = lambda req: (scan_count.append(1), fake_start(req))[1]
+    applied = []
+    real_set_rt = sw.set_realtime_calibration
+    sw.set_realtime_calibration = (
+        lambda *a, **kw: (applied.append(1), real_set_rt(*a, **kw))[1]
+    )
 
     req = replace(request_obj, thresholds=_gate_failing_thresholds())
     done = threading.Event(); holder = {}
     interface.start_calibration(
-        req, on_confirm_fn=_boom,
-        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
+        req, on_complete_fn=lambda r: (holder.update(r=r), done.set()))
     assert done.wait(30)
 
-    interface.write_calibration.assert_not_called()
-    assert "gate confirmation failed" in holder["r"].error
-
-
-def test_gate_wait_is_not_charged_against_the_watchdog(interface, request_obj):
-    """Operator think time must not surface as a bogus timeout: the
-    watchdog is paused across the prompt."""
-    from dataclasses import replace
-    _make_fake_scan_workflow(interface, _LEFT, _RIGHT)
-    interface.write_calibration = MagicMock(
-        side_effect=lambda cmin, cmax, imin, imax: Calibration(
-            c_min=cmin, c_max=cmax, i_min=imin, i_max=imax, source="test"))
-
-    # Budget deliberately shorter than the operator's deliberation.
-    req = replace(request_obj, thresholds=_gate_failing_thresholds(),
-                  max_duration_sec=3)
-
-    def _slow_yes(rows):
-        time.sleep(4.0)
-        return True
-
-    done = threading.Event(); holder = {}
-    interface.start_calibration(
-        req, on_confirm_fn=_slow_yes,
-        on_complete_fn=lambda r: (holder.update(r=r), done.set()))
-    assert done.wait(60)
-
-    r = holder["r"]
-    assert r.consented_below_threshold is True
-    assert "max_duration_sec" not in r.error
-    interface.write_calibration.assert_called()
+    assert len(scan_count) == 1, "validation scan ran despite gate failure"
+    assert applied == [], "proposed calibration applied despite gate failure"
+    assert holder["r"].passed is False

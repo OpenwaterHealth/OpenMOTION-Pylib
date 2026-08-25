@@ -110,6 +110,9 @@ class TelemetrySample:
     t2: float
     t3: float
     tec_adc: tuple[int, int, int, int]
+    # TecStats.tec_status — the TEC over-temp trip result (False = tripped,
+    # laser shut down by firmware), not a TMPGD settled-to-setpoint pin.
+    # See tec_status() below and issue #206.
     tec_good: bool
 
     def __str__(self):
@@ -177,6 +180,7 @@ class MotionConsole(SignalWrapper):
         self.telemetry = ConsoleTelemetryPoller(self)
 
         self._state = ConnectionState.DISCONNECTED
+        self._state_reason = ""
         self._state_cv = threading.Condition()
         self._monitor = None  # set by MotionInterface.start()
         self._version = "v0.0.0"
@@ -192,6 +196,11 @@ class MotionConsole(SignalWrapper):
     @property
     def state(self) -> ConnectionState:
         return self._state
+
+    @property
+    def state_reason(self) -> str:
+        """Reason given for the last state transition ("" before any)."""
+        return self._state_reason
 
     def is_connected(self) -> bool:
         return self._state == ConnectionState.CONNECTED
@@ -241,6 +250,7 @@ class MotionConsole(SignalWrapper):
                 return
             old = self._state
             self._state = new_state
+            self._state_reason = reason
             self._state_cv.notify_all()
         try:
             self.signal_state_changed.emit(self, old, new_state, reason)
@@ -1020,16 +1030,17 @@ class MotionConsole(SignalWrapper):
             )
 
             self.uart.clear_buffer()
-            # r.print_packet()
 
-            if r.packetType == OW_ERROR:
-                logger.error("Error Reading I2C Device")
+            if r is None or r.packetType == OW_ERROR or r.data_len <= 0:
+                logger.error(
+                    "I2C read failed: %s (mux=%d ch=%d addr=0x%02X reg=0x%02X len=%d)",
+                    "UART not open" if r is None
+                    else "console returned OW_ERROR" if r.packetType == OW_ERROR
+                    else "console returned no data",
+                    mux_index, channel, device_addr, reg_addr, read_len,
+                )
                 return None, None
-
-            if r.data_len > 0:
-                return r.data, r.data_len
-            else:
-                return None, None
+            return r.data, r.data_len
 
         except Exception as e:
             # The underlying error is already logged by MotionUart.send_packet()
@@ -1221,7 +1232,7 @@ class MotionConsole(SignalWrapper):
             if self.uart.demo_mode:
                 return rgb_state
 
-            logger.info("Setting RGB LED state.")
+            logger.debug("Setting RGB LED state.")
 
             # Send the RGB state as the reserved byte in the packet
             r = self.uart.send_packet(
@@ -1237,7 +1248,7 @@ class MotionConsole(SignalWrapper):
                 logger.error("Error setting RGB LED state")
                 return -1
 
-            logger.info(f"Set RGB LED state to {rgb_state}")
+            logger.debug(f"Set RGB LED state to {rgb_state}")
             return rgb_state
 
         except ValueError as v:
@@ -1909,6 +1920,20 @@ class MotionConsole(SignalWrapper):
     def tec_status(self) -> Tuple[str, str, str, str, bool]:
         """
         Get TEC status: (voltage, Temperature Setpoint, TEC Current, TEC Voltage, TEC Good)
+
+        ``tec_good`` is ``TecStats.tec_status`` from console FW — the TEC
+        over-temp **trip** result, not a TMPGD "temperature settled" pin.
+        ``tec_trip_evaluate()`` (console-fw ``Core/Src/uart_comms.c``) is its
+        only writer: it clears the bit when the TEC sense voltage crosses
+        ``TEC_TRIP_VALUE``, opens the safety disconnect, and re-arms only after
+        200 consecutive clean polls. ``False`` therefore means the console has
+        tripped and shut the laser down. Note the trip is disarmed when
+        ``TEC_TRIP_VALUE == 0.0``, and firmware then always reports ``True``.
+
+        This method raises rather than returning a sentinel on failure, so a
+        caller can never mistake a failed read for a trip; pollers that cache
+        the value should track "was it ever read" separately (see
+        ``ConsoleTelemetry.tec_known``). See issue #206.
 
         Returns:
             tuple: (volt, temp_set, tec_curr, tec_volt, tec_good)
