@@ -125,7 +125,7 @@ Calls `tec_status()`. Asserts the returned tuple is `(float, float, float, float
 Calls `tec_adc(ch)` for channels 0, 1, 2, 3. Asserts each returns a float in [0.0, 3.3].
 
 **`test_tec_voltage_read`**
-Calls `tec_voltage()` (no argument). Asserts the returned float is in [0.0, 3.3].
+Calls `tec_voltage()` (no argument). Asserts the returned TEC DAC setpoint is a float in the public API range [-5.0, 5.0] V. This is intentionally different from the 0-3.3 V ADC bounds used by `tec_adc()` and `tec_status()`.
 
 **`test_tec_voltage_set`**
 Sets a known voltage with `tec_voltage(1.5)`. Reads back with `tec_voltage()`. Asserts the read-back value is within ±0.05 V of the set point.
